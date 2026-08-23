@@ -1,4 +1,4 @@
-// The setup-token pseudo-terminal transport. It gives the Claude `setup-token`
+// The login pseudo-terminal (PTY) transport. It gives the Claude `setup-token`
 // login runner a child that runs on a real pseudo-terminal (PTY). The command
 // needs a PTY: pipe stdio emits no login prompt. The transport starts the
 // command on a PTY, streams the incremental terminal output, delivers delayed
@@ -7,7 +7,7 @@
 // This module is provider-agnostic and pure. It holds no Node built-in import,
 // so the browser-safe root entry can re-export it. A sandbox provider (for
 // example the Daytona plugin) opens the concrete pseudo-terminal through a
-// {@link SetupTokenPtySessionOpener}. A unit test opens a fake pseudo-terminal
+// {@link LoginPtySessionOpener}. A unit test opens a fake pseudo-terminal
 // through the same opener.
 //
 // Boundary (ANSI and OSC 8): the transport forwards the raw terminal bytes
@@ -20,7 +20,7 @@
  * raw terminal output, accepts delayed input, and stops the child. The session
  * forwards the raw terminal bytes; it runs no ANSI or OSC 8 handling.
  */
-export interface SetupTokenPtySession {
+export interface LoginPtySession {
   /**
    * Registers the one output listener. The session streams each raw terminal
    * output chunk to `listener`, in order, as the pseudo-terminal emits it.
@@ -49,7 +49,7 @@ export interface SetupTokenPtySession {
  * Opens a pseudo-terminal session for `command`. A provider binds this to its
  * sandbox. The transport calls it one time, on start.
  */
-export type SetupTokenPtySessionOpener = (command: string) => Promise<SetupTokenPtySession>;
+export type LoginPtySessionOpener = (command: string) => Promise<LoginPtySession>;
 
 /**
  * The child side of the setup-token run, in the shape the login runner needs.
@@ -60,7 +60,7 @@ export type SetupTokenPtySessionOpener = (command: string) => Promise<SetupToken
  * accepts the transport with no adapter. The transport never imports the runner,
  * so the runner package keeps its one-way dependency on this package.
  */
-export interface SetupTokenPtyTransport {
+export interface LoginPtyTransport {
   /**
    * Opens the pseudo-terminal session for `command` and streams the terminal
    * output to `onData` in order. Resolves with the child exit code when the
@@ -86,15 +86,15 @@ export interface SetupTokenPtyTransport {
 }
 
 /**
- * Creates a {@link SetupTokenPtyTransport} over `open`. The transport adapts a
+ * Creates a {@link LoginPtyTransport} over `open`. The transport adapts a
  * pseudo-terminal session into the runner driver shape. It buffers an early
  * input write, it honors an early stop, and it forwards the raw terminal bytes
  * with no ANSI or OSC 8 handling.
  */
-export function createSetupTokenPtyTransport(
-  open: SetupTokenPtySessionOpener,
-): SetupTokenPtyTransport {
-  let session: SetupTokenPtySession | null = null;
+export function createLoginPtyTransport(
+  open: LoginPtySessionOpener,
+): LoginPtyTransport {
+  let session: LoginPtySession | null = null;
   let started = false;
   let stopped = false;
   // Input that the runner writes before the session opens. The transport flushes
@@ -113,7 +113,7 @@ export function createSetupTokenPtyTransport(
   return {
     async start(command, onData): Promise<{ exitCode: number | null }> {
       if (started) {
-        throw new Error("setup-token PTY transport already started.");
+        throw new Error("login PTY transport already started.");
       }
       started = true;
       const opened = await open(command);

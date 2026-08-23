@@ -37,8 +37,8 @@ import {
   isJsonRpcSuccessResponse,
   JsonRpcParseError,
   JsonRpcCallError,
-  SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION,
-  SETUP_TOKEN_PTY_EXIT_NOTIFICATION,
+  LOGIN_PTY_OUTPUT_NOTIFICATION,
+  LOGIN_PTY_EXIT_NOTIFICATION,
   DUPLEX_CHANNEL_DATA_NOTIFICATION,
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
 } from "@paperclipai/plugin-sdk";
@@ -63,7 +63,11 @@ import {
   type DuplexAggregateTokenOwner,
   type ReservationToken,
 } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
-import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
+import {
+  isLoginCommandKey,
+  validateLoginSessionHome,
+  type LoginCommandKey,
+} from "./login-command.js";
 import { logger } from "../middleware/logger.js";
 import { traceparentFromContextToken } from "../instrumentation.js";
 
@@ -160,24 +164,24 @@ const MAX_WORKER_MESSAGE_CHARS = 128 * 1024 * 1024;
 const MAX_EXECUTE_LOG_TOTAL_CHARS = 128 * 1024 * 1024;
 
 /** Maximum characters for one live login pseudo-terminal output notification. */
-const MAX_SETUP_TOKEN_PTY_CHUNK_CHARS = 1_000_000;
+const MAX_LOGIN_PTY_CHUNK_CHARS = 1_000_000;
 /** Maximum cumulative output characters for one login pseudo-terminal route. */
-const MAX_SETUP_TOKEN_PTY_TOTAL_CHARS = 8 * 1024 * 1024;
+const MAX_LOGIN_PTY_TOTAL_CHARS = 8 * 1024 * 1024;
 /** The default open timeout for one login pseudo-terminal route, in milliseconds. */
-const SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS = 30_000;
+const LOGIN_PTY_OPEN_TIMEOUT_MS = 30_000;
 /** The default close timeout for one login pseudo-terminal route, in milliseconds. */
-const SETUP_TOKEN_PTY_CLOSE_TIMEOUT_MS = 10_000;
+const LOGIN_PTY_CLOSE_TIMEOUT_MS = 10_000;
 /**
- * The fixed non-secret error a disallowed login command returns. The manager
- * forwards only the compile-time `CLAUDE_SETUP_TOKEN_COMMAND` to the worker
- * pseudo-terminal. It rejects any other command before the worker call, so a
- * future caller cannot spawn an arbitrary process in the sandbox.
+ * The fixed non-secret error a disallowed login command key returns. The manager
+ * forwards only a closed login command key to the worker pseudo-terminal. It
+ * rejects a key outside the closed set before the worker call, so a caller cannot
+ * select an arbitrary command in the sandbox.
  */
-const SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED = "SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED";
+const LOGIN_PTY_COMMAND_NOT_ALLOWED = "LOGIN_PTY_COMMAND_NOT_ALLOWED";
 /** The fixed non-secret error a rejected second credential open returns. */
-const SETUP_TOKEN_PTY_ROUTE_BUSY = "SETUP_TOKEN_PTY_ROUTE_BUSY";
+const LOGIN_PTY_ROUTE_BUSY = "LOGIN_PTY_ROUTE_BUSY";
 /** The fixed non-secret error a failed open returns. */
-const SETUP_TOKEN_PTY_OPEN_FAILED = "SETUP_TOKEN_PTY_OPEN_FAILED";
+const LOGIN_PTY_OPEN_FAILED = "LOGIN_PTY_OPEN_FAILED";
 
 // Bounds and timeouts for the generic duplex channel route. The route mirrors the
 // login pseudo-terminal route, but it carries no command allowlist and adds seven
@@ -461,7 +465,7 @@ export interface WorkerStartOptions {
    * the open and the close timeouts. A test overrides them to exercise the
    * terminalize paths without huge inputs or long waits.
    */
-  setupTokenPtyLimits?: {
+  loginPtyLimits?: {
     /** Max characters for one login pseudo-terminal output notification. */
     maxChunkChars?: number;
     /** Max cumulative output characters for one login pseudo-terminal route. */
@@ -542,24 +546,33 @@ export type ExecuteLogSink = (
 ) => void | Promise<void>;
 
 /**
- * The input the manager needs to open one live login pseudo-terminal route
- * The manager mints the host route identifier; the caller supplies
- * only the sandbox scope, the provider lease id, and the fixed command.
+ * The input the manager needs to open one live login pseudo-terminal route. The
+ * manager mints the host route identifier; the caller supplies the sandbox scope,
+ * the provider lease id, and the host-resolved launch descriptor. The launch
+ * descriptor carries a closed command key and a validated session home. It
+ * carries no command string, so a caller cannot select the command.
  */
-export interface SetupTokenPtyOpenInput {
+export interface LoginPtyOpenInput {
+  /** The environment driver key. It routes the worker; it confers no command authority. */
   driverKey: string;
   companyId: string;
   environmentId: string;
   providerLeaseId: string;
-  command: string;
+  /** The host-resolved fixed command identity. The worker maps it to a compile-time command. */
+  loginCommandKey: LoginCommandKey;
+  /**
+   * The server-controlled, validated session home. The shape is exact:
+   * `/tmp/paperclip-adapter-login/<uuid>`.
+   */
+  sessionHome: string;
 }
 
 /**
  * One live login pseudo-terminal session the manager hands to the login
- * transport. The shape matches the sandbox provider setup-token
+ * transport. The shape matches the sandbox provider login
  * pseudo-terminal session, so the transport consumes it with no adapter.
  */
-export interface SetupTokenPtyHostSession {
+export interface LoginPtyHostSession {
   /** Registers the one output listener. The session streams each raw chunk in order. */
   onData(listener: (chunk: string) => void): void;
   /** Writes raw input bytes to the pseudo-terminal. */
@@ -701,9 +714,9 @@ export interface PluginWorkerHandle {
    * binds the worker session identifier one time, and returns a session the login
    * transport drives. It permits one active credential pseudo-terminal per worker.
    */
-  openSetupTokenPtySession(
-    input: SetupTokenPtyOpenInput,
-  ): Promise<SetupTokenPtyHostSession>;
+  openLoginPtySession(
+    input: LoginPtyOpenInput,
+  ): Promise<LoginPtyHostSession>;
 
   /**
    * Open one generic duplex channel on this worker. The manager mints the host
@@ -822,14 +835,14 @@ export interface PluginWorkerManager {
 
   /**
    * Open one live login pseudo-terminal route on a specific plugin worker
-   * See {@link PluginWorkerHandle.openSetupTokenPtySession}.
+   * See {@link PluginWorkerHandle.openLoginPtySession}.
    *
    * @throws if the worker is not registered.
    */
-  openSetupTokenPtySession(
+  openLoginPtySession(
     pluginId: string,
-    input: SetupTokenPtyOpenInput,
-  ): Promise<SetupTokenPtyHostSession>;
+    input: LoginPtyOpenInput,
+  ): Promise<LoginPtyHostSession>;
 }
 
 // ---------------------------------------------------------------------------
@@ -890,14 +903,14 @@ export function createPluginWorkerHandle(
 
   // Bounds and timeouts for the login pseudo-terminal route. A caller
   // (a test) can lower them to exercise the terminalize paths.
-  const maxSetupTokenPtyChunkChars =
-    options.setupTokenPtyLimits?.maxChunkChars ?? MAX_SETUP_TOKEN_PTY_CHUNK_CHARS;
-  const maxSetupTokenPtyTotalChars =
-    options.setupTokenPtyLimits?.maxTotalChars ?? MAX_SETUP_TOKEN_PTY_TOTAL_CHARS;
-  const setupTokenPtyOpenTimeoutMs =
-    options.setupTokenPtyLimits?.openTimeoutMs ?? SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS;
-  const setupTokenPtyCloseTimeoutMs =
-    options.setupTokenPtyLimits?.closeTimeoutMs ?? SETUP_TOKEN_PTY_CLOSE_TIMEOUT_MS;
+  const maxLoginPtyChunkChars =
+    options.loginPtyLimits?.maxChunkChars ?? MAX_LOGIN_PTY_CHUNK_CHARS;
+  const maxLoginPtyTotalChars =
+    options.loginPtyLimits?.maxTotalChars ?? MAX_LOGIN_PTY_TOTAL_CHARS;
+  const loginPtyOpenTimeoutMs =
+    options.loginPtyLimits?.openTimeoutMs ?? LOGIN_PTY_OPEN_TIMEOUT_MS;
+  const loginPtyCloseTimeoutMs =
+    options.loginPtyLimits?.closeTimeoutMs ?? LOGIN_PTY_CLOSE_TIMEOUT_MS;
 
   // Bounds and timeouts for the generic duplex channel route. A caller (a test)
   // can lower them to exercise each bound and the terminalize paths.
@@ -1320,7 +1333,7 @@ export function createPluginWorkerHandle(
   }
 
   // -----------------------------------------------------------------------
-  // Host-owned setup-token login pseudo-terminal route gate
+  // Host-owned login pseudo-terminal route gate
   // -----------------------------------------------------------------------
   // The manager owns one live login pseudo-terminal route per worker. It mints a
   // host-owned opaque route identifier, carries it in the open call, and keys the
@@ -1370,10 +1383,10 @@ export function createPluginWorkerHandle(
     return workerSessionId;
   }
 
-  type SetupTokenPtyRouteState = RouteState;
-  interface SetupTokenPtyRoute {
+  type LoginPtyRouteState = RouteState;
+  interface LoginPtyRoute {
     hostRouteId: string;
-    state: SetupTokenPtyRouteState;
+    state: LoginPtyRouteState;
     workerSessionId: string | null;
     listener: ((chunk: string) => void) | null;
     buffered: string[];
@@ -1383,19 +1396,19 @@ export function createPluginWorkerHandle(
   }
   // At most one active credential pseudo-terminal per worker. A non-null route
   // blocks a second open until the manager confirms the first route's close.
-  let setupTokenPtyRoute: SetupTokenPtyRoute | null = null;
+  let loginPtyRoute: LoginPtyRoute | null = null;
 
   // Close the worker terminal by the host route identifier and verify the bound
   // acknowledgement. Return true only when the worker returns an acknowledgement
   // that carries the exact host route identifier. An absent, malformed,
   // mismatched, or timed-out acknowledgement returns false, so the caller fails
   // closed.
-  async function closeSetupTokenPtyTerminal(hostRouteId: string): Promise<boolean> {
+  async function closeLoginPtyTerminal(hostRouteId: string): Promise<boolean> {
     try {
       const ack = await callInternal(
-        "setupTokenPtyClose",
+        "loginPtyClose",
         { hostRouteId },
-        setupTokenPtyCloseTimeoutMs,
+        loginPtyCloseTimeoutMs,
       );
       return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
     } catch {
@@ -1406,7 +1419,7 @@ export function createPluginWorkerHandle(
   // Terminalize the route exactly once. Resolve the login wait, close the worker
   // terminal by the host route identifier, and free the per-worker slot only
   // after the close resolves. Retire the worker when the close is unconfirmed.
-  async function terminalizeSetupTokenPtyRoute(route: SetupTokenPtyRoute): Promise<void> {
+  async function terminalizeLoginPtyRoute(route: LoginPtyRoute): Promise<void> {
     if (route.terminalized) return;
     route.terminalized = true;
     route.state = "closed";
@@ -1415,14 +1428,14 @@ export function createPluginWorkerHandle(
     // A terminalized route reports a null exit code, which the runner treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeSetupTokenPtyTerminal(route.hostRouteId);
-    if (setupTokenPtyRoute === route) setupTokenPtyRoute = null;
+    const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
+    if (loginPtyRoute === route) loginPtyRoute = null;
     if (!confirmed) {
       // The worker did not acknowledge the close, so the host cannot prove the
       // terminal is gone. Fail closed: retire the worker before any reuse.
       log.error(
         { pluginId },
-        "setup-token login pseudo-terminal close not acknowledged; retiring worker",
+        "login pseudo-terminal close not acknowledged; retiring worker",
       );
       void killProcess();
     }
@@ -1432,8 +1445,8 @@ export function createPluginWorkerHandle(
   // listener. Deliver only while the route is `open` and the notification carries
   // the exact bound worker session identifier and valid bounded bytes. Drop an
   // unknown, late, malformed, or mismatched notification. Never log the raw bytes.
-  function routeSetupTokenPtyOutput(notification: JsonRpcNotification): void {
-    const route = setupTokenPtyRoute;
+  function routeLoginPtyOutput(notification: JsonRpcNotification): void {
+    const route = loginPtyRoute;
     if (!route || route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
@@ -1442,13 +1455,13 @@ export function createPluginWorkerHandle(
     if (
       typeof chunk !== "string" ||
       chunk.length === 0 ||
-      chunk.length > maxSetupTokenPtyChunkChars
+      chunk.length > maxLoginPtyChunkChars
     ) {
       return;
     }
-    if (route.deliveredChars + chunk.length > maxSetupTokenPtyTotalChars) {
+    if (route.deliveredChars + chunk.length > maxLoginPtyTotalChars) {
       // The cumulative output passed the per-route bound. Terminalize the route.
-      void terminalizeSetupTokenPtyRoute(route);
+      void terminalizeLoginPtyRoute(route);
       return;
     }
     route.deliveredChars += chunk.length;
@@ -1459,8 +1472,8 @@ export function createPluginWorkerHandle(
   // Route one login pseudo-terminal exit notification to the login wait. Resolve
   // only while the route is `open` and the notification carries the exact bound
   // worker session identifier.
-  function routeSetupTokenPtyExit(notification: JsonRpcNotification): void {
-    const route = setupTokenPtyRoute;
+  function routeLoginPtyExit(notification: JsonRpcNotification): void {
+    const route = loginPtyRoute;
     if (!route || route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
@@ -1472,10 +1485,10 @@ export function createPluginWorkerHandle(
   // Close the one route on a worker exit. The worker is gone, so the manager
   // resolves the login wait with the fixed non-secret exit and clears the route
   // one time. The pending pseudo-terminal calls reject through `rejectAllPending`.
-  function closeSetupTokenPtyRouteOnWorkerExit(): void {
-    const route = setupTokenPtyRoute;
+  function closeLoginPtyRouteOnWorkerExit(): void {
+    const route = loginPtyRoute;
     if (!route) return;
-    setupTokenPtyRoute = null;
+    loginPtyRoute = null;
     route.terminalized = true;
     route.state = "closed";
     route.listener = null;
@@ -1487,27 +1500,31 @@ export function createPluginWorkerHandle(
   // before the open call, bind the worker session identifier one time on the
   // first successful open reply, and return a session the login transport drives.
   // Terminalize the route on every open failure path.
-  async function openSetupTokenPtySession(
-    input: SetupTokenPtyOpenInput,
-  ): Promise<SetupTokenPtyHostSession> {
-    if (input.command !== CLAUDE_SETUP_TOKEN_COMMAND) {
-      // Allowlist the login command. Only the fixed `CLAUDE_SETUP_TOKEN_COMMAND`
-      // may run in the sandbox pseudo-terminal. Reject any other command with one
-      // fixed non-secret error before the worker call, so a caller cannot spawn
-      // an arbitrary process in the sandbox pseudo-terminal.
-      throw new Error(SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED);
+  async function openLoginPtySession(
+    input: LoginPtyOpenInput,
+  ): Promise<LoginPtyHostSession> {
+    if (!isLoginCommandKey(input.loginCommandKey)) {
+      // Allowlist the login command key. Only a key in the closed set may open a
+      // sandbox pseudo-terminal. Reject a key outside the set with one fixed
+      // non-secret error before the worker call, so a caller cannot select an
+      // arbitrary command in the sandbox pseudo-terminal.
+      throw new Error(LOGIN_PTY_COMMAND_NOT_ALLOWED);
     }
-    if (setupTokenPtyRoute) {
+    // Revalidate the server-controlled session home shape before the worker RPC.
+    // The binding validated it at the service boundary; this is the last host gate
+    // before the worker call, so a malformed home fails closed here too.
+    validateLoginSessionHome(input.sessionHome);
+    if (loginPtyRoute) {
       // A route for this worker is not yet closed and confirmed. Reject the
       // second open with one fixed non-secret error before it reaches the worker.
-      throw new Error(SETUP_TOKEN_PTY_ROUTE_BUSY);
+      throw new Error(LOGIN_PTY_ROUTE_BUSY);
     }
     const hostRouteId = randomUUID();
     let settleWait: (value: { exitCode: number | null }) => void = () => {};
     const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
       settleWait = resolve;
     });
-    const route: SetupTokenPtyRoute = {
+    const route: LoginPtyRoute = {
       hostRouteId,
       state: "reserved",
       workerSessionId: null,
@@ -1517,36 +1534,37 @@ export function createPluginWorkerHandle(
       terminalized: false,
       settleWait,
     };
-    setupTokenPtyRoute = route;
+    loginPtyRoute = route;
 
     route.state = "opening";
-    let openResult: HostToWorkerMethods["setupTokenPtyOpen"][1];
+    let openResult: HostToWorkerMethods["loginPtyOpen"][1];
     try {
       openResult = await callInternal(
-        "setupTokenPtyOpen",
+        "loginPtyOpen",
         {
           hostRouteId,
           driverKey: input.driverKey,
           companyId: input.companyId,
           environmentId: input.environmentId,
           providerLeaseId: input.providerLeaseId,
-          command: input.command,
+          loginCommandKey: input.loginCommandKey,
+          sessionHome: input.sessionHome,
         },
-        setupTokenPtyOpenTimeoutMs,
+        loginPtyOpenTimeoutMs,
       );
     } catch (err) {
       // A send failure, an RPC rejection, or an open timeout. Terminalize the
       // route exactly once and fail closed.
-      await terminalizeSetupTokenPtyRoute(route);
-      throw err instanceof Error ? err : new Error(SETUP_TOKEN_PTY_OPEN_FAILED);
+      await terminalizeLoginPtyRoute(route);
+      throw err instanceof Error ? err : new Error(LOGIN_PTY_OPEN_FAILED);
     }
 
     const workerSessionId = readBindableWorkerSessionId(route, openResult);
     if (!workerSessionId) {
       // A malformed reply, or a route that already left `opening`. A late or a
       // duplicate reply never binds, revives, or reopens a route.
-      await terminalizeSetupTokenPtyRoute(route);
-      throw new Error(SETUP_TOKEN_PTY_OPEN_FAILED);
+      await terminalizeLoginPtyRoute(route);
+      throw new Error(LOGIN_PTY_OPEN_FAILED);
     }
     // Bind the worker session identifier one time and move the route to `open`.
     route.workerSessionId = workerSessionId;
@@ -1565,9 +1583,9 @@ export function createPluginWorkerHandle(
         const sid = route.workerSessionId;
         if (route.state !== "open" || !sid) return;
         void callInternal(
-          "setupTokenPtyInput",
+          "loginPtyInput",
           { workerSessionId: sid, data },
-          setupTokenPtyOpenTimeoutMs,
+          loginPtyOpenTimeoutMs,
         ).catch(() => {});
       },
       wait(): Promise<{ exitCode: number | null }> {
@@ -1577,13 +1595,13 @@ export function createPluginWorkerHandle(
         const sid = route.workerSessionId;
         if (!sid) return;
         void callInternal(
-          "setupTokenPtyStop",
+          "loginPtyStop",
           { workerSessionId: sid },
-          setupTokenPtyOpenTimeoutMs,
+          loginPtyOpenTimeoutMs,
         ).catch(() => {});
       },
       async close(): Promise<void> {
-        await terminalizeSetupTokenPtyRoute(route);
+        await terminalizeLoginPtyRoute(route);
       },
     };
   }
@@ -2660,15 +2678,15 @@ export function createPluginWorkerHandle(
       return;
     }
 
-    // Setup-token login pseudo-terminal notifications: deliver output
+    // Login pseudo-terminal notifications: deliver output
     // and the exit to the one host-owned login route, bound by the worker session
     // identifier while the route is open.
-    if (notification.method === SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION) {
-      routeSetupTokenPtyOutput(notification);
+    if (notification.method === LOGIN_PTY_OUTPUT_NOTIFICATION) {
+      routeLoginPtyOutput(notification);
       return;
     }
-    if (notification.method === SETUP_TOKEN_PTY_EXIT_NOTIFICATION) {
-      routeSetupTokenPtyExit(notification);
+    if (notification.method === LOGIN_PTY_EXIT_NOTIFICATION) {
+      routeLoginPtyExit(notification);
       return;
     }
 
@@ -2850,7 +2868,7 @@ export function createPluginWorkerHandle(
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
     // clear the route one time. The pending pseudo-terminal calls
     // already rejected through `rejectAllPending`.
-    closeSetupTokenPtyRouteOnWorkerExit();
+    closeLoginPtyRouteOnWorkerExit();
 
     // Close the one duplex channel route the same way. The pending channel calls
     // already rejected through `rejectAllPending`.
@@ -3326,7 +3344,7 @@ export function createPluginWorkerHandle(
       return callInternal(method, params, timeoutMs, executeLogSink);
     },
 
-    openSetupTokenPtySession(input: SetupTokenPtyOpenInput) {
+    openLoginPtySession(input: LoginPtyOpenInput) {
       if (status !== "running" && status !== "starting") {
         return Promise.reject(
           new Error(
@@ -3334,7 +3352,7 @@ export function createPluginWorkerHandle(
           ),
         );
       }
-      return openSetupTokenPtySession(input);
+      return openLoginPtySession(input);
     },
 
     openDuplexChannel(input: DuplexChannelOpenInput) {
@@ -3653,14 +3671,14 @@ export function createPluginWorkerManager(
       return handle.call(method, params, timeoutMs, executeLogSink);
     },
 
-    openSetupTokenPtySession(pluginId: string, input: SetupTokenPtyOpenInput) {
+    openLoginPtySession(pluginId: string, input: LoginPtyOpenInput) {
       const handle = workers.get(pluginId);
       if (!handle) {
         return Promise.reject(
           new Error(`No worker registered for plugin "${pluginId}"`),
         );
       }
-      return handle.openSetupTokenPtySession(input);
+      return handle.openLoginPtySession(input);
     },
   };
 }

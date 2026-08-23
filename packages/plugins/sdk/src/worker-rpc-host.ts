@@ -100,10 +100,10 @@ import type {
   PluginEnvironmentCaptureTemplateParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentDeleteTemplateParams,
-  PluginSetupTokenPtyOpenParams,
-  PluginSetupTokenPtyInputParams,
-  PluginSetupTokenPtyStopParams,
-  PluginSetupTokenPtyCloseParams,
+  PluginLoginPtyOpenParams,
+  PluginLoginPtyInputParams,
+  PluginLoginPtyStopParams,
+  PluginLoginPtyCloseParams,
   PluginDuplexChannelOpenParams,
   PluginDuplexChannelWriteParams,
   PluginDuplexChannelStopParams,
@@ -113,8 +113,8 @@ import type {
   WorkerToHostMethods,
 } from "./protocol.js";
 import {
-  SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION,
-  SETUP_TOKEN_PTY_EXIT_NOTIFICATION,
+  LOGIN_PTY_OUTPUT_NOTIFICATION,
+  LOGIN_PTY_EXIT_NOTIFICATION,
   DUPLEX_CHANNEL_DATA_NOTIFICATION,
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   JSONRPC_VERSION,
@@ -1378,7 +1378,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
-      setupTokenPty: {
+      loginPty: {
         output(workerSessionId: string, chunk: string): void {
           // Forward one raw output chunk of a live login pseudo-terminal. The
           // notification carries the worker session identifier, so the host binds
@@ -1388,14 +1388,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           // because it fires after the open reply returns.
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
           if (typeof chunk !== "string" || chunk.length === 0) return;
-          notifyHost(SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION, { workerSessionId, chunk });
+          notifyHost(LOGIN_PTY_OUTPUT_NOTIFICATION, { workerSessionId, chunk });
         },
         exit(workerSessionId: string, exitCode: number | null): void {
           // Forward the child exit of a live login pseudo-terminal. The host
           // resolves the open route's wait promise by the worker session
           // identifier while the route is open.
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
-          notifyHost(SETUP_TOKEN_PTY_EXIT_NOTIFICATION, {
+          notifyHost(LOGIN_PTY_EXIT_NOTIFICATION, {
             workerSessionId,
             exitCode: typeof exitCode === "number" ? exitCode : null,
           });
@@ -1652,17 +1652,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentDeleteTemplate":
         return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
 
-      case "setupTokenPtyOpen":
-        return handleSetupTokenPtyOpen(params as PluginSetupTokenPtyOpenParams);
+      case "loginPtyOpen":
+        return handleLoginPtyOpen(params as PluginLoginPtyOpenParams);
 
-      case "setupTokenPtyInput":
-        return handleSetupTokenPtyInput(params as PluginSetupTokenPtyInputParams);
+      case "loginPtyInput":
+        return handleLoginPtyInput(params as PluginLoginPtyInputParams);
 
-      case "setupTokenPtyStop":
-        return handleSetupTokenPtyStop(params as PluginSetupTokenPtyStopParams);
+      case "loginPtyStop":
+        return handleLoginPtyStop(params as PluginLoginPtyStopParams);
 
-      case "setupTokenPtyClose":
-        return handleSetupTokenPtyClose(params as PluginSetupTokenPtyCloseParams);
+      case "loginPtyClose":
+        return handleLoginPtyClose(params as PluginLoginPtyCloseParams);
 
       case "duplexChannelOpen":
         return handleDuplexChannelOpen(params as PluginDuplexChannelOpenParams);
@@ -1727,10 +1727,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
     if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
     if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
-    if (plugin.definition.onSetupTokenPtyOpen) supportedMethods.push("setupTokenPtyOpen");
-    if (plugin.definition.onSetupTokenPtyInput) supportedMethods.push("setupTokenPtyInput");
-    if (plugin.definition.onSetupTokenPtyStop) supportedMethods.push("setupTokenPtyStop");
-    if (plugin.definition.onSetupTokenPtyClose) supportedMethods.push("setupTokenPtyClose");
+    if (plugin.definition.onLoginPtyOpen) supportedMethods.push("loginPtyOpen");
+    if (plugin.definition.onLoginPtyInput) supportedMethods.push("loginPtyInput");
+    if (plugin.definition.onLoginPtyStop) supportedMethods.push("loginPtyStop");
+    if (plugin.definition.onLoginPtyClose) supportedMethods.push("loginPtyClose");
     if (plugin.definition.onDuplexChannelOpen) supportedMethods.push("duplexChannelOpen");
     if (plugin.definition.onDuplexChannelWrite) supportedMethods.push("duplexChannelWrite");
     if (plugin.definition.onDuplexChannelStop) supportedMethods.push("duplexChannelStop");
@@ -2083,32 +2083,32 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     return plugin.definition.onEnvironmentDeleteTemplate(params);
   }
 
-  async function handleSetupTokenPtyOpen(params: PluginSetupTokenPtyOpenParams) {
-    if (!plugin.definition.onSetupTokenPtyOpen) {
-      throw methodNotImplemented("setupTokenPtyOpen");
+  async function handleLoginPtyOpen(params: PluginLoginPtyOpenParams) {
+    if (!plugin.definition.onLoginPtyOpen) {
+      throw methodNotImplemented("loginPtyOpen");
     }
-    return plugin.definition.onSetupTokenPtyOpen(params);
+    return plugin.definition.onLoginPtyOpen(params);
   }
 
-  async function handleSetupTokenPtyInput(params: PluginSetupTokenPtyInputParams) {
-    if (!plugin.definition.onSetupTokenPtyInput) {
-      throw methodNotImplemented("setupTokenPtyInput");
+  async function handleLoginPtyInput(params: PluginLoginPtyInputParams) {
+    if (!plugin.definition.onLoginPtyInput) {
+      throw methodNotImplemented("loginPtyInput");
     }
-    return plugin.definition.onSetupTokenPtyInput(params);
+    return plugin.definition.onLoginPtyInput(params);
   }
 
-  async function handleSetupTokenPtyStop(params: PluginSetupTokenPtyStopParams) {
-    if (!plugin.definition.onSetupTokenPtyStop) {
-      throw methodNotImplemented("setupTokenPtyStop");
+  async function handleLoginPtyStop(params: PluginLoginPtyStopParams) {
+    if (!plugin.definition.onLoginPtyStop) {
+      throw methodNotImplemented("loginPtyStop");
     }
-    return plugin.definition.onSetupTokenPtyStop(params);
+    return plugin.definition.onLoginPtyStop(params);
   }
 
-  async function handleSetupTokenPtyClose(params: PluginSetupTokenPtyCloseParams) {
-    if (!plugin.definition.onSetupTokenPtyClose) {
-      throw methodNotImplemented("setupTokenPtyClose");
+  async function handleLoginPtyClose(params: PluginLoginPtyCloseParams) {
+    if (!plugin.definition.onLoginPtyClose) {
+      throw methodNotImplemented("loginPtyClose");
     }
-    return plugin.definition.onSetupTokenPtyClose(params);
+    return plugin.definition.onLoginPtyClose(params);
   }
 
   async function handleDuplexChannelOpen(params: PluginDuplexChannelOpenParams) {

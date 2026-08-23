@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  createSetupTokenPtyTransport,
-  type SetupTokenPtySession,
-} from "./setup-token-transport.js";
+  createLoginPtyTransport,
+  type LoginPtySession,
+} from "./login-pty-transport.js";
 
 // The Enter byte the terminal login UI reads to submit the browser code. The
 // login runner appends this byte to the code. The transport forwards the bytes
@@ -14,7 +14,7 @@ const ENTER = "\r";
  * stream on demand, and records the stop and the close. The tests use it in
  * place of a real pseudo-terminal, so the transport runs with no sandbox.
  */
-function createFakePtySession(): SetupTokenPtySession & {
+function createFakePtySession(): LoginPtySession & {
   writes: string[];
   emit: (chunk: string) => void;
   finish: (exitCode: number | null) => void;
@@ -74,10 +74,10 @@ function createFakePtySession(): SetupTokenPtySession & {
   };
 }
 
-describe("createSetupTokenPtyTransport", () => {
+describe("createLoginPtyTransport", () => {
   it("delivers delayed input to the process", async () => {
     const session = createFakePtySession();
-    const transport = createSetupTokenPtyTransport(async () => session);
+    const transport = createLoginPtyTransport(async () => session);
 
     const started = transport.start("claude setup-token", () => {});
     await session.ready;
@@ -94,7 +94,7 @@ describe("createSetupTokenPtyTransport", () => {
   it("returns incremental terminal output to the runner", async () => {
     const session = createFakePtySession();
     const received: string[] = [];
-    const transport = createSetupTokenPtyTransport(async () => session);
+    const transport = createLoginPtyTransport(async () => session);
 
     const started = transport.start("claude setup-token", (chunk) => {
       received.push(chunk);
@@ -114,7 +114,7 @@ describe("createSetupTokenPtyTransport", () => {
 
   it("delivers the Enter byte after the browser code", async () => {
     const session = createFakePtySession();
-    const transport = createSetupTokenPtyTransport(async () => session);
+    const transport = createLoginPtyTransport(async () => session);
 
     const started = transport.start("claude setup-token", () => {});
     await session.ready;
@@ -133,7 +133,7 @@ describe("createSetupTokenPtyTransport", () => {
 
   it("resolves start with the child exit code", async () => {
     const session = createFakePtySession();
-    const transport = createSetupTokenPtyTransport(async () => session);
+    const transport = createLoginPtyTransport(async () => session);
 
     const started = transport.start("claude setup-token", () => {});
     session.finish(7);
@@ -143,7 +143,7 @@ describe("createSetupTokenPtyTransport", () => {
 
   it("stops the child with a direct kill", async () => {
     const session = createFakePtySession();
-    const transport = createSetupTokenPtyTransport(async () => session);
+    const transport = createLoginPtyTransport(async () => session);
 
     const started = transport.start("claude setup-token", () => {});
     await session.ready;
@@ -156,7 +156,7 @@ describe("createSetupTokenPtyTransport", () => {
 
   it("disposes the session resources", async () => {
     const session = createFakePtySession();
-    const transport = createSetupTokenPtyTransport(async () => session);
+    const transport = createLoginPtyTransport(async () => session);
 
     const started = transport.start("claude setup-token", () => {});
     session.finish(0);
@@ -168,7 +168,7 @@ describe("createSetupTokenPtyTransport", () => {
 
   it("stays safe when stop and dispose run before start", async () => {
     const session = createFakePtySession();
-    const transport = createSetupTokenPtyTransport(async () => session);
+    const transport = createLoginPtyTransport(async () => session);
 
     // The runner may stop or dispose before it starts the child. The transport
     // must not throw, and it must not open a session for a run it already stopped.
@@ -185,7 +185,7 @@ describe("createSetupTokenPtyTransport", () => {
     const openGate = new Promise<void>((resolve) => {
       resolveOpen = resolve;
     });
-    const transport = createSetupTokenPtyTransport(async () => {
+    const transport = createLoginPtyTransport(async () => {
       await openGate;
       return session;
     });
@@ -207,7 +207,7 @@ describe("createSetupTokenPtyTransport", () => {
     const openGate = new Promise<void>((resolve) => {
       resolveOpen = resolve;
     });
-    const transport = createSetupTokenPtyTransport(async () => {
+    const transport = createLoginPtyTransport(async () => {
       await openGate;
       return session;
     });

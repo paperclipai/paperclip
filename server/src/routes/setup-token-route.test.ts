@@ -111,11 +111,9 @@ const mockSecretService = vi.hoisted(() => ({
 const mockFindActiveServerAdapter = vi.hoisted(() => vi.fn());
 
 // The Claude setup-token login capability the registry declares for the built-in
-// adapter. The guard requires the pseudo-terminal transport and the stored-session
-// completion claim.
+// adapter. The guard requires the stored-session completion claim.
 const CLAUDE_LOGIN_CAPABILITY = {
   panelMode: "submitted_browser_code",
-  sandboxTransport: "pseudo_terminal",
   timeoutPolicy: "fixed",
   completionClaim: "storedSessionId",
   getCommand: () => "",
