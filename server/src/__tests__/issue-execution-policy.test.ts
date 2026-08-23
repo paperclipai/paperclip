@@ -2134,38 +2134,80 @@ describe("isEligibleIssueMonitorLive", () => {
     }), now)).toBe(true);
   });
 
+  function idleState(monitor: Record<string, unknown>) {
+    return {
+      status: "idle",
+      currentStageId: null,
+      currentStageIndex: null,
+      currentStageType: null,
+      currentParticipant: null,
+      returnAssignee: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor,
+    };
+  }
+
   it("treats persisted monitor columns as live when executionPolicy has no monitor", () => {
     expect(isEligibleIssueMonitorLive(liveIssue({
       monitorNotes: "Check deployment",
       monitorScheduledBy: "assignee",
       executionPolicy: { stages: [] },
-      executionState: {
-        status: "idle",
-        currentStageId: null,
-        currentStageIndex: null,
-        currentStageType: null,
-        currentParticipant: null,
-        returnAssignee: null,
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-        monitor: {
-          status: "scheduled",
-          nextCheckAt: futureCheck,
-          lastTriggeredAt: null,
-          attemptCount: 0,
-          notes: "Check deployment",
-          scheduledBy: "assignee",
-          kind: "external_service",
-          serviceName: "github",
-          timeoutAt: null,
-          maxAttempts: 12,
-          recoveryPolicy: "wake_owner",
-          clearedAt: null,
-          clearReason: null,
-        },
-      },
+      executionState: idleState({
+        status: "scheduled",
+        nextCheckAt: futureCheck,
+        lastTriggeredAt: null,
+        attemptCount: 0,
+        notes: "Check deployment",
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        timeoutAt: null,
+        maxAttempts: 12,
+        recoveryPolicy: "wake_owner",
+        clearedAt: null,
+        clearReason: null,
+      }),
     }), now)).toBe(true);
+  });
+
+  it("does not treat a stale timestamp as live when the monitor is triggered", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      executionPolicy: { stages: [] },
+      executionState: idleState({
+        status: "triggered",
+        nextCheckAt: null,
+        lastTriggeredAt: now.toISOString(),
+        attemptCount: 1,
+        notes: null,
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        maxAttempts: 12,
+        clearedAt: null,
+        clearReason: null,
+      }),
+    }), now)).toBe(false);
+  });
+
+  it("does not treat a stale timestamp as live when the monitor is cleared", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      executionPolicy: { stages: [] },
+      executionState: idleState({
+        status: "cleared",
+        nextCheckAt: null,
+        lastTriggeredAt: now.toISOString(),
+        attemptCount: 1,
+        notes: null,
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        maxAttempts: 12,
+        clearedAt: now.toISOString(),
+        clearReason: "manual",
+      }),
+    }), now)).toBe(false);
   });
 
   it("does not treat timestamps as coverage for ineligible assignees or statuses", () => {
@@ -2230,6 +2272,46 @@ describe("isEligibleIssueMonitorLive", () => {
     expect(projection.executionPolicy?.monitor).toEqual(expect.objectContaining({
       notes: "Check deployment",
       nextCheckAt: futureCheck,
+      externalRef: REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+    }));
+    expect(JSON.stringify(projection)).not.toContain(secret);
+  });
+
+  it("projects compact monitor metadata from persisted state when executionPolicy has no monitor", () => {
+    const secret = "https://example.test/deploy?token=secret";
+    const projection = compactIssueMonitorProjection(liveIssue({
+      monitorNotes: "Check deployment",
+      monitorScheduledBy: "assignee",
+      monitorAttemptCount: 1,
+      executionPolicy: { stages: [] },
+      executionState: idleState({
+        status: "scheduled",
+        nextCheckAt: futureCheck,
+        lastTriggeredAt: null,
+        attemptCount: 1,
+        notes: "Check deployment",
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        timeoutAt: null,
+        maxAttempts: 12,
+        recoveryPolicy: "wake_owner",
+        externalRef: secret,
+        clearedAt: null,
+        clearReason: null,
+      }),
+    }), now);
+
+    expect(projection.monitorEligibleLive).toBe(true);
+    expect(projection.monitorStatus).toBe("scheduled");
+    expect(projection.monitorNextCheckAt).toBe(futureCheck);
+    expect(projection.monitorAttemptCount).toBe(1);
+    expect(projection.executionPolicy?.monitor).toEqual(expect.objectContaining({
+      nextCheckAt: futureCheck,
+      notes: "Check deployment",
+      kind: "external_service",
+      serviceName: "github",
+      maxAttempts: 12,
       externalRef: REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
     }));
     expect(JSON.stringify(projection)).not.toContain(secret);
