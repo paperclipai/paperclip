@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildLocalRuntimeApiCandidateUrls,
   buildRuntimeApiCandidateUrls,
+  choosePrimaryLocalRuntimeApiUrl,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
 } from "../runtime-api.js";
@@ -104,6 +106,70 @@ describe("runtime API discovery", () => {
       "http://127.0.0.1:3102",
       "http://host.docker.internal:3102",
     ]);
+  });
+
+  it("prefers internal runtime candidates over the public Paperclip origin for local adapters", () => {
+    expect(
+      buildLocalRuntimeApiCandidateUrls({
+        publicApiUrl: "https://paperclip.example.test/app",
+        allowedHostnames: [
+          "paperclip.example.test",
+          "app-paperclip.exe.xyz",
+        ],
+        bindHost: "0.0.0.0",
+        port: 8000,
+        networkInterfacesMap: {
+          eth0: [
+            {
+              address: "10.42.0.42",
+              family: "IPv4",
+              internal: false,
+              netmask: "255.255.255.0",
+              cidr: "10.42.0.42/24",
+              mac: "00:00:00:00:00:00",
+            },
+            {
+              address: "172.18.0.1",
+              family: "IPv4",
+              internal: false,
+              netmask: "255.255.0.0",
+              cidr: "172.18.0.1/16",
+              mac: "00:00:00:00:00:00",
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      "http://10.42.0.42:8000",
+      "http://172.18.0.1:8000",
+      "http://app-paperclip.exe.xyz:8000",
+      "http://127.0.0.1:8000",
+      "http://host.docker.internal:8000",
+      "https://paperclip.example.test",
+    ]);
+  });
+
+  it("chooses the internal control-plane origin before the advertised public URL", () => {
+    expect(
+      choosePrimaryLocalRuntimeApiUrl({
+        publicApiUrl: "https://paperclip.example.test/app",
+        allowedHostnames: ["paperclip.example.test", "app-paperclip.exe.xyz"],
+        bindHost: "0.0.0.0",
+        port: 8000,
+        networkInterfacesMap: {
+          eth0: [
+            {
+              address: "10.42.0.42",
+              family: "IPv4",
+              internal: false,
+              netmask: "255.255.255.0",
+              cidr: "10.42.0.42/24",
+              mac: "00:00:00:00:00:00",
+            },
+          ],
+        },
+      }),
+    ).toBe("http://10.42.0.42:8000");
   });
 
   it("prefers usable interface hosts and skips link-local addresses", () => {

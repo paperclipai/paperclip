@@ -2075,7 +2075,11 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+export function buildPaperclipEnv(agent: {
+  id: string;
+  companyId: string;
+  adapterType?: string | null;
+}): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -2090,13 +2094,24 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  // An explicit PAPERCLIP_API_URL override must win over the URL derived from
-  // authPublicBaseUrl: the derived URL can be unreachable from inside the
-  // runtime container (e.g. when the public base URL is VPN/tailnet-only).
-  const apiUrl =
-    process.env.PAPERCLIP_API_URL ??
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
+  const prefersRuntimeControlPlaneUrl =
+    agent.adapterType === "process"
+    || (typeof agent.adapterType === "string" && agent.adapterType.endsWith("_local"));
+  // Local child-process adapters need the runtime control-plane origin when the
+  // server exports one: their `PAPERCLIP_API_URL` must route to the live
+  // control plane from the agent's actual execution surface, not merely to the
+  // browser-facing/public origin.
+  const apiUrl = prefersRuntimeControlPlaneUrl
+    ? (
+      process.env.PAPERCLIP_RUNTIME_API_URL
+      ?? process.env.PAPERCLIP_API_URL
+      ?? `http://${runtimeHost}:${runtimePort}`
+    )
+    : (
+      process.env.PAPERCLIP_API_URL
+      ?? process.env.PAPERCLIP_RUNTIME_API_URL
+      ?? `http://${runtimeHost}:${runtimePort}`
+    );
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
 }

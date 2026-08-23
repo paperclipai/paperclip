@@ -1,4 +1,7 @@
 import type { Request, RequestHandler } from "express";
+import {
+  collectInternalRuntimeInterfaceHosts,
+} from "../runtime-api.js";
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
@@ -28,13 +31,22 @@ function normalizeAllowedHostnames(values: string[]): string[] {
   return Array.from(unique);
 }
 
-export function resolvePrivateHostnameAllowSet(opts: { allowedHostnames: string[]; bindHost: string }): Set<string> {
+export function resolvePrivateHostnameAllowSet(opts: {
+  allowedHostnames: string[];
+  bindHost: string;
+  networkInterfacesMap?: NodeJS.Dict<NodeJS.NetworkInterfaceInfo[]>;
+}): Set<string> {
   const configuredAllow = normalizeAllowedHostnames(opts.allowedHostnames);
   const bindHost = opts.bindHost.trim().toLowerCase();
   const allowSet = new Set<string>(configuredAllow);
 
   if (bindHost && bindHost !== "0.0.0.0") {
     allowSet.add(bindHost);
+  }
+  for (const host of collectInternalRuntimeInterfaceHosts({
+    networkInterfacesMap: opts.networkInterfacesMap,
+  })) {
+    allowSet.add(host.toLowerCase());
   }
   allowSet.add("localhost");
   allowSet.add("127.0.0.1");
@@ -57,6 +69,7 @@ export function privateHostnameGuard(opts: {
   enabled: boolean;
   allowedHostnames: string[];
   bindHost: string;
+  networkInterfacesMap?: NodeJS.Dict<NodeJS.NetworkInterfaceInfo[]>;
 }): RequestHandler {
   if (!opts.enabled) {
     return (_req, _res, next) => next();
@@ -65,6 +78,7 @@ export function privateHostnameGuard(opts: {
   const allowSet = resolvePrivateHostnameAllowSet({
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
+    networkInterfacesMap: opts.networkInterfacesMap,
   });
 
   return (req, res, next) => {

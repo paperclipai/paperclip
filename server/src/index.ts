@@ -80,7 +80,11 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
-import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import {
+  buildLocalRuntimeApiCandidateUrls,
+  choosePrimaryLocalRuntimeApiUrl,
+  choosePrimaryRuntimeApiUrl,
+} from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import {
@@ -870,16 +874,23 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const runtimeListenHost = config.host;
-  const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+  const advertisedApiUrl = choosePrimaryRuntimeApiUrl({
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
-  const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
-    preferredApiUrl: configuredApiUrl,
-    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || advertisedApiUrl;
+  const runtimeApiCandidates = buildLocalRuntimeApiCandidateUrls({
+    preferredRuntimeApiUrl: process.env.PAPERCLIP_RUNTIME_API_URL?.trim() || null,
+    publicApiUrl: configuredApiUrl,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const runtimeApiUrl = choosePrimaryLocalRuntimeApiUrl({
+    preferredRuntimeApiUrl: process.env.PAPERCLIP_RUNTIME_API_URL?.trim() || null,
+    publicApiUrl: configuredApiUrl,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
     port: listenPort,

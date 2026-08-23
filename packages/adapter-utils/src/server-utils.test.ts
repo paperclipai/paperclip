@@ -2654,17 +2654,30 @@ describe("buildPaperclipEnv", () => {
     }
   }
 
-  it("prefers an explicit PAPERCLIP_API_URL override over the derived runtime URL", () => {
+  it("keeps the public PAPERCLIP_API_URL override for non-local adapters", () => {
     withEnv(
       {
         PAPERCLIP_API_URL: "http://localhost:3100",
         PAPERCLIP_RUNTIME_API_URL: "http://203.0.113.7:3100",
       },
       () => {
-        const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+        const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1", adapterType: "cursor_cloud" });
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
         expect(env.PAPERCLIP_AGENT_ID).toBe("agent-1");
         expect(env.PAPERCLIP_COMPANY_ID).toBe("company-1");
+      },
+    );
+  });
+
+  it("prefers the runtime control-plane URL for local child-process adapters", () => {
+    withEnv(
+      {
+        PAPERCLIP_API_URL: "https://paperclip.example.test",
+        PAPERCLIP_RUNTIME_API_URL: "http://10.42.0.42:8000",
+      },
+      () => {
+        const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1", adapterType: "codex_local" });
+        expect(env.PAPERCLIP_API_URL).toBe("http://10.42.0.42:8000");
       },
     );
   });

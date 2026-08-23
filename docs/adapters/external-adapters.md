@@ -221,6 +221,8 @@ export async function execute(
 | `renderTemplate(template, data)` | `{{variable}}` substitution in prompt templates |
 | `asString(v)`, `asNumber(v)`, `asBoolean(v)` | Safe config value extraction |
 
+`buildPaperclipEnv(agent)` already handles Paperclip API base precedence. Local child-process adapters receive a `PAPERCLIP_API_URL` that prefers the runtime control-plane origin when available; remote or webhook-style adapters keep the advertised/public API URL. Do not hard-code `localhost`, public hostnames, or manual `Host` header workarounds in adapter code.
+
 ### src/server/test.ts
 
 Validates the adapter configuration before running. Returns structured diagnostics.
