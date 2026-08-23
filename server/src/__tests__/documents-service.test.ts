@@ -8,7 +8,7 @@ import {
   issueDocuments,
   issues,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -248,5 +248,62 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     expect(after?.latestRevisionId).toBe(put.document.latestRevisionId);
     expect(after?.latestRevisionNumber).toBe(3);
     expect(after?.body).toBe("# Plan v3");
+  });
+
+  it("reconciles a stale latestRevisionNumber before restoreIssueDocumentRevision (ETS-462)", async () => {
+    const { issueId } = await createIssueWithDocuments();
+
+    const created = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(created?.latestRevisionId).not.toBeNull();
+    const documentId = created!.id;
+    const firstRevisionId = created!.latestRevisionId!;
+
+    // Simulate the desync state: a revision lands in documentRevisions but
+    // the pointer on `documents` stays stale.
+    const [docRow] = await db.select({ companyId: documents.companyId }).from(documents).where(eq(documents.id, documentId));
+    const [staleNewRevision] = await db
+      .insert(documentRevisions)
+      .values({
+        companyId: docRow.companyId,
+        documentId,
+        revisionNumber: 2,
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan v2 (concurrent)",
+        createdAt: new Date(),
+      })
+      .returning();
+    await db
+      .update(documents)
+      .set({ latestRevisionNumber: 1 })
+      .where(eq(documents.id, documentId));
+    expect(staleNewRevision.id).not.toBe(firstRevisionId);
+
+    // Restore an earlier revision. Before ETS-462 the restore computed
+    // nextRevisionNumber from documents.latestRevisionNumber (1 + 1 = 2),
+    // which collides with the concurrent revision 2 and re-freezes the
+    // pointer. After the fix it reconciles against documentRevisions and
+    // writes revision 3.
+    const restored = await svc.restoreIssueDocumentRevision({
+      issueId,
+      key: "plan",
+      revisionId: firstRevisionId,
+    });
+
+    expect(restored.restoredFromRevisionId).toBe(firstRevisionId);
+    expect(restored.restoredFromRevisionNumber).toBe(1);
+    expect(restored.document.latestRevisionNumber).toBe(3);
+
+    const revisions = await db
+      .select({ id: documentRevisions.id, revisionNumber: documentRevisions.revisionNumber })
+      .from(documentRevisions)
+      .where(eq(documentRevisions.documentId, documentId))
+      .orderBy(desc(documentRevisions.revisionNumber));
+    expect(revisions.map((row) => row.revisionNumber)).toEqual([3, 2, 1]);
+
+    const after = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(after?.latestRevisionId).toBe(restored.document.latestRevisionId);
+    expect(after?.latestRevisionNumber).toBe(3);
+    expect(after?.body).toBe("# Plan");
   });
 });

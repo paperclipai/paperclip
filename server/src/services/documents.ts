@@ -567,6 +567,21 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        // Take an exclusive lock on the joined `documents` row before reading so
+        // concurrent writers (other PUTs, revision restores, system upserts)
+        // are serialized. Without this, a restore racing an upsert on the same
+        // document computes nextRevisionNumber from a stale pointer and can
+        // reintroduce the frozen documentRevisions/pointer desync that
+        // ETS-430/458/461 fixed. Mirrors the `for update of ${documents}`
+        // pattern in upsertIssueDocument above (documents.ts:237).
+        await tx.execute(sql`
+          select ${documents.id}
+          from ${issueDocuments}
+          inner join ${documents} on ${issueDocuments.documentId} = ${documents.id}
+          where ${and(eq(issueDocuments.issueId, input.issueId), eq(issueDocuments.key, key))}
+          for update of ${documents}
+        `);
+
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -575,6 +590,33 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) throw notFound("Document not found");
+
+        // Reconcile the revision pointer against documentRevisions so the next
+        // revision inserted below is strictly greater than any revision that
+        // just landed concurrently on this document. Also reconciles the id so
+        // the "already the latest revision" check below doesn't 409 against
+        // the stale pointer. Mirrors the effectiveLatestRevisionId/Number
+        // reconciliation in upsertIssueDocument above (documents.ts:278-296).
+        let effectiveLatestRevisionId = existing.latestRevisionId;
+        let effectiveLatestRevisionNumber = existing.latestRevisionNumber;
+        if (existing.latestRevisionId) {
+          const latestRevisionRow = (
+            await tx
+              .select({
+                id: documentRevisions.id,
+                revisionNumber: documentRevisions.revisionNumber,
+              })
+              .from(documentRevisions)
+              .where(eq(documentRevisions.documentId, existing.id))
+              .orderBy(desc(documentRevisions.revisionNumber))
+              .limit(1)
+          )[0] ?? null;
+          if (latestRevisionRow && (latestRevisionRow.id !== effectiveLatestRevisionId || latestRevisionRow.revisionNumber > effectiveLatestRevisionNumber)) {
+            effectiveLatestRevisionId = latestRevisionRow.id;
+            effectiveLatestRevisionNumber = latestRevisionRow.revisionNumber;
+          }
+        }
+
         if (existing.lockedAt) {
           throw conflict("Document is locked", {
             key: existing.key,
@@ -598,14 +640,14 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!revision) throw notFound("Document revision not found");
-        if (existing.latestRevisionId === revision.id) {
+        if (effectiveLatestRevisionId === revision.id) {
           throw conflict("Selected revision is already the latest revision", {
-            currentRevisionId: existing.latestRevisionId,
+            currentRevisionId: effectiveLatestRevisionId,
           });
         }
 
         const now = new Date();
-        const nextRevisionNumber = existing.latestRevisionNumber + 1;
+        const nextRevisionNumber = effectiveLatestRevisionNumber + 1;
         const [restoredRevision] = await tx
           .insert(documentRevisions)
           .values({
