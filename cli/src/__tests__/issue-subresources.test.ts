@@ -158,6 +158,10 @@ describe("issue subresource commands", () => {
         "issue", "interaction:create", ISSUE_ID,
         "--payload-json", JSON.stringify({
           kind: "request_confirmation",
+          // `summary` became required for asks (09d7ef037, board-asks Phase 3);
+          // this payload predated it, so the command exited 1 on schema
+          // validation before it ever reached the API stub.
+          summary: "ASK: confirm the rollout. WHY: it is irreversible. ACTION: reply yes or no.",
           payload: { version: 1, prompt: "Continue?" },
         }),
       ]);

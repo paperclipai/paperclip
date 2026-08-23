@@ -61,6 +61,9 @@ Env:
   PAPERCLIP_PINNED_DEPLOY_API_URL        # default http://127.0.0.1:3100
   PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS # default 150
   PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN    # required, unique per approved deployment
+  PAPERCLIP_TEST_RATCHET_ENFORCE=1       # make test_ratchet blocking (default: observe only)
+  PAPERCLIP_TEST_RATCHET_RECEIPT         # default STATE_DIR/test-ratchet-verdict.json
+  PAPERCLIP_TEST_RATCHET_MAX_AGE_HOURS   # default 36
 USAGE
 }
 
@@ -166,7 +169,8 @@ init_receipt() {
     "uq_fixture",
     "source_gate",
     "server_typecheck",
-    "candidate_tests"
+    "candidate_tests",
+    "test_ratchet"
   ],
   "deployPointerMutated": false,
   "liveCutover": false
@@ -436,6 +440,66 @@ cmd_candidate_tests() {
   fi
 }
 
+# Test ratchet (2026-08-23). candidate_tests above is an ALLOWLIST — it can only
+# ever protect the suites someone remembered to list, so red accumulates
+# everywhere else unseen (the 08-22 shared-extractor refactor shipped with an
+# antigravity suite already failing, and a large red set had accrued on live
+# before anyone counted it). This gate reads the verdict of a FULL-workspace run
+# and fails the promote when a failing test is not in the committed baseline, so
+# the red set can shrink freely but can only grow through a reviewed edit.
+#
+# The full suite is far too slow to run inline (it is dominated by 5s-timeout
+# remote/sandbox tests), so it runs out-of-band — scripts/test-ratchet-run.sh,
+# on a schedule — and writes a verdict receipt. This gate consumes that receipt
+# and additionally fails when it is STALE or describes a different SHA, because
+# a verdict nobody refreshed is not evidence.
+RATCHET_RECEIPT="${PAPERCLIP_TEST_RATCHET_RECEIPT:-$STATE_DIR/test-ratchet-verdict.json}"
+RATCHET_MAX_AGE_HOURS="${PAPERCLIP_TEST_RATCHET_MAX_AGE_HOURS:-36}"
+
+cmd_test_ratchet() {
+  if [ "$SKIP_HEAVY" = "1" ]; then
+    receipt_set_gate "test_ratchet" "pass" "skipped heavy (test mode)"
+    return 0
+  fi
+  if [ "${PAPERCLIP_TEST_RATCHET_ENFORCE:-0}" != "1" ]; then
+    # Observation mode: report, never block. Flip PAPERCLIP_TEST_RATCHET_ENFORCE=1
+    # once the baseline is triaged and the nightly job has proven stable.
+    if [ -f "$RATCHET_RECEIPT" ]; then
+      local verdict
+      verdict="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(`${j.status||"unknown"} regressions=${j.regressions??"?"} baseline=${j.baselineSize??"?"} at ${j.finishedAt||"?"}`)' "$RATCHET_RECEIPT" 2>/dev/null || echo "unreadable")"
+      receipt_set_gate "test_ratchet" "pass" "observation mode — last verdict: $verdict"
+      log "test_ratchet (observation only): $verdict"
+    else
+      receipt_set_gate "test_ratchet" "pass" "observation mode — no verdict receipt yet"
+      log "test_ratchet (observation only): no verdict receipt at $RATCHET_RECEIPT"
+    fi
+    return 0
+  fi
+
+  [ -f "$RATCHET_RECEIPT" ] || {
+    receipt_set_gate "test_ratchet" "fail" "no verdict receipt at $RATCHET_RECEIPT"
+    fail "test_ratchet: no verdict receipt — run scripts/test-ratchet-run.sh"
+  }
+  local status age_ok
+  status="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.status||""))' "$RATCHET_RECEIPT")"
+  age_ok="$(node -e '
+    const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+    const maxH=Number(process.argv[2]);
+    const t=Date.parse(j.finishedAt||"");
+    if(!Number.isFinite(t)){process.stdout.write("no");process.exit(0);}
+    process.stdout.write((Date.now()-t)/3600000 <= maxH ? "yes":"no");
+  ' "$RATCHET_RECEIPT" "$RATCHET_MAX_AGE_HOURS")"
+  if [ "$age_ok" != "yes" ]; then
+    receipt_set_gate "test_ratchet" "fail" "verdict older than ${RATCHET_MAX_AGE_HOURS}h"
+    fail "test_ratchet: verdict receipt is stale (> ${RATCHET_MAX_AGE_HOURS}h) — re-run scripts/test-ratchet-run.sh"
+  fi
+  if [ "$status" != "pass" ]; then
+    receipt_set_gate "test_ratchet" "fail" "ratchet verdict: $status"
+    fail "test_ratchet: last full-suite run reported new failures not in the baseline"
+  fi
+  receipt_set_gate "test_ratchet" "pass" "full-suite verdict green and fresh"
+}
+
 cmd_run_gates() {
   require_deployment_lease
   [ -f "$(working_receipt_path)" ] || fail "no working receipt"
@@ -445,6 +509,7 @@ cmd_run_gates() {
   cmd_source_gate
   cmd_server_typecheck
   cmd_candidate_tests
+  cmd_test_ratchet
   if assert_gates_green "$(working_receipt_path)"; then
     log "all mandatory gates green"
     finalize_receipt_copy >/dev/null

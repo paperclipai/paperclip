@@ -113,6 +113,10 @@ vi.mock("../services/instance-settings.js", async (importOriginal) => ({
 
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
+  // assertAdapterConfigConstraints (routes/agents.ts) validates
+  // adapterConfig.model through requireServerAdapter. Omitting it made the
+  // vitest mock proxy throw and every agent create/patch here answer 500.
+  requireServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
   listAdapterModels: vi.fn(),
   detectAdapterModel: vi.fn(),
@@ -156,6 +160,7 @@ function registerModuleMocks() {
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(() => mockAdapter),
+    requireServerAdapter: vi.fn(() => mockAdapter),
     findActiveServerAdapter: vi.fn(() => mockAdapter),
     listAdapterModels: vi.fn(),
     detectAdapterModel: vi.fn(),
@@ -939,7 +944,7 @@ describe.sequential("agent skill routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["pixel-art"] }));
+      .send({ desiredSkills: ["pixel-art"], mode: "replace" }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(res.body.error).toContain("Unknown skill(s): pixel-art.");
@@ -985,7 +990,7 @@ describe.sequential("agent skill routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["humanizer"] }));
+      .send({ desiredSkills: ["humanizer"], mode: "replace" }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAgentService.update).toHaveBeenCalledWith(
