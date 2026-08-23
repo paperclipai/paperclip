@@ -21,6 +21,8 @@ import type {
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
 import {
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS,
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX,
   LOW_TRUST_REVIEW_PRESET,
   extractAgentMentionIds,
   grantScopePrefixedValues,
@@ -419,18 +421,12 @@ export async function scopeAllows(
     if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
   }
 
+  // Shared with the cross-issue write fence, which has to know when a scope is
+  // answered by a `reportsTo` walk so it can lock that hierarchy first. Two
+  // copies of this list would let the fence miss a selector the evaluator honours.
   const subtreeRootAgentIds = [
-    ...scopeValuesForKeys(grantScope, [
-      "managerAgentId",
-      "managerAgentIds",
-      "managedSubtreeAgentId",
-      "managedSubtreeAgentIds",
-      "subtreeAgentId",
-      "subtreeAgentIds",
-      "subtreeRootAgentId",
-      "subtreeRootAgentIds",
-    ]),
-    ...prefixedScopeValues(grantScope, "subtree:"),
+    ...scopeValuesForKeys(grantScope, [...CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS]),
+    ...prefixedScopeValues(grantScope, CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX),
   ];
   if (subtreeRootAgentIds.length > 0) {
     constrained = true;

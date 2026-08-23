@@ -47,6 +47,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issues, principalPermissionGrants } from "@paperclipai/db";
+import { crossIssueWriteScopeUsesSubtree } from "@paperclipai/shared";
 import { scopeAllows } from "./authorization.js";
 import {
   CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV,
@@ -401,6 +402,19 @@ export async function resolveCrossIssueWriteBasis(
     // key set reads as "unconstrained but non-empty" and the grant silently
     // becomes exactly the company-wide permit this issue exists to remove
     // (FAI-10134 blocking finding 3).
+    //
+    // A `subtree:` scope is not answered by comparing ids — `scopeAllows` walks
+    // `agents.reportsTo` to decide whether the target's assignee is under the
+    // named manager. That walk is the same shape as the issue ancestor chain and
+    // had the same hole: unlocked, so a `reportsTo` change committing between the
+    // fence and the write moved the assignee out of the authorized subtree after
+    // the allow. Lock the company's agent rows before the walk. This is bounded
+    // (agents per company are few) and only runs for a subtree-scoped grant.
+    if (lock && crossIssueWriteScopeUsesSubtree(grantScope)) {
+      await db.execute(sql`
+        SELECT id FROM agents WHERE company_id = ${input.companyId} FOR SHARE
+      `);
+    }
     const covered = await scopeAllows(
       db as Db,
       input.companyId,

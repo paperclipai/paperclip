@@ -39,6 +39,27 @@ export const CROSS_ISSUE_WRITE_SCOPE_KEYS = [
 export const CROSS_ISSUE_WRITE_SCOPE_PREFIXES = ["project:", "agent:", "subtree:"] as const;
 
 /**
+ * The subset of the above that `scopeAllows` answers by walking the mutable
+ * `agents.reportsTo` hierarchy rather than by comparing ids. The cross-issue
+ * write fence has to lock that hierarchy before it trusts such a walk, so it
+ * needs to know when a scope uses one — see `lockAgentHierarchy` in
+ * `cross-issue-write-basis.ts`. Defined here, and imported by both the
+ * evaluator and the fence, so the two lists cannot drift apart.
+ */
+export const CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS = [
+  "managerAgentId",
+  "managerAgentIds",
+  "managedSubtreeAgentId",
+  "managedSubtreeAgentIds",
+  "subtreeAgentId",
+  "subtreeAgentIds",
+  "subtreeRootAgentId",
+  "subtreeRootAgentIds",
+] as const;
+
+export const CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX = "subtree:";
+
+/**
  * The two primitives the authorization evaluator reads a grant scope with.
  * They live here, not next to `scopeAllows`, because the save-time check below
  * has to agree with the evaluator exactly: an earlier revision read prefixed
@@ -60,6 +81,15 @@ export function grantScopePrefixedValues(grantScope: Record<string, unknown>, pr
     .filter((rule) => rule.startsWith(prefix))
     .map((rule) => rule.slice(prefix.length))
     .filter((value) => value.length > 0);
+}
+
+/** True when the scope narrows by manager subtree, so evaluating it walks `agents.reportsTo`. */
+export function crossIssueWriteScopeUsesSubtree(scope: Record<string, unknown> | null | undefined) {
+  if (!scope) return false;
+  for (const key of CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS) {
+    if (grantScopeValueList(scope[key]).length > 0) return true;
+  }
+  return grantScopePrefixedValues(scope, CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX).length > 0;
 }
 
 /** A recognized key, or an `allow` selector, carrying at least one non-empty value. */

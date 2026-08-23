@@ -347,5 +347,107 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
         .where(eq(issues.id, targetIssueId));
       expect(target?.assigneeAgentId).toBe(otherAgentId);
     });
+
+    /**
+     * A `subtree:` scope is the one selector `scopeAllows` answers by walking
+     * `agents.reportsTo` rather than by comparing ids, and that walk used to run
+     * unlocked inside the fence. So the hierarchy could be rewritten *after* the
+     * fence read it and *before* the write committed — the assignee left the
+     * authorized subtree and the mutation landed anyway. Same shape as the
+     * intermediate-ancestor race, on the agent tree instead of the issue tree.
+     *
+     * The fence now takes `FOR SHARE` on the company's agent rows before the
+     * walk, so a reparent has to wait for the write instead of sliding under it.
+     * Without that lock `reparentSettled` is true by the time the mutation runs.
+     */
+    it("makes a reparent racing a subtree-scoped write wait for it", async () => {
+      const companyId = randomUUID();
+      const actorAgentId = randomUUID();
+      const managerAgentId = randomUUID();
+      const assigneeAgentId = randomUUID();
+      const runId = randomUUID();
+      const sourceIssueId = randomUUID();
+      const targetIssueId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        defaultResponsibleUserId: "board-user",
+      });
+      await db.insert(agents).values([
+        { id: managerAgentId, name: "Manager", reportsTo: null },
+        // Under the manager, so a `subtree:<manager>` grant covers its issues.
+        { id: assigneeAgentId, name: "Report", reportsTo: managerAgentId },
+        { id: actorAgentId, name: "Sweeper", reportsTo: null },
+      ].map((agent) => ({
+        ...agent,
+        companyId,
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })));
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: actorAgentId,
+        status: "running",
+        responsibleUserId: "board-user",
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.insert(issues).values([
+        { id: sourceIssueId, companyId, title: "Sweep task" },
+        { id: targetIssueId, companyId, title: "Report's task", assigneeAgentId },
+      ]);
+      await db.insert(principalPermissionGrants).values({
+        companyId,
+        principalType: "agent",
+        principalId: actorAgentId,
+        permissionKey: "issues:cross-write",
+        // The `allow` selector form, so this covers the prefixed path too.
+        scope: { allow: [`subtree:${managerAgentId}`] },
+      });
+
+      const decision = await observeCrossIssueInfluence(db, {
+        companyId,
+        runId,
+        agentId: actorAgentId,
+        targetIssueId,
+        targetIssueIdentifier: "SUBTREE-1",
+        kind: "update",
+        now: NOW,
+        enforceGrantAt: ENFORCE_AT,
+      });
+      expect(decision?.fence).toMatchObject({ basisAtCheck: "explicit_permission_grant" });
+
+      let releaseFence!: () => void;
+      const fenceTaken = new Promise<void>((resolve) => { releaseFence = resolve; });
+      let reparentSettled = false;
+
+      const persisted = db.transaction(async (tx) => {
+        await assertCrossIssueWriteFence(db, tx, decision?.fence);
+        releaseFence();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(reparentSettled).toBe(false);
+        await tx.insert(activityLog).values(
+          mutationRow(companyId, actorAgentId, runId, targetIssueId),
+        );
+      });
+
+      await fenceTaken;
+      // The assignee leaves the manager's subtree: the grant no longer covers it.
+      const reparent = db
+        .update(agents)
+        .set({ reportsTo: null })
+        .where(eq(agents.id, assigneeAgentId))
+        .then(() => { reparentSettled = true; });
+
+      await persisted;
+      await reparent;
+
+      expect(await countMutations(companyId)).toBe(1);
+    });
   });
 });

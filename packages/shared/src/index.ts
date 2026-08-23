@@ -101,8 +101,11 @@ export {
   CROSS_ISSUE_WRITE_PERMISSION_KEY,
   CROSS_ISSUE_WRITE_SCOPE_KEYS,
   CROSS_ISSUE_WRITE_SCOPE_PREFIXES,
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS,
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX,
   crossIssueWriteGrantScopeError,
   crossIssueWriteScopeIsConstrained,
+  crossIssueWriteScopeUsesSubtree,
   grantScopePrefixedValues,
   grantScopeValueList,
 } from "./cross-issue-write-grant-scope.js";
