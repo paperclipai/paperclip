@@ -48,6 +48,14 @@ function normalizeExpiresAt(value: Date | string | null): Date | null {
  *
  * `tx` must be the replacing transaction, and this must run before the delete,
  * so the bound being carried forward is the one being replaced.
+ *
+ * The read takes `FOR UPDATE`, which is what makes the carry-forward safe under
+ * concurrency. Without it this is a read-then-write: a replacement that shortens
+ * an expiry could commit between another replacement's read and its insert, and
+ * the second one would write back the *old*, longer bound it had already read —
+ * silently undoing the shortening and keeping authority past its intended end.
+ * Holding the row lock from the read through commit serializes the two, so
+ * whichever runs second sees the other's committed bound.
  */
 export async function grantRowsPreservingExpiry(
   tx: Pick<Db, "select">,
@@ -72,7 +80,8 @@ export async function grantRowsPreservingExpiry(
         eq(principalPermissionGrants.principalType, input.principalType),
         eq(principalPermissionGrants.principalId, input.principalId),
       ),
-    );
+    )
+    .for("update");
   const expiryByKey = new Map(existing.map((row) => [row.permissionKey, row.expiresAt]));
 
   return input.grants.map((grant) => ({

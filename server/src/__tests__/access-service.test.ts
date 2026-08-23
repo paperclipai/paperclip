@@ -328,6 +328,55 @@ describeEmbeddedPostgres("access service", () => {
   });
 
   /**
+   * The carry-forward read is a read-then-write, so it takes `FOR UPDATE`.
+   * Without the lock, the replacement that omits the field can read the old
+   * bound, lose the race to the one that shortens it, and then write the old
+   * longer bound back — silently undoing the shortening.
+   *
+   * The assertion holds for either interleaving, which is what makes this
+   * deterministic: if the shortening commits first, the omitting replacement
+   * carries the shortened bound forward; if it commits second, it overwrites
+   * with the shortened bound. Only a lost update produces the long one.
+   */
+  it("does not let a concurrent replacement undo a shortened expiry", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    const longBound = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    const shortBound = new Date(Date.now() + 60 * 60 * 1000);
+
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [{ permissionKey: "environments:manage", expiresAt: longBound }],
+      owner.principalId,
+    );
+
+    await Promise.all([
+      // Shortens the bound on purpose.
+      access.setPrincipalGrants(
+        company.id,
+        "user",
+        owner.principalId,
+        [{ permissionKey: "environments:manage", expiresAt: shortBound }],
+        owner.principalId,
+      ),
+      // Touches the same grant set without mentioning the expiry.
+      access.setPrincipalGrants(
+        company.id,
+        "user",
+        owner.principalId,
+        [{ permissionKey: "environments:manage" }],
+        owner.principalId,
+      ),
+    ]);
+
+    const grants = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    expect(grants.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt?.toISOString())
+      .toBe(shortBound.toISOString());
+  });
+
+  /**
    * The seeders (built-in agents, company import) call `setPrincipalPermission`
    * on every ensure with no expiry argument. If absent meant "clear", a re-seed
    * would silently un-time-box a grant an operator had deliberately bounded.
