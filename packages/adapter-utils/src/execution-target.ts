@@ -2665,6 +2665,13 @@ interface DuplexReadinessGate {
    * reservation inside `brokerChannel.onData`, so a later call here is a no-op.
    */
   disposePendingReplay(): void;
+  /**
+   * Test-only. Report the length of the retained pre-READY buffer, in UTF-16 code
+   * units. A test reads this to prove the gate drops the pre-READY buffer on READY
+   * acceptance, so the process does not retain the sandbox-controlled prefix.
+   * Production code does not read this.
+   */
+  retainedReadinessBufferLength(): number;
 }
 
 function createDuplexReadinessGate(
@@ -2879,6 +2886,14 @@ function createDuplexReadinessGate(
         // prefix and the retained suffix. The two steps run in one synchronous
         // section, so no other route can take the freed bytes in between.
         const suffix = buffer.slice(newlineIndex + 1);
+        // Drop the original pre-READY buffer now. The gate keeps only the
+        // retained suffix as `pending`, and it charges that suffix under
+        // `readiness_replay` below. If the gate keeps the buffer, the process
+        // retains the full sandbox-controlled string while the ledger counts
+        // only the suffix, so aggregate retention passes the ceiling. This clear
+        // also covers the broker handoff and the replay disposal. Both run later
+        // and read no buffer bytes.
+        buffer = "";
         releaseReadinessBufferTokens();
         if (ledger && suffix.length > 0) {
           const token = ledger.reserve("readiness_replay", Buffer.byteLength(suffix, "utf8"));
@@ -2956,6 +2971,7 @@ function createDuplexReadinessGate(
       pending = "";
       releaseReplayTokens();
     },
+    retainedReadinessBufferLength: () => buffer.length,
   };
 }
 

@@ -6771,4 +6771,34 @@ describe("duplex readiness gate replay-buffer reservation", () => {
     gate.brokerChannel.onData((chunk) => replayed.push(chunk));
     expect(replayed).toEqual([]);
   });
+
+  it("drops the retained pre-READY buffer on READY acceptance", async () => {
+    const { channel, control } = makeFakeReadinessChannel();
+    const { ledger, counts } = makeCountingLedger(1024 * 1024);
+    const gate = __duplexReadinessTesting.createReadinessGate(channel, {
+      nonce: READY_NONCE,
+      timeoutMs: 5_000,
+      ledger,
+    });
+    // A large pre-READY noise line and a large suffix arrive with the READY line
+    // in one chunk. A sandbox controls every byte here.
+    const noise = `${"n".repeat(4096)}\n`;
+    const suffix = "s".repeat(2048);
+    control.emitData(`${noise}${readyLine()}${suffix}`);
+    expect((await gate.ready).ok).toBe(true);
+    // The gate drops the pre-READY buffer, so the process no longer retains the
+    // noise prefix. Without this, the process holds the full sandbox string while
+    // the ledger charges only the suffix, so retention passes the ceiling.
+    expect(gate.retainedReadinessBufferLength()).toBe(0);
+    // The ledger charges only the retained suffix, not the dropped prefix.
+    expect(ledger.bytesInUse).toBe(Buffer.byteLength(suffix, "utf8"));
+    expect(ledger.liveTokenCount).toBe(1);
+    // The broker binds, replays the suffix, and the gate releases the token.
+    const replayed: string[] = [];
+    gate.brokerChannel.onData((chunk) => replayed.push(chunk));
+    expect(replayed).toEqual([suffix]);
+    expect(ledger.bytesInUse).toBe(0);
+    expect(gate.retainedReadinessBufferLength()).toBe(0);
+    expect(counts.underflows).toBe(0);
+  });
 });

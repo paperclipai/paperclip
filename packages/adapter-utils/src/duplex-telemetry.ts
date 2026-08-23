@@ -59,7 +59,9 @@ export const DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL =
 /**
  * The closed set of aggregate byte ledger metric names. A test pins this exact
  * set, so a new ledger metric name needs an explicit review. Each record uses
- * only closed constant dimensions and no dynamic label.
+ * only closed constant dimensions and no dynamic label. The telemetry contract
+ * documents these metrics under "Aggregate byte ledger metrics" in
+ * `packages/shared/src/telemetry/README.md`.
  */
 export const DUPLEX_AGGREGATE_BYTE_LEDGER_METRIC_NAMES = [
   DUPLEX_GAUGE_AGGREGATE_BYTES_IN_USE,
