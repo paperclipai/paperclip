@@ -62,6 +62,7 @@ import {
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
+  portableGrantExpirySchema,
 } from "@paperclipai/shared";
 import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
 import {
@@ -821,17 +822,19 @@ function normalizePortablePermissionGrants(value: unknown): PortableAgentPermiss
     if (!isPlainRecord(entry)) return [];
     const permissionKey = asString(entry.permissionKey);
     if (!permissionKey || !VALID_PERMISSION_KEYS.has(permissionKey as PermissionKey)) return [];
-    // This path is hand-rolled and does not go through the manifest's zod
-    // schema, so it validates the expiry itself. A present-but-unparseable
-    // expiry drops the whole grant rather than importing it unbounded: the
-    // manifest asked for time-boxed authority, and importing it without the
+    // This path is hand-rolled and does not run the manifest's zod schema, so
+    // it applies that schema's expiry contract directly rather than a second
+    // hand-written one that could drift from it. Anything the contract rejects
+    // -- unparseable, or an instant with no offset, which `new Date` would
+    // resolve against this machine's local zone -- drops the whole grant. The
+    // manifest asked for time-boxed authority, and importing it *without* the
     // bound is the one outcome worse than importing nothing (FAI-10144).
-    const expiresAt = asString(entry.expiresAt);
-    if (expiresAt !== null && Number.isNaN(new Date(expiresAt).getTime())) return [];
+    const expiresAt = portableGrantExpirySchema.safeParse(entry.expiresAt ?? null);
+    if (!expiresAt.success) return [];
     return [{
       permissionKey: permissionKey as PermissionKey,
       scope: isPlainRecord(entry.scope) ? entry.scope : null,
-      expiresAt,
+      expiresAt: expiresAt.data,
     }];
   });
 }

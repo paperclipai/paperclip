@@ -68,6 +68,19 @@ export const portabilityBlobManifestEntrySchema = z.object({
   contentType: z.string().min(1),
 });
 
+/**
+ * A portable grant expiry: an ISO 8601 instant that names its own offset
+ * (FAI-10144).
+ *
+ * Exported because the server's import normalizer is hand-rolled and does not
+ * run the manifest schema, so both sides have to apply one contract rather than
+ * two that can drift. A timezone-free string is rejected on purpose:
+ * `new Date("2026-08-24T10:00:00")` resolves against the importing machine's
+ * local zone, so the same manifest would grant a different window depending on
+ * where it was imported.
+ */
+export const portableGrantExpirySchema = z.string().datetime({ offset: true }).nullable();
+
 export const portabilityAgentManifestEntrySchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
@@ -87,7 +100,7 @@ export const portabilityAgentManifestEntrySchema = z.object({
     scope: z.record(z.string(), z.unknown()).nullable().default(null),
     // Defaulting to null keeps every manifest written before FAI-10144 valid,
     // and reads as "no expiry" — the behaviour those manifests already had.
-    expiresAt: z.string().datetime().nullable().default(null),
+    expiresAt: portableGrantExpirySchema.default(null),
   })).default([]),
   budgetMonthlyCents: z.number().int().nonnegative(),
   metadata: z.record(z.string(), z.unknown()).nullable(),

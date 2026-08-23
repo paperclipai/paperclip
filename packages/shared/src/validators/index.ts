@@ -297,6 +297,7 @@ export {
   portabilityEnvInputSchema,
   portabilityCompanyManifestEntrySchema,
   portabilitySidebarOrderSchema,
+  portableGrantExpirySchema,
   portabilityAgentManifestEntrySchema,
   portabilitySkillManifestEntrySchema,
   portabilityManifestSchema,

@@ -2266,6 +2266,7 @@ export {
   portabilityEnvInputSchema,
   portabilityCompanyManifestEntrySchema,
   portabilitySidebarOrderSchema,
+  portableGrantExpirySchema,
   portabilityAgentManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
