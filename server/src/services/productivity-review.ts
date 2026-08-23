@@ -49,8 +49,24 @@ type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 // result_json/context_snapshot for up to MAX_RUNS_FOR_STREAK runs per issue.
 type ProductivityRunSample = Pick<
   HeartbeatRunRow,
-  "id" | "agentId" | "status" | "livenessState" | "createdAt" | "nextAction" | "usageJson" | "errorCode"
->;
+  | "id"
+  | "agentId"
+  | "status"
+  | "livenessState"
+  | "createdAt"
+  | "nextAction"
+  | "usageJson"
+  | "errorCode"
+> & {
+  // The reaper records the platform cause here when the error code itself is
+  // generic, so classification needs it. Projected as the single extracted key
+  // rather than the whole document to keep the detoast note above true.
+  resultStopReason: string | null;
+};
+
+function isInfraTerminatedSample(run: ProductivityRunSample) {
+  return isInfraTerminatedRun({ errorCode: run.errorCode, resultJson: { stopReason: run.resultStopReason } });
+}
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
 
 type ProductivityReviewThresholds = {
@@ -486,6 +502,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         nextAction: heartbeatRuns.nextAction,
         usageJson: heartbeatRuns.usageJson,
         errorCode: heartbeatRuns.errorCode,
+        resultStopReason: sql<string | null>`${heartbeatRuns.resultJson}->>'stopReason'`,
       })
       .from(heartbeatRuns)
       .where(
@@ -498,8 +515,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(MAX_RUNS_FOR_STREAK);
 
-    const infraTerminatedRuns = sampledRuns.filter((run) => isInfraTerminatedRun(run));
-    const latestRuns = sampledRuns.filter((run) => !isInfraTerminatedRun(run));
+    const infraTerminatedRuns = sampledRuns.filter(isInfraTerminatedSample);
+    const latestRuns = sampledRuns.filter((run) => !isInfraTerminatedSample(run));
     const isTerminal = (run: ProductivityRunSample) =>
       TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]);
     // Every terminal run in the sample was killed by infrastructure. The agent

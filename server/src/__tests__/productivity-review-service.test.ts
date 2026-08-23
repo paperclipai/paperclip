@@ -123,18 +123,25 @@ describeEmbeddedPostgres("productivity review service", () => {
     // Stamp each run with an infra termination code so tests can seed runs the
     // platform killed rather than runs the agent completed.
     errorCodes?: readonly string[];
+    // The other shape the platform produces: a generic error code with the
+    // infrastructure cause recorded only in the run result.
+    stopReasons?: readonly string[];
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
       const runId = randomUUID();
       const createdAt = new Date(input.now.getTime() - index * 60_000);
       const errorCode = input.errorCodes?.[index % input.errorCodes.length];
+      const stopReason = input.stopReasons?.[index % input.stopReasons.length];
       runs.push({
         id: runId,
         companyId: input.companyId,
         agentId: input.agentId,
         ...(errorCode ? { errorCode, error: `${errorCode} termination` } : {}),
-        status: errorCode ? "failed" : "succeeded",
+        ...(stopReason
+          ? { errorCode: "run_failed", error: "run ended without a result", resultJson: { stopReason } }
+          : {}),
+        status: errorCode || stopReason ? "failed" : "succeeded",
         invocationSource: "assignment",
         triggerDetail: "system",
         startedAt: createdAt,
@@ -228,6 +235,30 @@ describeEmbeddedPostgres("productivity review service", () => {
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
       errorCodes: ["process_lost", "server_shutdown_interrupted", "orphaned_running_run"],
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.infraSuppressed).toBe(1);
+    expect(result.infraSuppressedIssueIds).toEqual([seeded.issueId]);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  // The same false positive reached through the other representation: the reaper
+  // could not name a specific error code, so the platform cause exists only in
+  // the run result. The sample has to carry result_json for this to be visible.
+  it("does not review an agent whose runs record the infra cause only in the run result", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      stopReasons: ["process_lost", "server_shutdown_interrupted", "orphaned_running_run"],
     });
 
     const service = productivityReviewService(db);
