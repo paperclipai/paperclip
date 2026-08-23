@@ -630,17 +630,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Load the sandbox provider capabilities. A login that runs on a real
   // pseudo-terminal needs a provider that advertises the login pseudo-terminal
   // capability. The login panel gate reads this to hide the panel for a provider
-  // without the capability. Enable the query from the adapter login transport,
-  // not the adapter name: only a pseudo-terminal login consults this data. The
-  // gate is advisory; the server resolves the capability again and fails closed.
+  // without the capability. Enable the query when the adapter declares a login
+  // capability: every login runs on a real pseudo-terminal, so every login
+  // consults this data. The gate is advisory; the server resolves the capability
+  // again and fails closed.
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.environments.capabilities(selectedCompanyId)
       : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled:
-      Boolean(selectedCompanyId) &&
-      adapterCaps.login?.sandboxTransport === "pseudo_terminal",
+    enabled: Boolean(selectedCompanyId) && adapterCaps.login != null,
   });
 
   // When the instance forces Kubernetes execution, new agents must default to the
@@ -1032,11 +1031,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     testResult && testResultSupportsSandboxLogin
       ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
-  // A login that runs on a real pseudo-terminal needs a provider that advertises
-  // the login pseudo-terminal capability. Read the capability for the effective
-  // environment provider. The form reads the adapter login transport, not the
-  // adapter name: a login with a streamed-exec transport does not gate on this
-  // capability, so the requirement applies to a pseudo-terminal login only.
+  // A login runs on a real pseudo-terminal, so it needs a provider that
+  // advertises the login pseudo-terminal capability. Read the capability for the
+  // effective environment provider. The form reads the adapter login capability,
+  // not the adapter name: every adapter login gates on this provider capability.
   const effectiveLoginProvider =
     typeof effectiveLoginEnvironment?.config?.provider === "string"
       ? effectiveLoginEnvironment.config.provider
@@ -1044,7 +1042,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const providerSupportsLoginPty =
     effectiveLoginProvider != null &&
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
-  const loginNeedsPty = adapterCaps.login?.sandboxTransport === "pseudo_terminal";
+  const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&

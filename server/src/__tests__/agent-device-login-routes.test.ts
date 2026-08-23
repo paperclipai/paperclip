@@ -73,6 +73,10 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 }));
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
+// The provider capability resolver the device-login gate reads. A supported
+// provider advertises the login pseudo-terminal capability. A test overrides this
+// to prove an unsupported provider fails closed before any session or lease.
+const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
 }));
@@ -135,6 +139,16 @@ vi.mock("../services/secrets.js", () => ({
 vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: () => mockEnvironmentRuntime,
 }));
+
+vi.mock("../services/plugin-environment-driver.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/plugin-environment-driver.js")>(
+    "../services/plugin-environment-driver.js",
+  );
+  return {
+    ...actual,
+    resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
+  };
+});
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -340,6 +354,14 @@ describe("adapter device-login routes", () => {
       config: { provider: "daytona" },
       envVars: {},
     }));
+    // The default provider advertises the login pseudo-terminal capability. A
+    // test overrides this to prove an unsupported provider fails closed.
+    mockResolvePluginSandboxProviderDriverByKey.mockImplementation(
+      async ({ driverKey }: { driverKey: string }) =>
+        driverKey === "daytona"
+          ? { plugin: { id: "plugin-daytona" }, driver: { supportsLoginPty: true } }
+          : null,
+    );
   });
 
   afterEach(() => {
@@ -396,10 +418,10 @@ describe("adapter device-login routes", () => {
     expect(store.rows.get(res.body.sessionId)).toBeUndefined();
   });
 
-  it("rejects an adapter whose login capability drives a different transport", async () => {
-    // The Claude adapter declares a pseudo-terminal login, not a streamed-exec
-    // device login. The guard reads the capability transport, so it rejects the
-    // adapter with a fixed 400 before any lease.
+  it("rejects an adapter whose login capability drives a different panel mode", async () => {
+    // The Claude adapter declares a submitted-browser-code login, not a
+    // displayed-code device login. The guard reads the capability panel mode, so
+    // it rejects the adapter with a fixed 400 before any lease.
     const app = await createApp();
 
     const res = await request(app)
@@ -410,8 +432,8 @@ describe("adapter device-login routes", () => {
     expect(harness.acquisitions).toHaveLength(0);
   });
 
-  it("starts a device login for a third adapter that declares the streamed-exec capability", async () => {
-    // A third adapter, not the Codex adapter, declares a streamed-exec login
+  it("starts a device login for a third adapter that declares the displayed-code capability", async () => {
+    // A third adapter, not the Codex adapter, declares a displayed-code login
     // capability. The guard reads the registry capability, not the adapter name,
     // so the adapter passes the guard and starts a session. This proves no
     // adapter-name branch remains in the guard path. The test overrides an
@@ -428,7 +450,6 @@ describe("adapter device-login routes", () => {
       },
       loginCapability: {
         panelMode: "displayed_code",
-        sandboxTransport: "streamed_exec",
         timeoutPolicy: "caller_bounded",
         getCommand: () => "vendor login",
         parsePrompt: () => null,
@@ -446,6 +467,29 @@ describe("adapter device-login routes", () => {
     } finally {
       unregisterServerAdapter("gemini_local");
     }
+  });
+
+  it("rejects a provider that does not advertise the login pseudo-terminal capability", async () => {
+    // The device login runs on a real pseudo-terminal, so it needs a provider
+    // that advertises the login pseudo-terminal capability. The provider resolves
+    // to a driver with no capability, so the route gate fails closed before any
+    // session row or lease.
+    mockResolvePluginSandboxProviderDriverByKey.mockImplementation(
+      async ({ driverKey }: { driverKey: string }) =>
+        driverKey === "daytona"
+          ? { plugin: { id: "plugin-daytona" }, driver: { supportsLoginPty: false } }
+          : null,
+    );
+    const app = await createApp();
+
+    const res = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ code: "codex_device_login_provider_unsupported" });
+    // The gate ran before any session row or lease, so the runtime acquired none.
+    expect(harness.acquisitions).toHaveLength(0);
   });
 
   it("rejects a malformed start body with the strict schema before any side effect", async () => {

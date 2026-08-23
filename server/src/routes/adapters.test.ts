@@ -22,7 +22,6 @@ function makeAdapter(overrides: Partial<ServerAdapterModule> = {}): ServerAdapte
 
 const displayedCodeLogin: AdapterLoginCapability = {
   panelMode: "displayed_code",
-  sandboxTransport: "streamed_exec",
   timeoutPolicy: "caller_bounded",
   getCommand: () => "vendor login",
   parsePrompt: () => null,
@@ -33,7 +32,6 @@ describe("buildAdapterCapabilities login projection", () => {
     const caps = buildAdapterCapabilities(makeAdapter({ loginCapability: displayedCodeLogin }));
     expect(caps.login).toEqual({
       panelMode: "displayed_code",
-      sandboxTransport: "streamed_exec",
       timeoutPolicy: "caller_bounded",
     });
   });
@@ -48,7 +46,6 @@ describe("buildAdapterCapabilities login projection", () => {
       makeAdapter({
         loginCapability: {
           panelMode: "submitted_browser_code",
-          sandboxTransport: "pseudo_terminal",
           timeoutPolicy: "fixed",
           getCommand: () => "vendor setup-token",
           parsePrompt: () => null,
@@ -59,7 +56,6 @@ describe("buildAdapterCapabilities login projection", () => {
     );
     expect(caps.login).toEqual({
       panelMode: "submitted_browser_code",
-      sandboxTransport: "pseudo_terminal",
       timeoutPolicy: "fixed",
     });
     expect(caps.login).not.toHaveProperty("getCommand");

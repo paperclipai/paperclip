@@ -28,6 +28,12 @@ import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
 import { runDescriptorBoundAuthRead } from "./codex-device-login-credential-read.js";
+import {
+  resolveLoginCommandKey,
+  validateLoginSessionHome,
+  type LoginCommandKey,
+} from "./login-command.js";
+import type { LoginPtyWorkerManagerLike } from "./setup-token-transport-binding.js";
 
 // The login-session service. It creates a login session, acquires a fresh
 // sandbox lease, runs `codex login --device-auth` through the runner, and owns
@@ -42,6 +48,17 @@ import { runDescriptorBoundAuthRead } from "./codex-device-login-credential-read
 
 /** The host timeout for the sandbox login command. It is exactly five minutes. */
 export const CODEX_DEVICE_LOGIN_TIMEOUT_MS = 300_000;
+
+// The fixed error for a sandbox provider that does not advertise the login
+// pseudo-terminal capability. The Codex device login runs the login command on a
+// real pseudo-terminal, so only a provider that advertises the capability can
+// host the login. The route returns this specific, typed error and starts no
+// session, so an unsupported provider never reaches a session row, a lease, or a
+// pseudo-terminal.
+export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED =
+  "The sandbox provider does not support the Codex device login.";
+export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE =
+  "codex_device_login_provider_unsupported";
 
 /**
  * The lease-metadata key that tags a login sandbox lease with its session
@@ -1243,9 +1260,93 @@ export type OpenLoginPtySession = (
   binding: LoginPtySessionBinding,
 ) => Promise<LoginPtySessionOpener>;
 
+/** The fixed, non-secret error the Codex live opener throws when it cannot bind
+ *  the sandbox worker route. It carries no lease detail and no secret. */
+const CODEX_LOGIN_PTY_BIND_FAILED =
+  "device login failed: the sandbox pseudo-terminal transport is not bound.";
+
+/** The dependencies the worker-bound Codex live pseudo-terminal opener needs. */
+export interface CodexWorkerBoundLoginPtyOpenerDeps {
+  /** The plugin worker manager that owns the host route gate. */
+  workerManager: LoginPtyWorkerManagerLike;
+  /** A non-leaking status sink. It receives only fixed status lines. */
+  log?: (line: string) => void;
+}
+
+function readLeaseMetaString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Builds the production Codex `openLivePtySession`. It drives the sandbox worker
+ * through the manager route gate. The manager mints the host route identifier and
+ * owns the route lifecycle.
+ *
+ * The opener passes the binding's server-controlled `sessionHome` to the worker
+ * route. That home is the exact directory the descriptor-bound credential read
+ * opens, so the sandbox `CODEX_HOME` and the read target match. The opener never
+ * derives a fresh home: a fresh home would set `CODEX_HOME` to a directory the
+ * read never opens, and every Codex login would fail closed.
+ *
+ * The opener resolves the closed login command key from the trusted adapter type,
+ * never from the caller. It validates the session home shape before the worker
+ * RPC. It fails closed when the lease carries no sandbox worker binding.
+ */
+export function createCodexWorkerBoundLoginPtyOpener(
+  deps: CodexWorkerBoundLoginPtyOpenerDeps,
+): OpenLoginPtySession {
+  const log = deps.log ?? (() => {});
+  return async (binding) => {
+    const metadata =
+      binding.lease.metadata && typeof binding.lease.metadata === "object"
+        ? (binding.lease.metadata as Record<string, unknown>)
+        : {};
+    const pluginId = readLeaseMetaString(metadata.pluginId);
+    const driverKey =
+      readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
+    if (!binding.providerLeaseId || !pluginId || !driverKey) {
+      log("[paperclip] Device login: the lease carries no sandbox worker binding.");
+      throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
+    }
+    // Resolve the closed command key from the trusted adapter type. An unmapped
+    // adapter fails closed before the worker RPC.
+    let loginCommandKey: LoginCommandKey;
+    try {
+      loginCommandKey = resolveLoginCommandKey(binding.adapterType);
+    } catch {
+      log("[paperclip] Device login: the adapter type has no login command key.");
+      throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
+    }
+    // Validate the server-controlled session home shape before the worker RPC.
+    // The runtime derived it from the session id; the manager revalidates it too.
+    validateLoginSessionHome(binding.sessionHome);
+    // The opener argument is the runner's fixed command string. It confers no
+    // command authority, so the opener ignores it and returns a host-bound opener.
+    return (_command: string) =>
+      deps.workerManager.openLoginPtySession(pluginId, {
+        driverKey,
+        companyId: binding.companyId,
+        environmentId: binding.environmentId,
+        providerLeaseId: binding.providerLeaseId,
+        loginCommandKey,
+        sessionHome: binding.sessionHome,
+      });
+  };
+}
+
 export interface ProductionLoginSessionRuntimeDeps {
   db: Db;
   environmentRuntime: EnvironmentRuntimeService;
+  /**
+   * Re-checks the provider login pseudo-terminal capability from current runtime
+   * state, immediately before the provider lease. The route gate already ran, so
+   * a managed reconciliation can rebind the environment to an unsupported
+   * provider between the route gate and this acquire. The check reads the current
+   * provider capability, not the stale route decision. It throws the fixed
+   * unsupported-provider error, so the runtime creates no lease and opens no
+   * pseudo-terminal for an unsupported provider.
+   */
+  assertProviderSupportsLoginPty: (environmentId: string) => Promise<void>;
   /**
    * Opens the live pseudo-terminal for the acquired lease. When a caller omits
    * it, the runtime binds a fail-closed opener: the login run then fails and the
@@ -1274,6 +1375,14 @@ export function createProductionLoginSessionRuntime(
       if (!environment) {
         throw new Error(`Environment "${input.environmentId}" is not found.`);
       }
+      // Re-check the provider login pseudo-terminal capability from current
+      // runtime state, immediately before the provider lease. A managed
+      // reconciliation can rebind the environment to an unsupported provider
+      // between the route gate and this acquire, so the check reads the current
+      // capability, not the stale route decision. It throws the fixed
+      // unsupported-provider error, so the runtime acquires no lease and opens no
+      // pseudo-terminal for an unsupported provider.
+      await deps.assertProviderSupportsLoginPty(input.environmentId);
       const record = await deps.environmentRuntime.acquireRunLease(
         buildLoginLeaseAcquireArgs({
           metadata: {
