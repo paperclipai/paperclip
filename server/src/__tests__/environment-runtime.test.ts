@@ -5865,7 +5865,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     expect(reusableLease.metadata?.pluginId).toBe(pluginId);
 
-    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+    const effective = await runtimeWithPlugin.resolveCapabilities({
       environment,
       lease: reusableLease,
     });
@@ -5902,7 +5902,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+    const effective = await runtimeWithPlugin.resolveCapabilities({
       environment,
       lease: reusableLease,
     });
@@ -5961,7 +5961,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+    const effective = await runtimeWithPlugin.resolveCapabilities({
       environment,
       lease: reusableLease,
     });
@@ -6015,7 +6015,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+    const effective = await runtimeWithPlugin.resolveCapabilities({
       environment,
       lease: reusableLease,
     });

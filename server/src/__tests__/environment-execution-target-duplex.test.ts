@@ -246,7 +246,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       driver: "sandbox",
       acquireRunLease: vi.fn(),
       releaseRunLease: vi.fn(),
-      effectiveSandboxCapabilities: vi.fn(async () => ({ ...DUPLEX_ABSENT })),
+      resolveCapabilities: vi.fn(async () => ({ ...DUPLEX_ABSENT })),
       openDuplexChannel,
     } as unknown as EnvironmentRuntimeDriver;
     const service = environmentRuntimeService({} as never, { drivers: [narrowedDriver] });

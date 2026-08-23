@@ -19,7 +19,7 @@ const ALL_PLUGIN_METHODS = [
   "environmentSyncOut",
 ];
 
-describe("sandbox capability contract normalizer", () => {
+describe("environment capability contract normalizer", () => {
   it("test_absent_declaration_defers_to_worker_supported_methods_discovery", () => {
     // No declaration at all. The effective set must fall back to what the worker
     // verified, so a third-party provider that implements the sync hooks keeps

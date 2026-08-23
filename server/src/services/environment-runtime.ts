@@ -602,11 +602,6 @@ export interface EnvironmentRuntimeDriver {
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
   /**
-   * Resolve the read-only effective sandbox capability snapshot for a lease.
-   * Only the sandbox driver implements it; other drivers omit it.
-   */
-  effectiveSandboxCapabilities?(input: EnvironmentDriverLeaseInput): Promise<EffectiveSandboxCapabilities>;
-  /**
    * Resolve the effective eight-field capability snapshot for this driver and
    * lease. Every driver implements this general method, so a caller never
    * needs to branch on the driver name to read a capability.
@@ -2590,10 +2585,6 @@ function createSandboxEnvironmentDriver(
       return adaptDuplexChannelHostSession(session);
     },
 
-    async effectiveSandboxCapabilities(input) {
-      return await resolveSandboxCapabilitiesForLease(input);
-    },
-
     async resolveCapabilities(input) {
       return await resolveSandboxCapabilitiesForLease(input);
     },
@@ -3612,20 +3603,12 @@ export function environmentRuntimeService(
       return driver?.supportsSync?.(input) ?? false;
     },
 
-    async effectiveSandboxCapabilities(
-      input: EnvironmentDriverLeaseInput,
-    ): Promise<EffectiveSandboxCapabilities | null> {
-      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
-      return (await driver?.effectiveSandboxCapabilities?.(input)) ?? null;
-    },
-
     /**
      * Resolve the general per-lease capability snapshot through the driver's
-     * {@link EnvironmentRuntimeDriver.resolveCapabilities}. Unlike {@link
-     * effectiveSandboxCapabilities}, every registered driver implements this
-     * method, so it returns a full snapshot for any registered driver. It
-     * returns `null` only when the lease's driver is not registered — never as
-     * a stand-in for "every capability denied".
+     * {@link EnvironmentRuntimeDriver.resolveCapabilities}. Every registered
+     * driver implements this method, so it returns a full snapshot for any
+     * registered driver. It returns `null` only when the lease's driver is
+     * not registered — never as a stand-in for "every capability denied".
      */
     async resolveCapabilities(
       input: EnvironmentDriverLeaseInput,
@@ -3659,14 +3642,14 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support duplex channels.`);
       }
       // Centralize the duplex channel authorization here. Resolve the exact lease
-      // capability snapshot and refuse unless the effective snapshot grants the
-      // opt-in `duplexCommandStream` capability. This gate runs before the driver
-      // call, so an unauthorized lease never reaches the worker. The
-      // execution-target member gate stays as defense in depth. A driver that
-      // cannot resolve the snapshot fails closed with the fixed refusal.
-      const effective =
-        (await driver.effectiveSandboxCapabilities?.(input)) ?? null;
-      if (effective?.duplexCommandStream !== true) {
+      // capability snapshot through the general resolver and refuse unless the
+      // effective snapshot grants the opt-in `duplexCommandStream` capability.
+      // This gate runs before the driver call, so an unauthorized lease never
+      // reaches the worker. The execution-target member gate stays as defense
+      // in depth. A driver that cannot resolve the snapshot fails closed with
+      // the fixed refusal.
+      const effective = await driver.resolveCapabilities(input);
+      if (effective.duplexCommandStream !== true) {
         throw new Error(DUPLEX_CHANNEL_CAPABILITY_DENIED);
       }
       return await driver.openDuplexChannel(input);
