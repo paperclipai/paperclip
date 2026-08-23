@@ -142,6 +142,21 @@ export const AGENT_ICON_NAMES = [
 export type AgentIconName = (typeof AGENT_ICON_NAMES)[number];
 
 /**
+ * Namespaced icon id a plugin can register for agents, distinct from the
+ * built-in `AGENT_ICON_NAMES` enum so a plugin never has to repaint a name a
+ * real agent might legitimately want. Shape: `plugin:<pluginId>:<iconKey>`,
+ * e.g. `plugin:coldsmoke.customizations-by-nick:comms-at`. The `pluginId`
+ * segment scopes icon keys per plugin so two plugins can both ship a `mail`
+ * key without colliding.
+ */
+export const PLUGIN_AGENT_ICON_NAME_RE =
+  /^plugin:[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+
+export function isPluginAgentIconName(value: string): boolean {
+  return PLUGIN_AGENT_ICON_NAME_RE.test(value);
+}
+
+/**
  * Curated Lucide icon set for projects (PAP-68 part 3).
  *
  * The first entry, `"folder"`, is the default for any project without an

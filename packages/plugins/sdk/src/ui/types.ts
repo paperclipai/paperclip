@@ -486,3 +486,16 @@ export interface PluginStreamResult<T = unknown> {
  * ```
  */
 export type PluginActionFn = (params?: Record<string, unknown>) => Promise<unknown>;
+
+// ---------------------------------------------------------------------------
+// registerAgentIcon
+// ---------------------------------------------------------------------------
+
+/**
+ * Props passed to a component registered with `registerAgentIcon`. Matches
+ * how the host's `<AgentIcon>` renders every built-in lucide icon, so a
+ * registered component behaves like one at every `<AgentIcon>` call site.
+ */
+export interface AgentIconComponentProps {
+  className?: string;
+}

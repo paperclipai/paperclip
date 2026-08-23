@@ -43,6 +43,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AGENT_ICON_NAMES, type AgentIconName } from "@paperclipai/shared";
+import { getRegisteredAgentIcon } from "./plugin-agent-icons";
 
 export const AGENT_ICONS: Record<AgentIconName, LucideIcon> = {
   bot: Bot,
@@ -93,6 +94,10 @@ const DEFAULT_ICON: AgentIconName = "bot";
 export function getAgentIcon(iconName: string | null | undefined): LucideIcon {
   if (iconName && AGENT_ICON_NAMES.includes(iconName as AgentIconName)) {
     return AGENT_ICONS[iconName as AgentIconName];
+  }
+  if (iconName) {
+    const registered = getRegisteredAgentIcon(iconName);
+    if (registered) return registered as unknown as LucideIcon;
   }
   return AGENT_ICONS[DEFAULT_ICON];
 }

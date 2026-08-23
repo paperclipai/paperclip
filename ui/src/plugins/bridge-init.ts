@@ -30,6 +30,7 @@ import {
   type FileTreeProps as HostFileTreeProps,
 } from "@/components/FileTree";
 import { AgentIcon } from "@/components/AgentIconPicker";
+import { registerAgentIcon } from "@/lib/plugin-agent-icons";
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
 import { IssuesList as HostIssuesList } from "@/components/IssuesList";
 import { ManagedRoutinesList as HostManagedRoutinesList } from "@/components/ManagedRoutinesList";
@@ -721,6 +722,7 @@ export function initPluginBridge(
       AssigneePicker: PluginSdkAssigneePicker,
       ProjectPicker: PluginSdkProjectPicker,
       ManagedRoutinesList: HostManagedRoutinesList,
+      registerAgentIcon,
     },
   };
 }

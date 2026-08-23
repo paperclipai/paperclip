@@ -55,6 +55,7 @@ export {
   useHostLocation,
   usePluginStream,
   usePluginToast,
+  registerAgentIcon,
 } from "./hooks.js";
 
 export { copyTextToClipboard } from "./clipboard.js";
@@ -143,6 +144,7 @@ export type {
   PluginToastAction,
   PluginToastInput,
   PluginToastFn,
+  AgentIconComponentProps,
 } from "./types.js";
 
 // Slot component prop interfaces

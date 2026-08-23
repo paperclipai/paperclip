@@ -11,6 +11,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AGENT_ICONS, getAgentIcon } from "../lib/agent-icons";
+import { listRegisteredAgentIcons } from "../lib/plugin-agent-icons";
 
 const DEFAULT_ICON: AgentIconName = "bot";
 
@@ -35,7 +36,10 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
-    const entries = AGENT_ICON_NAMES.map((name) => [name, AGENT_ICONS[name]] as const);
+    const entries: (readonly [string, LucideIcon])[] = [
+      ...AGENT_ICON_NAMES.map((name) => [name, AGENT_ICONS[name]] as const),
+      ...listRegisteredAgentIcons().map(([name, Icon]) => [name, Icon as unknown as LucideIcon] as const),
+    ];
     if (!search) return entries;
     const q = search.toLowerCase();
     return entries.filter(([name]) => name.includes(q));

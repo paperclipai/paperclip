@@ -1,4 +1,6 @@
+import type { ComponentType } from "react";
 import type {
+  AgentIconComponentProps,
   PluginDataResult,
   PluginActionFn,
   HostLocation,
@@ -224,4 +226,44 @@ export function usePluginStream<T = unknown>(
 export function usePluginToast(): PluginToastFn {
   const impl = getSdkUiRuntimeValue<() => PluginToastFn>("usePluginToast");
   return impl();
+}
+
+// ---------------------------------------------------------------------------
+// registerAgentIcon
+// ---------------------------------------------------------------------------
+
+/**
+ * Registers a custom agent icon under a namespaced id, so an agent can be
+ * assigned this icon from the host's normal icon picker without a plugin
+ * having to repaint one of the built-in `AGENT_ICON_NAMES` — a name a real
+ * agent might legitimately want later.
+ *
+ * `id` must be `plugin:<pluginId>:<iconKey>` (lowercase, digits and hyphens,
+ * `pluginId` matching this plugin's manifest id) — any other shape is
+ * rejected both here and by the create/update agent validator. Call this once
+ * per icon, e.g. from a `globalToolbarButton` slot component, which the host
+ * mounts on every page regardless of route.
+ *
+ * @example
+ * ```tsx
+ * function CustomizationsInjector() {
+ *   useEffect(() => {
+ *     registerAgentIcon("plugin:coldsmoke.customizations-by-nick:comms-at", CommsAtIcon);
+ *   }, []);
+ *   return null;
+ * }
+ *
+ * function CommsAtIcon({ className }: { className?: string }) {
+ *   return <img src={commsAtGoldDataUri} className={className} alt="" />;
+ * }
+ * ```
+ */
+export function registerAgentIcon(
+  id: string,
+  component: ComponentType<AgentIconComponentProps>,
+): void {
+  const impl = getSdkUiRuntimeValue<
+    (nextId: string, nextComponent: ComponentType<AgentIconComponentProps>) => void
+  >("registerAgentIcon");
+  impl(id, component);
 }

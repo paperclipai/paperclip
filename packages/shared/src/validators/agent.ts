@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  PLUGIN_AGENT_ICON_NAME_RE,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -69,11 +70,18 @@ export const agentRuntimeConfigSchema = z.object({
   }).strict().optional(),
 }).catchall(z.unknown());
 
+// A built-in name, or a `plugin:<pluginId>:<iconKey>` id a plugin registered
+// with `registerAgentIcon` — see PLUGIN_AGENT_ICON_NAME_RE.
+const agentIconSchema = z.union([
+  z.enum(AGENT_ICON_NAMES),
+  z.string().regex(PLUGIN_AGENT_ICON_NAME_RE),
+]);
+
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
-  icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
+  icon: agentIconSchema.optional().nullable(),
   reportsTo: z.string().guid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
