@@ -14,7 +14,7 @@
  * instead of a driver-name condition.
  */
 
-import type { EnvironmentDriver } from "@paperclipai/shared";
+import type { EnvironmentDriver, WorkspaceRealizationSyncStrategy } from "@paperclipai/shared";
 import type { SandboxCapabilityKey } from "./environment-runtime.js";
 
 /**
@@ -111,12 +111,12 @@ export interface EnvironmentDriverTraits {
    */
   readonly confinesStagedProjects: boolean;
   /**
-   * The workspace-realization transport label for the driver. Read by
-   * `buildWorkspaceRealizationRecord` (`workspace-realization.ts`) to choose
-   * the sync strategy the adapter follows to move a workspace onto the
-   * target and back.
+   * The workspace sync strategy for the driver. Read by
+   * `buildWorkspaceRealizationRecord` (`workspace-realization.ts`) to select
+   * the sync plan the adapter follows to move a workspace onto the target
+   * and back.
    */
-  readonly workspaceTransport: EnvironmentDriver;
+  readonly workspaceSyncStrategy: WorkspaceRealizationSyncStrategy;
   /**
    * True when the driver resolves a per-lease capability snapshot that a
    * consumer reads today. Read by `resolveEnvironmentExecutionTarget`
@@ -142,7 +142,7 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: true,
     runsWorkspaceOffHost: false,
     confinesStagedProjects: false,
-    workspaceTransport: "local",
+    workspaceSyncStrategy: "none",
     hasLeaseCapabilityModel: false,
   },
   ssh: {
@@ -150,7 +150,7 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: true,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: false,
-    workspaceTransport: "ssh",
+    workspaceSyncStrategy: "ssh_git_import_export",
     hasLeaseCapabilityModel: false,
   },
   sandbox: {
@@ -158,7 +158,7 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: true,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: true,
-    workspaceTransport: "sandbox",
+    workspaceSyncStrategy: "sandbox_archive_upload_download",
     hasLeaseCapabilityModel: true,
   },
   plugin: {
@@ -166,7 +166,7 @@ export const ENVIRONMENT_DRIVER_TRAITS: Record<EnvironmentDriver, EnvironmentDri
     realizesWorkspace: false,
     runsWorkspaceOffHost: true,
     confinesStagedProjects: false,
-    workspaceTransport: "plugin",
+    workspaceSyncStrategy: "provider_defined",
     hasLeaseCapabilityModel: false,
   },
 };
