@@ -7,6 +7,11 @@ function readNonEmptyString(value: unknown): string | null {
 export const QUOTA_EXHAUSTED_ERROR_CODES = new Set<string>([
   "gemini_quota_exhausted",
   "antigravity_quota_exhausted",
+  // Every codex lane runs through the ACPX engine, which reported quota
+  // rejections as the generic "acpx_turn_failed". Codex is the fleet's
+  // highest-volume adapter, so the omission was also the largest: 110
+  // rejections on 2026-08-23 all classed as genuine failures.
+  "acpx_provider_quota_exhausted",
 ]);
 
 type QuotaFailureCandidate = {

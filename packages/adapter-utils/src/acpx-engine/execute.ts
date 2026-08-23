@@ -2703,6 +2703,39 @@ export function surfaceLimitTextThroughOpaqueError(
   return errorMessage;
 }
 
+/**
+ * A provider quota rejection is a DATED condition, not a defect in the work.
+ *
+ * The 2026-08-06 fix surfaced the limit TEXT through the opaque "Internal error"
+ * so failover monitors keyed on run-error text could see it. The errorCode was
+ * left at `acpx_turn_failed`, so everything keyed on the CODE stayed blind:
+ * QUOTA_EXHAUSTED_ERROR_CODES never matched, no cooldown-until-reset was
+ * applied, and the equivalent-failure circuit counted each rejection as a
+ * genuine failure. Two of them pause the agent and mint a BOARD ACTION card.
+ * On 2026-08-23 that produced 110 rejections between 06:32 and 11:04 and three
+ * such cards (Kestrel-Codex, CTO, Engineer-Codex), whose every failure in the
+ * window was this and nothing else.
+ */
+const ACPX_PROVIDER_QUOTA_RE =
+  /(?:you(?:'|’)?ve hit your (?:session|weekly|daily|5-?hour|usage) limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+const ACPX_QUOTA_RETRY_AT_RE = /try again at\s+([^.!\n(]+)/i;
+
+export function detectAcpxProviderQuota(
+  errorMessage: string | null | undefined,
+  now: Date = new Date(),
+): { exhausted: boolean; resetAt: Date | null } {
+  const message = (errorMessage ?? "").trim();
+  if (!message || !ACPX_PROVIDER_QUOTA_RE.test(message)) return { exhausted: false, resetAt: null };
+  const raw = ACPX_QUOTA_RETRY_AT_RE.exec(message)?.[1]?.trim();
+  if (!raw) return { exhausted: true, resetAt: null };
+  // "Aug 27th, 2026 9:02 AM" -- Date.parse rejects the ordinal suffix.
+  const parsed = new Date(raw.replace(/(\d{1,2})(?:st|nd|rd|th)\b/gi, "$1"));
+  if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= now.getTime()) {
+    return { exhausted: true, resetAt: null };
+  }
+  return { exhausted: true, resetAt: parsed };
+}
+
 function usageBreakdownsEqual(
   left: AcpRuntimeUsageBreakdown,
   right: AcpRuntimeUsageBreakdown,
@@ -4413,6 +4446,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // path keeps it set, so the run root span closes with error status. A
         // completed terminal with a lost duplex channel keeps the flag set.
         runFailed = turnSucceeded ? false : true;
+        const providerQuota = detectAcpxProviderQuota(errorMessage);
         capturedResult = {
           exitCode: turnSucceeded ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
@@ -4421,7 +4455,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           errorCode: tokenBudgetExhausted
             ? "token_budget_exhausted"
             : terminal.status === "failed"
-              ? "acpx_turn_failed"
+              ? (providerQuota.exhausted ? "acpx_provider_quota_exhausted" : "acpx_turn_failed")
               : timedOut
                 ? "acpx_timeout"
                 : channelLost
@@ -4437,6 +4471,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           costUsd: turnUsage.costUsd,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
+            ...(providerQuota.exhausted
+              ? {
+                  quotaFailure: {
+                    provider: "acpx",
+                    matchedLine: errorMessage,
+                    resetAt: providerQuota.resetAt?.toISOString() ?? null,
+                  },
+                  ...(providerQuota.resetAt ? { resetAt: providerQuota.resetAt.toISOString() } : {}),
+                }
+              : {}),
             ...(tokenBudgetExhausted
               ? {
                   stopReason: "token_budget_exhausted",

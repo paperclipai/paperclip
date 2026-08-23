@@ -34,6 +34,7 @@ import {
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
   surfaceLimitTextThroughOpaqueError,
+  detectAcpxProviderQuota,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
@@ -6366,5 +6367,41 @@ describe("surfaceLimitTextThroughOpaqueError", () => {
     expect(surfaceLimitTextThroughOpaqueError("Internal error", ["done, all good"]))
       .toBe("Internal error");
     expect(surfaceLimitTextThroughOpaqueError(null, [LIMIT_TEXT])).toBeNull();
+  });
+});
+
+
+describe("provider quota is a dated condition, not a genuine failure (TSMC-21353)", () => {
+  // Verbatim run error from 2026-08-23; 110 of these between 06:32 and 11:04,
+  // every one classed as acpx_turn_failed and counted toward the circuit.
+  const REAL = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage"
+    + " to purchase more credits or try again at Aug 27th, 2026 9:02 AM. (ACP turn failed: Internal error)";
+
+  it("recognises the rejection and dates the retry past the ordinal suffix", () => {
+    const now = new Date("2026-08-23T10:00:00Z");
+    const result = detectAcpxProviderQuota(REAL, now);
+    expect(result.exhausted).toBe(true);
+    expect(result.resetAt?.getTime()).toBeGreaterThan(now.getTime());
+    expect(result.resetAt?.getFullYear()).toBe(2026);
+    expect(result.resetAt?.getMonth()).toBe(7); // August
+    expect(result.resetAt?.getDate()).toBe(27);
+  });
+
+  it("still reports exhaustion when no retry time is offered", () => {
+    const result = detectAcpxProviderQuota("You've hit your usage limit.");
+    expect(result.exhausted).toBe(true);
+    expect(result.resetAt).toBeNull();
+  });
+
+  it("declines a reset time that has already passed rather than scheduling into the past", () => {
+    const result = detectAcpxProviderQuota(REAL, new Date("2026-09-01T00:00:00Z"));
+    expect(result.exhausted).toBe(true);
+    expect(result.resetAt).toBeNull();
+  });
+
+  it("leaves ordinary failures alone", () => {
+    for (const message of ["Internal error", "ACP turn failed: Internal error", "", null]) {
+      expect(detectAcpxProviderQuota(message).exhausted).toBe(false);
+    }
   });
 });

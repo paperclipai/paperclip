@@ -25575,6 +25575,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    */
   async function enforceEquivalentFailureCircuitBreaker(run: typeof heartbeatRuns.$inferSelect) {
     const now = new Date();
+    // A provider quota rejection is not a genuine failure of the work: the turn
+    // never ran. Counting it opened circuits on three codex agents on
+    // 2026-08-23, whose every failure in the window was "You've hit your usage
+    // limit" and nothing else -- pausing healthy agents and minting BOARD
+    // ACTION cards for a condition that clears on its own at a known time.
+    if (isQuotaExhaustedFailureRun(run)) return false;
     const cutoff = new Date(now.getTime() - EQUIVALENT_FAILURE_WINDOW_MS);
     const currentIssueId = issueIdFromRunContext(run.contextSnapshot);
     if (!currentIssueId) return false;
@@ -25597,7 +25603,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${currentIssueId}`,
       ));
 
-    const issueIds = [...new Set(recentRuns
+    const countableRuns = recentRuns.filter((candidate) => !isQuotaExhaustedFailureRun(candidate));
+    const issueIds = [...new Set(countableRuns
       .map((candidate) => issueIdFromRunContext(candidate.contextSnapshot))
       .filter((value): value is string => Boolean(value)))];
     const issueRows = issueIds.length > 0
@@ -25607,7 +25614,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, issueIds)))
       : [];
     const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
-    const observations: FailureObservation[] = recentRuns.map((candidate) => {
+    const observations: FailureObservation[] = countableRuns.map((candidate) => {
       const issueId = issueIdFromRunContext(candidate.contextSnapshot);
       const issue = issueId ? issueById.get(issueId) : null;
       return {
