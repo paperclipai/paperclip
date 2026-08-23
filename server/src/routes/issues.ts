@@ -252,7 +252,11 @@ import {
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
-import { hasAgentWriteRunAuthority, loadAgentRunRow } from "../services/agent-run-authority.js";
+import {
+  hasAgentWriteRunAuthority,
+  loadAgentRunRow,
+  recordDurableWriteDenialOnActiveRun,
+} from "../services/agent-run-authority.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -4045,6 +4049,14 @@ export function issueRoutes(
       || contextIssueId !== issue.id
     ) {
       const actor = getActorInfo(req);
+      // A denial that lands on the caller's own live run is a fact about that
+      // heartbeat: it asked for a durable write and did not get one, so the run
+      // must not later be finalized as a success (FAI-9903, FAI-9983).
+      await recordDurableWriteDenialOnActiveRun(db, {
+        runId,
+        agentId: req.actor.agentId,
+        companyId: issue.companyId,
+      });
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,

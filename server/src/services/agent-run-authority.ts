@@ -1,7 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
+import { logger } from "../middleware/logger.js";
 
 /**
  * The heartbeat-run statuses that carry agent write authority (FAI-9983).
@@ -96,4 +97,73 @@ export async function lockLiveAgentRun(
     .for("update")
     .then((rows) => (rows[0] ?? null) as AgentRunRow | null);
   return run && hasAgentWriteRunAuthority(run.status) ? run : null;
+}
+
+/**
+ * The run `errorCode` that marks a heartbeat whose durable write was refused.
+ *
+ * Denying the write is only half the contract. FAI-9903 is the other half: an
+ * agent whose every comment and status PATCH was rejected still finished as a
+ * `succeeded` heartbeat, because finalization reads the adapter's exit code and
+ * an adapter that never noticed the 403s exits 0. A run that was refused its
+ * writes did not do its job, and recording that on the run is what lets
+ * finalization say so instead of reporting a success nobody can act on.
+ */
+export const DURABLE_WRITE_DENIED_ERROR_CODE = "durable_write_denied";
+
+/**
+ * Records a refused durable write against the caller's own live run.
+ *
+ * Deliberately narrow. The run id arrives in a caller-controlled header, so
+ * marking whatever run it names would hand any agent-key holder a way to fail
+ * *another* agent's run by quoting its id — trading a write-authorization hole
+ * for a denial-of-service one. The predicate therefore only matches a run that
+ * is live and already belongs to this actor's agent and company, which is
+ * exactly the case where the header names the caller's real run and the denial
+ * is a fact about that run's own execution.
+ *
+ * A denial the request cannot attribute to a live run of the caller's — an
+ * unknown id, a forged one, a spent one, another agent's — marks nothing. That
+ * is not a gap: those requests carry no live run to hold accountable, and they
+ * are already audited at the denial site.
+ *
+ * `errorCode` is only claimed when it is still empty so an earlier, more
+ * specific denial (a responsible-user refusal, say) keeps the field it wrote.
+ * Both outcomes finalize the same way, so first writer wins is enough.
+ */
+export async function recordDurableWriteDenialOnActiveRun(
+  db: Db,
+  input: { runId: string | null | undefined; agentId: string | null | undefined; companyId: string },
+): Promise<boolean> {
+  const lookupId = agentRunLookupId(input.runId);
+  if (!lookupId || !input.agentId) return false;
+  try {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ errorCode: DURABLE_WRITE_DENIED_ERROR_CODE, updatedAt: new Date() })
+      .where(and(
+        eq(heartbeatRuns.id, lookupId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        inArray(heartbeatRuns.status, [...AGENT_WRITE_HEARTBEAT_RUN_STATUSES]),
+        isNull(heartbeatRuns.errorCode),
+      ))
+      .returning({ id: heartbeatRuns.id })
+      .then((rows) => rows.length > 0);
+    if (updated) {
+      logger.info(
+        { runId: lookupId, agentId: input.agentId, companyId: input.companyId },
+        "recorded durable-write denial on active heartbeat run",
+      );
+    }
+    return updated;
+  } catch (err) {
+    // Best effort on purpose: this marker exists to make a denial louder, so
+    // failing to write it must not convert an audited 403 into a 500.
+    logger.warn(
+      { err, runId: lookupId, agentId: input.agentId, companyId: input.companyId },
+      "failed to record durable-write denial on active heartbeat run",
+    );
+    return false;
+  }
 }

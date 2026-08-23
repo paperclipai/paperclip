@@ -4,7 +4,11 @@ import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { agentRunLookupId, hasAgentWriteRunAuthority } from "./agent-run-authority.js";
+import {
+  agentRunLookupId,
+  hasAgentWriteRunAuthority,
+  recordDurableWriteDenialOnActiveRun,
+} from "./agent-run-authority.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
@@ -87,6 +91,15 @@ type ObserveInput = {
  * the denial throws, which would take the audit row with it.
  */
 async function auditRunContextDenied(db: Db, input: ObserveInput, denial: RunContextDenial) {
+  // Refusing the write is only half the contract: if the run that asked for it
+  // is the caller's own live run, it has to finalize as a failure rather than
+  // as the silent success FAI-9903 reported. Runs this cannot attribute — spent,
+  // forged, another agent's — simply do not match the predicate.
+  await recordDurableWriteDenialOnActiveRun(db, {
+    runId: input.runId,
+    agentId: input.agentId,
+    companyId: input.companyId,
+  });
   try {
     await db.insert(activityLog).values({
       companyId: input.companyId,

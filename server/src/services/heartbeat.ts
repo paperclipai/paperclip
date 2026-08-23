@@ -83,6 +83,7 @@ import {
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
+import { DURABLE_WRITE_DENIED_ERROR_CODE } from "./agent-run-authority.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -16308,12 +16309,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       let outcome: RunSessionOutcome;
       const latestRun = await getRun(run.id);
+      // A run whose durable write the API refused did not do its job, whatever
+      // its process did afterwards. Exit code is the adapter's opinion of its
+      // own subprocess, and an adapter that never inspected the 403s exits 0 —
+      // which is how FAI-9903 produced heartbeats that reported success while
+      // every comment and status PATCH they attempted had been rejected. The
+      // recorded denial outranks a clean exit here so the failure is terminal
+      // and auditable instead of invisible (FAI-9983).
+      const durableWriteDenied = latestRun?.errorCode === DURABLE_WRITE_DENIED_ERROR_CODE;
       if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        outcome = durableWriteDenied ? "failed" : "succeeded";
       } else {
         outcome = "failed";
       }
@@ -16342,7 +16351,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                adapterResult.errorMessage
+                  ?? (outcome === "timed_out"
+                    ? "Timed out"
+                    : durableWriteDenied
+                      ? "Heartbeat writes were denied; the run reported no error of its own"
+                      : "Adapter failed"),
                 currentUserRedactionOptions,
               );
       const recordedResponsibleUserDenialCode =
@@ -16353,7 +16367,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
+              ? (adapterResult.errorCode
+                  ?? recordedResponsibleUserDenialCode
+                  ?? (durableWriteDenied ? DURABLE_WRITE_DENIED_ERROR_CODE : null)
+                  ?? "adapter_failed")
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
