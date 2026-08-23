@@ -5073,6 +5073,28 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
     };
   }
 
+  // Convergence guard (TSMC-21089). The rotation above is meant to happen ONCE
+  // — "the first project-scoped run establishes the session that later
+  // project-scoped continuations may resume". But it keys on
+  // `previousWorkspaceSource`, which several adapters never persist, so the
+  // check never becomes true and the SAME task rotates forever. Measured
+  // 2026-08-23 over 48h: 78 of 183 (agent, issue) pairs rotated more than once,
+  // worst 59 times; 112 of the resulting runs matched the no-op shape (under
+  // 60s, no disposition) and burned 815,607 tokens — each one a fresh
+  // context-less session recorded as SUCCESS.
+  //
+  // The stale-context rationale is about migrating AWAY from a fallback tree.
+  // If the prior session already ran in the project cwd, there is nothing to
+  // migrate away from and its context is exactly the context we want to keep,
+  // whatever the adapter did or did not record about workspace source.
+  if (previousCwd && previousCwd === projectCwd) {
+    return {
+      sessionParams: previousSessionParams,
+      warning: null,
+      resetReason: null,
+    };
+  }
+
   return {
     // A provider conversation that was started in agent-home can contain stale
     // file discoveries and continuation guidance from that fallback tree. Moving

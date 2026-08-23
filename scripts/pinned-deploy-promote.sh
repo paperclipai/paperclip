@@ -433,7 +433,7 @@ cmd_candidate_tests() {
   # blocked card is held before it may be re-polled). A regression there either
   # strands work or re-opens the ~800 runs/day of blocked re-poll churn, so it
   # is gated alongside the loop throttle it complements.
-  _cand_group server src/__tests__/resource-ceiling-continuation.test.ts src/__tests__/heartbeat-issue-rewake-throttle.test.ts src/__tests__/heartbeat-high-input-token-guard.test.ts src/__tests__/blocked-repoll-throttle.test.ts src/__tests__/resource-ceiling-progress-aware.test.ts
+  _cand_group server src/__tests__/resource-ceiling-continuation.test.ts src/__tests__/heartbeat-issue-rewake-throttle.test.ts src/__tests__/heartbeat-high-input-token-guard.test.ts src/__tests__/blocked-repoll-throttle.test.ts src/__tests__/resource-ceiling-progress-aware.test.ts src/__tests__/workspace-migration-convergence.test.ts
   if [ "$ok" = "1" ]; then
     receipt_set_gate "candidate_tests" "pass" "adapter + budget/ceiling/throttle vitest suites green"
     rm -f "$log"
