@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+import hosts
 import vault_note
 
 VAULT_ZIEL = Path(os.path.expanduser(
@@ -17,7 +18,22 @@ VAULT_ZIEL = Path(os.path.expanduser(
 ))
 CSV_UNTERORDNER = "_daten"
 CSV_NAME = "llm-nutzung.csv"
-CSV_KOPF = ["tag", "agent", "modell", "aufrufe", "token", "kosten_eur"]
+CSV_KOPF = ["tag", "agent", "modell", "ort", "aufrufe", "token", "kosten_eur"]
+# Der Kopf vor Einfuehrung der Ort-Spalte (08/2026). Die kumulative CSV reicht
+# bis zum 16.04. zurueck; ihre Zeilen werden beim naechsten Lauf nachgezogen.
+CSV_KOPF_ALT = ["tag", "agent", "modell", "aufrufe", "token", "kosten_eur"]
+
+
+def _mit_ort(zeile: list) -> list:
+    """Eine Zeile im alten 6-Spalten-Format auf das neue Format heben.
+
+    Der Ort ist aus der Modell-ID ableitbar, muss also nicht neu erhoben
+    werden. Ohne diese Migration blieben die Altzeilen kurz und jede Auswertung
+    laege ab der vierten Spalte um eins daneben.
+    """
+    if len(zeile) >= len(CSV_KOPF):
+        return zeile
+    return zeile[:3] + [hosts.ort(zeile[2], zeile[0])] + zeile[3:]
 
 
 def schreibe_notiz(tag: date, modell_rows, agent_model_rows,
@@ -63,10 +79,10 @@ def aktualisiere_csv(tag: date, agent_model_rows, ziel=VAULT_ZIEL) -> Path:
         with open(pfad, encoding="utf-8", newline="") as fh:
             leser = csv.reader(fh)
             for i, zeile in enumerate(leser):
-                if i == 0 and zeile == CSV_KOPF:
+                if i == 0 and zeile in (CSV_KOPF, CSV_KOPF_ALT):
                     continue
                 if zeile and zeile[0] != tag_str:
-                    bestand.append(zeile)
+                    bestand.append(_mit_ort(zeile))
 
     neu = [[str(f) for f in z] for z in vault_note.csv_zeilen(tag, agent_model_rows)]
     alle = sorted(bestand + neu, key=lambda z: (z[0], z[1], z[2]))

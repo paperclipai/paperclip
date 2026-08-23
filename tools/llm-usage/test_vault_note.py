@@ -120,9 +120,10 @@ def test_dateiname_kollidiert_nicht_mit_den_tagesprotokollen():
 def test_csv_eine_zeile_je_agent_und_modell_mit_kosten():
     zeilen = vault_note.csv_zeilen(TAG, AGENT_MODELL_ROWS)
     assert len(zeilen) == 4
-    tag, agent, modell, aufrufe, token, kosten = zeilen[0]
+    tag, agent, modell, ort, aufrufe, token, kosten = zeilen[0]
     assert tag == "2026-08-19"
     assert (agent, modell, aufrufe) == ("CTO", "qwen3.6-35b-a3b-mlx", 120)
+    assert ort == "MacBook"
     assert token == 660_000  # in + out, wie in query.py
     assert kosten == 0.0     # lokales Modell
 
@@ -131,3 +132,36 @@ def test_csv_kosten_bei_unbekanntem_preis_sind_leer_nicht_null():
     """Auch hier: 0 waere gelogen, leer ist ehrlich."""
     zeilen = vault_note.csv_zeilen(TAG, [("X", "claude-supernova-9", 1, 10, 0, 5)])
     assert zeilen[0][-1] == ""
+
+
+# --------------------------------------------------------------------------- #
+# Ausfuehrungsort
+# --------------------------------------------------------------------------- #
+def test_je_modell_tabelle_zeigt_den_ausfuehrungsort():
+    text = vault_note.build(TAG, MODELL_ROWS, AGENT_MODELL_ROWS)
+    block = text.split("## Je Modell", 1)[1].split("##", 1)[0]
+    assert "| Modell | Wo |" in block
+    assert "| qwen3.6-35b-a3b-mlx | MacBook |" in block
+    assert "| claude-sonnet-4-6 | Cloud |" in block
+
+
+def test_kreuztabelle_zeigt_den_ausfuehrungsort():
+    text = vault_note.build(TAG, MODELL_ROWS, AGENT_MODELL_ROWS)
+    kreuz = text.split("## Agent × Modell", 1)[1]
+    assert "| CTO | qwen3.6-35b-a3b-mlx | MacBook |" in kreuz
+
+
+def test_frontmatter_je_modell_traegt_den_ort():
+    """Damit Dataview nach Geraet gruppieren kann, ohne den Body zu parsen."""
+    text = vault_note.build(TAG, MODELL_ROWS, AGENT_MODELL_ROWS)
+    block = text.split("je_modell:", 1)[1].split("tags:", 1)[0]
+    assert '    ort: "MacBook"' in block
+    assert '    ort: "Cloud"' in block
+
+
+def test_unbekannter_ort_wird_in_der_notiz_gewarnt():
+    """Gleiches Muster wie beim fehlenden Preis — sonst faellt ein neues
+    lokales Modell nie auf."""
+    rows = MODELL_ROWS + [("irgendwas/neues-42b", 10, 1000, 5, 0.0)]
+    text = vault_note.build(TAG, rows, AGENT_MODELL_ROWS)
+    assert "Ausfuehrungsort nicht hinterlegt: irgendwas/neues-42b" in text

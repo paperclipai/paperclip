@@ -15,6 +15,7 @@ from openpyxl.chart.legend import Legend
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
+import hosts
 import pricing
 import query
 
@@ -64,8 +65,9 @@ def sheet_llm_per_day(wb, days):
     ws.title = "LLM pro Tag"
     ws["A1"] = f"LLM-Nutzung pro Tag (letzte {days} Tage) — Paperclip-Agenten"
     ws["A1"].font = TITLE_FONT
-    hdr = ["LLM", "Datum", "Aufrufe", "Input-Token", "Cache-Token", "Output-Token",
-           "Token gesamt", "Laufzeit (Sek.)", "Laufzeit (h:m:s)", "Kosten (EUR)"]
+    hdr = ["LLM", "Wo", "Datum", "Aufrufe", "Input-Token", "Cache-Token",
+           "Output-Token", "Token gesamt", "Laufzeit (Sek.)", "Laufzeit (h:m:s)",
+           "Kosten (EUR)"]
     ws.append([])
     ws.append(hdr)
     hrow = ws.max_row
@@ -75,21 +77,21 @@ def sheet_llm_per_day(wb, days):
         # Kosten je Tag rechnen, damit ein auslaufender Einfuehrungspreis
         # (pricing.INTRO) am richtigen Datum greift.
         kosten = pricing.kosten_eur(model, in_tok, cached_tok, out_tok, tag)
-        ws.append([model, str(tag), calls, in_tok or 0, cached_tok or 0,
-                   out_tok or 0, tokens or 0, dur or 0, _hms(dur),
+        ws.append([model, hosts.ort(model, tag), str(tag), calls, in_tok or 0,
+                   cached_tok or 0, out_tok or 0, tokens or 0, dur or 0, _hms(dur),
                    kosten if kosten is not None else "Preis unbekannt"])
-    _autosize(ws, [40, 12, 9, 14, 14, 14, 14, 15, 15, 14])
+    _autosize(ws, [40, 12, 12, 9, 14, 14, 14, 14, 15, 15, 14])
     for r in range(hrow + 1, ws.max_row + 1):
-        for c in (4, 5, 6, 7):
+        for c in (5, 6, 7, 8):
             ws.cell(row=r, column=c).number_format = "#,##0"
-        zelle = ws.cell(row=r, column=10)
+        zelle = ws.cell(row=r, column=11)
         if isinstance(zelle.value, float):
             zelle.number_format = '#,##0.00 "€"'
     ws.freeze_panes = ws.cell(row=hrow + 1, column=1)
 
-    # ---- Grafik-Matrix (Datum × LLM) rechts, Spalte K ff. ----
+    # ---- Grafik-Matrix (Datum × LLM) rechts, Spalte L ff. ----
     tage, modelle, counts = query.matrix_day_by_model(days)
-    gcol = 11  # K
+    gcol = 12  # L
     ws.cell(row=hrow, column=gcol, value="Datum").fill = HEAD_FILL
     ws.cell(row=hrow, column=gcol).font = HEAD_FONT
     for j, m in enumerate(modelle, start=1):
@@ -114,16 +116,17 @@ def sheet_agent_hour(wb, days):
     ws = wb.create_sheet("Agent je Stunde")
     ws["A1"] = f"Agenten-LLM-Aufrufe je Stunde (letzte {days} Tage)"
     ws["A1"].font = TITLE_FONT
-    hdr = ["Agent", "Datum", "Stunde", "LLM", "Aufrufe", "Token"]
+    hdr = ["Agent", "Datum", "Stunde", "LLM", "Wo", "Aufrufe", "Token"]
     ws.append([])
     ws.append(hdr)
     hrow = ws.max_row
     _style_header(ws, hrow, len(hdr))
     for agent, tag, stunde, model, calls, tokens in query.agent_hour(days):
-        ws.append([agent, str(tag), stunde, model, calls, tokens or 0])
-    _autosize(ws, [24, 12, 9, 40, 9, 12])
+        ws.append([agent, str(tag), stunde, model, hosts.ort(model, tag),
+                   calls, tokens or 0])
+    _autosize(ws, [24, 12, 9, 40, 12, 9, 12])
     for r in range(hrow + 1, ws.max_row + 1):
-        ws.cell(row=r, column=6).number_format = "#,##0"
+        ws.cell(row=r, column=7).number_format = "#,##0"
     ws.freeze_panes = ws.cell(row=hrow + 1, column=1)
 
 

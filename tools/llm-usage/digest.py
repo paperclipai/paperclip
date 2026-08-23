@@ -14,6 +14,7 @@ import sys
 import urllib.request
 from datetime import date
 
+import hosts
 import pricing
 import query
 import vault_writer
@@ -47,29 +48,45 @@ def fmt(n):
     return f"{int(n or 0):,}".replace(",", ".")
 
 
-def build_html(day, rows, week_totals):
+def _warnung(text):
+    return ("<p style='background:#fce8e6;border-left:3px solid #d93025;"
+            "padding:8px 12px;font-size:13px;margin-top:16px'>" + text + "</p>")
+
+
+def build_html(day, rows, week_totals, live=None):
+    """Der Mail-Body.
+
+    `live` ist die Belegung aus `hosts.lade_live()` (Modell -> Geraet) und dient
+    allein dem Abgleich gegen `hosts.ZUORDNUNG`. `None` heisst „kein Abgleich
+    moeglich" (LM Studio nicht erreichbar) — dann wird auch nichts behauptet.
+    """
     total_calls = sum(r[1] for r in rows)
     total_tokens = sum(r[2] for r in rows)
     total_dur = sum(r[3] for r in rows)
     tag_kosten = sum(r[4] for r in rows if r[4] is not None)
     woche_kosten = sum(r[4] for r in week_totals if r[4] is not None)
+    alle_modelle = [r[0] for r in rows] + [r[0] for r in week_totals]
     # Modelle ohne hinterlegten Preis kommen als eigene Zeile in die Mail —
     # sonst faellt eine fehlende Preiszeile still unter den Tisch und der
     # Report weist wieder zu wenig aus (genau die Luecke, die es zu schliessen galt).
-    offen = pricing.unbekannte([r[0] for r in rows] + [r[0] for r in week_totals])
+    offen = pricing.unbekannte(alle_modelle)
+    ortlos = hosts.unbekannte(alle_modelle, day)
+    umgezogen = hosts.abweichungen(alle_modelle, live) if live else []
 
     day_rows = "".join(
         f"<tr><td style='padding:4px 10px'>{m}</td>"
+        f"<td style='padding:4px 10px'>{hosts.ort(m, day)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{fmt(c)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{fmt(t)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{hms(d)}</td>"
         f"<td style='padding:4px 10px;text-align:right'>{pricing.fmt_eur(k)}</td></tr>"
         for m, c, t, d, k in rows
-    ) or "<tr><td colspan='5' style='padding:8px'>Keine Aufrufe an diesem Tag.</td></tr>"
+    ) or "<tr><td colspan='6' style='padding:8px'>Keine Aufrufe an diesem Tag.</td></tr>"
 
     max_wk = max((c for _m, c, *_ in week_totals), default=1)
     week_rows = "".join(
         f"<tr><td style='padding:3px 10px'>{m}</td>"
+        f"<td style='padding:3px 10px;color:#5f6368'>{hosts.ort(m)}</td>"
         f"<td style='padding:3px 10px;text-align:right'>{fmt(c)}</td>"
         f"<td style='padding:3px 6px;width:200px'>"
         f"<div style='background:#1F3864;height:12px;border-radius:2px;"
@@ -81,12 +98,27 @@ def build_html(day, rows, week_totals):
 
     hinweis = ""
     if offen:
-        hinweis = (
-            "<p style='background:#fce8e6;border-left:3px solid #d93025;"
-            "padding:8px 12px;font-size:13px;margin-top:16px'>"
+        hinweis += _warnung(
             "<b>Preis nicht hinterlegt:</b> " + ", ".join(offen) +
             " — diese Aufrufe fehlen in den Kostensummen. "
-            "Preis in <code>pricing.py</code> ergänzen.</p>"
+            "Preis in <code>pricing.py</code> ergänzen."
+        )
+    # Beide Warnungen nach demselben Muster: die Tabellen im Code sind von Hand
+    # gepflegt und veralten sonst still. Genau daran krankte der Report vor der
+    # Preistabelle — der Ort soll denselben Fehler nicht wiederholen.
+    if ortlos:
+        hinweis += _warnung(
+            "<b>Ausführungsort nicht hinterlegt:</b> " + ", ".join(ortlos) +
+            " — Gerät in <code>hosts.py</code> (<code>ZUORDNUNG</code>) ergänzen; "
+            "es steht in der DEVICE-Spalte von <code>lms ps</code>."
+        )
+    if umgezogen:
+        hinweis += _warnung(
+            "<b>Zuordnung veraltet:</b> " + ", ".join(
+                f"{m} steht als {soll} in <code>hosts.py</code>, "
+                f"läuft laut <code>lms ps</code> aber auf {ist}"
+                for m, soll, ist in umgezogen
+            ) + " — <code>hosts.ZUORDNUNG</code> nachziehen."
         )
 
     return f"""<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#202124;max-width:720px">
@@ -97,6 +129,7 @@ def build_html(day, rows, week_totals):
 <table style="border-collapse:collapse;font-size:14px;border:1px solid #dadce0">
 <tr style="background:#1F3864;color:#fff">
 <th style="padding:6px 10px;text-align:left">Modell</th>
+<th style="padding:6px 10px;text-align:left">Wo</th>
 <th style="padding:6px 10px;text-align:right">Aufrufe</th>
 <th style="padding:6px 10px;text-align:right">Token</th>
 <th style="padding:6px 10px;text-align:right">Laufzeit</th>
@@ -104,6 +137,7 @@ def build_html(day, rows, week_totals):
 {day_rows}
 <tr style="background:#f1f3f4;font-weight:bold">
 <td style="padding:5px 10px">Summe</td>
+<td></td>
 <td style="padding:5px 10px;text-align:right">{fmt(total_calls)}</td>
 <td style="padding:5px 10px;text-align:right">{fmt(total_tokens)}</td>
 <td style="padding:5px 10px;text-align:right">{hms(total_dur)}</td>
@@ -116,6 +150,7 @@ def build_html(day, rows, week_totals):
 {week_rows}
 <tr style="border-top:1px solid #dadce0;font-weight:bold">
 <td style="padding:5px 10px">Summe 7 Tage</td>
+<td></td>
 <td style="padding:5px 10px;text-align:right">{fmt(sum(r[1] for r in week_totals))}</td>
 <td></td>
 <td style="padding:5px 10px;text-align:right">{pricing.fmt_eur(woche_kosten)}</td></tr>
@@ -124,6 +159,10 @@ def build_html(day, rows, week_totals):
 <p style="color:#9aa0a6;font-size:12px;margin-top:24px">
 Quelle: Paperclip <code>cost_events</code>. Nicht enthalten: n8n-AI-Nodes, PII-Proxy, LM-Studio-Direktnutzung, Claude Code.
 Detail-Tabellen (LLM/Tag + Agent/Aufruf) mit Grafiken im angehängten Excel.<br>
+<b>Wo</b> kommt aus der Zuordnung in <code>hosts.py</code>, täglich abgeglichen gegen die DEVICE-Spalte von <code>lms ps</code> —
+<code>cost_events</code> führt keinen Host, alle Agenten rufen <code>localhost:1234</code> und LM Link routet unsichtbar weiter.
+Vor dem 06.07.2026 war der Mac Studio der einzige LLM-Server, danach gilt die Tabelle.
+Zieht ein Modell um, stimmt die Angabe für zurückliegende Tage erst wieder, wenn der Umzug dort eingetragen ist.<br>
 <b>Kosten</b> sind aus den Token gerechnet (Preistabelle in <code>pricing.py</code>), nicht aus <code>cost_events.cost_cents</code> — Paperclip füllt die Spalte für Anthropic-Modelle nicht.
 Lokale Modelle kosten 0 €. Cache-Reads zu 0,1× Input-Preis; Cache-<i>Writes</i> erfasst <code>cost_events</code> offenbar nicht getrennt, die echten Kosten liegen daher eher etwas höher.</p>
 </body></html>"""
@@ -184,7 +223,11 @@ def main():
 
     rows = query.per_llm_on_day(day)
     week_totals = query.totals_by_model(7)
-    html = build_html(day, rows, week_totals)
+    # Live-Belegung nur als Kontrolle der Tabelle in hosts.py. Faellt sie aus
+    # (LM Studio nicht erreichbar), liefert lade_live() ein leeres dict und der
+    # Report laeuft ohne Abgleich weiter — er darf daran nie scheitern.
+    live = hosts.lade_live()
+    html = build_html(day, rows, week_totals, live=live)
 
     attachments = []
     if attach:

@@ -16,6 +16,7 @@ Bewusst eine reine Funktion: keine DB, kein Dateizugriff, kein PyYAML
 from datetime import date
 from typing import Optional
 
+import hosts
 import pricing
 
 TZ_HINWEIS = (
@@ -23,7 +24,12 @@ TZ_HINWEIS = (
     "n8n-AI-Nodes, PII-Proxy, LM-Studio-Direktnutzung, Claude Code. "
     "Kosten sind aus den Token gerechnet (`pricing.py`), nicht aus "
     "`cost_events.cost_cents` — die Spalte fuellt Paperclip fuer "
-    "Anthropic-Modelle nicht. Lokale Modelle kosten 0 €."
+    "Anthropic-Modelle nicht. Lokale Modelle kosten 0 €. "
+    "`Wo` kommt aus der Zuordnung in `hosts.py` — `cost_events` fuehrt keinen "
+    "Host, alle Agenten rufen `localhost:1234` und LM Link routet unsichtbar "
+    "weiter. Vor dem 06.07.2026 war der Mac Studio der einzige LLM-Server, "
+    "danach gilt die Tabelle; ein spaeterer Modellumzug muss dort nachgetragen "
+    "werden, damit zurueckliegende Tage wieder stimmen."
 )
 
 
@@ -83,7 +89,7 @@ def dateiname(tag: date) -> str:
 
 
 def csv_zeilen(tag: date, agent_model_rows):
-    """Zeilen fuer die kumulative CSV: (tag, agent, modell, aufrufe, token, kosten).
+    """Zeilen fuer die kumulative CSV: (tag, agent, modell, ort, aufrufe, token, kosten).
 
     Reihenfolge wie geliefert — die Abfrage sortiert bereits nach Aufrufen.
     Unbekannter Preis wird zu '' und nicht zu 0; 0 waere schlicht gelogen.
@@ -92,7 +98,7 @@ def csv_zeilen(tag: date, agent_model_rows):
     for agent, modell, calls, in_tok, cached, out_tok in agent_model_rows:
         k = pricing.kosten_eur(modell, in_tok, cached, out_tok, tag)
         zeilen.append((
-            tag.isoformat(), agent, modell, calls,
+            tag.isoformat(), agent, modell, hosts.ort(modell, tag), calls,
             (in_tok or 0) + (out_tok or 0),
             "" if k is None else round(k, 4),
         ))
@@ -142,6 +148,7 @@ def build(tag: date, modell_rows, agent_model_rows) -> Optional[str]:
     for modell, calls, tok, _dauer, k in modell_rows:
         fm += [
             f"  - modell: {_yaml_str(modell)}",
+            f"    ort: {_yaml_str(hosts.ort(modell, tag))}",
             f"    aufrufe: {calls}",
             f"    token: {tok or 0}",
             f"    kosten_eur: {'null' if k is None else f'{k:.4f}'}",
@@ -165,11 +172,23 @@ def build(tag: date, modell_rows, agent_model_rows) -> Optional[str]:
             "",
         ]
 
-    body += ["## Je Modell", "", "| Modell | Aufrufe | Token | Laufzeit | Kosten |",
-             "| --- | ---: | ---: | ---: | ---: |"]
+    # Gleiches Muster wie oben: eine handgepflegte Tabelle veraltet still,
+    # wenn niemand sie auf ihre Luecken hinweist.
+    ortlos = hosts.unbekannte([r[0] for r in modell_rows], tag)
+    if ortlos:
+        body += [
+            f"> [!warning] Ausfuehrungsort nicht hinterlegt: {', '.join(ortlos)}",
+            "> Geraet in `hosts.py` (`ZUORDNUNG`) ergaenzen — es steht in der "
+            "DEVICE-Spalte von `lms ps`.",
+            "",
+        ]
+
+    body += ["## Je Modell", "",
+             "| Modell | Wo | Aufrufe | Token | Laufzeit | Kosten |",
+             "| --- | --- | ---: | ---: | ---: | ---: |"]
     for modell, calls, tok, dur, k in modell_rows:
-        body.append(f"| {_zelle(modell)} | {_de(calls)} | {_de(tok)} | "
-                    f"{_hms(dur)} | {pricing.fmt_eur(k)} |")
+        body.append(f"| {_zelle(modell)} | {hosts.ort(modell, tag)} | {_de(calls)} | "
+                    f"{_de(tok)} | {_hms(dur)} | {pricing.fmt_eur(k)} |")
 
     body += ["", "## Je Agent", "", "| Agent | Aufrufe | Token | Kosten |",
              "| --- | ---: | ---: | ---: |"]
@@ -177,11 +196,12 @@ def build(tag: date, modell_rows, agent_model_rows) -> Optional[str]:
         body.append(f"| {_zelle(agent)} | {_de(calls)} | {_de(tok)} | "
                     f"{pricing.fmt_eur(k)} |")
 
-    body += ["", "## Agent × Modell", "", "| Agent | Modell | Aufrufe | Token |",
-             "| --- | --- | ---: | ---: |"]
+    body += ["", "## Agent × Modell", "",
+             "| Agent | Modell | Wo | Aufrufe | Token |",
+             "| --- | --- | --- | ---: | ---: |"]
     for agent, modell, calls, in_tok, _cached, out_tok in agent_model_rows:
-        body.append(f"| {_zelle(agent)} | {_zelle(modell)} | {_de(calls)} | "
-                    f"{_de((in_tok or 0) + (out_tok or 0))} |")
+        body.append(f"| {_zelle(agent)} | {_zelle(modell)} | {hosts.ort(modell, tag)} | "
+                    f"{_de(calls)} | {_de((in_tok or 0) + (out_tok or 0))} |")
 
     body += ["", "---", "", f"*{TZ_HINWEIS}*", ""]
     return "\n".join(fm + body)
