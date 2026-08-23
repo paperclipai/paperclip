@@ -730,8 +730,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
+  // A session saved before `promptBundleKey` was persisted carries no key. Such a session must not
+  // be resumed when the current bundle supplies agent instructions: the resume path below skips
+  // `--append-system-prompt-file`, so the agent would keep running without its instructions and
+  // nothing in the run log would say so. Keyless sessions stay resumable when the bundle carries no
+  // instructions, because then there is nothing for the resume to drop.
   const hasMatchingPromptBundle =
-    runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
+    runtimePromptBundleKey.length === 0
+      ? promptBundle.instructionsFilePath === null
+      : runtimePromptBundleKey === promptBundle.bundleKey;
   const hasMatchingMcpServers =
     runtimeMcpServerIdentity.length === 0
       ? runtimeMcpServers.length === 0
