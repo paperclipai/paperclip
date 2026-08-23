@@ -75,6 +75,11 @@ export const MIN_HOST_PROCESS_MEMORY_BYTES_FOR_DUPLEX = 2 * 1024 * 1024 * 1024;
  *     between chunks, plus the peak replacement buffer it allocates on concat.
  *   - `readiness_buffer`: the raw untrusted bytes the readiness gate retains before
  *     the READY frame completes, before the broker binds and the decoder takes over.
+ *   - `readiness_replay`: the post-READY suffix bytes the readiness gate holds in the
+ *     pending replay buffer, from the READY accept until the broker binds and the
+ *     frame decoder charges its own retention. This is a separate retention from
+ *     `readiness_buffer`: the gate drops the whole pre-READY buffer on READY, then
+ *     charges only the retained suffix and each later pre-bind chunk under this owner.
  *   - `pending_write`: the raw host-to-worker write payload a pending duplex write
  *     RPC retains, from the enqueue seam until the RPC settles.
  *   - `stdin_write`: the serialized host-to-worker frame the child-stdin transport
@@ -93,6 +98,7 @@ export const DUPLEX_AGGREGATE_TOKEN_OWNERS = [
   "seen_request_id",
   "decoder_buffer",
   "readiness_buffer",
+  "readiness_replay",
   "pending_write",
   "stdin_write",
 ] as const;
@@ -226,8 +232,7 @@ export interface DuplexAggregateByteLedgerOptions {
  * reserve.
  */
 export function assertDuplexAggregateCeilingBytes(value: number): void {
-  const maxCeiling =
-    MIN_HOST_PROCESS_MEMORY_BYTES_FOR_DUPLEX - DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES;
+  const maxCeiling = maxDuplexAggregateCeilingBytes();
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new Error(
       `The duplex aggregate byte ceiling must be a positive safe integer; got ${String(value)}.`,
@@ -241,17 +246,55 @@ export function assertDuplexAggregateCeilingBytes(value: number): void {
 }
 
 /**
+ * The maximum accepted aggregate ceiling, in bytes: the documented process
+ * allocation minus the documented reserve. Both {@link assertDuplexAggregateCeilingBytes}
+ * and {@link isValidDuplexAggregateCeilingBytes} read this one bound.
+ */
+function maxDuplexAggregateCeilingBytes(): number {
+  return MIN_HOST_PROCESS_MEMORY_BYTES_FOR_DUPLEX - DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES;
+}
+
+/**
+ * Report whether `value` is a valid aggregate ceiling. A valid ceiling is a
+ * positive safe integer that is no larger than {@link maxDuplexAggregateCeilingBytes}.
+ * This is the non-throwing form of {@link assertDuplexAggregateCeilingBytes}. The
+ * override resolver uses it to reject an invalid override without a throw.
+ */
+export function isValidDuplexAggregateCeilingBytes(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1 && value <= maxDuplexAggregateCeilingBytes();
+}
+
+/**
+ * A reporter the host binds to receive one invalid-override rejection signal.
+ * {@link resolveDuplexAggregateCeilingBytes} calls it one time when it rejects a
+ * present invalid override and falls back to the safe default. The signal carries
+ * only the rejected numeric value. It carries no route, company, run, or payload
+ * value.
+ */
+export type DuplexAggregateCeilingOverrideRejectionReporter = (rejectedValue: number) => void;
+
+/**
  * Resolve an aggregate ceiling from an optional operator override. A missing or
  * `null` override uses {@link DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES}. A present
- * value passes through {@link assertDuplexAggregateCeilingBytes}, so an invalid
- * override throws and fails startup. The function never returns a silently
- * disabled ceiling.
+ * valid value passes through unchanged.
+ *
+ * A present invalid override does not fail host startup. The host process is
+ * multi-tenant, so one invalid environment value must not brick the whole host.
+ * The resolver rejects the invalid override, reports it through the optional
+ * `onRejectedOverride` reporter, and returns the conservative safe default. This
+ * fails loud without failing closed on availability.
  */
-export function resolveDuplexAggregateCeilingBytes(override?: number | null): number {
+export function resolveDuplexAggregateCeilingBytes(
+  override?: number | null,
+  onRejectedOverride?: DuplexAggregateCeilingOverrideRejectionReporter,
+): number {
   if (override === undefined || override === null) {
     return DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES;
   }
-  assertDuplexAggregateCeilingBytes(override);
+  if (!isValidDuplexAggregateCeilingBytes(override)) {
+    onRejectedOverride?.(override);
+    return DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES;
+  }
   return override;
 }
 

@@ -162,6 +162,7 @@ describe("DuplexAggregateByteLedger", () => {
       "seen_request_id",
       "decoder_buffer",
       "readiness_buffer",
+      "readiness_replay",
       "pending_write",
       "stdin_write",
     ]);
@@ -182,19 +183,39 @@ describe("aggregate ceiling configuration", () => {
     expect(resolveDuplexAggregateCeilingBytes(maxCeiling)).toBe(maxCeiling);
   });
 
-  it("fails closed on an invalid override instead of disabling the ceiling", () => {
-    expect(() => resolveDuplexAggregateCeilingBytes(0)).toThrow();
-    expect(() => resolveDuplexAggregateCeilingBytes(-1)).toThrow();
-    expect(() => resolveDuplexAggregateCeilingBytes(1.5)).toThrow();
-    expect(() => resolveDuplexAggregateCeilingBytes(Number.POSITIVE_INFINITY)).toThrow();
-    expect(() => resolveDuplexAggregateCeilingBytes(Number.NaN)).toThrow();
-    // An override larger than the process allocation minus the reserve fails.
-    expect(() =>
-      resolveDuplexAggregateCeilingBytes(MIN_HOST_PROCESS_MEMORY_BYTES_FOR_DUPLEX),
-    ).toThrow();
+  it("rejects an invalid override to the safe default and reports each rejection", () => {
+    const overMaximum = MIN_HOST_PROCESS_MEMORY_BYTES_FOR_DUPLEX;
+    const invalidOverrides = [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN, overMaximum];
+    for (const invalid of invalidOverrides) {
+      const rejected: number[] = [];
+      // An invalid present override returns the safe default. It never throws, so a
+      // single bad environment value never fails host startup.
+      expect(resolveDuplexAggregateCeilingBytes(invalid, (value) => rejected.push(value))).toBe(
+        DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
+      );
+      // The resolver reports the rejection one time with the rejected numeric value.
+      expect(rejected).toEqual([invalid]);
+    }
   });
 
-  it("rejects an unsafe-integer ceiling", () => {
+  it("does not report a rejection for a valid or a missing override", () => {
+    const rejected: number[] = [];
+    const reporter = (value: number): void => {
+      rejected.push(value);
+    };
+    expect(resolveDuplexAggregateCeilingBytes(64 * 1024 * 1024, reporter)).toBe(64 * 1024 * 1024);
+    expect(resolveDuplexAggregateCeilingBytes(undefined, reporter)).toBe(
+      DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
+    );
+    expect(resolveDuplexAggregateCeilingBytes(null, reporter)).toBe(
+      DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
+    );
+    expect(rejected).toEqual([]);
+  });
+
+  it("still throws for a direct ceiling assertion on an unsafe integer", () => {
+    // The ledger constructor asserts its ceiling and must fail loud on a
+    // programming error, so `assertDuplexAggregateCeilingBytes` keeps throwing.
     expect(() => assertDuplexAggregateCeilingBytes(Number.MAX_SAFE_INTEGER + 2)).toThrow();
   });
 });

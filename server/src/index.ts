@@ -770,12 +770,22 @@ export async function startServer(): Promise<StartedServer> {
   //
   // The optional operator override reads PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES.
   // A missing override uses the documented default. A present invalid, non-finite,
-  // zero, negative, non-integer, or unsafe value throws here and fails startup, so
-  // the ceiling never silently disables.
+  // zero, negative, non-integer, unsafe, or over-maximum value does not fail
+  // startup. The host process is multi-tenant, so one invalid environment value
+  // must not brick the whole host. The resolver rejects the invalid override and
+  // returns the safe default. The reporter logs the rejection loudly at error, so
+  // the misconfiguration stays visible while the host stays up. The log line
+  // carries only the rejected numeric value.
   const duplexAggregateCeilingOverrideRaw =
     process.env.PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES?.trim();
   const duplexAggregateCeilingBytes = resolveDuplexAggregateCeilingBytes(
     duplexAggregateCeilingOverrideRaw ? Number(duplexAggregateCeilingOverrideRaw) : undefined,
+    (rejectedValue) => {
+      logger.error(
+        { rejectedValue },
+        "duplex aggregate byte ceiling override rejected; using the safe default",
+      );
+    },
   );
   // The server has no process metric pipeline yet, so the ledger telemetry maps to
   // the structured logger. The gauge logs at debug. A reservation rejection logs at

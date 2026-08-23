@@ -3289,6 +3289,66 @@ describe("sandbox adapter execution targets", () => {
     expect(control.stopCount).toBeGreaterThanOrEqual(1);
   }, 20000);
 
+  it("falls back to the file bridge when a post-READY pre-bind flood exceeds the aggregate ceiling", async () => {
+    // The gateway sends a valid READY, then floods the channel before the broker
+    // binds. The pre-READY buffer cap does not bound the post-READY replay buffer,
+    // so the replay reservation must. The ceiling admits the small READY frame but
+    // rejects the flood. The host drops the buffer, stops the channel, and selects
+    // the file bridge with the aggregate marker. No request forwards, and the
+    // aggregate ledger returns to zero.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-replay-flood-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    // The flood is larger than the ceiling; the READY frame is far smaller.
+    const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 4096 });
+    const { runner, control } = makeDuplexSelectionRunner((ctx) => {
+      ctx.emitFrame({ version: 1, type: "ready", nonce: ctx.nonce });
+      ctx.emitRaw("x".repeat(64 * 1024));
+    });
+    const { recorder, counters } = createRecordingDuplexRecorder();
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+      duplexAggregateByteLedger: ledger,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-duplex-replay-flood",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+      duplexTelemetryRecorder: recorder,
+    });
+    try {
+      // The file bridge serves, not the duplex transport.
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+      // The fallback names the aggregate marker on the file transport.
+      const fallback = counters.find((c) => c.metric === DUPLEX_COUNTER_FALLBACK_TOTAL);
+      expect(fallback?.dimensions.fallback_reason).toBe("aggregate_bytes_exceeded");
+      expect(fallback?.dimensions.transport).toBe("file");
+      // The gate stopped the flooded channel.
+      expect(control.stopCount).toBeGreaterThanOrEqual(1);
+      // No request forwarded, because the broker never bound.
+      expect(api.requests).toHaveLength(0);
+      // The aggregate ledger returns to zero with no live token.
+      expect(ledger.bytesInUse).toBe(0);
+      expect(ledger.liveTokenCount).toBe(0);
+    } finally {
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
   it("streams run logs on the duplex path under the same gate and log line as the file path", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-runlog-"));
     cleanupDirs.push(rootDir);
@@ -6436,5 +6496,185 @@ describe("CLI-lane run-disposition seam", () => {
     expect(result.exitCode).toBe(2);
     expect(result.errorCode ?? null).toBeNull();
     expect(settleCalls).toBe(0);
+  });
+});
+
+describe("duplex readiness gate replay-buffer reservation", () => {
+  const READY_NONCE = "0123456789abcdef0123456789abcdef";
+
+  // A fake duplex channel the test drives directly. `control.emitData` re-enters
+  // the data listener the gate bound at construction. `control.emitExit` re-enters
+  // the exit listener. The fake records the stop and the close calls.
+  function makeFakeReadinessChannel(): {
+    channel: CommandManagedDuplexChannel;
+    control: {
+      stopCount: number;
+      closeCount: number;
+      written: string[];
+      emitData: (chunk: string) => void;
+      emitExit: (exit: { exitCode: number | null }) => void;
+    };
+  } {
+    let dataListener: ((chunk: string) => void) | null = null;
+    let exitListener: ((exit: { exitCode: number | null }) => void) | null = null;
+    const control = {
+      stopCount: 0,
+      closeCount: 0,
+      written: [] as string[],
+      emitData: (chunk: string): void => dataListener?.(chunk),
+      emitExit: (exit: { exitCode: number | null }): void => exitListener?.(exit),
+    };
+    const channel: CommandManagedDuplexChannel = {
+      write(data: string): void {
+        control.written.push(data);
+      },
+      onData(listener: (chunk: string) => void): void {
+        dataListener = listener;
+      },
+      onExit(listener: (exit: { exitCode: number | null }) => void): void {
+        exitListener = listener;
+      },
+      stop(): void {
+        control.stopCount += 1;
+      },
+      close(): Promise<void> {
+        control.closeCount += 1;
+        return Promise.resolve();
+      },
+    };
+    return { channel, control };
+  }
+
+  // A ledger that counts the reservation-rejection and the accounting-underflow
+  // signals, so a test proves the one-owner-one-release invariant holds.
+  function makeCountingLedger(ceilingBytes: number): {
+    ledger: DuplexAggregateByteLedger;
+    counts: { rejections: number; underflows: number };
+  } {
+    const counts = { rejections: 0, underflows: 0 };
+    const ledger = new DuplexAggregateByteLedger({
+      ceilingBytes,
+      telemetry: {
+        setBytesInUse(): void {},
+        recordReservationRejection(): void {
+          counts.rejections += 1;
+        },
+        recordAccountingUnderflow(): void {
+          counts.underflows += 1;
+        },
+      },
+    });
+    return { ledger, counts };
+  }
+
+  function readyLine(): string {
+    return `${JSON.stringify({ version: 1, type: "ready", nonce: READY_NONCE })}\n`;
+  }
+
+  it("charges the post-READY suffix and releases it after the broker handoff", async () => {
+    const { channel, control } = makeFakeReadinessChannel();
+    const { ledger, counts } = makeCountingLedger(1024 * 1024);
+    const gate = __duplexReadinessTesting.createReadinessGate(channel, {
+      nonce: READY_NONCE,
+      timeoutMs: 5_000,
+      ledger,
+    });
+    const suffix = "hello-post-ready-suffix";
+    // The READY line and the suffix arrive in one chunk. The gate drops the whole
+    // pre-READY buffer charge, then charges only the retained suffix.
+    control.emitData(`${readyLine()}${suffix}`);
+    const readiness = await gate.ready;
+    expect(readiness.ok).toBe(true);
+    expect(gate.replayOverflowed()).toBe(false);
+    // The gate holds the suffix under one readiness_replay token before the bind.
+    expect(ledger.bytesInUse).toBe(Buffer.byteLength(suffix, "utf8"));
+    expect(ledger.liveTokenCount).toBe(1);
+    // The broker binds and replays the suffix; the gate releases the token after
+    // the synchronous handoff.
+    const replayed: string[] = [];
+    gate.brokerChannel.onData((chunk) => replayed.push(chunk));
+    expect(replayed).toEqual([suffix]);
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+    expect(counts.underflows).toBe(0);
+  });
+
+  it("releases the suffix token on disposePendingReplay without a broker handoff", async () => {
+    const { channel, control } = makeFakeReadinessChannel();
+    const { ledger, counts } = makeCountingLedger(1024 * 1024);
+    const gate = __duplexReadinessTesting.createReadinessGate(channel, {
+      nonce: READY_NONCE,
+      timeoutMs: 5_000,
+      ledger,
+    });
+    const suffix = "abandoned-suffix";
+    control.emitData(`${readyLine()}${suffix}`);
+    expect((await gate.ready).ok).toBe(true);
+    expect(ledger.bytesInUse).toBe(Buffer.byteLength(suffix, "utf8"));
+    // A broker-construction failure abandons the buffer, so the caller disposes it.
+    gate.disposePendingReplay();
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+    // A second dispose is a no-op and never underflows.
+    gate.disposePendingReplay();
+    expect(ledger.bytesInUse).toBe(0);
+    expect(counts.underflows).toBe(0);
+  });
+
+  it("releases the suffix token after a pre-bind exit then a broker handoff", async () => {
+    const { channel, control } = makeFakeReadinessChannel();
+    const { ledger, counts } = makeCountingLedger(1024 * 1024);
+    const gate = __duplexReadinessTesting.createReadinessGate(channel, {
+      nonce: READY_NONCE,
+      timeoutMs: 5_000,
+      ledger,
+    });
+    const suffix = "pre-bind-exit-suffix";
+    control.emitData(`${readyLine()}${suffix}`);
+    expect((await gate.ready).ok).toBe(true);
+    // The channel exits after READY but before the broker binds. The gate holds the
+    // exit and keeps the pending suffix charged.
+    control.emitExit({ exitCode: 0 });
+    expect(ledger.bytesInUse).toBe(Buffer.byteLength(suffix, "utf8"));
+    expect(ledger.liveTokenCount).toBe(1);
+    // The broker binds, replays the suffix and the exit, then the gate releases the
+    // reservation.
+    const replayed: string[] = [];
+    const exits: Array<{ exitCode: number | null }> = [];
+    gate.brokerChannel.onData((chunk) => replayed.push(chunk));
+    gate.brokerChannel.onExit((exit) => exits.push(exit));
+    expect(replayed).toEqual([suffix]);
+    expect(exits).toEqual([{ exitCode: 0 }]);
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+    expect(counts.underflows).toBe(0);
+  });
+
+  it("fails closed when a post-READY pre-bind chunk floods past the ceiling", async () => {
+    const { channel, control } = makeFakeReadinessChannel();
+    // The ceiling admits the small READY line but not the flood chunk.
+    const { ledger, counts } = makeCountingLedger(256);
+    const gate = __duplexReadinessTesting.createReadinessGate(channel, {
+      nonce: READY_NONCE,
+      timeoutMs: 5_000,
+      ledger,
+    });
+    // The READY line arrives alone, so the pending suffix starts empty.
+    control.emitData(readyLine());
+    expect((await gate.ready).ok).toBe(true);
+    expect(ledger.bytesInUse).toBe(0);
+    // A post-READY chunk larger than the ceiling floods the replay buffer before
+    // the broker binds. The gate refuses the reservation and fails closed.
+    control.emitData("x".repeat(512));
+    expect(gate.replayOverflowed()).toBe(true);
+    expect(control.stopCount).toBe(1);
+    expect(ledger.bytesInUse).toBe(0);
+    expect(ledger.liveTokenCount).toBe(0);
+    expect(counts.rejections).toBe(1);
+    expect(counts.underflows).toBe(0);
+    // Binding the broker replays nothing, because the gate dropped the buffer.
+    const replayed: string[] = [];
+    gate.brokerChannel.onData((chunk) => replayed.push(chunk));
+    expect(replayed).toEqual([]);
   });
 });
