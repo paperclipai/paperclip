@@ -2218,10 +2218,37 @@ async function runFileGateway() {
   });
 }
 
+// Split one whole body buffer into body_chunk frames. The gateway buffers the
+// whole source body once, then splits it here. Each frame carries one fixed raw
+// slice as base64 text, except the final frame, which carries the remaining
+// bytes. A zero-length body yields no frame. Send-side true streaming is a
+// separate goal; this whole-body split is acceptable for this gateway.
+function splitDuplexBodyIntoChunks(id, body) {
+  const frames = [];
+  let seq = 0;
+  for (let offset = 0; offset < body.length; offset += DUPLEX_BODY_CHUNK_RAW_BYTES) {
+    const slice = body.subarray(offset, offset + DUPLEX_BODY_CHUNK_RAW_BYTES);
+    frames.push({
+      version: DUPLEX_FRAME_VERSION,
+      type: "body_chunk",
+      id: id,
+      seq: seq,
+      data: slice.toString("base64"),
+    });
+    seq += 1;
+  }
+  return frames;
+}
+
 function runDuplexGateway() {
   // One outstanding local request per id. Each entry holds the HTTP resolver and
   // the wait-budget timer.
   const pending = new Map();
+  // One in-flight response reassembly per id. The host returns a response as an
+  // envelope frame that carries bodyByteCount, then the body_chunk frames that
+  // carry the body. The gateway reassembles the response body in memory here; it
+  // does not spill, because a production response body stays small.
+  const responseAssembly = new Map();
   let unavailable = false;
   let lossTriggered = false;
   let lastInboundAt = Date.now();
@@ -2263,25 +2290,88 @@ function runDuplexGateway() {
       });
     }
     pending.clear();
+    responseAssembly.clear();
     const exitTimer = setTimeout(() => process.exit(0), lossExitGraceMs);
     if (typeof exitTimer.unref === "function") exitTimer.unref();
+  }
+
+  // Fail one outstanding request with a bounded local 502. The gateway calls it
+  // when a response reassembly breaks: a reordered seq, a base64 that is not
+  // canonical, or a total that overruns the declared body size. The host is the
+  // response peer, so this is a defensive local error, not a channel loss.
+  function failRequest(id, message) {
+    responseAssembly.delete(id);
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    clearTimeout(entry.timer);
+    entry.resolve({
+      status: 502,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ error: message }),
+    });
   }
 
   function handleInboundFrame(frame) {
     if (frame.type === "response") {
       const entry = pending.get(frame.id);
       if (!entry) return;
-      pending.delete(frame.id);
-      clearTimeout(entry.timer);
       // Map an indeterminate outcome to a non-retryable 409, the same contract
       // the file gateway applies through the outcome header.
       const statusCode =
         frame.outcome === "indeterminate" ? 409 : typeof frame.status === "number" ? frame.status : 200;
-      entry.resolve({
+      const headers = frame.headers || {};
+      if (frame.bodyByteCount === 0) {
+        // A zero-length body accepts no body_chunk, so the response completes now.
+        pending.delete(frame.id);
+        responseAssembly.delete(frame.id);
+        clearTimeout(entry.timer);
+        entry.resolve({ status: statusCode, headers: headers, body: "" });
+        return;
+      }
+      // The body rides body_chunk frames that share this id. Record the envelope
+      // and wait for the chunks.
+      responseAssembly.set(frame.id, {
         status: statusCode,
-        headers: frame.headers || {},
-        body: typeof frame.body === "string" ? frame.body : "",
+        headers: headers,
+        bodyByteCount: frame.bodyByteCount,
+        received: 0,
+        nextSeq: 0,
+        chunks: [],
       });
+      return;
+    }
+    if (frame.type === "body_chunk") {
+      const asm = responseAssembly.get(frame.id);
+      if (!asm) return;
+      if (frame.seq !== asm.nextSeq) {
+        failRequest(frame.id, "duplex response body_chunk seq is out of order");
+        return;
+      }
+      const decoded = Buffer.from(frame.data, "base64");
+      if (decoded.toString("base64") !== frame.data) {
+        failRequest(frame.id, "duplex response body_chunk is not canonical base64");
+        return;
+      }
+      if (asm.received + decoded.length > asm.bodyByteCount) {
+        failRequest(frame.id, "duplex response body overruns the declared size");
+        return;
+      }
+      asm.nextSeq += 1;
+      asm.received += decoded.length;
+      asm.chunks.push(decoded);
+      if (asm.received === asm.bodyByteCount) {
+        const entry = pending.get(frame.id);
+        responseAssembly.delete(frame.id);
+        if (!entry) return;
+        pending.delete(frame.id);
+        clearTimeout(entry.timer);
+        entry.resolve({
+          status: asm.status,
+          headers: asm.headers,
+          body: Buffer.concat(asm.chunks).toString("utf8"),
+        });
+      }
       return;
     }
     if (frame.type === "close") {
@@ -2340,11 +2430,14 @@ function runDuplexGateway() {
         return;
       }
       const requestId = randomUUID();
-      const requestBody = await readBody(req);
+      const requestBodyBuffer = Buffer.from(await readBody(req), "utf8");
       if (unavailable) {
         writeJsonResponse(res, 503, { error: "bridge_unavailable" });
         return;
       }
+      // The request body rides body_chunk frames. The envelope carries only the
+      // raw byte count, so the envelope stays small and the body splits into
+      // fixed-size slices that each stay under the frame bound.
       const requestFrame = {
         version: DUPLEX_FRAME_VERSION,
         type: "request",
@@ -2353,20 +2446,36 @@ function runDuplexGateway() {
         path: url.pathname,
         query: url.search,
         headers: normalizeHeaders(req.headers),
-        body: requestBody,
+        bodyByteCount: requestBodyBuffer.length,
       };
-      // Enforce the frame size bound on encode. When the request body makes the
-      // frame exceed the bound, fail this one local request with a clean 413. Do
-      // not write the frame and do not trigger loss. The frame never leaves the
-      // gateway, so no other in-flight request is affected and the channel stays
-      // open.
       const encodedRequest = encodeDuplexFrameChecked(requestFrame);
       if (!encodedRequest.ok) {
         writeJsonResponse(res, 413, { error: "request_too_large" });
         return;
       }
+      // Pre-encode every body_chunk frame and enforce the frame size bound on
+      // each. A fixed raw slice never exceeds the bound, so this guard is
+      // defensive. On a rejection, fail this one local request with a clean 413.
+      // The frames never leave the gateway, so no other in-flight request is
+      // affected and the channel stays open.
+      const chunkFrames = splitDuplexBodyIntoChunks(requestId, requestBodyBuffer);
+      const encodedChunks = [];
+      let chunkTooLarge = false;
+      for (const chunk of chunkFrames) {
+        const encodedChunk = encodeDuplexFrameChecked(chunk);
+        if (!encodedChunk.ok) {
+          chunkTooLarge = true;
+          break;
+        }
+        encodedChunks.push(encodedChunk.line);
+      }
+      if (chunkTooLarge) {
+        writeJsonResponse(res, 413, { error: "request_too_large" });
+        return;
+      }
       const response = await new Promise((resolve) => {
         const timer = setTimeout(() => {
+          responseAssembly.delete(requestId);
           if (pending.delete(requestId)) {
             resolve({
               status: 502,
@@ -2377,6 +2486,7 @@ function runDuplexGateway() {
         }, responseTimeoutMs);
         pending.set(requestId, { resolve: resolve, timer: timer });
         process.stdout.write(encodedRequest.line);
+        for (const line of encodedChunks) process.stdout.write(line);
       });
       res.statusCode = typeof response.status === "number" ? response.status : 200;
       for (const [key, value] of Object.entries(response.headers || {})) {

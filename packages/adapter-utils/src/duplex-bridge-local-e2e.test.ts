@@ -4,6 +4,7 @@ import net from "node:net";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -23,6 +24,7 @@ import {
   type DuplexBridgeBroker,
   type DuplexBrokerForwardResult,
 } from "./duplex-bridge-broker.js";
+import type { ReassembledBody } from "./duplex-body-spool.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 
 /**
@@ -299,7 +301,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<DuplexE2EHar
 
   const forwardRequest = async (
     request: DuplexRequestFrame,
-    opts: { signal: AbortSignal },
+    opts: { signal: AbortSignal; body: ReassembledBody },
   ): Promise<DuplexBrokerForwardResult> => {
     forwardedRequests.push(request);
     // Keep the real route allowlist on the forward seam. The broker forwards
@@ -334,12 +336,16 @@ async function createHarness(options: HarnessOptions = {}): Promise<DuplexE2EHar
     headers.set("authorization", `Bearer ${hostApiToken}`);
     headers.set("x-paperclip-run-id", runId);
     const target = new URL(`${request.path}${request.query ?? ""}`, api.origin);
-    const response = await fetch(target, {
-      method,
-      headers,
-      ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-      signal: opts.signal,
-    });
+    // Stream the reassembled request body to the host, the same as the real
+    // forward. A streamed body needs `duplex: "half"`.
+    const forwardInit: RequestInit & { duplex?: "half" } = { method, headers, signal: opts.signal };
+    if (method !== "GET" && method !== "HEAD") {
+      forwardInit.body = Readable.toWeb(
+        opts.body.createReadStream(),
+      ) as unknown as ReadableStream<Uint8Array>;
+      forwardInit.duplex = "half";
+    }
+    const response = await fetch(target, forwardInit);
     const body = await response.text();
     const outHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {
@@ -349,7 +355,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<DuplexE2EHar
     return { status: response.status, headers: outHeaders, body };
   };
 
-  const broker = createDuplexBridgeBroker({
+  const broker = await createDuplexBridgeBroker({
     channel,
     forwardRequest,
     logger: () => undefined,
@@ -456,7 +462,7 @@ describe("duplex bridge local end-to-end harness", () => {
     const ready = harness.observedFrames.find(
       (frame) => frame.type === "ready",
     ) as DuplexReadyFrame;
-    expect(ready.version).toBe(1);
+    expect(ready.version).toBe(2);
     expect(ready.nonce).toBe(harness.nonce);
     // READY is liveness only. It carries no address data.
     expect((ready as unknown as Record<string, unknown>).address).toBeUndefined();
