@@ -19,6 +19,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { DURABLE_WRITE_DENIED_ERROR_CODE } from "../services/agent-run-authority.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -604,4 +605,95 @@ describeEmbeddedPostgres("issue run-context authorization routes", () => {
 
     await lockDb.$client.end();
   }, 60_000);
+
+  /**
+   * FAI-9903 — the denial has to survive the request that caused it.
+   *
+   * An agent whose writes were all refused still finished as a `succeeded`
+   * heartbeat, because finalization reads the adapter's exit code and an
+   * adapter that never inspected the 403s exits 0. Marking the run at the
+   * denial site is what lets finalization contradict that exit code.
+   *
+   * The marker is deliberately hard to aim. The run id comes from a caller
+   * controlled header, so marking whatever run it names would let any agent-key
+   * holder fail *another* agent's run by quoting its id — a denial-of-service
+   * traded for the write-authorization hole above.
+   */
+  async function readRunErrorCode(runId: string) {
+    return db
+      .select({ errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.errorCode ?? null);
+  }
+
+  it("marks the caller's own live run when its context does not name the target issue", async () => {
+    const scenario = await seedScenario();
+    const app = createApp(agentActor(scenario.companyId, scenario.agentId, scenario.wrongIssueRunId));
+
+    const res = await request(app)
+      .post(`/api/issues/${scenario.issueId}/checkout`)
+      .send({ agentId: scenario.agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(await readRunErrorCode(scenario.wrongIssueRunId)).toBe(DURABLE_WRITE_DENIED_ERROR_CODE);
+  });
+
+  it("marks the caller's own live run when a comment is refused for missing context", async () => {
+    const scenario = await seedScenario();
+    const app = createApp(agentActor(scenario.companyId, scenario.agentId, scenario.emptyContextRunId));
+
+    const res = await request(app)
+      .post(`/api/issues/${scenario.issueId}/comments`)
+      .send({ body: "Write that must not land." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(await countComments(scenario.issueId)).toBe(0);
+    expect(await readRunErrorCode(scenario.emptyContextRunId)).toBe(DURABLE_WRITE_DENIED_ERROR_CODE);
+  });
+
+  it("never marks a live run belonging to a different agent", async () => {
+    const scenario = await seedScenario();
+    const app = createApp(agentActor(scenario.companyId, scenario.agentId, scenario.otherAgentRunId));
+
+    const res = await request(app)
+      .post(`/api/issues/${scenario.issueId}/checkout`)
+      .send({ agentId: scenario.agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    // Quoting a peer's run id must not be a way to fail that peer's heartbeat.
+    expect(await readRunErrorCode(scenario.otherAgentRunId)).toBeNull();
+  });
+
+  it("never marks a run that has already finished", async () => {
+    const scenario = await seedScenario();
+    const app = createApp(agentActor(scenario.companyId, scenario.agentId, scenario.staleRunId));
+
+    const res = await request(app)
+      .post(`/api/issues/${scenario.issueId}/checkout`)
+      .send({ agentId: scenario.agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    // A finished run has no finalization left to correct, and rewriting its
+    // terminal error would destroy the record of why it actually ended.
+    expect(await readRunErrorCode(scenario.staleRunId)).toBeNull();
+  });
+
+  it("keeps the error code an earlier, more specific denial already wrote", async () => {
+    const scenario = await seedScenario();
+    await db
+      .update(heartbeatRuns)
+      .set({ errorCode: "RESPONSIBLE_USER_UNAUTHORIZED" })
+      .where(eq(heartbeatRuns.id, scenario.wrongIssueRunId));
+    const app = createApp(agentActor(scenario.companyId, scenario.agentId, scenario.wrongIssueRunId));
+
+    const res = await request(app)
+      .post(`/api/issues/${scenario.issueId}/checkout`)
+      .send({ agentId: scenario.agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    // Both codes finalize the run the same way, so first writer wins and the
+    // more specific reason survives.
+    expect(await readRunErrorCode(scenario.wrongIssueRunId)).toBe("RESPONSIBLE_USER_UNAUTHORIZED");
+  });
 });
