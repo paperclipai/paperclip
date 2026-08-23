@@ -2972,6 +2972,26 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("re-reads the issue before it arms, so a concurrent monitor is not overwritten", async () => {
+    // The request snapshot is taken before the interaction is created. A policy
+    // written from that snapshot would discard whatever landed in between.
+    mockIssueService.getById
+      .mockResolvedValueOnce(createIssue())
+      .mockResolvedValue(createIssue({ monitorNextCheckAt: new Date("2026-01-09T10:00:00.000Z") }));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.getById).toHaveBeenCalledTimes(2);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("does not arm for an interaction that never wakes the assignee", async () => {
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-quiet",

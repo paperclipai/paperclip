@@ -11323,7 +11323,7 @@ export function issueRoutes(
 
     // Best effort: the interaction is already committed, so a failure to arm the
     // wait monitor must not turn a created gate into a 5xx the agent retries.
-    await armInteractionWaitMonitor(issue, interaction, actor).catch((err) => {
+    await armInteractionWaitMonitor(issue.id, interaction, actor).catch((err) => {
       logger.warn(
         { err, issueId: issue.id, interactionId: interaction.id },
         "interaction wait monitor arming failed",
@@ -11338,12 +11338,18 @@ export function issueRoutes(
    * come. Give the wait a server-owned floor: if the issue carries no monitor yet,
    * arm a default one so the assignee is re-woken instead of aging out silently.
    * An agent that arms its own monitor keeps it — this never overwrites.
+   *
+   * The issue is read again here instead of reusing the request snapshot. Writing
+   * the whole `executionPolicy` from a snapshot taken before the interaction was
+   * created would discard stages or settings that landed in between, and the
+   * "already armed" guard has to see the current monitor to hold.
    */
   async function armInteractionWaitMonitor(
-    issue: Awaited<ReturnType<typeof svc.getById>>,
+    issueId: string,
     interaction: { id: string; kind: string; continuationPolicy: string },
     actor: ReturnType<typeof getActorInfo>,
   ) {
+    const issue = await svc.getById(issueId);
     if (!issue) return;
     const policy = buildInteractionWaitMonitorPolicy({
       issue,
