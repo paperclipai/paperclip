@@ -12,6 +12,7 @@ import {
   assertCrossIssueWriteGrantEnforceAtConfig,
   crossIssueWriteGrantEnforceAt,
   evaluateCrossIssueWriteGrant,
+  resolveCrossIssueWriteBasis,
 } from "../services/cross-issue-write-basis.ts";
 import { crossIssueWriteGrantScopeError } from "@paperclipai/shared";
 
@@ -21,6 +22,48 @@ const AGENT_ID = "33333333-3333-4333-8333-333333333333";
 const SOURCE_ISSUE_ID = "44444444-4444-4444-8444-444444444444";
 const TARGET_ISSUE_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_AGENT_ID = "66666666-6666-4666-8666-666666666666";
+const MID_ISSUE_ID = "77777777-7777-4777-8777-777777777777";
+
+const resolvedRows = (rows: unknown[]) => ({
+  then: (resolve: (value: unknown[]) => unknown) => resolve(rows),
+});
+
+/**
+ * A reader for `resolveCrossIssueWriteBasis` that answers each ancestor walk
+ * from a script, so a reparent racing the locks is reproducible. Lock
+ * statements and the recursive walk both arrive through `execute`; only the
+ * walk carries `RECURSIVE`. The last scripted walk repeats, which is what lets
+ * the resolver's fixpoint converge.
+ */
+function ancestryRaceReader(walks: ReadonlyArray<ReadonlyArray<string>>) {
+  const executed: string[] = [];
+  const remaining = walks.map((ids) => ids.map((id) => ({ seed: SOURCE_ISSUE_ID, id })));
+  const issueRows = [
+    issueRow({ id: SOURCE_ISSUE_ID, parentId: MID_ISSUE_ID }),
+    issueRow({ id: TARGET_ISSUE_ID, assigneeAgentId: OTHER_AGENT_ID }),
+  ];
+  const db = {
+    select: (selection: Record<string, unknown>) => ({
+      from: () => ({
+        where: () => {
+          const keys = Object.keys(selection);
+          if (keys.includes("originFingerprint")) return resolvedRows(issueRows);
+          // No `issues:cross-write` grant, so the tree bases decide alone.
+          return resolvedRows([]);
+        },
+      }),
+    }),
+    execute: async (query: unknown) => {
+      if (!JSON.stringify(query).includes("RECURSIVE")) {
+        executed.push("lock");
+        return [];
+      }
+      executed.push("walk");
+      return remaining.length > 1 ? remaining.shift()! : remaining[0] ?? [];
+    },
+  };
+  return { db, executed };
+}
 
 function issueRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -461,6 +504,44 @@ describe("cross-issue write grant (FAI-10132)", () => {
       details: expect.objectContaining({ basis: null }),
     });
     expect(fake.observedCount).toBe(0);
+  });
+
+  // Finding 1 again, on the one input the first fix locked in the wrong order:
+  // the ancestor walk read unlocked rows and the lock was taken on what that
+  // walk returned, so a reparent committing in between was never seen.
+  it.each([
+    [
+      "denies the tree basis when a reparent lands between the walk and the lock",
+      [MID_ISSUE_ID, TARGET_ISSUE_ID],
+      [MID_ISSUE_ID],
+      null,
+    ],
+    [
+      "keeps the tree basis when the chain is unchanged under the lock",
+      [MID_ISSUE_ID, TARGET_ISSUE_ID],
+      [MID_ISSUE_ID, TARGET_ISSUE_ID],
+      "target_is_ancestor_of_source",
+    ],
+  ] as const)("%s", async (_name, firstWalk, secondWalk, expected) => {
+    const reader = ancestryRaceReader([firstWalk, secondWalk]);
+
+    const authority = await resolveCrossIssueWriteBasis(
+      reader.db as never,
+      {
+        companyId: COMPANY_ID,
+        actorAgentId: AGENT_ID,
+        sourceIssueId: SOURCE_ISSUE_ID,
+        targetIssueId: TARGET_ISSUE_ID,
+        operation: "comment",
+      },
+      { lockAuthorityInputs: true },
+    );
+
+    expect(authority.basis).toBe(expected);
+    // Proof it is the *post-lock* walk that decided: the resolver walked more
+    // than once, and locked the chain before the walk it trusted.
+    expect(reader.executed.filter((step) => step === "walk").length).toBeGreaterThan(1);
+    expect(reader.executed.indexOf("lock")).toBeLessThan(reader.executed.lastIndexOf("walk"));
   });
 
   it("honours a scoped issues:cross-write grant and refuses an unscoped one", async () => {

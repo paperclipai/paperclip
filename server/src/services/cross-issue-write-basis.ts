@@ -70,6 +70,14 @@ export const CROSS_ISSUE_WRITE_PERMISSION_KEY = "issues:cross-write" as const;
  */
 export const CROSS_ISSUE_WRITE_MAX_ANCESTOR_DEPTH = 25;
 
+/**
+ * How many times the locked ancestry walk may re-walk before it gives up. Two
+ * rounds is the quiet case (walk, lock, confirm); a reparent landing in the gap
+ * costs one more. The bound is a backstop against a reparent storm, and it fails
+ * closed — see `loadAncestorsUnderLock`.
+ */
+export const CROSS_ISSUE_WRITE_ANCESTOR_LOCK_ROUNDS = 4;
+
 export const CROSS_ISSUE_WRITE_BASES = [
   "target_is_ancestor_of_source",
   "target_is_descendant_of_source",
@@ -221,6 +229,55 @@ async function loadAncestors(
   return bySeed;
 }
 
+/**
+ * Ancestry that is still true when the transaction commits.
+ *
+ * `loadAncestors` walks unlocked rows, so locking the chain that walk returned
+ * and then trusting the walk itself leaves open the exact gap the lock exists to
+ * close: a reparent committing between the walk and the lock is invisible to the
+ * decision, and the mutation lands on authority that no longer holds. Walking
+ * again after the lock closes it — once every edge a walk relied on is held
+ * `FOR SHARE`, a repeat walk returning the same chain proves that chain cannot
+ * move before commit, because changing it means updating a locked row.
+ *
+ * Each round only ever adds rows the previous round had not seen and the walk is
+ * depth-capped, so it converges; exhausting the bound returns empty ancestry,
+ * which denies the two tree bases rather than authorizing from an unconfirmed
+ * walk.
+ */
+async function loadAncestorsUnderLock(
+  db: BasisReader,
+  companyId: string,
+  seedIds: string[],
+): Promise<Map<string, Set<string>>> {
+  // Both endpoints are already locked by the caller.
+  const locked = new Set(seedIds);
+  let previous: Map<string, Set<string>> | null = null;
+  for (let round = 0; round < CROSS_ISSUE_WRITE_ANCESTOR_LOCK_ROUNDS; round += 1) {
+    const walked = await loadAncestors(db, companyId, seedIds);
+    if (previous && sameAncestry(previous, walked)) return walked;
+    const unlocked = [...walked.values()]
+      .flatMap((ids) => [...ids])
+      .filter((id) => !locked.has(id));
+    // Lock every edge the walk relied on. A reparent anywhere in the chain
+    // rewrites one of these rows, so it now blocks behind the mutation.
+    await lockIssueRows(db, companyId, unlocked);
+    for (const id of unlocked) locked.add(id);
+    previous = walked;
+  }
+  return new Map(seedIds.map((id) => [id, new Set<string>()]));
+}
+
+function sameAncestry(a: Map<string, Set<string>>, b: Map<string, Set<string>>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [seed, ids] of a) {
+    const other = b.get(seed);
+    if (!other || other.size !== ids.size) return false;
+    for (const id of ids) if (!other.has(id)) return false;
+  }
+  return true;
+}
+
 async function explicitGrantScope(
   db: BasisReader,
   companyId: string,
@@ -322,15 +379,10 @@ export async function resolveCrossIssueWriteBasis(
       if (held) return held;
     }
 
-    const ancestors = await loadAncestors(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
-    if (lock) {
-      // Lock every edge the walk relied on. A reparent anywhere in the chain
-      // rewrites one of these rows, so it now blocks behind the mutation.
-      await lockIssueRows(db, input.companyId, [
-        ...(ancestors.get(input.sourceIssueId) ?? []),
-        ...(ancestors.get(input.targetIssueId) ?? []),
-      ]);
-    }
+    const seeds = [input.sourceIssueId, input.targetIssueId];
+    const ancestors = lock
+      ? await loadAncestorsUnderLock(db, input.companyId, seeds)
+      : await loadAncestors(db, input.companyId, seeds);
     if (ancestors.get(input.sourceIssueId)?.has(input.targetIssueId)) {
       const held = accept("target_is_ancestor_of_source");
       if (held) return held;
