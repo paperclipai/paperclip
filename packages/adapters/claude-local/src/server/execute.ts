@@ -160,6 +160,17 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
 
+function renderApiAccessNote(env: Record<string, string>): string {
+  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
+  return [
+    "Paperclip API access note:",
+    "Use shell commands with curl to make Paperclip API requests when needed.",
+    "Include X-Paperclip-Run-Id on mutating requests.",
+    "",
+    "",
+  ].join("\n");
+}
+
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, runtimeCommandSpec, executionTarget, authToken } = input;
   const onLog = input.onLog ?? (async () => {});
@@ -819,11 +830,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
     taskContextNote,
+    apiAccessNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -832,6 +845,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskContextChars: taskContextNote.length,
+    apiAccessNoteChars: apiAccessNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 
