@@ -100,10 +100,30 @@ NODE
     log "acquired deployment lease at $LEASE_DIR"
     return 0
   fi
-  [ -f "$(lease_owner_path)" ] || fail "deployment lease directory is malformed: $LEASE_DIR"
+  [ -f "$(lease_owner_path)" ] || fail "deployment lease directory is malformed: $LEASE_DIR (remove it to clear)"
   owner_token="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.token||""))' "$(lease_owner_path)")"
   [ "$owner_token" = "$token" ] && return 0
-  fail "deployment lease already held; second caller exited before candidate, receipt, pointer, or restart mutation"
+  # A lease is only meaningful while its holder is alive. Before 2026-08-23 any
+  # failure between acquire (prepare-candidate) and release (promote success)
+  # left the directory behind forever: the next deploy was refused with a
+  # message blaming a "second caller" that did not exist, and the only recovery
+  # was an operator removing the directory with nothing telling them so.
+  #
+  # Reclaim ONLY when the recorded pid is genuinely gone. Never reclaim on age
+  # alone -- a slow-but-live gate run must never be stomped, because two
+  # concurrent promotes are exactly what this lease exists to prevent.
+  local owner_pid owner_actor owner_since
+  owner_pid="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.pid||""))' "$(lease_owner_path)")"
+  owner_actor="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.actor||"unknown"))' "$(lease_owner_path)")"
+  owner_since="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.acquiredAt||"unknown"))' "$(lease_owner_path)")"
+  if [ -n "$owner_pid" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+    log "reclaiming abandoned deployment lease: holder pid $owner_pid ($owner_actor, acquired $owner_since) is no longer running"
+    rm -f "$(lease_owner_path)"
+    rmdir "$LEASE_DIR" 2>/dev/null || fail "abandoned lease directory has unexpected contents, refusing to reclaim: $LEASE_DIR"
+    acquire_deployment_lease
+    return 0
+  fi
+  fail "deployment lease held by a LIVE deploy: pid $owner_pid ($owner_actor) since $owner_since. Wait for it to finish. If you are certain it is dead: rm -rf $LEASE_DIR"
 }
 
 require_deployment_lease() {
@@ -112,6 +132,22 @@ require_deployment_lease() {
   [ -f "$(lease_owner_path)" ] || fail "no deployment lease; begin with prepare-candidate"
   owner_token="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.token||""))' "$(lease_owner_path)")"
   [ "$owner_token" = "$token" ] || fail "deployment lease is held by another caller; exited before mutation"
+}
+
+# Best-effort release for a FAILING run. Only ever removes a lease this process
+# owns (token match), never touches the deploy pointer, and never fails the
+# caller's exit status.
+release_lease_if_ours_on_failure() {
+  local rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ -f "$(lease_owner_path)" ] || return 0
+  local owner_token
+  owner_token="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.token||""))' "$(lease_owner_path)" 2>/dev/null)" || return 0
+  [ "$owner_token" = "$(lease_token)" ] || return 0
+  rm -f "$(lease_owner_path)" 2>/dev/null || true
+  rmdir "$LEASE_DIR" 2>/dev/null || true
+  log "released deployment lease after a failed run (exit $rc); deploy pointer untouched"
+  return 0
 }
 
 release_deployment_lease() {
@@ -300,6 +336,11 @@ cmd_prepare_candidate() {
   [ -n "$sha" ] || fail "prepare-candidate requires <sha>"
   [ -d "$SOURCE_ROOT/.git" ] || [ -f "$SOURCE_ROOT/.git" ] || fail "SOURCE_ROOT is not a git checkout: $SOURCE_ROOT"
   acquire_deployment_lease
+  # Every exit path between here and a successful promote must give the lease
+  # back. The pointer is never touched by prepare-candidate or run-gates, so
+  # releasing on failure is always safe -- and not releasing wedges every future
+  # deploy. Cleared by release_deployment_lease on the success path.
+  trap 'release_lease_if_ours_on_failure' EXIT
 
   # Resolve to full SHA; must be committed object.
   local full
