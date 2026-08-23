@@ -90,6 +90,8 @@ function counterDb(
     issues?: Array<Record<string, unknown>>;
     ancestors?: Array<{ seed: string; id: string }>;
     grantScope?: Record<string, unknown> | null;
+    /** Null (the default) is a grant with no expiry (FAI-10144). */
+    grantExpiresAt?: Date | null;
   } = {},
 ) {
   let observedCount = initialCount;
@@ -113,9 +115,14 @@ function counterDb(
           // Issue facts for the basis resolver.
           if (keys.includes("originFingerprint")) return resolved(issueRows);
           // The `issues:cross-write` grant lookup; undefined means "no row".
-          if (keys.length === 1 && keys[0] === "scope") {
+          if (keys.length === 2 && keys.includes("scope") && keys.includes("expiresAt")) {
             return resolved(
-              basisOverrides.grantScope === undefined ? [] : [{ scope: basisOverrides.grantScope }],
+              basisOverrides.grantScope === undefined
+                ? []
+                : [{
+                  scope: basisOverrides.grantScope,
+                  expiresAt: basisOverrides.grantExpiresAt ?? null,
+                }],
             );
           }
           return {
@@ -623,6 +630,90 @@ describe("cross-issue write grant (FAI-10132)", () => {
     const wrongProject = counterDb(0, {}, { ...unrelated, grantScope: { projectId: "project-b" } });
     await expect(observeCrossIssueInfluence(wrongProject.db as never, { ...base, now: AFTER, enforceGrantAt: ENFORCE_AT }))
       .rejects.toMatchObject({ details: { code: "cross_issue_write_grant_required" } });
+  });
+
+  /**
+   * FAI-10144. The motivating case is "this sweep agent may write across the
+   * project for two weeks" — which is only expressible if the grant stops
+   * conferring on its own. `unrelated` gives the target no tree, creator or
+   * origin relationship, so the grant is the *only* thing that can authorize
+   * these writes and the expiry is the only variable.
+   */
+  describe("grant expiry", () => {
+    const grantedTo = { ...unrelated, grantScope: { projectId: "project-a" } } as const;
+
+    it("confers nothing once the expiry has passed", async () => {
+      const expired = counterDb(0, {}, {
+        ...grantedTo,
+        grantExpiresAt: new Date(AFTER.getTime() - 1),
+      });
+
+      await expect(observeCrossIssueInfluence(expired.db as never, {
+        ...base,
+        now: AFTER,
+        enforceGrantAt: ENFORCE_AT,
+      })).rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_write_grant_required" },
+      });
+      // Same as any other unauthorized write: it must not spend cap budget.
+      expect(expired.observedCount).toBe(0);
+    });
+
+    it("still confers while the expiry is in the future", async () => {
+      const live = counterDb(0, {}, {
+        ...grantedTo,
+        grantExpiresAt: new Date(AFTER.getTime() + 60_000),
+      });
+
+      await expect(observeCrossIssueInfluence(live.db as never, {
+        ...base,
+        now: AFTER,
+        enforceGrantAt: ENFORCE_AT,
+      })).resolves.toMatchObject({ allowed: true });
+      expect((live.inserted[0]!.details as { basis: string }).basis).toBe("explicit_permission_grant");
+    });
+
+    /**
+     * The column is nullable with no backfill, so this is the behaviour of every
+     * `issues:cross-write` grant that already exists.
+     */
+    it("treats a null expiry as no expiry", async () => {
+      const forever = counterDb(0, {}, { ...grantedTo, grantExpiresAt: null });
+
+      await expect(observeCrossIssueInfluence(forever.db as never, {
+        ...base,
+        now: AFTER,
+        enforceGrantAt: ENFORCE_AT,
+      })).resolves.toMatchObject({ allowed: true });
+    });
+
+    /**
+     * The fence re-resolves against the clock at write time, not the clock the
+     * cap gate used — that is what makes an expiry crossing mid-write binding.
+     * Resolving the same grant at two instants proves the resolver reads `now`
+     * per call rather than pinning it once.
+     */
+    it("resolves the same grant differently either side of its expiry", async () => {
+      const expiresAt = new Date(AFTER.getTime() + 1_000);
+      const reader = counterDb(0, {}, { ...grantedTo, grantExpiresAt: expiresAt });
+      const resolveAt = (now: Date) => reader.db.transaction((tx) => resolveCrossIssueWriteBasis(
+        tx as never,
+        {
+          companyId: COMPANY_ID,
+          actorAgentId: AGENT_ID,
+          sourceIssueId: SOURCE_ISSUE_ID,
+          targetIssueId: TARGET_ISSUE_ID,
+          operation: "comment",
+        },
+        { now },
+      ));
+
+      await expect(resolveAt(new Date(expiresAt.getTime() - 1)))
+        .resolves.toMatchObject({ basis: "explicit_permission_grant" });
+      // The instant itself is already past: `expiresAt` is when it stops.
+      await expect(resolveAt(expiresAt)).resolves.toMatchObject({ basis: null });
+    });
   });
 
   /**

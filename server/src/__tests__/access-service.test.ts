@@ -270,6 +270,101 @@ describeEmbeddedPostgres("access service", () => {
     await expect(access.canUser(company.id, viewer.principalId, "environments:manage")).resolves.toBe(false);
   });
 
+  /**
+   * FAI-10144. Enforcement is only half the feature: an operator who time-boxes
+   * a grant has to be able to set the expiry and read it back, or the only way
+   * to know a grant is bounded is to wait for it to stop working.
+   */
+  it("round-trips a grant expiry through the write and read paths", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    const twoWeeks = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [
+        { permissionKey: "environments:manage", expiresAt: twoWeeks },
+        // Same call, no expiry: the two must be storable side by side.
+        { permissionKey: "users:manage_permissions" },
+      ],
+      owner.principalId,
+    );
+
+    const grants = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    const byKey = new Map(grants.map((grant) => [grant.permissionKey, grant]));
+    expect(byKey.get("environments:manage")?.expiresAt?.toISOString()).toBe(twoWeeks.toISOString());
+    expect(byKey.get("users:manage_permissions")?.expiresAt).toBeNull();
+
+    // Still inside the window, so the time-boxed permission is live.
+    await expect(access.canUser(company.id, owner.principalId, "environments:manage")).resolves.toBe(true);
+
+    // Re-writing the same grant with no expiry clears the bound; the delete-then
+    // -insert write path has no notion of "leave the old expiry alone".
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [{ permissionKey: "environments:manage" }],
+      owner.principalId,
+    );
+    const rewritten = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    expect(rewritten.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt).toBeNull();
+  });
+
+  /**
+   * The seeders (built-in agents, company import) call `setPrincipalPermission`
+   * on every ensure with no expiry argument. If absent meant "clear", a re-seed
+   * would silently un-time-box a grant an operator had deliberately bounded.
+   */
+  it("leaves an existing expiry alone when a re-seed passes no expiry", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    // A principal of its own: `setPrincipalPermission` ensures a plain "member"
+    // membership, which would rewrite the owner's role if aimed at them.
+    const principalId = `seeded-${randomUUID()}`;
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await access.setPrincipalPermission(
+      company.id,
+      "user",
+      principalId,
+      "environments:manage",
+      true,
+      owner.principalId,
+      null,
+      expiresAt,
+    );
+    // A seeder re-ensuring the same permission: scope is restated, expiry is not.
+    await access.setPrincipalPermission(
+      company.id,
+      "user",
+      principalId,
+      "environments:manage",
+      true,
+      owner.principalId,
+    );
+
+    const grants = await access.listPrincipalGrants(company.id, "user", principalId);
+    expect(grants.find((row) => row.permissionKey === "environments:manage")?.expiresAt?.toISOString())
+      .toBe(expiresAt.toISOString());
+
+    // An explicit null is how you actually clear it.
+    await access.setPrincipalPermission(
+      company.id,
+      "user",
+      principalId,
+      "environments:manage",
+      true,
+      owner.principalId,
+      null,
+      null,
+    );
+    const cleared = await access.listPrincipalGrants(company.id, "user", principalId);
+    expect(cleared.find((row) => row.permissionKey === "environments:manage")?.expiresAt).toBeNull();
+  });
+
   it("backfills pre-upgrade human memberships with missing role grants without replacing custom grants", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const scopedEnvironmentGrant = { environmentId: "env-1" };

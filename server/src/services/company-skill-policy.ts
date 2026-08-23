@@ -1,6 +1,11 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companySkillPolicies, principalPermissionGrants } from "@paperclipai/db";
+import {
+  agents,
+  companySkillPolicies,
+  principalGrantNotExpired,
+  principalPermissionGrants,
+} from "@paperclipai/db";
 import {
   normalizeSkillPolicySourceLocator,
   skillPolicyDocumentSchema,
@@ -146,6 +151,9 @@ export function companySkillPolicyService(db: Db) {
         eq(principalPermissionGrants.principalType, principalType),
         eq(principalPermissionGrants.principalId, principal.id),
         inArray(principalPermissionGrants.permissionKey, ["skills:create", "skills:suggest-changes"]),
+        // Bypasses `decidePrincipalGrant`, so expiry is applied here too
+        // (FAI-10144) — a lapsed grant confers nothing anywhere.
+        principalGrantNotExpired(),
       ))
       .limit(1)
       .then((rows) => rows[0] ?? null);

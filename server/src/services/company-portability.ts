@@ -824,6 +824,7 @@ function normalizePortablePermissionGrants(value: unknown): PortableAgentPermiss
     return [{
       permissionKey: permissionKey as PermissionKey,
       scope: isPlainRecord(entry.scope) ? entry.scope : null,
+      expiresAt: asString(entry.expiresAt),
     }];
   });
 }
@@ -3533,6 +3534,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         true,
         grantedByUserId,
         grant.scope ?? null,
+        // Explicitly null rather than absent: an import re-materializes the
+        // grant wholesale, so "the source had no expiry" must clear any expiry
+        // an earlier import left on the row (FAI-10144).
+        grant.expiresAt ? new Date(grant.expiresAt) : null,
       );
     }
   }
@@ -3886,6 +3891,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           principalId: principalPermissionGrants.principalId,
           permissionKey: principalPermissionGrants.permissionKey,
           scope: principalPermissionGrants.scope,
+          expiresAt: principalPermissionGrants.expiresAt,
         })
         .from(principalPermissionGrants)
         .where(and(
@@ -3901,6 +3907,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       grants.push({
         permissionKey: row.permissionKey as PermissionKey,
         scope: isPlainRecord(row.scope) ? row.scope : null,
+        expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
       });
       permissionGrantsByAgentId.set(row.principalId, grants);
     }

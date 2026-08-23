@@ -8,6 +8,7 @@ import {
   instanceUserRoles,
   issueComments,
   issues,
+  principalGrantIsActive,
   principalPermissionGrants,
   projects,
   userInboxAgentPolicies,
@@ -129,6 +130,7 @@ export type AuthorizationDecision = {
     | "deny_company_boundary"
     | "deny_missing_membership"
     | "deny_missing_grant"
+    | "deny_expired_grant"
     | "deny_missing_consent"
     | "deny_no_grant"
     | "deny_policy_restricted"
@@ -140,8 +142,21 @@ export type AuthorizationDecision = {
     principalId: string;
     permissionKey: PermissionKey;
     scope: Record<string, unknown> | null;
+    /** Null means the grant has no expiry. Only set by grant-row lookups. */
+    expiresAt?: string | null;
   };
 };
+
+/**
+ * "There is nothing here to authorize from" — no row, or a row that has lapsed.
+ * The two are separate `reason`s so the audit trail can tell an expiry apart
+ * from a permission that was never granted (FAI-10144), but a caller deciding
+ * whether to fall through to a second permission key must treat them the same:
+ * an expired broad grant is not a reason to withhold a live scoped one.
+ */
+function grantIsAbsent(reason: AuthorizationDecision["reason"]): boolean {
+  return reason === "deny_missing_grant" || reason === "deny_expired_grant";
+}
 
 type PrincipalGrantDecision = AuthorizationDecision & {
   grant?: NonNullable<AuthorizationDecision["grant"]>;
@@ -655,6 +670,8 @@ export function authorizationService(db: Db) {
     action: AuthorizationAction;
     permissionKey: PermissionKey;
     scope?: Record<string, unknown> | null;
+    /** Overrides the expiry clock. Tests only; production reads the wall clock. */
+    now?: Date;
   }): Promise<PrincipalGrantDecision> {
     const membership = await getActiveMembership(input.companyId, input.principalType, input.principalId);
     if (!membership) {
@@ -674,6 +691,26 @@ export function authorizationService(db: Db) {
       });
     }
 
+    // Expiry is checked before scope so a lapsed grant reports as expired rather
+    // than as out-of-scope, and it is checked here — the one funnel every
+    // permission key flows through — so no key can acquire an unbounded grant by
+    // taking a different path (FAI-10144).
+    if (!principalGrantIsActive(grant, input.now ?? new Date())) {
+      return deny({
+        action: input.action,
+        reason: "deny_expired_grant",
+        explanation:
+          `Permission ${input.permissionKey} expired at ${grant.expiresAt?.toISOString() ?? "an unknown time"}.`,
+        grant: {
+          principalType: input.principalType,
+          principalId: input.principalId,
+          permissionKey: input.permissionKey,
+          scope: grant.scope ?? null,
+          expiresAt: grant.expiresAt?.toISOString() ?? null,
+        },
+      });
+    }
+
     if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
         requireStructuredScope: input.permissionKey === "tasks:assign_scope",
@@ -688,6 +725,7 @@ export function authorizationService(db: Db) {
           principalId: input.principalId,
           permissionKey: input.permissionKey,
           scope: grant.scope ?? null,
+          expiresAt: grant.expiresAt?.toISOString() ?? null,
         },
       });
     }
@@ -701,6 +739,7 @@ export function authorizationService(db: Db) {
         principalId: input.principalId,
         permissionKey: input.permissionKey,
         scope: grant.scope ?? null,
+        expiresAt: grant.expiresAt?.toISOString() ?? null,
       },
     });
   }
@@ -1489,7 +1528,7 @@ export function authorizationService(db: Db) {
         permissionKey: "tasks:assign_scope",
         scope: input.scope,
       });
-      if (scopedDecision.allowed || broadDecision.reason === "deny_missing_grant") return scopedDecision;
+      if (scopedDecision.allowed || grantIsAbsent(broadDecision.reason)) return scopedDecision;
       return broadDecision;
     }
 
@@ -1517,7 +1556,7 @@ export function authorizationService(db: Db) {
         permissionKey: "agents:suggest-changes",
         scope: input.scope,
       });
-      if (suggestDecision.allowed || suggestDecision.reason === "deny_missing_grant") {
+      if (suggestDecision.allowed || grantIsAbsent(suggestDecision.reason)) {
         return suggestDecision;
       }
       return configureDecision;

@@ -85,6 +85,9 @@ export const portabilityAgentManifestEntrySchema = z.object({
   permissionGrants: z.array(z.object({
     permissionKey: z.enum(PERMISSION_KEYS),
     scope: z.record(z.string(), z.unknown()).nullable().default(null),
+    // Defaulting to null keeps every manifest written before FAI-10144 valid,
+    // and reads as "no expiry" — the behaviour those manifests already had.
+    expiresAt: z.string().datetime().nullable().default(null),
   })).default([]),
   budgetMonthlyCents: z.number().int().nonnegative(),
   metadata: z.record(z.string(), z.unknown()).nullable(),

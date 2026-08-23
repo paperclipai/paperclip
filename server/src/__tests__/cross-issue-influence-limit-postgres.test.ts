@@ -310,6 +310,170 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       expect(await countMutations(companyId)).toBe(0);
     });
 
+    /**
+     * FAI-10144. An expiry is a revocation the operator scheduled in advance, so
+     * it has to bind at exactly the same point: the fence re-reads `expires_at`
+     * under the same `FOR SHARE` that covers a `DELETE`, and re-evaluates it
+     * against the clock at write time rather than the clock the cap gate used.
+     *
+     * The expiry is moved into the past by an `UPDATE` that commits between the
+     * gate and the write, rather than by waiting for wall-clock time to pass, so
+     * the test proves the property without racing a real timer.
+     */
+    it("rolls back when the grant expires between the cap gate and the write", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const runId = randomUUID();
+      const sourceIssueId = randomUUID();
+      const targetIssueId = randomUUID();
+      const projectId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `E${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        defaultResponsibleUserId: "board-user",
+      });
+      await db.insert(agents).values([agentId, otherAgentId].map((id, index) => ({
+        id,
+        companyId,
+        name: index === 0 ? "Two Week Sweeper" : "Owner",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })));
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "board-user",
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Sweeps" });
+      await db.insert(issues).values([
+        { id: sourceIssueId, companyId, title: "Sweep task" },
+        { id: targetIssueId, companyId, title: "Peer task", assigneeAgentId: otherAgentId, projectId },
+      ]);
+      // The board's actual ask: authority over this project, for two weeks.
+      await db.insert(principalPermissionGrants).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "issues:cross-write",
+        scope: { projectId },
+        expiresAt: new Date(NOW.getTime() + 14 * 24 * 60 * 60 * 1000),
+      });
+
+      const decision = await observeCrossIssueInfluence(db, {
+        companyId,
+        runId,
+        agentId,
+        targetIssueId,
+        targetIssueIdentifier: "EXPIRY-1",
+        kind: "update",
+        now: NOW,
+        enforceGrantAt: ENFORCE_AT,
+      });
+      // Inside the window, the grant is the basis exactly as before.
+      expect(decision?.fence).toMatchObject({ basisAtCheck: "explicit_permission_grant" });
+
+      // The window closes before the write reaches the fence.
+      await db
+        .update(principalPermissionGrants)
+        .set({ expiresAt: new Date(NOW.getTime() - 1) })
+        .where(eq(principalPermissionGrants.companyId, companyId));
+
+      await expect(db.transaction(async (tx) => {
+        await assertCrossIssueWriteFence(db, tx, decision?.fence);
+        await tx.insert(activityLog).values(mutationRow(companyId, agentId, runId, targetIssueId));
+      })).rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_write_grant_required" },
+      });
+
+      expect(await countMutations(companyId)).toBe(0);
+      // The row is still there — an expired grant is evidence, not garbage — so
+      // the audit trail can tell "it lapsed" from "it was never granted".
+      const surviving = await db
+        .select({ expiresAt: principalPermissionGrants.expiresAt })
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.companyId, companyId));
+      expect(surviving).toHaveLength(1);
+      expect(surviving[0]!.expiresAt).not.toBeNull();
+    });
+
+    /** A grant with no expiry keeps working: null means "never expires". */
+    it("still authorizes the write when the grant has no expiry", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const runId = randomUUID();
+      const sourceIssueId = randomUUID();
+      const targetIssueId = randomUUID();
+      const projectId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `N${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        defaultResponsibleUserId: "board-user",
+      });
+      await db.insert(agents).values([agentId, otherAgentId].map((id, index) => ({
+        id,
+        companyId,
+        name: index === 0 ? "Standing Sweeper" : "Owner",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      })));
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "board-user",
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Sweeps" });
+      await db.insert(issues).values([
+        { id: sourceIssueId, companyId, title: "Sweep task" },
+        { id: targetIssueId, companyId, title: "Peer task", assigneeAgentId: otherAgentId, projectId },
+      ]);
+      await db.insert(principalPermissionGrants).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "issues:cross-write",
+        scope: { projectId },
+        expiresAt: null,
+      });
+
+      const decision = await observeCrossIssueInfluence(db, {
+        companyId,
+        runId,
+        agentId,
+        targetIssueId,
+        targetIssueIdentifier: "NOEXPIRY-1",
+        kind: "update",
+        now: NOW,
+        enforceGrantAt: ENFORCE_AT,
+      });
+      expect(decision?.fence).toMatchObject({ basisAtCheck: "explicit_permission_grant" });
+
+      await db.transaction(async (tx) => {
+        await assertCrossIssueWriteFence(db, tx, decision?.fence);
+        await tx.insert(activityLog).values(mutationRow(companyId, agentId, runId, targetIssueId));
+      });
+
+      expect(await countMutations(companyId)).toBe(1);
+    });
+
     it("makes a revocation racing the write wait for it instead of racing past it", async () => {
       const { companyId, agentId, otherAgentId, runId, targetIssueId, decision } = await seed();
 

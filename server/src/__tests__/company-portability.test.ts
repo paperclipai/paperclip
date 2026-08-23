@@ -612,10 +612,13 @@ describe("company portability", () => {
       {
         permissionKey: "agents:suggest-changes",
         scope: null,
+        // Carried so a clone cannot widen a time-boxed grant (FAI-10144).
+        expiresAt: null,
       },
       {
         permissionKey: "skills:create",
         scope: { targetAgentIds: ["agent-1"] },
+        expiresAt: null,
       },
     ]);
   });

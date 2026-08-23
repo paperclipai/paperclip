@@ -5,6 +5,7 @@ import {
   agents,
   heartbeatRuns,
   issues,
+  principalGrantNotExpired,
   principalPermissionGrants,
   projects,
   routines,
@@ -1029,6 +1030,11 @@ export function toolAccessPolicyService(db: Db) {
         eq(principalPermissionGrants.principalType, principalType),
         eq(principalPermissionGrants.principalId, principalId),
         eq(principalPermissionGrants.permissionKey, "tools:use"),
+        // This read bypasses `decidePrincipalGrant`, so it applies expiry
+        // itself (FAI-10144). Without it a lapsed `tools:use` grant would keep
+        // conferring tool access after the same grant stopped conferring
+        // everything else.
+        principalGrantNotExpired(),
       ));
     return grants.some((grant) => scopeAllowsTool(grant.scope, ctx));
   }

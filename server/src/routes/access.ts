@@ -125,6 +125,8 @@ const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
 type MemberGrantPayload = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
+  /** ISO instant the grant lapses; absent or null means it never does. */
+  expiresAt?: string | null;
 };
 
 export function createInviteToken() {
@@ -4680,6 +4682,7 @@ export function accessRoutes(
               principalId: existing.principalId,
               permissionKey: grant.permissionKey,
               scope: grant.scope ?? null,
+              expiresAt: grant.expiresAt ? new Date(grant.expiresAt) : null,
               grantedByUserId: req.actor.userId ?? null,
               createdAt: now,
               updatedAt: now,

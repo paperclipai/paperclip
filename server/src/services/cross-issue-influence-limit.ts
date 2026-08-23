@@ -205,7 +205,7 @@ export async function observeCrossIssueInfluence(
         sourceIssueId,
         targetIssueId: input.targetIssueId,
         operation,
-      }),
+      }, { now: input.now }),
       now: input.now,
       enforceAt: input.enforceGrantAt,
     });

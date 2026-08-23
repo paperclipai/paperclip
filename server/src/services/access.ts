@@ -17,7 +17,19 @@ type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
+  /** Null or absent means the grant does not expire (FAI-10144). */
+  expiresAt?: Date | string | null;
 };
+
+/**
+ * Grants arrive from HTTP payloads, where an expiry is an ISO string, and from
+ * internal callers, where it is already a `Date`. Normalize once at the write
+ * boundary so the column only ever sees a `Date` or null.
+ */
+function grantExpiresAt(grant: GrantInput): Date | null {
+  if (grant.expiresAt === null || grant.expiresAt === undefined) return null;
+  return grant.expiresAt instanceof Date ? grant.expiresAt : new Date(grant.expiresAt);
+}
 
 /**
  * `issues:cross-write` is the one grant whose whole contract is "narrow". An
@@ -165,6 +177,7 @@ export function accessService(db: Db) {
             principalId: member.principalId,
             permissionKey: grant.permissionKey,
             scope: grant.scope ?? null,
+            expiresAt: grantExpiresAt(grant),
             grantedByUserId,
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -261,6 +274,7 @@ export function accessService(db: Db) {
             principalId: existing.principalId,
             permissionKey: grant.permissionKey,
             scope: grant.scope ?? null,
+            expiresAt: grantExpiresAt(grant),
             grantedByUserId,
             createdAt: now,
             updatedAt: now,
@@ -609,6 +623,7 @@ export function accessService(db: Db) {
           principalId,
           permissionKey: grant.permissionKey,
           scope: grant.scope ?? null,
+          expiresAt: grantExpiresAt(grant),
           grantedByUserId,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -677,6 +692,14 @@ export function accessService(db: Db) {
     enabled: boolean,
     grantedByUserId: string | null,
     scope: Record<string, unknown> | null = null,
+    /**
+     * `undefined` leaves an existing grant's expiry alone; `null` clears it.
+     * The distinction matters because the default-grant seeders (built-in
+     * agents, company import) call this on every ensure with no expiry — if
+     * absent meant "clear", a re-seed would silently un-time-box a grant an
+     * operator had deliberately bounded (FAI-10144).
+     */
+    expiresAt: Date | null | undefined = undefined,
   ) {
     if (!enabled) {
       await db
@@ -714,6 +737,7 @@ export function accessService(db: Db) {
         .set({
           scope,
           grantedByUserId,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
           updatedAt: new Date(),
         })
         .where(eq(principalPermissionGrants.id, existing.id));
@@ -726,6 +750,7 @@ export function accessService(db: Db) {
       principalId,
       permissionKey,
       scope,
+      expiresAt: expiresAt ?? null,
       grantedByUserId,
       createdAt: new Date(),
       updatedAt: new Date(),

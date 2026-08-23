@@ -42,11 +42,18 @@
  * commits before those locks (the re-resolution sees it and the mutation rolls
  * back with zero rows written) or blocks behind them until the mutation
  * commits. That closes FAI-10134 blocking finding 1.
+ *
+ * A grant may also lapse on its own (`expires_at`, FAI-10144). That is not a
+ * concurrent write, so no lock can order it — instead the re-resolution reads
+ * the clock at fence time, which puts an expiry crossing between the cap gate
+ * and the write on the same footing as a revocation crossing there: the write
+ * rolls back with zero rows. Null `expires_at` means no expiry, so every grant
+ * written before that column existed behaves exactly as it always did.
  */
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, principalPermissionGrants } from "@paperclipai/db";
+import { issues, principalGrantIsActive, principalPermissionGrants } from "@paperclipai/db";
 import { crossIssueWriteScopeUsesSubtree } from "@paperclipai/shared";
 import { scopeAllows } from "./authorization.js";
 import {
@@ -157,6 +164,12 @@ type ResolveOptions = {
    * or grant revocation then cannot commit between the check and the write.
    */
   lockAuthorityInputs?: boolean;
+  /**
+   * The instant grant expiry is measured against. Defaults to the wall clock at
+   * the moment of the call, which is what makes the fence's re-resolution catch
+   * an expiry that crossed since the cap gate. Tests pin it.
+   */
+  now?: Date;
 };
 
 async function lockIssueRows(db: BasisReader, companyId: string, issueIds: string[]) {
@@ -284,10 +297,13 @@ async function explicitGrantScope(
   companyId: string,
   actorAgentId: string,
   lock: boolean,
+  now: Date,
 ): Promise<Record<string, unknown> | null | undefined> {
   if (lock) {
     // `FOR SHARE` on the grant row: a revocation racing the mutation either
     // lands before this and is seen, or waits for the mutation's transaction.
+    // The same lock covers `expires_at` — an operator shortening the expiry
+    // mid-write is a revocation by another name and gets the same treatment.
     await db.execute(sql`
       SELECT id FROM principal_permission_grants
       WHERE company_id = ${companyId}
@@ -298,7 +314,10 @@ async function explicitGrantScope(
     `);
   }
   const grant = await db
-    .select({ scope: principalPermissionGrants.scope })
+    .select({
+      scope: principalPermissionGrants.scope,
+      expiresAt: principalPermissionGrants.expiresAt,
+    })
     .from(principalPermissionGrants)
     .where(and(
       eq(principalPermissionGrants.companyId, companyId),
@@ -307,7 +326,16 @@ async function explicitGrantScope(
       eq(principalPermissionGrants.permissionKey, CROSS_ISSUE_WRITE_PERMISSION_KEY),
     ))
     .then((rows) => rows[0] ?? null);
-  return grant ? grant.scope : undefined;
+  if (!grant) return undefined;
+  // Expiry is filtered in JS, not in the `where`, so the locked read and the
+  // decision share one snapshot of the row: the lock above is what makes an
+  // expiry crossing mid-write as binding as a revocation crossing mid-write,
+  // and `now` is read at fence time rather than at cap-gate time (FAI-10144).
+  // An expired grant is indistinguishable from no grant *to the basis walk* —
+  // both fall through to deny — but the two are separable in the audit trail by
+  // the row that is still there.
+  if (!principalGrantIsActive(grant, now)) return undefined;
+  return grant.scope;
 }
 
 /**
@@ -331,6 +359,7 @@ export async function resolveCrossIssueWriteBasis(
   options: ResolveOptions = {},
 ): Promise<CrossIssueWriteAuthority> {
   const lock = options.lockAuthorityInputs === true;
+  const now = options.now ?? new Date();
   if (lock) await lockIssueRows(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
 
   const facts = await loadIssueFacts(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
@@ -394,7 +423,7 @@ export async function resolveCrossIssueWriteBasis(
     }
   }
 
-  const grantScope = await explicitGrantScope(db, input.companyId, input.actorAgentId, lock);
+  const grantScope = await explicitGrantScope(db, input.companyId, input.actorAgentId, lock, now);
   if (grantScope !== undefined) {
     // `requireStructuredScope` rejects an empty scope; `requireRecognizedConstraint`
     // rejects a *non-empty* scope that constrains nothing this evaluator

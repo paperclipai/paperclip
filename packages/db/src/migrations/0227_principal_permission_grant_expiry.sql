@@ -1,0 +1,13 @@
+-- Time-box a permission grant (FAI-10144, split out of FAI-10132).
+--
+-- "principal_permission_grants" is the shared table behind every permission in
+-- the product, so this column is deliberately nullable with no default and no
+-- backfill: null means "no expiry", which is exactly the behaviour every row
+-- written before this migration already had. Nothing an operator granted
+-- yesterday starts expiring because this ran.
+--
+-- No index. The only reads that filter on expiry already select a single row by
+-- the (company, principal_type, principal_id, permission_key) unique index, or
+-- scan a principal's handful of grants; an index on "expires_at" would be
+-- writes-slower for no read this table performs.
+ALTER TABLE "principal_permission_grants" ADD COLUMN "expires_at" timestamp with time zone;

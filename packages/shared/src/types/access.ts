@@ -30,6 +30,8 @@ export interface PrincipalPermissionGrant {
   principalId: string;
   permissionKey: PermissionKey;
   scope: Record<string, unknown> | null;
+  /** When the grant stops conferring anything; null means it never does. */
+  expiresAt: Date | null;
   grantedByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
