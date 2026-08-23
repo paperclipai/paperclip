@@ -1,11 +1,55 @@
 {
   "name": "@paperclipai/adapter-firstmate-gateway",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.3.1",
+  "description": "Paperclip adapter for FirstMate WebSocket gateway workers",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/adapters/firstmate-gateway"
+  },
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./server": "./src/server/index.ts" },
-  "scripts": { "typecheck": "tsc --noEmit" },
-  "dependencies": { "@paperclipai/adapter-utils": "workspace:*", "ws": "^8.21.3" },
-  "devDependencies": { "@types/ws": "^8.18.1" },
-  "engines": { "node": ">=24.11.0" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./server": {
+        "types": "./dist/server/index.d.ts",
+        "import": "./dist/server/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "workspace:*",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
 }
