@@ -324,3 +324,16 @@ describe("Muse operator request isolation", () => {
     expect(await previousOperator).toEqual({ operator: "previous" });
   });
 });
+
+describe("204 responses", () => {
+  // activeRunForIssue builds its null on this undefined.
+  it("resolves undefined without reading the empty body", async () => {
+    const json = vi.fn(async () => {
+      throw new SyntaxError("Unexpected end of JSON input");
+    });
+    fetchMock.mockResolvedValue({ ok: true, status: 204, json } as unknown as Response);
+
+    await expect(api.get("/no-content")).resolves.toBeUndefined();
+    expect(json).not.toHaveBeenCalled();
+  });
+});
