@@ -2009,7 +2009,7 @@ export interface PluginExecutionClient {
 }
 
 /**
- * `ctx.setupTokenPty` — stream one live login pseudo-terminal's output and exit
+ * `ctx.loginPty` — stream one live login pseudo-terminal's output and exit
  * from a sandbox provider worker to the host.
  *
  * The worker opener registers the output listener on the session and forwards
@@ -2020,7 +2020,7 @@ export interface PluginExecutionClient {
  * chunk or an exit that carries an unknown or a mismatched identifier, and it
  * never logs the raw bytes. The default is a no-op that never throws.
  */
-export interface PluginSetupTokenPtyClient {
+export interface PluginLoginPtyClient {
   /**
    * Deliver one raw output chunk of a live login pseudo-terminal.
    *
@@ -2048,7 +2048,7 @@ export interface PluginSetupTokenPtyClient {
  * by that identifier while the route is open. The host drops a chunk or an exit
  * that carries an unknown or a mismatched identifier, and it never logs the raw
  * bytes. The default is a no-op that never throws. This client models the
- * `setupTokenPty` client, but it carries no login command allowlist.
+ * `loginPty` client, but it carries no login command allowlist.
  */
 export interface PluginDuplexChannelClient {
   /**
@@ -2193,7 +2193,7 @@ export interface PluginContext {
   /** Stream one live login pseudo-terminal's output and exit to the host.
    * The default is a no-op for a provider that opens no login
    * pseudo-terminal. */
-  setupTokenPty: PluginSetupTokenPtyClient;
+  loginPty: PluginLoginPtyClient;
 
   /** Stream one persistent duplex channel's data and exit to the host. The
    * default is a no-op for a provider that opens no duplex channel. */

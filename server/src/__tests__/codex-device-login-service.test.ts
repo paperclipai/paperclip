@@ -115,6 +115,8 @@ const execHang: ExecBehavior = ({ onStdout }) => {
 interface FakeRuntimeOptions {
   exec: ExecBehavior;
   authBytes?: Buffer;
+  /** When set, the descriptor-bound read rejects with this error on success. */
+  readError?: Error;
   delete?: () => Promise<SandboxDeleteResult>;
 }
 
@@ -130,8 +132,11 @@ function createFakeRuntime(opts: FakeRuntimeOptions) {
         providerLeaseId: `lease-${input.sessionId}`,
         authPath: sessionCredentialPath(input.sessionId),
         driver: {
-          execStreaming: (_command, onStdout) => opts.exec({ onStdout, input }),
-          readFile: async () => opts.authBytes ?? Buffer.from("{}"),
+          start: (_command, onData) => opts.exec({ onStdout: onData, input }),
+          readFile: async () => {
+            if (opts.readError) throw opts.readError;
+            return opts.authBytes ?? Buffer.from("{}");
+          },
           dispose: async () => {},
         },
         deleteSandbox: async () => {
@@ -241,7 +246,7 @@ describe("codex device login service", () => {
           providerLeaseId: `lease-${input.sessionId}`,
           authPath: sessionCredentialPath(input.sessionId),
           driver: {
-            execStreaming: (_command, onStdout) => execSuccess({ onStdout, input }),
+            start: (_command, onData) => execSuccess({ onStdout: onData, input }),
             readFile: async () => Buffer.from("{}"),
             dispose: async () => {},
           },
@@ -414,6 +419,73 @@ describe("codex device login service", () => {
     const outcome = await completed;
     expect(outcome.status).toBe("failed");
     expect(deleteCalls).toHaveLength(1);
+  });
+
+  it("fails closed and deletes the sandbox when the descriptor-bound read fails", async () => {
+    const store = createMemoryStore();
+    let promoteCalls = 0;
+    const { runtime, deleteCalls } = createFakeRuntime({
+      // The login command exits 0, but the descriptor-bound read rejects. The
+      // runner converts the read error to a fixed driver error, so the run fails.
+      exec: execSuccess,
+      readError: new Error("device login failed: the sandbox credential read errored."),
+    });
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {
+          promoteCalls += 1;
+        },
+      },
+    });
+    const companyId = randomUUID();
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+    const outcome = await completed;
+    // A failed read never promotes a credential and still deletes the sandbox.
+    expect(outcome.status).toBe("failed");
+    expect(promoteCalls).toBe(0);
+    expect(deleteCalls).toHaveLength(1);
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    expect(row?.status).toBe("failed");
+  });
+
+  it("fails closed and deletes the sandbox when the credential schema is malformed", async () => {
+    const store = createMemoryStore();
+    const { runtime, deleteCalls } = createFakeRuntime({
+      // The read returns a well-formed file, but the promotion rejects the shape.
+      // A malformed schema fails the same way as a failed check: no authenticate,
+      // and a sandbox delete.
+      exec: execSuccess,
+      authBytes: Buffer.from('{"not":"a subscription auth"}', "utf8"),
+    });
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {
+          throw new Error("malformed credential schema");
+        },
+      },
+    });
+    const companyId = randomUUID();
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+    const outcome = await completed;
+    expect(outcome.status).toBe("failed");
+    expect(deleteCalls).toHaveLength(1);
+    const failed = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.failure?.reason).toBe("promotion_failed");
   });
 
   it("deletes the sandbox and records a cancelled terminal on a cancellation", async () => {
@@ -789,45 +861,53 @@ describe("codex device login service", () => {
     });
   });
 
-  it("builds a production driver that sets an empty session home and reads the fixed credential path", async () => {
-    // Record the program and the argument vector for each call. The provider
-    // quotes each element as one shell token, so the driver must pass a program
-    // plus its arguments, never one compound string. A one-shot exec streams no
-    // output, so the login command must set `forceSession` to open the session.
-    const calls: {
-      command: string;
-      args?: string[];
-      forceSession?: boolean;
-      bypassSession?: boolean;
-    }[] = [];
+  it("runs the login over the shared pseudo-terminal and reads the credential with the descriptor-bound read", async () => {
     const sessionId = randomUUID();
     const sessionHome = sessionCodexHomePath(sessionId);
     const authPath = sessionCredentialPath(sessionId);
+
+    // The fake pseudo-terminal session streams the prompt and exits with code
+    // zero. It records the command the transport opened.
+    let openedCommand: string | null = null;
+    let closed = false;
+    const openPtySession = async (command: string) => {
+      openedCommand = command;
+      return {
+        onData(listener: (chunk: string) => void) {
+          listener(PROMPT_OUTPUT);
+        },
+        write() {},
+        async wait() {
+          return { exitCode: 0 };
+        },
+        kill() {},
+        async close() {
+          closed = true;
+        },
+      };
+    };
+
+    // The fake runtime runs only the descriptor-bound read. It records the fixed,
+    // no-follow helper shape and returns the base64 of the credential bytes.
+    const execCalls: { command: string; args?: string[]; bypassSession?: boolean }[] = [];
+    const credential = '{"tokens":{"refresh_token":"r"}}';
     const environmentRuntime = {
-      execute: async (input: {
-        command: string;
-        args?: string[];
-        forceSession?: boolean;
-        bypassSession?: boolean;
-        onLog?: (stream: "stdout" | "stderr", chunk: string) => void | Promise<void>;
-      }) => {
-        calls.push({
+      execute: async (input: { command: string; args?: string[]; bypassSession?: boolean }) => {
+        execCalls.push({
           command: input.command,
           args: input.args,
-          forceSession: input.forceSession,
           bypassSession: input.bypassSession,
         });
-        const script = input.args?.join(" ") ?? "";
-        if (script.includes("codex login")) {
-          await input.onLog?.("stdout", PROMPT_OUTPUT);
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        // The credential read.
-        return { exitCode: 0, stdout: '{"token":"secret"}', stderr: "" };
+        return {
+          exitCode: 0,
+          stdout: Buffer.from(credential, "utf8").toString("base64"),
+          stderr: "",
+        };
       },
     };
+
     const driver = buildSandboxLoginDriver({
-      // The helper only calls `execute`; a partial runtime is enough here.
+      openPtySession,
       environmentRuntime: environmentRuntime as never,
       environment: { id: "env", driver: "sandbox" } as never,
       lease: { id: "lease" } as never,
@@ -836,25 +916,28 @@ describe("codex device login service", () => {
     });
 
     const chunks: string[] = [];
-    const result = await driver.execStreaming("codex login --device-auth", (chunk) => chunks.push(chunk));
+    const result = await driver.start("codex login --device-auth", (chunk) => chunks.push(chunk));
     expect(result.exitCode).toBe(0);
+    expect(openedCommand).toBe("codex login --device-auth");
     expect(chunks.join("")).toContain(DEVICE_LOGIN_URL);
-    // The login command runs through `sh -c`, so the runtime runs the whole
-    // compound command in one shell. It sets an empty session-specific Codex
-    // home before the login. It opens the session, so the prompt streams.
-    expect(calls[0].command).toBe("sh");
-    expect(calls[0].args).toEqual([
-      "-c",
-      `rm -rf ${sessionHome} && mkdir -p ${sessionHome} && CODEX_HOME=${sessionHome} codex login --device-auth`,
-    ]);
-    expect(calls[0].forceSession).toBe(true);
+    // The login runs over the pseudo-terminal, so the descriptor read did not run
+    // during the login.
+    expect(execCalls.length).toBe(0);
 
+    // The runner path passes the credential path, but the descriptor-bound read
+    // ignores it and reads the fixed file under the verified session home.
     const authBytes = await driver.readFile(authPath);
-    expect(authBytes.toString("utf8")).toBe('{"token":"secret"}');
-    // The credential read runs `cat` with the path as one argument, one-shot.
-    expect(calls[1].command).toBe("cat");
-    expect(calls[1].args).toEqual([authPath]);
-    expect(calls[1].bypassSession).toBe(true);
+    expect(authBytes.toString("utf8")).toBe(credential);
+    expect(execCalls.length).toBe(1);
+    // The read runs the fixed no-follow helper as a one-shot, non-session command.
+    expect(execCalls[0].command).toBe("node");
+    expect(execCalls[0].bypassSession).toBe(true);
+    expect(execCalls[0].args?.[0]).toBe("-e");
+    // The third argument is the verified session home the helper opens no-follow.
+    expect(execCalls[0].args?.[2]).toBe(sessionHome);
+
+    await driver.dispose();
+    expect(closed).toBe(true);
   });
 });
 
