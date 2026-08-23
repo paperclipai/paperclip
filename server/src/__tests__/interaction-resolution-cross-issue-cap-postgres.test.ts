@@ -13,10 +13,18 @@ import {
   heartbeatRuns,
   issueThreadInteractions,
   issues,
+  principalPermissionGrants,
+  projects,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
-import { CROSS_ISSUE_INFLUENCE_LIMIT } from "../services/cross-issue-influence-limit.js";
+import {
+  assertCrossIssueWriteFence,
+  CROSS_ISSUE_INFLUENCE_LIMIT,
+  observeCrossIssueInfluence,
+} from "../services/cross-issue-influence-limit.js";
+import { CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV } from "../services/cross-issue-write-basis.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -58,7 +66,9 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
       () => db.delete(heartbeatRuns),
       () => db.delete(agentWakeupRequests),
       () => db.delete(heartbeatRuns),
+      () => db.delete(principalPermissionGrants),
       () => db.delete(issues),
+      () => db.delete(projects),
       () => db.delete(companyMemberships),
       () => db.delete(agents),
       () => db.delete(companies),
@@ -211,7 +221,12 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
     return runId;
   }
 
-  async function seedInteraction(companyId: string, issueId: string, route: ResolutionRoute) {
+  async function seedInteraction(
+    companyId: string,
+    issueId: string,
+    route: ResolutionRoute,
+    createdByAgentId: string | null = null,
+  ) {
     const fixture = INTERACTION_FIXTURES[route];
     const [row] = await db.insert(issueThreadInteractions).values({
       companyId,
@@ -222,8 +237,25 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
       requestedResolverPolicy: "anyone",
       effectiveResolverPolicy: "anyone",
       payload: fixture.payload as never,
+      createdByAgentId,
     }).returning({ id: issueThreadInteractions.id });
     return row.id;
+  }
+
+  async function seedAgent(companyId: string, name: string) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name,
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return agentId;
   }
 
   async function spendBudget(companyId: string, agentId: string, runId: string, attempts: number) {
@@ -395,4 +427,177 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
       .where(eq(issueThreadInteractions.companyId, companyId));
     expect(answered.map((row) => row.status).sort()).toEqual(["answered", "pending"]);
   }, 30_000);
+
+  /**
+   * Withdrawal is a resolution in everything but name: it cancels the target's
+   * pending decision, revokes the tool-action requests linked to it and wakes the
+   * peer issue's assignee. It used to be the one interaction route a live run
+   * could reach on an unrelated visible issue without a named basis or a budget
+   * slot — `assertIssueThreadInteractionWithdrawalAllowed` returned allowed for a
+   * non-assignee *creator* before the gate, and the route built an unguarded
+   * service so nothing re-checked authority at write time (FAI-10134 finding 3).
+   */
+  describe("cross-issue interaction withdrawal (FAI-10134 finding 3)", () => {
+    it("counts a creator's cross-issue withdrawal against the run cap and refuses it with zero effects", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent("WDC");
+      const sourceIssueId = await seedIssue(companyId, "WDC", agentId);
+      // Board-held: the actor is emphatically not the assignee, so only the
+      // creator branch can carry this withdrawal.
+      const targetIssueId = await seedIssue(companyId, "WDC", null);
+      const runId = await seedRun(companyId, agentId, sourceIssueId);
+      await spendBudget(companyId, agentId, runId, CROSS_ISSUE_INFLUENCE_LIMIT);
+      const interactionId = await seedInteraction(companyId, targetIssueId, "reject", agentId);
+
+      const res = await request(app(agentActor(companyId, agentId, runId)))
+        .post(`/api/issues/${targetIssueId}/interactions/${interactionId}/withdraw`)
+        .send({ reason: "Superseded by a newer card" });
+
+      // Before the fix this was a 200: the creator branch returned allowed
+      // without ever reaching the counter.
+      expect(res.status, JSON.stringify(res.body)).toBe(429);
+      expect(res.body.details).toMatchObject({
+        code: "cross_issue_influence_cap_exceeded",
+        cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+        mode: "enforce",
+      });
+
+      const [interaction] = await db
+        .select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      expect(interaction).toMatchObject({ status: "pending", result: null });
+
+      const wakes = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakes).toEqual([]);
+
+      const targetActivity = await db
+        .select({ action: activityLog.action })
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, targetIssueId)));
+      expect(targetActivity.map((row) => row.action)).toEqual([
+        "issue.cross_issue_influence_cap_rejected",
+      ]);
+    }, 30_000);
+
+    it("refuses a creator's withdrawal on an unrelated peer issue under enforcement, with an audited basis", async () => {
+      const previous = process.env[CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV];
+      process.env[CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV] = "2026-01-01T00:00:00.000Z";
+      try {
+        const { companyId, agentId } = await seedCompanyAndAgent("WDE");
+        const peerAgentId = await seedAgent(companyId, "Peer Owner");
+        const sourceIssueId = await seedIssue(companyId, "WDE", agentId);
+        // Held by another agent, unrelated by tree or routine origin: nothing
+        // names authority over it, so creating the card earlier is the only
+        // thing the actor could point at — and that is not a basis.
+        const targetIssueId = await seedIssue(companyId, "WDE", peerAgentId);
+        const runId = await seedRun(companyId, agentId, sourceIssueId);
+        const interactionId = await seedInteraction(companyId, targetIssueId, "reject", agentId);
+
+        const res = await request(app(agentActor(companyId, agentId, runId)))
+          .post(`/api/issues/${targetIssueId}/interactions/${interactionId}/withdraw`)
+          .send({ reason: "Superseded by a newer card" });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "cross_issue_write_grant_required" });
+
+        const [interaction] = await db
+          .select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId));
+        expect(interaction).toMatchObject({ status: "pending", result: null });
+
+        const wakes = await db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.companyId, companyId));
+        expect(wakes).toEqual([]);
+
+        // The refusal is evidence, so it survives outside the gate's rolled-back
+        // transaction and names what was actually attempted.
+        const denials = await db
+          .select({ details: activityLog.details })
+          .from(activityLog)
+          .where(and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "issue.cross_issue_write_grant_denied"),
+          ));
+        expect(denials).toHaveLength(1);
+        expect(denials[0]?.details).toMatchObject({
+          kind: "interaction_resolution",
+          operation: "mutation",
+          sourceIssueId,
+          targetIssueId,
+          basis: null,
+        });
+        // Refused before the counter, so the run's budget is untouched.
+        expect(await countInfluenceRows(companyId, runId, "issue.cross_issue_influence_observed")).toBe(0);
+      } finally {
+        if (previous === undefined) delete process.env[CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV];
+        else process.env[CROSS_ISSUE_WRITE_GRANT_ENFORCE_AT_ENV] = previous;
+      }
+    }, 30_000);
+
+    /**
+     * The gate's answer is time-of-check. `withdrawInteraction` opens its own
+     * transaction — one that cancels the linked tool-action requests before it
+     * resolves the card — so the route now builds the service with the same
+     * `preCommitAuthorityGuard` the resolution paths use. Revoke the grant after
+     * the gate said yes and the whole withdrawal has to roll back, not just the
+     * card update.
+     */
+    it("rolls a withdrawal back whole when the grant is revoked between the gate and the write", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent("WDR");
+      const peerAgentId = await seedAgent(companyId, "Peer Owner");
+      const projectId = randomUUID();
+      await db.insert(projects).values({ id: projectId, companyId, name: "Sweeps" });
+      const sourceIssueId = await seedIssue(companyId, "WDR", agentId);
+      const targetIssueId = await seedIssue(companyId, "WDR", peerAgentId);
+      await db.update(issues).set({ projectId }).where(eq(issues.id, targetIssueId));
+      const runId = await seedRun(companyId, agentId, sourceIssueId);
+      const interactionId = await seedInteraction(companyId, targetIssueId, "reject", agentId);
+      await db.insert(principalPermissionGrants).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "issues:cross-write",
+        scope: { projectId },
+      });
+
+      const decision = await observeCrossIssueInfluence(db, {
+        companyId,
+        runId,
+        agentId,
+        targetIssueId,
+        targetIssueIdentifier: null,
+        kind: "interaction_resolution",
+        enforceGrantAt: new Date("2026-01-01T00:00:00.000Z"),
+      });
+      expect(decision?.fence).toMatchObject({ basisAtCheck: "explicit_permission_grant" });
+
+      // The grant goes away after the gate allowed the write.
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+
+      const guarded = issueThreadInteractionService(db, {
+        preCommitAuthorityGuard: (tx) => assertCrossIssueWriteFence(db, tx, decision?.fence),
+      });
+      await expect(guarded.withdrawInteraction(
+        { id: targetIssueId, companyId, status: "in_progress" },
+        interactionId,
+        { reason: "Superseded" },
+        { agentId, runId, userId: null },
+      )).rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_write_grant_required" },
+      });
+
+      const [interaction] = await db
+        .select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      expect(interaction).toMatchObject({ status: "pending", result: null });
+    }, 30_000);
+  });
 });

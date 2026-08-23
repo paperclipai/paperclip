@@ -1725,6 +1725,30 @@ function isApprovalReviewComment(body: string) {
   );
 }
 
+/**
+ * Whether posting this body auto-approves the target's pending review: on an
+ * `in_review` issue with a pending execution decision, an approval-shaped comment
+ * from the current participant closes the issue and writes a decision row.
+ *
+ * The comment route grades its cross-issue authority and applies this transition
+ * from the same predicate, so the cap gate cannot admit as comment-grade a write
+ * that later mutates the target. Deriving the condition a second time at the
+ * effect site is what let a comment-only basis — a sibling relationship, a shared
+ * routine origin, a mention — reach the transition (FAI-10134 security verdict at
+ * 1462ea9c3, finding 2).
+ */
+function commentAutoApprovesIssueReview(
+  issue: { status: string; executionState?: unknown },
+  actor: { actorType: "user" | "agent"; actorId: string },
+  body: string,
+) {
+  if (issue.status !== "in_review") return false;
+  const state = parseIssueExecutionState(issue.executionState);
+  if (state?.status !== "pending") return false;
+  return actorMatchesExecutionParticipant(actor, state.currentParticipant ?? null)
+    && isApprovalReviewComment(body);
+}
+
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
@@ -4672,8 +4696,15 @@ export function issueRoutes(
       res.status(403).json({ error: "Only the interaction creator, current issue assignee, or a board user may withdraw it" });
       return false;
     }
-    if (isAssignee) return assertAgentIssueMutationAllowed(req, res, issue);
-    return true;
+    if (isAssignee && !(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
+    // Withdrawing cancels the target's pending decision, revokes the tool-action
+    // requests linked to it and wakes the peer issue's assignee, so it mutates
+    // that ticket exactly as a resolution does and takes the same gate: a named
+    // basis over the target, counted against the run's cap and audited on denial.
+    // Having created the interaction earlier is not a standing licence over a
+    // peer issue — the creator branch previously returned allowed here without
+    // ever reaching the gate (FAI-10134 security verdict at 1462ea9c3, finding 3).
+    return assertCrossIssueInfluenceWithinRunCap(req, res, issue, "interaction_resolution");
   }
 
   async function assertTaskWatchdogCreateIssueAllowed(
@@ -11911,7 +11942,12 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
 
-      const interactionSvc = issueThreadInteractionService(db);
+      // Same guarded service the resolution paths use: the withdrawal's own
+      // transaction re-checks the authority under locks and rolls the whole
+      // withdrawal back if the basis or grant was revoked mid-request.
+      const interactionSvc = issueThreadInteractionService(db, {
+        preCommitAuthorityGuard: (tx) => assertPendingCrossIssueWriteFences(tx, req),
+      });
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
@@ -12349,12 +12385,20 @@ export function issueRoutes(
     // scheduled retry, or rebuilds its closed workspace is a mutation of someone
     // else's ticket, and a comment-only basis — a sibling relationship, a shared
     // routine origin, a mention — must not reach it (FAI-10134 blocking finding 1).
+    //
+    // Auto-approval is graded from `issue`, the same snapshot every other clause
+    // above reads. The only status change between here and the transition site is
+    // the move to `todo` at the reopen path, and that path is already a mutation
+    // by `effectiveMoveToTodoRequested` — so reading the pre-gate snapshot cannot
+    // miss an auto-approval the later site would apply, and cannot over-grade one
+    // it would skip.
     const commentPerformsIssueMutation =
       effectiveMoveToTodoRequested ||
       effectiveReopenRequested ||
       effectiveResumeRequested === true ||
       interruptRequested ||
-      closedExecutionWorkspace !== null;
+      closedExecutionWorkspace !== null ||
+      commentAutoApprovesIssueReview(issue, actor, req.body.body);
     if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment", {
       operation: commentPerformsIssueMutation ? "mutation" : "comment",
     }))) return;
@@ -12504,11 +12548,7 @@ export function issueRoutes(
 
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
     const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
-    const shouldAutoApproveReviewComment =
-      currentIssue.status === "in_review" &&
-      currentExecutionState?.status === "pending" &&
-      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
-      isApprovalReviewComment(req.body.body);
+    const shouldAutoApproveReviewComment = commentAutoApprovesIssueReview(currentIssue, actor, req.body.body);
 
     // Persist the comment and the auto-approval state transition atomically when both apply.
     // Without a single transaction, a 422 (or any error) thrown by the status update after the
