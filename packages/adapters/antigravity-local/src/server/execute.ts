@@ -38,6 +38,8 @@ import {
   signalRunningProcess,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+import type { ParsedAntigravityOutput } from "./parse.js";
 import {
   inspectAntigravityStream,
   parseAntigravityOutput,
@@ -48,6 +50,25 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ANTIGRAVITY_MAX_TOKENS_PER_RUN = 100_000;
+/**
+ * In-run disposition re-ask (2026-08-23).
+ *
+ * The finalization reminder below is instruction only, and instruction alone
+ * does not land: measured on a live task (TSMC-21345) the lane did the work
+ * correctly, updated the issue, and emitted NO marker at all — zero occurrences
+ * in the run log. That is the same shape claude and hermes had, and on all
+ * three lanes where a bounded in-run re-ask shipped the capture rate went to
+ * ~100% the same day (hermes 0-4% -> 99.0%, codex 39-53% -> 99.8%).
+ *
+ * One bounded follow-up turn in the SAME agy conversation, only after a clean
+ * main turn that stated nothing. Never more than one per run.
+ */
+const ANTIGRAVITY_DISPOSITION_REASK_TIMEOUT_SEC = 90;
+const ANTIGRAVITY_DISPOSITION_REASK_PROMPT =
+  "Your previous reply did not end with the required PAPERCLIP_DISPOSITION line. "
+  + "Reply with exactly ONE line and nothing else, reflecting the work you just did on this issue: "
+  + 'PAPERCLIP_DISPOSITION: {"status":"done|cancelled|in_review|blocked","hasBlocker":true|false,"blocker":"<named blocker, or empty>"}';
+
 const ANTIGRAVITY_FINALIZATION_REMINDER =
   "Before ending this run, record the real issue state through Paperclip. " +
   "If that write cannot be confirmed, your FINAL response line MUST be exactly a " +
@@ -597,6 +618,57 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    // One bounded follow-up turn in the same conversation when a clean run
+    // states no disposition. Skipped when the budget is already spent so the
+    // re-ask can never be the thing that pushes a run over the governor's cap,
+    // and skipped when the CLI's own verdict was not SUCCESS — an ERROR or
+    // CANCELED turn has no work to report on.
+    const maybeReaskDisposition = async <T extends { proc: RunProcessResult; parsed: ParsedAntigravityOutput }>(
+      attempt: T,
+    ): Promise<T> => {
+      if (tokenBudgetExceeded) return attempt;
+      if (attempt.proc.timedOut) return attempt;
+      if ((attempt.proc.exitCode ?? 0) !== 0) return attempt;
+      if (attempt.parsed.disposition) return attempt;
+      if (attempt.parsed.resultStatus && attempt.parsed.resultStatus !== "SUCCESS") return attempt;
+      const reaskSessionId = attempt.parsed.sessionId;
+      if (!reaskSessionId) return attempt;
+
+      const reaskArgs = buildAntigravityArgs({
+        prompt: ANTIGRAVITY_DISPOSITION_REASK_PROMPT,
+        printTimeout,
+        sessionId: reaskSessionId,
+        autoApprove,
+        sandbox,
+        extraDirs,
+        extraArgs,
+        model,
+      });
+      await onLog("stdout", "[paperclip] disposition re-ask: one bounded turn in the same conversation\n");
+      let reaskProc: RunProcessResult;
+      try {
+        reaskProc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, reaskArgs, {
+          cwd,
+          env,
+          timeoutSec: ANTIGRAVITY_DISPOSITION_REASK_TIMEOUT_SEC,
+          graceSec,
+          onSpawn,
+          // Deliberately the raw logger: the budget-accounting logger would let
+          // the re-ask flip tokenBudgetExceeded and fail an otherwise clean run.
+          onLog,
+        });
+      } catch {
+        return attempt;
+      }
+      const reaskParsed = parseAntigravityOutput(reaskProc.stdout, reaskProc.stderr);
+      if (!reaskParsed.disposition) {
+        await onLog("stdout", "[paperclip] disposition re-ask: still no disposition stated\n");
+        return attempt;
+      }
+      await onLog("stdout", `[paperclip] disposition re-ask: captured ${reaskParsed.disposition.status}\n`);
+      return { ...attempt, parsed: { ...attempt.parsed, disposition: reaskParsed.disposition } };
+    };
+
     const initial = await runAttempt(sessionId);
     if (
       sessionId &&
@@ -609,11 +681,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Antigravity conversation "${sessionId}" is unavailable; retrying with a fresh conversation.\n`,
       );
-      const retry = await runAttempt(null);
+      const retry = await maybeReaskDisposition(await runAttempt(null));
       return toResult(retry, true, true);
     }
 
-    return toResult(initial);
+    const withDisposition = await maybeReaskDisposition(initial);
+    return toResult(withDisposition);
   } finally {
     await Promise.all([
       cleanupInstructions(),

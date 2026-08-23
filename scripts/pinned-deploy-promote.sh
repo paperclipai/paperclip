@@ -424,7 +424,7 @@ cmd_candidate_tests() {
   # path that feeds it are gated here — the antigravity suite in particular had
   # been RED on the live branch since the 08-22 shared-extractor refactor because
   # nothing ran it.
-  _cand_group packages/adapters/antigravity-local src/server/parse.test.ts
+  _cand_group packages/adapters/antigravity-local src/server/parse.test.ts src/server/execute.disposition-reask.test.ts
   # NOTE: packages/adapters/hermes/src/server/execute.test.ts intentionally NOT
   # gated — it has a 5s live-usage-poll timing test that flakes under gate load;
   # a mandatory gate must be deterministic. Hermes disposition/re-ask logic is
