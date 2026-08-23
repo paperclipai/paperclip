@@ -1415,16 +1415,23 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           if (typeof chunk !== "string" || chunk.length === 0) return;
           notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, { hostRouteId, workerSessionId, chunk });
         },
-        exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void {
+        exit(
+          hostRouteId: string,
+          workerSessionId: string,
+          exitCode: number | null,
+          transportClosed?: boolean,
+        ): void {
           // Forward the child exit of a persistent duplex channel. The host
           // resolves the open route's wait promise by the exact live pair while
-          // the route is open.
+          // the route is open. `transportClosed` carries the exit discriminator, so
+          // the host tells a real process exit from a reason-less transport close.
           if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
           notifyHost(DUPLEX_CHANNEL_EXIT_NOTIFICATION, {
             hostRouteId,
             workerSessionId,
             exitCode: typeof exitCode === "number" ? exitCode : null,
+            transportClosed: transportClosed === true,
           });
         },
       },
