@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { INFRA_TERMINATION_ERROR_CODES, isInfraTerminatedRun } from "./heartbeat-stop-metadata.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -48,7 +49,7 @@ type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 // result_json/context_snapshot for up to MAX_RUNS_FOR_STREAK runs per issue.
 type ProductivityRunSample = Pick<
   HeartbeatRunRow,
-  "id" | "agentId" | "status" | "livenessState" | "createdAt" | "nextAction" | "usageJson"
+  "id" | "agentId" | "status" | "livenessState" | "createdAt" | "nextAction" | "usageJson" | "errorCode"
 >;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
 
@@ -89,6 +90,11 @@ type ProductivityReviewEvidence = {
   generatedAt: Date;
 };
 
+type ProductivityEvidenceOutcome =
+  | { kind: "evidence"; evidence: ProductivityReviewEvidence }
+  | { kind: "infra_blocked"; infraTerminatedRunCount: number }
+  | { kind: "none" };
+
 type EnqueueWakeup = (
   agentId: string,
   opts?: {
@@ -104,6 +110,23 @@ type EnqueueWakeup = (
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
+}
+
+// Runs killed by a host restart or a control-plane reap never got the chance to
+// comment or advance the issue, so counting them would blame the agent for an
+// infrastructure fault. Every run-derived signal below filters them out.
+//
+// This is isInfraTerminatedRun expressed in SQL, and it has to stay that way —
+// including the result_json stop reason the reaper writes when the error code
+// itself is generic. If the two disagree, a run excluded from the streak sample
+// but still counted toward six-hour churn reintroduces the same false positive
+// through a different trigger.
+function notInfraTerminatedRunSql() {
+  const codes = sql.join(INFRA_TERMINATION_ERROR_CODES.map((code) => sql`${code}`), sql`, `);
+  return sql`(
+    coalesce(${heartbeatRuns.errorCode}, '') not in (${codes})
+    and coalesce(${heartbeatRuns.resultJson}->>'stopReason', '') not in (${codes})
+  )`;
 }
 
 function issueRunScopeSql(issueId: string) {
@@ -418,6 +441,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           issueRunScopeSql(issueId),
+          notInfraTerminatedRunSql(),
           sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         ),
       )
@@ -448,11 +472,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     sourceAgent: AgentRow,
     thresholds: ProductivityReviewThresholds,
     now: Date,
-  ): Promise<ProductivityReviewEvidence | null> {
+  ): Promise<ProductivityEvidenceOutcome> {
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
-    const latestRuns = await db
+    const sampledRuns = await db
       .select({
         id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
@@ -461,6 +485,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         createdAt: heartbeatRuns.createdAt,
         nextAction: heartbeatRuns.nextAction,
         usageJson: heartbeatRuns.usageJson,
+        errorCode: heartbeatRuns.errorCode,
       })
       .from(heartbeatRuns)
       .where(
@@ -472,6 +497,17 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(MAX_RUNS_FOR_STREAK);
+
+    const infraTerminatedRuns = sampledRuns.filter((run) => isInfraTerminatedRun(run));
+    const latestRuns = sampledRuns.filter((run) => !isInfraTerminatedRun(run));
+    const isTerminal = (run: ProductivityRunSample) =>
+      TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]);
+    // Every terminal run in the sample was killed by infrastructure. The agent
+    // never got a chance to make progress, so the issue is blocked on infra and
+    // reviewing the assignee would be a false positive.
+    if (infraTerminatedRuns.some(isTerminal) && !latestRuns.some(isTerminal)) {
+      return { kind: "infra_blocked", infraTerminatedRunCount: infraTerminatedRuns.length };
+    }
 
     const runIds = latestRuns.map((run) => run.id);
     const commentRunIds = new Set<string>();
@@ -491,9 +527,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       }
     }
 
-    const terminalRuns = latestRuns.filter((run) =>
-      TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]),
-    );
+    const terminalRuns = latestRuns.filter(isTerminal);
     let noCommentStreak = 0;
     for (const run of terminalRuns) {
       if (commentRunIds.has(run.id)) break;
@@ -554,7 +588,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       runCountLastSixHours >= thresholds.highChurnSixHours ||
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
-    if (!trigger) return null;
+    if (!trigger) return { kind: "none" };
 
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);
@@ -565,7 +599,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       );
     }
 
-    return {
+    const evidence: ProductivityReviewEvidence = {
       trigger,
       triggerReasons,
       sourceIssue,
@@ -591,6 +625,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       thresholds,
       generatedAt: now,
     };
+    return { kind: "evidence", evidence };
   }
 
   async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
@@ -871,10 +906,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       snoozed: 0,
       creationCapped: 0,
       noActionSuppressed: 0,
+      infraSuppressed: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
+      infraSuppressedIssueIds: [] as string[],
     };
 
     const prefixCache = new Map<string, string>();
@@ -901,11 +938,26 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
-      const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
-      if (!evidence) {
+      const evidenceOutcome = await collectEvidence(candidate, sourceAgent, thresholds, now);
+      if (evidenceOutcome.kind === "infra_blocked") {
+        result.infraSuppressed += 1;
+        result.infraSuppressedIssueIds.push(candidate.id);
+        logger.info(
+          {
+            companyId: candidate.companyId,
+            issueId: candidate.id,
+            agentId: sourceAgent.id,
+            infraTerminatedRunCount: evidenceOutcome.infraTerminatedRunCount,
+          },
+          "productivity review suppressed: every sampled terminal run was terminated by infrastructure",
+        );
+        continue;
+      }
+      if (evidenceOutcome.kind === "none") {
         result.skipped += 1;
         continue;
       }
+      const evidence = evidenceOutcome.evidence;
       let prefix = prefixCache.get(candidate.companyId);
       if (!prefix) {
         prefix = await getCompanyIssuePrefix(candidate.companyId);
@@ -957,14 +1009,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     ]);
     if (!sourceIssue || !sourceAgent || !openReview) return { held: false as const };
     if (sourceAgent.companyId !== input.companyId) return { held: false as const };
-    const evidence = await collectEvidence(sourceIssue, sourceAgent, thresholds, now);
-    if (!evidence || !isSoftStopTrigger(evidence.trigger)) return { held: false as const };
+    const outcome = await collectEvidence(sourceIssue, sourceAgent, thresholds, now);
+    if (outcome.kind !== "evidence" || !isSoftStopTrigger(outcome.evidence.trigger)) {
+      return { held: false as const };
+    }
     return {
       held: true as const,
       reviewIssueId: openReview.id,
       reviewIdentifier: openReview.identifier,
-      trigger: evidence.trigger,
-      reason: evidence.triggerReasons.join("; "),
+      trigger: outcome.evidence.trigger,
+      reason: outcome.evidence.triggerReasons.join("; "),
     };
   }
 
