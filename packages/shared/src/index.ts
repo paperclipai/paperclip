@@ -669,6 +669,7 @@ export type {
   WriteSummarySlotResponse,
   Environment,
   EnvironmentDeleteBlastRadius,
+  EnvironmentDeleteReusableLeaseHolder,
   EnvironmentDeleteBlockedReason,
   EnvironmentLease,
   EnvironmentProbeResult,

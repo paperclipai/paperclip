@@ -1230,8 +1230,17 @@ export function environmentService(db: Db) {
             ),
           ),
         db
-          .select({ count: sql<number>`count(*)::int` })
+          .select({
+            leaseId: environmentLeases.id,
+            executionWorkspaceId: environmentLeases.executionWorkspaceId,
+            executionWorkspaceName: executionWorkspaces.name,
+            issueId: environmentLeases.issueId,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+          })
           .from(environmentLeases)
+          .leftJoin(executionWorkspaces, eq(environmentLeases.executionWorkspaceId, executionWorkspaces.id))
+          .leftJoin(issues, eq(environmentLeases.issueId, issues.id))
           .where(
             and(
               eq(environmentLeases.environmentId, id),
@@ -1253,7 +1262,15 @@ export function environmentService(db: Db) {
       const isManagedLocal = environment.driver === "local";
       const isInstanceDefault = countFromRows(instanceDefaultRows) > 0;
       const pendingCleanupLeaseCount = countFromRows(pendingCleanupLeaseRows);
-      const reusableSandboxLeaseCount = countFromRows(reusableSandboxLeaseRows);
+      const reusableSandboxLeaseHolders = reusableSandboxLeaseRows.map((row) => ({
+        leaseId: row.leaseId,
+        executionWorkspaceId: row.executionWorkspaceId,
+        executionWorkspaceName: row.executionWorkspaceName,
+        issueId: row.issueId,
+        issueIdentifier: row.issueIdentifier,
+        issueTitle: row.issueTitle,
+      }));
+      const reusableSandboxLeaseCount = reusableSandboxLeaseHolders.length;
       const deleteBlockedReasons: EnvironmentDeleteBlockedReason[] = [];
       if (isManagedLocal) deleteBlockedReasons.push("managed_local");
       if (isInstanceDefault) deleteBlockedReasons.push("instance_default");
@@ -1273,6 +1290,7 @@ export function environmentService(db: Db) {
         deleteBlockedReasons,
         pendingCleanupLeaseCount,
         reusableSandboxLeaseCount,
+        reusableSandboxLeaseHolders,
         staticReferences: {
           isManagedLocal,
           isInstanceDefault,

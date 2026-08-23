@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions, environmentLeases } from "@paperclipai/db";
+import { companySecrets, companySecretVersions, environmentLeases, heartbeatRuns } from "@paperclipai/db";
 import type {
   Environment,
   EnvironmentLease,
@@ -3403,6 +3403,131 @@ export function environmentRuntimeService(
         });
       }
       return destroyed;
+    },
+
+    /**
+     * Destroy every reusable sandbox lease still owned by one environment, so a
+     * consented environment delete can proceed. This must run while the
+     * environment row still exists: the driver resolves provider credentials
+     * from the environment config, and after the delete the normal destroy path
+     * has no context left. A per-lease failure is contained — the driver routes
+     * a failed teardown to `pending_cleanup` for the sweep, and an unexpected
+     * throw leaves the lease in place — so the caller re-checks the blast
+     * radius instead of trusting these counts for the delete decision.
+     */
+    async destroyReusableSandboxLeasesForEnvironment(input: {
+      environmentId: string;
+      failureReason?: string;
+    }): Promise<{ destroyed: number; failed: number; skippedLiveRun: number }> {
+      const environment = await environmentsSvc.getById(input.environmentId);
+      if (!environment) return { destroyed: 0, failed: 0, skippedLiveRun: 0 };
+      const leaseRows = await db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.environmentId, input.environmentId),
+            eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+            inArray(environmentLeases.status, ["active", "released", "retained"]),
+          ),
+        );
+
+      // A lease whose holding run is still in flight keeps its sandbox: the
+      // consented delete must not tear a live run's environment out from under
+      // it. The skipped lease keeps blocking the delete, so the caller's
+      // blast-radius re-check rejects and the operator retries after the run
+      // finishes. A lease pointing at a finished run — or at no run — is a
+      // stale reservation and destroys normally.
+      const holdingRunIds = leaseRows
+        .map((row) => row.heartbeatRunId)
+        .filter((runId): runId is string => Boolean(runId));
+      const liveRunIds = new Set<string>();
+      if (holdingRunIds.length > 0) {
+        const liveRuns = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              inArray(heartbeatRuns.id, holdingRunIds),
+              inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+            ),
+          );
+        for (const run of liveRuns) liveRunIds.add(run.id);
+      }
+
+      let destroyed = 0;
+      let failed = 0;
+      let skippedLiveRun = 0;
+      const failureReason = input.failureReason ?? "environment_delete_requested";
+      const now = new Date();
+      for (const leaseRow of leaseRows) {
+        if (leaseRow.heartbeatRunId && liveRunIds.has(leaseRow.heartbeatRunId)) {
+          skippedLiveRun += 1;
+          continue;
+        }
+        // Claim the row BEFORE the provider call, mirroring the inline-teardown
+        // invariant used elsewhere in this file: no provider destroy without a
+        // durable `pending_cleanup` reference already on disk. The claim is one
+        // conditional UPDATE, so it is the fence against a racing resume: a
+        // resume that re-activates the lease first makes the status predicate
+        // (or the run-liveness predicate) fail and the claim loses — the live
+        // run keeps its sandbox. A claim that wins parks the lease where the
+        // cleanup sweep owns it, so a crash or thrown destroy after this point
+        // is recovered by the sweep's idempotent teardown, and a double write
+        // failure cannot strand the lease in a reusable status.
+        const claimedRow = await db
+          .update(environmentLeases)
+          .set({
+            status: "pending_cleanup",
+            failureReason,
+            cleanupStatus: "failed",
+            releasedAt: now,
+            lastUsedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(environmentLeases.id, leaseRow.id),
+              inArray(environmentLeases.status, ["active", "released", "retained"]),
+              sql`NOT EXISTS (
+                SELECT 1 FROM ${heartbeatRuns}
+                WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
+                  AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
+              )`,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!claimedRow) {
+          // Lost to a racing resume or a concurrent terminal transition — the
+          // lease is no longer ours to destroy.
+          skippedLiveRun += 1;
+          continue;
+        }
+        const leaseSnapshot = toEnvironmentLeaseSnapshot(claimedRow);
+        try {
+          const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+          if (!driver?.destroyRunLease) {
+            // No driver available: the claim already parked the lease for the
+            // sweep, which retries once the driver's plugin is back.
+            failed += 1;
+            continue;
+          }
+          const lease = await driver.destroyRunLease({
+            environment,
+            lease: leaseSnapshot,
+            failureReason,
+          });
+          if (lease && lease.status !== "pending_cleanup") destroyed += 1;
+          else failed += 1;
+        } catch {
+          // The claim above already parked the lease in `pending_cleanup`, so
+          // the sweep owns the retry; its teardown is idempotent, so a destroy
+          // that reached the provider before the throw resolves as success.
+          failed += 1;
+        }
+      }
+      return { destroyed, failed, skippedLiveRun };
     },
 
     async resumeRunLease(input: EnvironmentDriverLeaseInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
