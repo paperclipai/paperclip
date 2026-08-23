@@ -506,13 +506,19 @@ describeEmbeddedPostgres("resource-ceiling bounded auto-continuation", () => {
     // at the continuation cap the issue is BLOCKED with a board unblockDescriptor
     // (louder + better-scoped than an error lane, and it stops the re-offer loop
     // now that the lane stays idle). It is NOT blocked on a recovery-owner chain.
-    const issue = await db
-      .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
-    expect((issue?.unblockDescriptor as { owner?: string } | null)?.owner).toBe("board");
+    // Poll: the cap path awaits issuesSvc.update, but under gate load the status
+    // write can land after the cap comment is already visible (flake on candidate_tests).
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then((rows) => rows[0] ?? null),
+        { timeout: 10_000, interval: 50 },
+      )
+      .toMatchObject({ status: "blocked", unblockDescriptor: { owner: "board" } });
 
     // 2026-08-23 (operator directive: a lane must never go dark for one issue's
     // problem): a governor stop — even at the 24h continuation cap with NO
