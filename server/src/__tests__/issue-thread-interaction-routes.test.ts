@@ -89,29 +89,47 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
   select: (selection: Record<string, unknown>) => ({
     from: () => ({
       where: () => {
-        if (Object.keys(selection).includes("count")) {
-          return {
-            then: (resolve: (rows: unknown[]) => unknown) =>
-              resolve([{ count: mockCrossIssueInfluence.priorCount }]),
-          };
+        const keys = Object.keys(selection);
+        const resolved = (rows: unknown[]) => ({
+          then: (resolve: (value: unknown[]) => unknown) => resolve(rows),
+        });
+        if (keys.includes("count")) {
+          return resolved([{ count: mockCrossIssueInfluence.priorCount }]);
         }
+        // Issue facts for the cross-issue write basis resolver. Both issues are
+        // modelled with no agent assignee, so the resolver lands on
+        // `target_has_no_agent_assignee` and these cases keep exercising the
+        // cap rather than the authority decision.
+        if (keys.includes("originFingerprint")) {
+          return resolved([mockCrossIssueInfluence.sourceIssueId, ISSUE_ID].map((id) => ({
+            id,
+            parentId: null,
+            projectId: null,
+            assigneeAgentId: null,
+            createdByAgentId: null,
+            originKind: "manual",
+            originId: null,
+            originFingerprint: "default",
+          })));
+        }
+        // The `issues:cross-write` grant lookup; no row means no grant.
+        if (keys.length === 1 && keys[0] === "scope") return resolved([]);
         const run = mockRunAttribution.value;
         return {
-          for: () => ({
-            then: (resolve: (rows: unknown[]) => unknown) => resolve(run
-              ? [{
-                  id: run.runId ?? null,
-                  companyId: run.companyId ?? null,
-                  agentId: run.agentId ?? null,
-                  responsibleUserId: run.responsibleUserId ?? null,
-                  contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
-                }]
-              : []),
-          }),
+          for: () => resolved(run
+            ? [{
+                id: run.runId ?? null,
+                companyId: run.companyId ?? null,
+                agentId: run.agentId ?? null,
+                responsibleUserId: run.responsibleUserId ?? null,
+                contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
+              }]
+            : []),
         };
       },
     }),
   }),
+  execute: async () => [],
   insert: () => ({
     values: async (value: Record<string, unknown>) => {
       mockCrossIssueInfluence.inserted.push(value);
