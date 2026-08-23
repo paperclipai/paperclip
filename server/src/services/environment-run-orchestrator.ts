@@ -42,9 +42,12 @@ import {
   type AdapterRemoteExecutionSpec,
   type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
+import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -152,6 +155,14 @@ export function environmentRunOrchestrator(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     environmentRuntime?: EnvironmentRuntimeService;
+    /**
+     * The process-owned aggregate byte ledger for the sandbox duplex channel.
+     * The server root creates one ledger per host process and injects the same
+     * object here. The orchestrator stamps it onto the sandbox execution target,
+     * so one shared gauge bounds the aggregate retained bytes across all live
+     * duplex routes. Absent keeps the bridge inert for this seam.
+     */
+    duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -346,6 +357,12 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    /**
+     * The host duplex telemetry recorder for this run. The orchestrator threads
+     * it to `resolveEnvironmentExecutionTarget`, which stamps it on the sandbox
+     * target. Absent keeps the safe no-op default in the bridge.
+     */
+    duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -420,7 +437,29 @@ export function environmentRunOrchestrator(
       (typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
         ? lease.metadata.remoteCwd.trim()
         : executionWorkspace.cwd);
-    if (provisionCommand && environment.driver !== "local") {
+    // The host `provisionCommand` runs on the host worktree during the
+    // `workspace_provision` step, before the run reaches the environment.
+    // A `sandbox`-driver environment does not receive the repo tree here. The
+    // sandbox driver `realizeWorkspace` step only creates the remote folder.
+    // The adapter uploads the provisioned tree later, in its `stage.sync` step.
+    // So the host command must not run inside the still-empty sandbox; it fails
+    // there (exit 127). Skip the step for `sandbox`, and keep the existing skip
+    // for `local`. Keep the step for `ssh`, which runs the command on the
+    // remote host that shares the workspace path.
+    const driverSkipsHostProvision =
+      environment.driver === "local" || environment.driver === "sandbox";
+    if (provisionCommand && environment.driver === "sandbox") {
+      logger.info(
+        {
+          environmentId: environment.id,
+          driver: environment.driver,
+          issueId,
+          heartbeatRunId,
+        },
+        "Skip host provisionCommand for sandbox-driver environment; the adapter stage.sync step delivers the provisioned tree",
+      );
+    }
+    if (provisionCommand && !driverSkipsHostProvision) {
       try {
         const provisionResult = await environmentRuntime.execute({
           environment,
@@ -432,6 +471,13 @@ export function environmentRunOrchestrator(
             SHELL: "/bin/bash",
           },
           timeoutMs: 300_000,
+          // The provision command runs before the run opens its trace root, so it
+          // carries no run parent. A sandbox provider that opens a persistent
+          // session on the first command must not open the session here, or the
+          // session-setup span loses its parent and the span backend drops it.
+          // Bypass the session for this command; the session opens on the first
+          // in-run command instead, whose setup span parents to the run trace.
+          bypassSession: true,
         });
         if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
           throw new Error(formatProvisionFailureDetail(provisionResult));
@@ -485,6 +531,8 @@ export function environmentRunOrchestrator(
         leaseMetadata: (lease.metadata as Record<string, unknown> | null) ?? null,
         lease,
         environmentRuntime,
+        duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
+        duplexAggregateByteLedger: options.duplexAggregateByteLedger ?? null,
       });
       const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
       const authoritativeRoot =
@@ -554,7 +602,11 @@ export function environmentRunOrchestrator(
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(input.heartbeatRunId, status);
+      releasedLeases = await environmentRuntime.releaseRunLeases(
+        input.heartbeatRunId,
+        status,
+        (leaseId, error) => result.errors.push({ leaseId, error }),
+      );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;

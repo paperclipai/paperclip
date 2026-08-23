@@ -13,9 +13,12 @@ import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
+  shouldHideInteractionCard,
   type IssueThreadInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
+import { isLiveIssueRun } from "./liveIssueIds";
+import { findUIAdapter } from "../adapters/registry";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
@@ -84,6 +87,19 @@ export interface IssueChatTranscriptEntry {
 }
 
 const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
+
+// Adapters whose backends stream verbosely can declare a wider window via
+// their UI adapter module (transcriptPresentation.maxVisibleEntries); every
+// adapter without a declaration keeps the long-standing 30-entry window.
+// Resolved through the registry so shared code never branches on adapter
+// identities.
+function issueChatTranscriptMaxVisibleEntries(adapterType: string | null | undefined): number {
+  if (!adapterType) return ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES;
+  return (
+    findUIAdapter(adapterType)?.transcriptPresentation?.maxVisibleEntries ??
+    ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES
+  );
+}
 
 type MessageWithOrder = {
   createdAtMs: number;
@@ -787,7 +803,7 @@ function createHistoricalTranscriptMessage(args: {
 }) {
   const { run, transcript, hasOutput, agentMap } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
@@ -954,13 +970,15 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
 function normalizeLiveRuns(
   liveRuns: readonly LiveRunForIssue[],
   activeRun: ActiveRunForIssue | null | undefined,
-  issueId?: string,
+  issueId: string | undefined,
+  issueStatus: string | null | undefined,
 ) {
   const deduped = new Map<string, LiveRunForIssue>();
   for (const run of liveRuns) {
+    if (!isLiveIssueRun(run, issueStatus)) continue;
     deduped.set(run.id, run);
   }
-  if (activeRun) {
+  if (activeRun && isLiveIssueRun(activeRun, issueStatus)) {
     deduped.set(activeRun.id, {
       id: activeRun.id,
       status: activeRun.status,
@@ -1002,7 +1020,7 @@ function createLiveRunMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
 }) {
   const { run, transcript } = args;
-  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const compactedTranscript = compactIssueChatTranscript(transcript, issueChatTranscriptMaxVisibleEntries(run.adapterType));
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
@@ -1056,6 +1074,7 @@ export function buildIssueChatMessages(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  issueStatus?: string | null;
 }) {
   const {
     comments,
@@ -1073,6 +1092,7 @@ export function buildIssueChatMessages(args: {
     agentMap,
     currentUserId,
     userLabelMap,
+    issueStatus,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -1086,6 +1106,11 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const interaction of sortByCreated(interactions)) {
+    // A card IssueThreadInteractionCard never renders — a degenerate
+    // `ask_user_questions` (e.g. the onboarding `Test / A` placeholder) or a
+    // stale sibling superseded by a newer question (PAP-437) — is skipped here so
+    // it leaves no empty message slot in the thread (PAP-424, plan from PAP-420).
+    if (shouldHideInteractionCard(interaction)) continue;
     const createdAtMs = toTimestamp(interaction.createdAt);
     const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
       ? latestSameRunHandoffTimestamp({
@@ -1139,7 +1164,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId)) {
+  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus)) {
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,

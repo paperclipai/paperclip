@@ -112,7 +112,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   const syncSkills = useMutation({
     mutationFn: (desiredSkills: Array<string | AgentDesiredSkillEntry>) =>
-      agentsApi.syncSkills(agent.id, desiredSkills, companyId),
+      agentsApi.syncSkills(agent.id, desiredSkills, "replace", companyId),
     onSuccess: async (snapshot) => {
       queryClient.setQueryData(queryKeys.agents.skills(agent.id), snapshot);
       lastSavedSkillsRef.current = snapshot.desiredSkills;

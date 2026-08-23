@@ -1,4 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "@/lib/router";
+import {
+  onboardingStepForCompany,
+  shouldRouteAgentlessCompanyToOnboarding,
+} from "../lib/onboarding-route";
+import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -21,6 +27,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -40,6 +47,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -51,6 +59,45 @@ export function Dashboard() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  // A company with no agent cannot do anything — no runs, no tasks, nothing
+  // to show. The banner below already says so and offers a link; this takes
+  // the customer there instead of asking them to notice.
+  //
+  // It also closes the gap a Cloud-provisioned stack falls into. Cloud creates
+  // the company before the tenant boots, so the companyless redirect never
+  // fires and a seeded customer lands here, on an empty dashboard, straight
+  // out of signup.
+  //
+  // Opened as the dialog rather than navigated to: the wizard is already
+  // mounted globally, so there is no route to race and no redirect to loop.
+  // Placed with the other hooks — the early returns below mean anything
+  // further down would be called conditionally.
+  //
+  // The company and the step are both passed. Opening with empty options would
+  // start the wizard at the front door with no company, and the new-company
+  // path there would create a *second* company instead of giving this one an
+  // agent.
+  const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
+    pathname: location.pathname,
+    agentsLoaded: agents !== undefined,
+    agentCount: agents?.length ?? 0,
+  });
+  // Auto-open once per company. Every input to the effect sits behind a query,
+  // so a refetch re-runs it, and the customer can also navigate away and come
+  // back — both would otherwise call `openOnboarding` again and reopen a
+  // wizard that was deliberately closed. `claimOnboardingOffer` holds the
+  // companies already offered; see it for why that outlives this component.
+  useEffect(() => {
+    if (!shouldOpenOnboarding || !selectedCompanyId) return;
+    if (!claimOnboardingOffer(selectedCompanyId)) return;
+    openOnboarding({
+      companyId: selectedCompanyId,
+      initialStep: onboardingStepForCompany(),
+    });
+    // No mission lookup to wait on any more: the step this opens is the same
+    // whatever the goals say, so waiting only delayed the open.
+  }, [shouldOpenOnboarding, selectedCompanyId, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
@@ -225,7 +272,7 @@ export function Dashboard() {
             </p>
           </div>
           <button
-            onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
+            onClick={() => openOnboarding({ initialStep: 3, companyId: selectedCompanyId! })}
             className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
           >
             Create one here
@@ -316,9 +363,12 @@ export function Dashboard() {
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>
-            <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-              <PriorityChart issues={issues ?? []} />
-            </ChartCard>
+            {/* PAP-411: "Tasks by Priority" chart hidden behind SHOW_TASK_PRIORITY_UI. */}
+            {SHOW_TASK_PRIORITY_UI && (
+              <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
+                <PriorityChart issues={issues ?? []} />
+              </ChartCard>
+            )}
             <ChartCard title="Tasks by Status" subtitle="Last 14 days">
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>

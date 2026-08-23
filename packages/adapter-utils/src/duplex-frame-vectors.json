@@ -1,0 +1,631 @@
+{
+  "frameVersion": 2,
+  "defaultMaxFrameBytes": 1000000,
+  "description": "Shared wire-compatibility vectors for the duplex frame codec. Every codec copy decodes the same bytes. bytes is a UTF-8 byte stream; splitByteOffsets cuts it into chunks; expected lists the ordered decode results (frame or protocol-error code).",
+  "vectors": [
+    {
+      "name": "valid-request",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "request",
+            "id": "req-1",
+            "method": "GET",
+            "path": "/api/issues/PAP-1",
+            "query": "expand=comments",
+            "headers": {
+              "accept": "application/json",
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-request-with-body-count",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-body\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":1048576}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "request",
+            "id": "req-body",
+            "method": "GET",
+            "path": "/api/issues/PAP-1",
+            "query": "expand=comments",
+            "headers": {
+              "accept": "application/json",
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 1048576
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-response-completed",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"response\",\"id\":\"req-1\",\"status\":200,\"headers\":{\"content-type\":\"application/json\"},\"bodyByteCount\":11,\"outcome\":\"completed\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "response",
+            "id": "req-1",
+            "status": 200,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 11,
+            "outcome": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-response-indeterminate",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"response\",\"id\":\"req-2\",\"status\":409,\"headers\":{\"content-type\":\"application/json\"},\"bodyByteCount\":33,\"outcome\":\"indeterminate\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "response",
+            "id": "req-2",
+            "status": 409,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 33,
+            "outcome": "indeterminate"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-response-unavailable",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"response\",\"id\":\"req-3\",\"status\":503,\"headers\":{\"content-type\":\"application/json\"},\"bodyByteCount\":30,\"outcome\":\"unavailable\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "response",
+            "id": "req-3",
+            "status": 503,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 30,
+            "outcome": "unavailable"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-body-chunk",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"body_chunk\",\"id\":\"req-1\",\"seq\":0,\"data\":\"aGVsbG8gYm9keSBjaHVuaw==\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "body_chunk",
+            "id": "req-1",
+            "seq": 0,
+            "data": "aGVsbG8gYm9keSBjaHVuaw=="
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-body-chunk-final",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"body_chunk\",\"id\":\"req-1\",\"seq\":7,\"data\":\"dGFpbA==\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "body_chunk",
+            "id": "req-1",
+            "seq": 7,
+            "data": "dGFpbA=="
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-ready",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "ready",
+            "nonce": "9f8e7d6c5b4a39281706f5e4d3c2b1a0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-heartbeat",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"heartbeat\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "heartbeat"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-close",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"close\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "close"
+          }
+        }
+      ]
+    },
+    {
+      "name": "valid-error",
+      "category": "valid",
+      "bytes": "{\"version\":2,\"type\":\"error\",\"code\":\"malformed_frame\",\"message\":\"peer reported a malformed frame\"}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "error",
+            "code": "malformed_frame",
+            "message": "peer reported a malformed frame"
+          }
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-missing-nonce",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"ready\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-with-address",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\",\"address\":\"http://127.0.0.1:47215\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-ready-with-port",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"ready\",\"nonce\":\"9f8e7d6c5b4a39281706f5e4d3c2b1a0\",\"port\":47215}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-not-json",
+      "category": "invalid",
+      "bytes": "{not valid json\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-json-array",
+      "category": "invalid",
+      "bytes": "[1,2,3]\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-json-number",
+      "category": "invalid",
+      "bytes": "42\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-unknown-type",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"teleport\"}\n",
+      "expected": [
+        {
+          "error": "unknown_type"
+        }
+      ]
+    },
+    {
+      "name": "invalid-missing-id",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"bodyByteCount\":0}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-request-body-count-string",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"bodyByteCount\":\"10\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-request-body-count-negative",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"bodyByteCount\":-1}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-request-body-count-fractional",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"bodyByteCount\":1.5}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-bad-headers",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"response\",\"id\":\"req-1\",\"status\":200,\"headers\":{\"accept\":7},\"bodyByteCount\":10,\"outcome\":\"completed\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-body-chunk-negative-seq",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"body_chunk\",\"id\":\"req-1\",\"seq\":-1,\"data\":\"eA==\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-body-chunk-fractional-seq",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"body_chunk\",\"id\":\"req-1\",\"seq\":2.5,\"data\":\"eA==\"}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-body-chunk-missing-data",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"body_chunk\",\"id\":\"req-1\",\"seq\":0}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "invalid-body-chunk-nonstring-data",
+      "category": "invalid",
+      "bytes": "{\"version\":2,\"type\":\"body_chunk\",\"id\":\"req-1\",\"seq\":0,\"data\":42}\n",
+      "expected": [
+        {
+          "error": "malformed_frame"
+        }
+      ]
+    },
+    {
+      "name": "partial-request-split",
+      "category": "partial",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n",
+      "splitByteOffsets": [
+        102
+      ],
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "request",
+            "id": "req-1",
+            "method": "GET",
+            "path": "/api/issues/PAP-1",
+            "query": "expand=comments",
+            "headers": {
+              "accept": "application/json",
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "partial-utf8-split",
+      "category": "partial",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-utf8\",\"method\":\"POST\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"content-type\":\"application/json\",\"x-note\":\"héllo 😀 wörld\"},\"bodyByteCount\":0}\n",
+      "splitByteOffsets": [
+        172
+      ],
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "request",
+            "id": "req-utf8",
+            "method": "POST",
+            "path": "/api/issues/PAP-1",
+            "query": "expand=comments",
+            "headers": {
+              "content-type": "application/json",
+              "x-note": "héllo 😀 wörld"
+            },
+            "bodyByteCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "partial-two-frames",
+      "category": "partial",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n{\"version\":2,\"type\":\"response\",\"id\":\"req-1\",\"status\":200,\"headers\":{\"content-type\":\"application/json\"},\"bodyByteCount\":11,\"outcome\":\"completed\"}\n",
+      "splitByteOffsets": [
+        7,
+        174,
+        344
+      ],
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "request",
+            "id": "req-1",
+            "method": "GET",
+            "path": "/api/issues/PAP-1",
+            "query": "expand=comments",
+            "headers": {
+              "accept": "application/json",
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 0
+          }
+        },
+        {
+          "frame": {
+            "version": 2,
+            "type": "response",
+            "id": "req-1",
+            "status": 200,
+            "headers": {
+              "content-type": "application/json"
+            },
+            "bodyByteCount": 11,
+            "outcome": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "partial-no-trailing-newline",
+      "category": "partial",
+      "bytes": "{\"version\":2,\"type\":\"heartbeat\"}",
+      "expected": []
+    },
+    {
+      "name": "oversized-complete-line",
+      "category": "oversized",
+      "maxFrameBytes": 64,
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"q=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n",
+      "expected": [
+        {
+          "error": "frame_too_large"
+        }
+      ]
+    },
+    {
+      "name": "oversized-flood-then-resync",
+      "category": "oversized",
+      "maxFrameBytes": 64,
+      "splitByteOffsets": [
+        40
+      ],
+      "bytes": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n{\"version\":2,\"type\":\"heartbeat\"}\n",
+      "expected": [
+        {
+          "error": "frame_too_large"
+        },
+        {
+          "frame": {
+            "version": 2,
+            "type": "heartbeat"
+          }
+        }
+      ]
+    },
+    {
+      "name": "version-mismatch-lower",
+      "category": "versionMismatch",
+      "bytes": "{\"version\":1,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n",
+      "expected": [
+        {
+          "error": "version_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "version-mismatch-higher",
+      "category": "versionMismatch",
+      "bytes": "{\"version\":3,\"type\":\"request\",\"id\":\"req-1\",\"method\":\"GET\",\"path\":\"/api/issues/PAP-1\",\"query\":\"expand=comments\",\"headers\":{\"accept\":\"application/json\",\"content-type\":\"application/json\"},\"bodyByteCount\":0}\n",
+      "expected": [
+        {
+          "error": "version_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "version-mismatch-missing",
+      "category": "versionMismatch",
+      "bytes": "{\"type\":\"heartbeat\"}\n",
+      "expected": [
+        {
+          "error": "version_mismatch"
+        }
+      ]
+    },
+    {
+      "name": "request-id-at-max-bytes",
+      "category": "idBoundValid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"bodyByteCount\":0}\n",
+      "roundTrip": true,
+      "expected": [
+        {
+          "frame": {
+            "version": 2,
+            "type": "request",
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "method": "GET",
+            "path": "/",
+            "query": "",
+            "headers": {},
+            "bodyByteCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "request-id-over-max-bytes",
+      "category": "idBoundInvalid",
+      "bytes": "{\"version\":2,\"type\":\"request\",\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"method\":\"GET\",\"path\":\"/\",\"query\":\"\",\"headers\":{},\"bodyByteCount\":0}\n",
+      "expected": [
+        {
+          "error": "id_too_large"
+        }
+      ]
+    },
+    {
+      "name": "body-chunk-id-over-max-bytes",
+      "category": "idBoundInvalid",
+      "bytes": "{\"version\":2,\"type\":\"body_chunk\",\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seq\":0,\"data\":\"eA==\"}\n",
+      "expected": [
+        {
+          "error": "id_too_large"
+        }
+      ]
+    }
+  ],
+  "encodeDescription": "Encode-bound vectors. Each codec copy runs the size-checked encode against the frame with the maxFrameBytes limit, then asserts the same result. An ok result must decode back to the same frame. This proves both copies enforce the same bound on encode.",
+  "encodeVectors": [
+    {
+      "name": "encode-within-bound",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 2,
+        "type": "request",
+        "id": "req-enc-1",
+        "method": "GET",
+        "path": "/",
+        "query": "",
+        "headers": {},
+        "bodyByteCount": 5
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "encode-body-chunk-within-bound",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 2,
+        "type": "body_chunk",
+        "id": "req-enc-3",
+        "seq": 0,
+        "data": "Y2h1bmsgcGF5bG9hZA=="
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "encode-control-frame-never-rejected",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 2,
+        "type": "heartbeat"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "encode-over-bound",
+      "maxFrameBytes": 200,
+      "frame": {
+        "version": 2,
+        "type": "response",
+        "id": "req-enc-2",
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "x-pad": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "bodyByteCount": 0,
+        "outcome": "completed"
+      },
+      "expected": {
+        "ok": false,
+        "error": "frame_too_large"
+      }
+    }
+  ]
+}

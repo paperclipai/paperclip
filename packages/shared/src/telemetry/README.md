@@ -1,7 +1,9 @@
 # Telemetry Data Contract
 
 This document explains how contributors should use Paperclip's public telemetry
-contract. It intentionally does not list individual events or dimensions.
+contract. It does not duplicate the full list of individual events or
+dimensions. It documents extra semantic and privacy rules where the generated
+shape is not sufficient.
 
 The canonical source for first-party event names, dimensions, optionality,
 allowed primitive value types, and enum descriptions is
@@ -55,6 +57,23 @@ If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
 
+## Interaction Resolver Events
+
+`interaction.created` records the interaction kind and whether the create
+request used a deprecated resolver-policy alias. It does not record the prompt,
+title, options, questions, target identifier, creator identifier, or resolver
+identifier.
+
+`interaction.resolved` records the low-cardinality interaction outcome defined
+in the generated contract. Its `legacy_inherited_restriction` dimension is
+`true` only when stored migration provenance preserves a legacy resolver-policy
+restriction. It is `false` for canonical new writes. This dimension describes
+policy provenance. It does not contain user content or an identifier.
+
+Use `trackInteractionCreated()` and `trackInteractionResolved()` from
+`events.ts` to emit these events. The generated contract remains the authority
+for their exact dimensions and optionality.
+
 ## Sandbox Startup Trace Spans
 
 Paperclip opens OpenTelemetry spans on the sandbox start path. These spans are a
@@ -90,14 +109,55 @@ absent, never a misleading `0`.
 | `codex-home.seed` | Managed-home seed step. | `sandbox.startup` |
 | `skills.reconcile` | Skills reconcile step. | `sandbox.startup` |
 | `stage.sync` | Workspace stage-sync step. | `sandbox.startup` |
+| `snapshot.git` | Host-side git workspace enumeration inside `stage.sync` (`git status --ignored`, the HEAD diffs, `ls-files`). | `stage.sync` |
+| `snapshot.baseline` | Host-side baseline workspace content-hash walk inside `stage.sync`, kept for restore. | `stage.sync` |
+| `stage.workspace` | One inbound workspace stage task inside `stage.sync`. It packs and uploads the workspace. | `stage.sync` |
+| `stage.asset.<key>` | One inbound asset stage task inside `stage.sync`. It packs and uploads one managed-home asset. The `<key>` segment is the asset key. | `stage.sync` |
+| `stage.project.<id>` | One inbound referenced-project stage task inside `stage.sync`. It uploads one referenced project. The `<id>` segment is the project id. | `stage.sync` |
+| `pack` | Host-side workspace tarball build inside the `stage.workspace` task. | `stage.workspace` |
 | `bridge.paperclip` | Paperclip bridge start step. | `sandbox.startup` |
 | `bridge.process-session` | Process-session bridge start step. | `sandbox.startup` |
 | `acp.handshake` | ACP session handshake step. | `sandbox.startup` |
-| `sandbox.exec` | One host-to-sandbox execution. | the active step span |
+| `sandbox.syncBack` | The settlement sync-back that restores the managed home at teardown. | the active run span |
+| `restore.workspace` | One outbound workspace restore task at teardown. It reads the sandbox workspace back and merges it into the host workspace. | `sandbox.syncBack` |
+| `restore.asset.<key>` | One outbound asset restore task at teardown. It reads one asset back to its host store. The `<key>` segment is the asset key. | `sandbox.syncBack` |
+| `sandbox.agentSession.sendInput` | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec. | the active run span |
+| `sandbox.agentSession.pollOutput` | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs). | the active run span |
+| `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it. | the active run span |
+| `sandbox.agentProcess` | The persistent streamed agent process the process-session bridge launches; open until the process settles or the bridge tears down, whichever comes first. | the active run span |
+| `sandbox.exec` | One host-to-sandbox execution. | the active step or wrapper span |
 
 A step span name is the step name. The `sandbox.exec` span parents to the step
-span that runs the execution, so each execution nests under its step. With no
-active trace context the exec span opens unparented.
+span that runs the execution, so each execution nests under its step. Within
+`stage.sync`, the host-side sub-steps `snapshot.git` and `snapshot.baseline` open
+as child spans of the step, so the host work at the head of the step is
+attributed rather than showing as a gap. Each inbound sync operation also opens
+its own task span under `stage.sync`: `stage.workspace`, one `stage.asset.<key>`
+per asset, and one `stage.project.<id>` per referenced project. The `pack` span
+nests under `stage.workspace`, because the host builds the tarball inside that
+task. Two concurrent tasks produce overlapping spans.
+
+The settlement `sandbox.syncBack` span runs at teardown and parents to the run
+span. It wraps the managed-home restore. Each outbound restore operation opens
+its own task span under `sandbox.syncBack`: `restore.workspace` and one
+`restore.asset.<key>` per asset. Two concurrent restore tasks produce overlapping
+spans. A run-time
+`sandbox.exec` span parents instead to the run-time wrapper span that runs it
+(`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`,
+`sandbox.callbackBridge.relayRequest`, or `sandbox.agentProcess`). Each run-time
+wrapper span parents to the live run span (`agent.turn` during the turn,
+`task.run` otherwise). With no active trace context the exec span opens
+unparented.
+
+`sandbox.agentProcess` wraps the persistent streamed agent process. The
+process-session bridge launches it during `bridge.process-session`, so it opens
+under `task.run` — no turn has started yet. It therefore overlaps the sibling
+`agent.turn` rather than nesting under it or dangling off the short-lived bring-up
+step. The span ends when the process settles or when the bridge tears down,
+whichever comes first. The bridge tears down before the run root span ends, so
+the span never outlives `task.run` even when the process lingers past teardown
+(the sandbox `execute` has no cancel, so a lingering process cannot be forced to
+resolve).
 
 The root span sets the error status when the bring-up fails. Each step span sets
 the error status when its step fails. The `sandbox.exec` span sets the error
@@ -172,7 +232,7 @@ the code first. Keep the attribute low-cardinality and free of user content.
 ### Provider spans
 
 A sandbox provider plugin also opens spans for its own sync steps. These spans
-use the `sandbox.provider.` name prefix. They share the
+use the `sandbox.daytona.` name prefix. They share the
 `paperclip.sandbox.startup.` attribute prefix and obey the same opt-in and
 no-user-content rules as the startup spans above.
 
@@ -183,15 +243,26 @@ before it records the span.
 
 | Span | Scope | Parent |
 | --- | --- | --- |
-| `sandbox.provider.pack` | The host-local pack step that builds the upload tarball. It makes no sandbox round trip. | the active startup step span |
-| `sandbox.provider.transfer` | The transfer step that uploads the files to the sandbox. | the active startup step span |
-| `sandbox.provider.other` | Any span name outside the known set. | the active startup step span |
+| `sandbox.daytona.pack` | The host-local pack step that builds the upload tarball. It makes no sandbox round trip. | the active startup step span |
+| `sandbox.daytona.transfer` | The transfer step: an upload to the sandbox (inbound) or a download from the sandbox (outbound). The `paperclip.sandbox.startup.transfer.direction` attribute records the direction. | the active sync task span (`stage.*` inbound, `restore.*` under `sandbox.syncBack` outbound) |
+| `sandbox.daytona.ensureDirectory` | The `mkdir -p` step that ensures a directory exists before a write. | the active startup step span |
+| `sandbox.daytona.checkSymlinkEscape` | The re-check step that a path resolves inside the workspace root before use. | the active startup step span |
+| `sandbox.daytona.promote` | The atomic move of a staged temp onto its target via a pinned dir handle. | the active startup step span |
+| `sandbox.daytona.extractTarball` | The one round trip that re-checks the path, runs `tar -xf`, and removes the scratch tarball. | the active startup step span |
+| `sandbox.daytona.postUploadCommand` | One caller-supplied post-upload command. | the active startup step span |
+| `sandbox.daytona.session.open` | The create of the one persistent session for a lease, on the first in-run command. | the active run span |
+| `sandbox.daytona.session.close` | The delete of that persistent session on lease release. | the active run span |
+| `sandbox.daytona.other` | Any span name outside the known set. | the active startup step span |
 
-The host clamps the span name to the closed set `pack` and `transfer`. The host
-maps a known name to `sandbox.provider.<name>`. The host maps any other value to
-`sandbox.provider.other`, so a span name never carries free-form data.
+The host clamps the span name to the closed set of leaf names above (`pack`,
+`transfer`, `ensureDirectory`, `checkSymlinkEscape`, `promote`, `extractTarball`,
+`postUploadCommand`, `session.open`, and `session.close`). The host maps a known
+name to `sandbox.daytona.<name>`. The host maps any other value to
+`sandbox.daytona.other`, so a span name never carries free-form data. Only the
+daytona provider emits these spans today, so the segment is the literal
+`daytona`.
 
-The `sandbox.provider.*` spans use this closed attribute allowlist. The host
+The `sandbox.daytona.*` spans use this closed attribute allowlist. The host
 drops every other key, so a command, an argument, a path, an id, a standard
 output, or a standard error never rides a provider span. The host records only
 the attributes that the producer sends for one span.
@@ -200,13 +271,15 @@ the attributes that the producer sends for one span.
 | --- | --- | --- | --- |
 | `paperclip.sandbox.startup.provider` | string | no | The normalized provider family. |
 | `paperclip.sandbox.startup.outcome` | string | yes | The step outcome (`ok`, `skipped`, or `failed`). |
-| `paperclip.sandbox.startup.pack.wall_ms` | number | yes | The host-local wall time of the pack step. It rides the `sandbox.provider.pack` span. |
-| `paperclip.sandbox.startup.transfer.wall_ms` | number | yes | The wall time of the transfer step. It rides the `sandbox.provider.transfer` span. |
-| `paperclip.sandbox.startup.transfer.guard.count` | number | yes | The number of serial guard round trips before one transfer. It rides the `sandbox.provider.transfer` span. |
+| `paperclip.sandbox.startup.pack.wall_ms` | number | yes | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span. |
+| `paperclip.sandbox.startup.transfer.wall_ms` | number | yes | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span. |
+| `paperclip.sandbox.startup.transfer.guard.count` | number | yes | The number of serial guard round trips before one transfer. It rides the `sandbox.daytona.transfer` span. |
+| `paperclip.sandbox.startup.transfer.direction` | string | yes | The transfer direction (`inbound` or `outbound`). It rides the `sandbox.daytona.transfer` span. |
 
 The `span.record` host handler enforces the allowlist. It re-maps `provider`
 through the provider-family normalizer. It keeps `outcome` only when the value
-is `ok`, `skipped`, or `failed`. It keeps a numeric attribute only when the
+is `ok`, `skipped`, or `failed`. It keeps `transfer.direction` only when the
+value is `inbound` or `outbound`. It keeps a numeric attribute only when the
 value is a finite number. It drops a status message and keeps only the numeric
 status code. The handler never throws, because observability must not change the
 sync control flow.
@@ -216,15 +289,106 @@ capability. So only a plugin that registers an environment driver may emit a
 provider span. The capability gate rejects a provider span from any other
 plugin.
 
-The host parents each provider span to the active startup step span. The host
-mints a W3C `traceparent` from the active step and passes it to the plugin
-worker on the per-call invocation channel. The worker tags its span with the
+The host parents each provider span to the active sync task span. An inbound
+transfer runs inside a `stage.*` task span, so its provider spans parent there.
+An outbound transfer runs inside a `restore.*` task span under `sandbox.syncBack`
+at teardown, so its provider spans parent there. The host mints a W3C
+`traceparent` from the active task span and passes it to the plugin worker on the
+per-call invocation channel. The teardown restore runs inside the run-parented
+`sandbox.syncBack` span, so the host mints a `traceparent` for an outbound
+provider span the same way it does for an inbound one. The worker tags its span with the
 `traceparent` and treats the value as opaque. The worker never derives the
 parent from it. The host recovers the `traceparent` from its own invocation
 record, so a worker can never forge a parent. The host validates the
 `traceparent` and rejects a missing or malformed value. With no active host
 trace context the worker sends no span, so the whole provider-span path is a
 no-op.
+
+## Sandbox Duplex Transport Telemetry
+
+Paperclip opens a fixed observability surface for the sandbox duplex transport.
+This surface is separate from the first-party events and from the startup spans
+above. The generated telemetry contract does not cover it, so this section is its
+canonical contract. The code owner is
+`packages/adapter-utils/src/duplex-telemetry.ts`. That module holds each name and
+each enum value as a literal constant, so the surface never drifts.
+
+The surface is opt-in. The host injects a recorder that binds the span to the
+OTel tracer, the counter to the guarded counter store in
+`server/src/services/tool-runtime-metrics.ts`, and the event to the run-events
+bridge. The default recorder is a no-op, so the whole surface stays inert until
+the host binds a real recorder. Every recorder call sits inside an error swallow,
+so a telemetry failure never breaks the request path.
+
+The surface carries no user content. No route, no query, no request body, no
+token, and no raw identifier rides a span, a counter, or an event. Each record
+carries only the closed dimension keys below and, for the request span, a
+latency. The `provider` dimension carries only the allowlisted public value
+`daytona`. Any other plugin key maps to `other` before the record reaches a sink,
+so a raw plugin key never reaches a span attribute, a counter label, or an event
+field.
+
+### Spans
+
+| Span | Scope | Latency |
+| --- | --- | --- |
+| `sandbox.duplex.channel_open` | One duplex channel-open attempt. The `outcome` dimension is `ok` when the channel opened and readiness passed, or `error` when the open or readiness failed. | none |
+| `sandbox.duplex.request` | One duplex request the broker forwarded to the host. | The request latency in milliseconds. |
+
+### Event
+
+| Event | Scope |
+| --- | --- |
+| `sandbox.duplex.transport` | The host emits it at each transport boundary: a ready duplex channel, a fallback to the file bridge, and a terminal channel loss. Its dimensions record the boundary. |
+
+### Counters
+
+| Counter | Scope |
+| --- | --- |
+| `sandbox_duplex_channel_open_total` | One successful duplex channel open. |
+| `sandbox_duplex_fallback_total` | One fallback to the file bridge. The `fallback_reason` dimension records the cause. |
+| `sandbox_duplex_loss_total` | One terminal duplex channel loss. The `loss_class` dimension records the phase. |
+| `sandbox_duplex_session_leak_total` | One leaked provider session at teardown. |
+
+### Aggregate byte ledger metrics
+
+The host aggregate byte ledger owns one process-scoped gauge and two
+process-scoped counters. The ledger bounds the retained bytes across every live
+duplex route in one process. It sets the gauge on each reserve and each release.
+It increments a counter on a rejected reservation and on an accounting defect.
+These records carry no dimension label. The guarded counter store keys each
+counter on `(companyId, metric)`, and the gauge reports one process value, so no
+dynamic dimension rides them. The code owner is
+`packages/adapter-utils/src/duplex-aggregate-byte-ledger.ts`, and the metric
+names are literal constants in `duplex-telemetry.ts`.
+
+| Metric | Type | Scope |
+| --- | --- | --- |
+| `sandbox_duplex_aggregate_bytes_in_use` | gauge | The aggregate retained bytes across every live duplex route. The ledger sets it on each reserve and each release. |
+| `sandbox_duplex_aggregate_byte_reservation_rejections_total` | counter | One rejected aggregate byte reservation. The ledger increments it when a reservation would pass the aggregate ceiling. |
+| `sandbox_duplex_aggregate_byte_accounting_underflow_total` | counter | One aggregate byte accounting defect. The ledger increments it on a double release or on a transfer of a token it does not hold. |
+
+### Dimension keys
+
+Counters carry no dimension labels. The guarded counter store keys each counter
+on `(companyId, metric)` with no label column, so the `fallback_reason` and
+`loss_class` values fold into the counter metric name instead. The full closed
+dimension set below rides only the spans and the `sandbox.duplex.transport`
+event, which use only these closed keys. A test asserts the exact set, so a new
+key never reaches a sink by accident.
+
+| Key | Type | Optional | Value set |
+| --- | --- | --- | --- |
+| `provider` | string | no | `daytona`, or `other` for any other plugin key. |
+| `transport` | string | no | `duplex` or `file`. A fallback record uses `file`; every other record uses `duplex`. |
+| `outcome` | string | yes | `ok` or `error`. |
+| `fallback_reason` | string | yes | `gate_off`, `capability_absent`, `open_failed`, `ready_invalid`, `ready_nonce_mismatch`, `ready_timeout`, or `contaminated`. It rides only a fallback record. |
+| `loss_class` | string | yes | `pre_dispatch` or `post_dispatch`, relative to the first request dispatch. It rides only a loss record. |
+| `loss_reason` | string | yes | `stdin_eof`, `provider_exit`, `heartbeat_timeout`, `rpc_failure`, `write_error`, `transport_closed`, or `other`. The host maps every loss cause to one of these values, so no raw provider text reaches a sink. `write_error` marks a rejected host-to-sandbox write. `transport_closed` marks a reason-less provider transport close with no exit data. It rides only a loss record. |
+
+To add a name or an enum value, extend the literal constant in
+`duplex-telemetry.ts` first, then update the test that asserts the closed set.
+Keep every dimension low-cardinality and free of user content.
 
 ## Sandbox Startup Run-Log Event
 
@@ -250,6 +414,45 @@ ensure-session sub-times.
 
 To read the detailed timing, use the startup spans. The spans need an OTLP
 endpoint. A run with no endpoint keeps only the three run-log fields above.
+
+## Run Phase Timing Run-Log Event
+
+Paperclip writes one `run.phase.timing` event to the run log for each
+run-lifecycle phase. This event is a run-log record, not a first-party telemetry
+event. The generated telemetry contract does not cover it, so this section is its
+canonical contract. The producer is `emitRunPhaseTiming` in
+`packages/adapter-utils/src/acpx-engine/startup-timing.ts`.
+
+The event payload carries only three fields.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `phase` | string | The run-lifecycle phase name from the closed allowlist below. |
+| `durationMs` | number | The wall time of the phase. A negative or a non-finite value clamps to `0`. |
+| `outcome` | string | The phase outcome (`ok` or `failed`). |
+
+The `phase` field is one member of a closed, low-cardinality allowlist. The
+producer drops any event whose phase name is outside this allowlist, so a
+free-form label never reaches the run log. The allowlist has twelve phase names.
+
+| Phase | Meaning |
+| --- | --- |
+| `place_workspace` | Place the run workspace. |
+| `start_transport` | Start the agent transport. |
+| `create_runtime` | Create the agent runtime. |
+| `ensure_session` | Ensure the agent session exists. |
+| `configure_session` | Configure the agent session. |
+| `prepare_turn` | Prepare the turn. |
+| `turn` | Run the turn. |
+| `end_session` | End the agent session. |
+| `settle_reuse` | Settle the session for reuse. |
+| `stop_transport` | Stop the agent transport. |
+| `sync_back` | Sync the workspace back. |
+| `release_staging_lease` | Release the staging lease. |
+
+The payload never carries a command, an argument, a path, an environment value,
+or a raw identifier. The event rides the `ctx.onEvent` run-event bridge and is
+observability-only. It needs no OTLP endpoint.
 
 ## Dimension Values
 

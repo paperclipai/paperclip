@@ -32,6 +32,7 @@ variables:
       - project
       - workspaces_overview
       - project_workspace
+      - execution_workspace
 triggers:
   - kind: schedule
     label: Daily stale-summary refresh

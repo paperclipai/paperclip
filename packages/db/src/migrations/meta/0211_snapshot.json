@@ -1,5 +1,5 @@
 {
-  "id": "0015beb3-ae9d-4adb-9a50-36759601eb3b",
+  "id": "c56d3441-2ed4-4249-a115-99d55d395899",
   "prevId": "ecc034cd-9b49-418f-b40e-7372ef1e6eeb",
   "version": "7",
   "dialect": "postgresql",
@@ -1338,6 +1338,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "agent_wakeup_requests_company_payload_issue_idx": {
+          "name": "agent_wakeup_requests_company_payload_issue_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\" ->> 'issueId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1862,24 +1883,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "withdrawn_by_agent_id": {
-          "name": "withdrawn_by_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "withdrawn_by_user_id": {
-          "name": "withdrawn_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "withdrawn_at": {
-          "name": "withdrawn_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1944,19 +1947,6 @@
           "tableTo": "agents",
           "columnsFrom": [
             "requested_by_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "approvals_withdrawn_by_agent_id_agents_id_fk": {
-          "name": "approvals_withdrawn_by_agent_id_agents_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "withdrawn_by_agent_id"
           ],
           "columnsTo": [
             "id"
@@ -16770,6 +16760,87 @@
               "expression": "company_id",
               "isExpression": false,
               "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_ctx_issue_created_idx": {
+          "name": "heartbeat_runs_company_ctx_issue_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\" ->> 'issueId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_ctx_task_created_idx": {
+          "name": "heartbeat_runs_company_ctx_task_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\" ->> 'taskId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_ctx_taskkey_created_idx": {
+          "name": "heartbeat_runs_company_ctx_taskkey_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\" ->> 'taskKey')",
+              "asc": true,
+              "isExpression": true,
               "nulls": "last"
             },
             {
@@ -33589,27 +33660,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tool_connections_company_name_uq": {
-          "name": "tool_connections_company_name_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}

@@ -208,7 +208,7 @@ export function OutputFeedbackButtons({
               and future votes local.
             </p>
             <p>
-              You can change this later in Instance Settings &gt; General.
+              You can change this later in Settings &gt; General.
             </p>
             {termsUrl ? (
               <a

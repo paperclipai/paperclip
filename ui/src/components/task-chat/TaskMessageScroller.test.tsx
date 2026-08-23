@@ -56,6 +56,20 @@ describe("TaskMessageScroller", () => {
     return container.querySelector<HTMLButtonElement>(PILL_SELECTOR);
   }
 
+  /**
+   * Wait for the pill to reach a state, rather than for a fixed number of turns.
+   * `flushEvents` yields exactly one macrotask, which is enough on an idle
+   * machine and not when the suite runs many workers in parallel — React
+   * flushes continuous-priority updates asynchronously, so the DOM read can
+   * land before the state does. Sites that dereference `pill()!` turn that into
+   * a hard failure rather than a retry.
+   */
+  async function waitForPill(present: boolean): Promise<void> {
+    await vi.waitFor(() =>
+      present ? expect(pill()).not.toBeNull() : expect(pill()).toBeNull(),
+    );
+  }
+
   /** Set scrollTop and fire a scroll event, like a user or the browser would. */
   async function scrollTo(el: HTMLElement, top: number) {
     el.scrollTop = top;
@@ -89,11 +103,19 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
 
+  it("keeps the scrollbar at the full-width thread viewport edge", () => {
+    render();
+    const frame = scroller().parentElement;
+
+    expect(frame?.className).toBe("relative min-h-0 flex-1");
+  });
+
   it("auto-follows content instantly while pinned", async () => {
     render(1);
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 600); // bottom: 1000 - 600 - 400 = 0 → pinned
+    await waitForPill(false); // pinned state settled before content grows
     render(2);
     expect(el.scrollTop).toBe(1000);
     expect(pill()).toBeNull();
@@ -104,6 +126,7 @@ describe("TaskMessageScroller", () => {
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 100); // 500px from bottom → unpinned
+    await waitForPill(true);
     const btn = pill();
     expect(btn).not.toBeNull();
     expect(btn!.className).toContain("tc-scroll-pill-in");
@@ -132,6 +155,7 @@ describe("TaskMessageScroller", () => {
     el.scrollTo = scrollToSpy as unknown as typeof el.scrollTo;
 
     await scrollTo(el, 100);
+    await waitForPill(true);
     const btn = pill()!;
     btn.click();
     await flushEvents();
@@ -160,6 +184,7 @@ describe("TaskMessageScroller", () => {
     el.scrollTo = vi.fn() as unknown as typeof el.scrollTo;
 
     await scrollTo(el, 100);
+    await waitForPill(true);
     pill()!.click();
     await flushEvents();
     await dispatch(el, new Event("wheel", { bubbles: true }));
@@ -183,20 +208,20 @@ describe("TaskMessageScroller", () => {
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 100);
-    expect(pill()!.className).toContain("tc-scroll-pill-in");
+    await vi.waitFor(() => expect(pill()?.className).toContain("tc-scroll-pill-in"));
 
     // Scrolling back to the bottom starts the exit animation but keeps the
     // pill mounted until animationend.
     await scrollTo(el, 600);
+    await vi.waitFor(() => expect(pill()?.className).toContain("tc-scroll-pill-out"));
     const exiting = pill();
     expect(exiting).not.toBeNull();
-    expect(exiting!.className).toContain("tc-scroll-pill-out");
 
     // jsdom has no window.AnimationEvent, so React's vendor-prefix detection
     // maps onAnimationEnd to "webkitAnimationEnd" here (real browsers get the
     // unprefixed event).
     await dispatch(exiting!, new Event("webkitAnimationEnd", { bubbles: true }));
-    expect(pill()).toBeNull();
+    await waitForPill(false);
   });
 
   it("unmounts immediately on hide under prefers-reduced-motion", async () => {
@@ -208,8 +233,8 @@ describe("TaskMessageScroller", () => {
     const el = scroller();
     fakeGeometry(el);
     await scrollTo(el, 100);
-    expect(pill()).not.toBeNull();
+    await waitForPill(true);
     await scrollTo(el, 600);
-    expect(pill()).toBeNull(); // no animationend needed
+    await waitForPill(false); // no animationend needed
   });
 });

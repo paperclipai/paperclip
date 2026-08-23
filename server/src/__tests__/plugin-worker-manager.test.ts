@@ -23,6 +23,7 @@ const INVOCATION_SCOPE_WORKER_ENTRYPOINT = path.join(
   "plugin-worker-invocation-scope.cjs",
 );
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
+const EXECUTE_LOG_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-execute-log.cjs");
 
 const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   id: "test.plugin",
@@ -774,6 +775,571 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
         code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
       });
       expect(eventsSubscribe).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// execute.log worker→host notification route
+// ---------------------------------------------------------------------------
+
+function makeExecuteLogHandle(extra?: Record<string, unknown>) {
+  return createPluginWorkerHandle("test.plugin", {
+    entrypointPath: EXECUTE_LOG_WORKER_ENTRYPOINT,
+    manifest: TEST_MANIFEST,
+    config: {},
+    instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+    apiVersion: 1,
+    hostHandlers: {},
+    ...extra,
+  });
+}
+
+function executeParams(
+  overrides: Record<string, unknown>,
+): HostToWorkerMethods["environmentExecute"][0] {
+  return {
+    driverKey: "daytona",
+    companyId: "company-1",
+    environmentId: "env-1",
+    config: {},
+    lease: { providerLeaseId: "lease-1" },
+    command: "echo",
+    ...overrides,
+  } as unknown as HostToWorkerMethods["environmentExecute"][0];
+}
+
+describe("plugin worker manager execute.log route", () => {
+  it("delivers ordered execute.log chunks to the execute log sink", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "one" },
+            { stream: "stderr", chunk: "two" },
+            { stream: "stdout", chunk: "three" },
+          ],
+          finalStdout: "onethree",
+          finalStderr: "two",
+        }),
+        undefined,
+        sink,
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+      expect(sink.mock.calls).toEqual([
+        ["stdout", "one"],
+        ["stderr", "two"],
+        ["stdout", "three"],
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an execute.log chunk with a forged or missing invocation id", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "valid", tag: "echo" },
+            { stream: "stdout", chunk: "forged", tag: "unknown" },
+            { stream: "stdout", chunk: "orphan", tag: "none" },
+          ],
+        }),
+        undefined,
+        sink,
+      );
+      // Only the chunk that carries this call's own host-issued id is delivered.
+      expect(sink.mock.calls).toEqual([["stdout", "valid"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an execute.log chunk with an invalid stream name or an empty chunk", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "keep" },
+            { stream: "bogus", chunk: "dropped-stream" },
+            { stream: "stdout", chunk: "" },
+          ],
+        }),
+        undefined,
+        sink,
+      );
+      expect(sink.mock.calls).toEqual([["stdout", "keep"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("routes two concurrent same-company execute calls to their own sink only", async () => {
+    const handle = makeExecuteLogHandle();
+    const sinkA = vi.fn();
+    const sinkB = vi.fn();
+    try {
+      await handle.start();
+      const callA = handle.call(
+        "environmentExecute",
+        executeParams({
+          companyId: "company-1",
+          logs: [{ stream: "stdout", chunk: "a1" }],
+          delayMs: 40,
+        }),
+        undefined,
+        sinkA,
+      );
+      const callB = handle.call(
+        "environmentExecute",
+        executeParams({
+          companyId: "company-1",
+          logs: [{ stream: "stdout", chunk: "b1" }],
+          delayMs: 40,
+        }),
+        undefined,
+        sinkB,
+      );
+      await Promise.all([callA, callB]);
+      // Both calls belong to one company, so the shared pipe stays
+      // single-company and each chunk reaches only its own call's sink.
+      expect(sinkA.mock.calls).toEqual([["stdout", "a1"]]);
+      expect(sinkB.mock.calls).toEqual([["stdout", "b1"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("fails closed and never delivers execute.log across companies, even with a forged peer id", async () => {
+    // A single worker process serves every company, so it knows both companies'
+    // active invocation ids. While company B's execute stays active, company A's
+    // execute forges B's known, valid id and aims a chunk at B's route. The host
+    // must not deliver it to B. Before the exact-company-scope validation, the
+    // route lookup by the worker-supplied id delivered the forged chunk to B.
+    const handle = makeExecuteLogHandle();
+    const sinkA = vi.fn();
+    const sinkB = vi.fn();
+    try {
+      await handle.start();
+      // Company B opens first and stays active (delayed finish), so its route is
+      // registered and known to the worker when company A runs.
+      const callB = handle.call(
+        "environmentExecute",
+        executeParams({ companyId: "company-b", logs: [], delayMs: 200 }),
+        undefined,
+        sinkB,
+      );
+      // Let the worker process B's execute, so it records B's id as the peer id.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const callA = handle.call(
+        "environmentExecute",
+        executeParams({
+          companyId: "company-a",
+          logs: [{ stream: "stdout", chunk: "forged-into-b", tag: "forge-previous" }],
+        }),
+        undefined,
+        sinkA,
+      );
+      await Promise.all([callA, callB]);
+      expect(sinkB).not.toHaveBeenCalled();
+      expect(sinkA).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops execute.log chunks once one execute call exceeds its output budget", async () => {
+    // Bound the total streamed output for one execute call. Past the ceiling the
+    // host drops further chunks, so one runaway or hostile execution cannot flood
+    // the host without limit.
+    const handle = makeExecuteLogHandle({
+      executeLogLimits: { maxTotalCharsPerExecute: 10 },
+    });
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      await handle.call(
+        "environmentExecute",
+        executeParams({
+          logs: [
+            { stream: "stdout", chunk: "aaaaa" }, // total 5 → delivered
+            { stream: "stdout", chunk: "bbbbb" }, // total 10 → delivered
+            { stream: "stdout", chunk: "c" }, // total 11 > 10 → dropped
+          ],
+        }),
+        undefined,
+        sink,
+      );
+      expect(sink.mock.calls).toEqual([
+        ["stdout", "aaaaa"],
+        ["stdout", "bbbbb"],
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an over-length worker line before parsing it and keeps serving the call", async () => {
+    // Enforce the framing bound before the JSON parse. The oversized note is a
+    // valid execute.log line for this call's own id, so without the pre-parse
+    // guard the host would parse and deliver it. The normal note stays under the
+    // limit and reaches the sink, and the call still completes.
+    const handle = makeExecuteLogHandle({
+      executeLogLimits: { maxIncomingMessageChars: 400 },
+    });
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({
+          oversizedLogChunkChars: 1_000,
+          logs: [{ stream: "stdout", chunk: "kept" }],
+          finalStdout: "kept",
+        }),
+        undefined,
+        sink,
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+      expect(sink.mock.calls).toEqual([["stdout", "kept"]]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("completes an execute call that sends no execute.log notification", async () => {
+    const handle = makeExecuteLogHandle();
+    const sink = vi.fn();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({ logs: [], finalStdout: "done" }),
+        undefined,
+        sink,
+      );
+      expect(result).toMatchObject({ exitCode: 0, stdout: "done" });
+      expect(sink).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("does not throw when execute.log arrives but no sink is registered", async () => {
+    const handle = makeExecuteLogHandle();
+    try {
+      await handle.start();
+      const result = await handle.call(
+        "environmentExecute",
+        executeParams({ logs: [{ stream: "stdout", chunk: "no-sink" }] }),
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-owned setup-token login pseudo-terminal route gate
+// ---------------------------------------------------------------------------
+
+const LOGIN_PTY_WORKER_ENTRYPOINT = path.join(
+  FIXTURES_DIR,
+  "plugin-worker-login-pty.cjs",
+);
+
+function makeLoginPtyHandle(extra?: Record<string, unknown>) {
+  return createPluginWorkerHandle("test.plugin", {
+    entrypointPath: LOGIN_PTY_WORKER_ENTRYPOINT,
+    manifest: TEST_MANIFEST,
+    config: {},
+    instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+    apiVersion: 1,
+    hostHandlers: {},
+    ...extra,
+  });
+}
+
+// One valid session home. The shape is the fixed root, one slash, and one UUID.
+const PTY_SESSION_HOME = "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555";
+
+function ptyOpenInput(directive: unknown) {
+  return {
+    driverKey: "daytona",
+    companyId: "company-1",
+    environmentId: "env-1",
+    // The test directive rides in `providerLeaseId`, an opaque field the manager
+    // forwards to the worker unchanged. The manager carries the closed command
+    // key and the validated session home; it carries no command string.
+    providerLeaseId: JSON.stringify(directive),
+    loginCommandKey: "claude" as const,
+    sessionHome: PTY_SESSION_HOME,
+  };
+}
+
+describe("plugin worker manager setup-token pty route gate", () => {
+  it("rejects a command key that is not in the closed set before the worker call", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The provider driver key routes the worker; it confers no command
+      // authority. A key outside the closed set rejects with one fixed non-secret
+      // error before the worker call, so a caller cannot select an arbitrary
+      // command in the sandbox pseudo-terminal.
+      await expect(
+        handle.openLoginPtySession({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: JSON.stringify({ mode: "normal" }),
+          loginCommandKey: "gemini" as unknown as "claude",
+          sessionHome: PTY_SESSION_HOME,
+        }),
+      ).rejects.toThrow("LOGIN_PTY_COMMAND_NOT_ALLOWED");
+      // The rejected open never consumed the single route, so a later open with a
+      // closed key still succeeds.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("rejects a malformed session home before the worker call", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The host revalidates the server-controlled session home shape before the
+      // worker RPC. A traversal candidate fails closed at the last host gate.
+      await expect(
+        handle.openLoginPtySession({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: JSON.stringify({ mode: "normal" }),
+          loginCommandKey: "claude" as const,
+          sessionHome: "/tmp/paperclip-adapter-login/../etc",
+        }),
+      ).rejects.toThrow("LOGIN_PTY_INVALID_SESSION_HOME");
+      // The rejected open never consumed the single route.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("permits one active credential pseudo-terminal per worker", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      // A second open while the first route is not closed rejects with one fixed
+      // non-secret error before it reaches the worker.
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
+      ).rejects.toThrow("LOGIN_PTY_ROUTE_BUSY");
+      await first.close();
+      // After the first route closes and the worker acknowledges the close, a new
+      // open is admitted.
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers output only for the exact bound worker session id and drops a mismatch", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "good-1" },
+            { chunk: "forged", sid: "ws-EVIL" },
+            { chunk: "good-2" },
+          ],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      // The forged notification carries a wrong worker session id, so the host
+      // drops it. Only the two bound chunks reach the listener, in order.
+      expect(chunks).toEqual(["good-1", "good-2"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("routes delayed input to the worker and back to the listener", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      session.write("browser-code");
+      // The worker echoes the input as one output notification for the bound
+      // session, so the listener receives it.
+      await vi.waitFor(() => expect(chunks).toContain("echo:browser-code"));
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when the cumulative output passes the per-route bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxTotalChars: 10 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          outputs: [
+            { chunk: "aaaaa" }, // total 5 → delivered
+            { chunk: "bbbbb" }, // total 10 → delivered
+            { chunk: "ccccc" }, // total 15 > 10 → terminalize
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The per-route bound terminalizes the route, so the login wait resolves
+      // with a null exit code and the third chunk never reaches the listener.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["aaaaa", "bbbbb"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes and fails closed on a malformed open reply, then admits a later open", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "malformed-open" })),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+      // The terminalize closed the route by the host route id and the worker
+      // acknowledged the close, so a later open is admitted.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route on an open timeout", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { openTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "no-open-reply" })),
+      ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("binds the worker session id one time and ignores a duplicate open reply", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          mode: "duplicate-open-reply",
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "hello" }],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The duplicate open reply never rebinds or reopens the route, so the
+      // session runs normally on the one bind.
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["hello"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("closes the route with a fixed exit when the worker exits", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      const waitResult = session.wait();
+      await handle.stop();
+      // A worker exit closes the one route and resolves the login wait with the
+      // fixed non-secret exit.
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("retires the worker on an unconfirmed close acknowledgement", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { closeTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      const exited = new Promise<void>((resolve) => {
+        handle.on("exit", () => resolve());
+      });
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal", closeMode: "bad-ack" }),
+      );
+      await session.close();
+      // The close acknowledgement carried a mismatched host route id, so the host
+      // fails closed and retires the worker before any reuse.
+      await exited;
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
+      ).rejects.toThrow();
     } finally {
       await handle.stop().catch(() => undefined);
     }

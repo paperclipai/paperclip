@@ -68,7 +68,7 @@ describe("paperclip skill utils", () => {
     const apiReference = await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8");
     const issueDocs = await fs.readFile(path.resolve("docs/api/issues.md"), "utf8");
     for (const body of [apiReference, issueDocs]) {
-      expect(body).toContain('resolverPolicy: "board_only" | "board_or_agents"');
+      expect(body).toContain('resolverPolicy: "anyone" | "not_creator" | "human_only"');
       expect(body).toContain("requestedResolverPolicy");
       expect(body).toContain("effectiveResolverPolicy");
       expect(body).toContain("toolAction");

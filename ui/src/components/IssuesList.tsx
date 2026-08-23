@@ -46,6 +46,7 @@ import {
   type InboxIssueColumn,
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
@@ -1827,6 +1828,7 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
+                  {/* PAP-411: "priority" sort option hidden behind SHOW_TASK_PRIORITY_UI (comparator stays dormant). */}
                   {([
                     ["workflow", "Workflow"],
                     ["status", "Status"],
@@ -1834,7 +1836,9 @@ export function IssuesList({
                     ["title", "Title"],
                     ["created", "Created"],
                     ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
+                  ] as const)
+                    .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
+                    .map(([field, label]) => (
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
@@ -1871,6 +1875,7 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
+                  {/* PAP-411: "priority" group-by option hidden behind SHOW_TASK_PRIORITY_UI (group logic stays dormant). */}
                   {([
                     ["status", "Status"],
                     ["priority", "Priority"],
@@ -1879,7 +1884,9 @@ export function IssuesList({
                     ["workspace", "Workspace"],
                     ["parent", "Parent Task"],
                     ["none", "None"],
-                  ] as const).map(([value, label]) => (
+                  ] as const)
+                    .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")
+                    .map(([value, label]) => (
                     <button
                       key={value}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${

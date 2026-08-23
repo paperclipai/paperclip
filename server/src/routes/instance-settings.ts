@@ -8,11 +8,51 @@ import {
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a)
+      && Array.isArray(b)
+      && a.length === b.length
+      && a.every((value, i) => sameJsonValue(value, b[i]))
+    );
+  }
+  const aKeys = Object.keys(a);
+  const bKeys = new Set(Object.keys(b));
+  return aKeys.length === bKeys.size && aKeys.every((key) =>
+    bKeys.has(key) && sameJsonValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
+  );
+}
+
+/**
+ * Floor writes to operator-hidden settings. Same-value writes pass so clients
+ * that echo a full GET response keep working (the executionMode precedent);
+ * only a write that would actually change a hidden setting is rejected.
+ */
+async function assertNoHiddenSettingChanges(
+  body: Record<string, unknown>,
+  getCurrent: () => Promise<object>,
+  isHiddenField: (field: string) => boolean,
+) {
+  const hiddenKeys = Object.keys(body).filter(isHiddenField);
+  if (hiddenKeys.length === 0) return;
+  const current = (await getCurrent()) as Record<string, unknown>;
+  for (const key of hiddenKeys) {
+    if (sameJsonValue(body[key], current[key])) continue;
+    throw forbidden(`${key} is managed by the hosting operator on this instance`, {
+      code: "settings_operator_managed",
+    });
+  }
+}
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -47,7 +87,26 @@ export function instanceSettingsRoutes(db: Db) {
           typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
         );
       }
-      const updated = await svc.update(req.body);
+      // An explicit tenant write of the instance default reclassifies its
+      // attribution: whatever the default becomes — including a deliberate
+      // re-selection of the managed sandbox row — it is tenant-chosen, so
+      // the reconciliation stamp marker must not survive to let a later
+      // managed-sandbox-only mode-off pass mistake the tenant's choice for a
+      // stamp and revert it. The marker clear and the settings write commit
+      // in ONE transaction, so no partial failure can desync attribution
+      // from the default (neither a stale stamp on a tenant choice, nor a
+      // reconciliation default that lost its marker and can never revert).
+      const writesDefault = Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId");
+      const managedSandbox = writesDefault
+        ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
+        : null;
+      const updated = await db.transaction(async (tx) => {
+        if (managedSandbox?.metadata?.managedDefaultStamped === true) {
+          const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
+          await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
+        }
+        return svc.update(req.body, { db: tx });
+      });
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
@@ -103,6 +162,12 @@ export function instanceSettingsRoutes(db: Db) {
           });
         }
       }
+      const hidden = getHiddenSettings();
+      await assertNoHiddenSettingChanges(
+        req.body,
+        () => svc.getGeneral(),
+        (field) => hidden.has(`instance.general.${field}`),
+      );
       const updated = await svc.updateGeneral(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
@@ -142,6 +207,15 @@ export function instanceSettingsRoutes(db: Db) {
     validate(patchInstanceExperimentalSettingsSchema),
     async (req, res) => {
       assertCanManageInstanceSettings(req);
+      // Hiding the whole Experimental page floors every toggle; otherwise
+      // only individually hidden keys are floored.
+      const hidden = getHiddenSettings();
+      await assertNoHiddenSettingChanges(
+        req.body,
+        () => svc.getExperimental(),
+        (field) =>
+          hidden.has("instance.experimental") || hidden.has(`instance.experimental.${field}`),
+      );
       const updated = await svc.updateExperimental(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();

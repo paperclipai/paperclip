@@ -68,6 +68,7 @@ const {
     reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
+    sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
     reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
@@ -522,7 +523,11 @@ describe("startServer feedback export wiring", () => {
     try {
       await startServer();
 
-      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+      // The disabled path still creates one heartbeat runtime. This runtime owns
+      // the orphan-sandbox cleanup sweep, so a leaked provider sandbox is still
+      // reaped at startup and on the interval.
+      expect(heartbeatServiceFactoryMock).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalled();
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await Promise.resolve();
@@ -693,7 +698,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     );
   });
 
-  it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
+  it("preserves explicit-port external auth public URLs when detect-port selects a new port", async () => {
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
@@ -703,9 +708,12 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     const started = await startServer();
 
+    // The server listens internally on 3110, but an explicit *external* base URL must keep
+    // its advertised port. Rewriting it to the internal listen port produced an unreachable
+    // URL that leaked to spawned agents as a dead PAPERCLIP_API_URL. (BRO-1558)
     expect(started.listenPort).toBe(3110);
-    expect(started.apiUrl).toBe("http://my-host.ts.net:3110");
-    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
+    expect(started.apiUrl).toBe("http://my-host.ts.net:3100");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3100");
   });
 
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {

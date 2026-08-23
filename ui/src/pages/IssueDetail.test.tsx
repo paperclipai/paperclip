@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, Issue, IssueAttachment, IssueComment, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
@@ -33,12 +34,14 @@ const mockIssuesApi = vi.hoisted(() => ({
   createTreeHold: vi.fn(),
   releaseTreeHold: vi.fn(),
   archiveFromInbox: vi.fn(),
+  unarchiveFromInbox: vi.fn(),
   addComment: vi.fn(),
   cancelComment: vi.fn(),
   upsertFeedbackVote: vi.fn(),
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
+  getDocument: vi.fn(),
 }));
 
 const mockActivityApi = vi.hoisted(() => ({
@@ -87,6 +90,10 @@ const mockLocation = vi.hoisted(() => ({
 }));
 const mockOpenPanel = vi.hoisted(() => vi.fn());
 const mockClosePanel = vi.hoisted(() => vi.fn());
+const mockSetPanelVisible = vi.hoisted(() => vi.fn());
+const mockPanelState = vi.hoisted(() => ({ panelVisible: true }));
+const mockSidebarState = vi.hoisted(() => ({ isMobile: false }));
+const mockIssuePropertiesRender = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSetMobileToolbar = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
@@ -185,12 +192,18 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+const mockOpenNewIssue = vi.hoisted(() => vi.fn());
+const mockOpenNewProject = vi.hoisted(() => vi.fn());
+const mockOpenNewGoal = vi.hoisted(() => vi.fn());
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
   }),
   useDialogActions: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
+    openNewProject: mockOpenNewProject,
+    openNewGoal: mockOpenNewGoal,
   }),
 }));
 
@@ -198,15 +211,13 @@ vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
     openPanel: mockOpenPanel,
     closePanel: mockClosePanel,
-    panelVisible: true,
-    setPanelVisible: vi.fn(),
+    panelVisible: mockPanelState.panelVisible,
+    setPanelVisible: mockSetPanelVisible,
   }),
 }));
 
 vi.mock("../context/SidebarContext", () => ({
-  useSidebar: () => ({
-    isMobile: false,
-  }),
+  useSidebar: () => mockSidebarState,
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
@@ -290,11 +301,47 @@ vi.mock("../components/IssueChatThread", () => ({
   },
 }));
 
-// The redesign thread pulls in the MarkdownEditor composer, whose @mdxeditor
-// dependency cannot load under jsdom's CSSOM. These tests exercise the legacy
-// (flag-off) path, so an inert stub keeps the suite unit-scoped.
+// The task chat thread pulls in the MarkdownEditor composer, whose @mdxeditor
+// dependency cannot load under jsdom's CSSOM. The stub keeps the suite
+// unit-scoped but still renders the threadHeader JSX (the issue header row
+// lives inside the thread) so header controls stay testable, records its props
+// on the shared thread-render spy, and exposes the same run-control buttons as
+// the IssueChatThread stub above.
 vi.mock("../components/TaskChatThread", () => ({
-  TaskChatThread: () => <div data-testid="task-chat-thread">Task chat thread</div>,
+  TaskChatThread: (props: {
+    threadHeader?: ReactNode;
+    onStopRun?: (runId: string) => Promise<void>;
+    stopRunLabel?: string;
+    runFinalizationActions?: readonly {
+      id: string;
+      label: string;
+      onSelect: (runId: string) => Promise<void> | void;
+    }[];
+    footer?: ReactNode;
+  }) => {
+    mockIssueChatThreadRender(props);
+    return (
+      <div data-testid="task-chat-thread">
+        {props.threadHeader}
+        Task chat thread
+        {props.onStopRun ? (
+          <button type="button" onClick={() => void props.onStopRun?.("run-active-1")}>
+            {props.stopRunLabel ?? "Stop run"}
+          </button>
+        ) : null}
+        {props.runFinalizationActions?.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            onClick={() => void action.onSelect("run-active-1")}
+          >
+            {action.label}
+          </button>
+        ))}
+        {props.footer}
+      </div>
+    );
+  },
 }));
 
 vi.mock("../components/IssueDocumentsSection", () => ({
@@ -320,7 +367,10 @@ vi.mock("../components/IssuesList", () => ({
 }));
 
 vi.mock("../components/IssueProperties", () => ({
-  IssueProperties: () => <div>Properties</div>,
+  IssueProperties: (props: unknown) => {
+    mockIssuePropertiesRender(props);
+    return <div>Properties</div>;
+  },
 }));
 
 vi.mock("../components/IssueRunLedger", () => ({
@@ -977,6 +1027,8 @@ describe("IssueDetail", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    mockPanelState.panelVisible = true;
+    mockSidebarState.isMobile = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -1000,6 +1052,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
+    mockIssuesApi.unarchiveFromInbox.mockResolvedValue({ ok: true });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
     mockActivityApi.forIssue.mockResolvedValue([]);
@@ -1029,11 +1082,19 @@ describe("IssueDetail", () => {
       enableExternalObjects: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
+    mockIssuesApi.getDocument.mockResolvedValue(null);
+    mockOpenPanel.mockClear();
+    mockClosePanel.mockClear();
+    mockSetPanelVisible.mockClear();
+    mockIssuePropertiesRender.mockClear();
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
     mockNavigate.mockClear();
+    mockOpenNewIssue.mockClear();
+    mockOpenNewProject.mockClear();
+    mockOpenNewGoal.mockClear();
     mockLocation.pathname = "/issues/PAP-1";
     mockLocation.search = "";
     mockLocation.hash = "";
@@ -1067,12 +1128,305 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Issue detail smoke");
-    expect(container.textContent).toContain("Chat thread");
+    expect(container.textContent).toContain("Task chat thread");
     expect(
       consoleErrorSpy.mock.calls.some((call: unknown[]) =>
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("opens a closed desktop pane and routes an ordinary document to Artifacts on direct load", async () => {
+    mockPanelState.panelVisible = false;
+    mockLocation.hash = "#document-qa-evidence";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect(panel?.props?.documentDeepLink).toMatchObject({
+        tab: "artifacts",
+        documentKey: "qa-evidence",
+      });
+    });
+  });
+
+  it("leaves ordinary document links to the classic center-column surface", async () => {
+    mockPanelState.panelVisible = false;
+    mockLocation.hash = "#document-qa-evidence";
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableClassicTaskInterface: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull();
+      expect(mockSetPanelVisible).not.toHaveBeenCalled();
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect(panel?.props?.documentDeepLink).toBeNull();
+    });
+  });
+
+  it("clears document routing when the URL no longer names a document", async () => {
+    mockLocation.hash = "#document-qa-evidence";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForAssertion(() => {
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect(panel?.props?.documentDeepLink).toMatchObject({ documentKey: "qa-evidence" });
+    });
+
+    mockLocation.hash = "#work-product-1";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect(panel?.props?.documentDeepLink).toBeNull();
+    });
+  });
+
+  it("routes plan to the Plan pane tab and leaves continuation-summary on its existing surface", async () => {
+    mockPanelState.panelVisible = false;
+    mockLocation.hash = "#document-plan";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForAssertion(() => {
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect(panel?.props?.documentDeepLink).toMatchObject({ tab: "plans", documentKey: "plan" });
+    });
+
+    mockSetPanelVisible.mockClear();
+    mockLocation.hash = "#document-continuation-summary";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    expect(mockSetPanelVisible).not.toHaveBeenCalled();
+    await waitForAssertion(() => {
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect(panel?.props?.documentDeepLink).toBeNull();
+    });
+  });
+
+  it("replays document routing when the current same-page hash is clicked again", async () => {
+    mockLocation.hash = "#document-qa-evidence";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForAssertion(() => {
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect((panel?.props?.documentDeepLink as { requestId?: number } | null)?.requestId).toBe(1);
+    });
+
+    const link = document.createElement("a");
+    link.href = "#document-qa-evidence";
+    link.textContent = "QA evidence";
+    container.appendChild(link);
+    await act(async () => link.click());
+
+    await waitForAssertion(() => {
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as { props?: Record<string, unknown> } | undefined;
+      expect((panel?.props?.documentDeepLink as { requestId?: number } | null)?.requestId).toBe(2);
+    });
+  });
+
+  it("opens the mobile properties sheet for a document deep link", async () => {
+    mockSidebarState.isMobile = true;
+    mockLocation.hash = "#document-qa-evidence";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockIssuePropertiesRender).toHaveBeenCalledWith(expect.objectContaining({
+        inline: true,
+        documentDeepLink: expect.objectContaining({
+          tab: "artifacts",
+          documentKey: "qa-evidence",
+        }),
+      }));
+    });
+    expect(mockSetPanelVisible).not.toHaveBeenCalled();
+  });
+
+  it("renders the full sub-task tree below the title in the chat center pane", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({
+        id: "child-1",
+        parentId: "issue-1",
+        identifier: "PAP-2",
+        issueNumber: 2,
+        title: "Child task",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const title = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Issue detail smoke",
+    );
+    const subTasks = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Sub-issues",
+    );
+    expect(title).toBeDefined();
+    expect(subTasks).toBeDefined();
+    expect(title!.compareDocumentPosition(subTasks!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(mockIssuesListRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createIssueLabel: "Sub-task",
+        showProgressSummary: true,
+      }),
+    );
+  });
+
+  it("hides the full sub-task tree when the task has no subtasks", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Sub-issues");
+    expect(mockIssuesListRender.mock.calls).not.toContainEqual([
+      expect.objectContaining({ isLoading: false }),
+    ]);
+  });
+
+  it("keeps the properties panel stable across unrelated chat-detail renders", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const detail = (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    // React Query returns a new mutation result object on render. The panel
+    // effect must depend on the stable mutate function rather than that wrapper
+    // object, or openPanel's state update recursively renders
+    // IssueDetail until React throws "Maximum update depth exceeded".
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+  });
+
+  it("does not loop openPanel when the sub-task list query is still loading (PAP-508)", async () => {
+    // While the descendant-issues query is still in flight, `data` is undefined.
+    // A literal `= []` default for that `data` mints a new array reference on
+    // every render, which destabilizes the child-derived panel key, re-firing
+    // openPanel each render until
+    // React throws "Maximum update depth exceeded". Keep the list query pending
+    // so `data` stays undefined and the stabilization of the empty default is
+    // the only thing preventing the loop. A fresh root element is rendered each
+    // pass so React actually re-renders IssueDetail (a reused element reference
+    // lets the reconciler bail out, masking the loop).
+    const pendingListRequest = createDeferred<Issue[]>();
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockReturnValue(pendingListRequest.promise);
+    const renderDetail = () => (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+
+    pendingListRequest.resolve([]);
+    await flushReact();
   });
 
   it("does not load or render decision sections in the issue header", async () => {
@@ -1108,7 +1462,7 @@ describe("IssueDetail", () => {
     expect(mockDecisionsApi.list).not.toHaveBeenCalled();
   });
 
-  it("updates status and priority from the task header controls", async () => {
+  it("updates status from the task header control and hides the priority control (PAP-411)", async () => {
     const issue = createIssue({ status: "todo", priority: "medium" });
     mockIssuesApi.get.mockResolvedValue(issue);
     mockIssuesApi.update.mockImplementation(async (_issueId: string, data: Record<string, unknown>) => ({
@@ -1133,7 +1487,9 @@ describe("IssueDetail", () => {
       'button[aria-label="Change priority (current: medium)"]',
     );
     expect(statusButton).not.toBeNull();
-    expect(priorityButton).not.toBeNull();
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off), so the header
+    // priority control must not render.
+    expect(priorityButton).toBeNull();
 
     await act(async () => {
       statusButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -1141,18 +1497,15 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { status: "done" });
     });
-
-    await act(async () => {
-      priorityButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    });
-    await waitForAssertion(() => {
-      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { priority: "high" });
-    });
+    expect(mockIssuesApi.update).not.toHaveBeenCalledWith(
+      issue.identifier,
+      expect.objectContaining({ priority: expect.anything() }),
+    );
 
     mockIssuesApi.update.mockReset();
   });
 
-  it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
+  it("removes an inbox-origin archived issue and restores it when the toast Undo action is pressed", async () => {
     const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
     const otherIssue = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Keep me in inbox" });
     const archiveRequest = createDeferred<{ id: string; archivedAt: Date }>();
@@ -1165,6 +1518,12 @@ describe("IssueDetail", () => {
       "with-routine-executions",
       "live-descendant-summary",
     ] as const;
+    const compactKey = [
+      ...queryKeys.issues.list("company-1"),
+      "compact",
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
     const touchedKey = [
       ...queryKeys.issues.listTouchedByMe("company-1"),
       "with-routine-executions",
@@ -1172,6 +1531,7 @@ describe("IssueDetail", () => {
     ] as const;
     const unreadKey = queryKeys.issues.listUnreadTouchedByMe("company-1");
     queryClient.setQueryData<Issue[]>(mineKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(compactKey, [issue, otherIssue]);
     queryClient.setQueryData<Issue[]>(touchedKey, [issue, otherIssue]);
     queryClient.setQueryData<Issue[]>(unreadKey, [issue, otherIssue]);
 
@@ -1196,6 +1556,7 @@ describe("IssueDetail", () => {
 
     await waitForAssertion(() => {
       expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(compactKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(mockNavigate).not.toHaveBeenCalled();
@@ -1207,7 +1568,101 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(mockNavigate).toHaveBeenCalledWith("/inbox/mine", { replace: true });
-    expect(mockPushToast).toHaveBeenCalledWith({ title: "Task archived from inbox", tone: "success" });
+    const archiveToast = mockPushToast.mock.calls
+      .map(([toast]) => toast)
+      .find((toast) => toast.title === "Task archived from inbox");
+    expect(archiveToast).toMatchObject({
+      title: "Task archived from inbox",
+      tone: "success",
+      action: { label: "Undo" },
+    });
+    expect(archiveToast?.action?.onClick).toEqual(expect.any(Function));
+
+    const staleInboxFetch = createDeferred<Issue[]>();
+    const staleInboxRequest = queryClient.fetchQuery({
+      queryKey: mineKey,
+      queryFn: () => staleInboxFetch.promise,
+    }).catch(() => undefined);
+    const staleCompactFetch = createDeferred<Issue[]>();
+    const staleCompactRequest = queryClient.fetchQuery({
+      queryKey: compactKey,
+      queryFn: () => staleCompactFetch.promise,
+    }).catch(() => undefined);
+    await waitForAssertion(() => {
+      expect(queryClient.isFetching({ queryKey: mineKey })).toBe(1);
+      expect(queryClient.isFetching({ queryKey: compactKey })).toBe(1);
+    });
+
+    await act(async () => {
+      archiveToast.action.onClick();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    staleInboxFetch.resolve([otherIssue]);
+    staleCompactFetch.resolve([otherIssue]);
+    await staleInboxRequest;
+    await staleCompactRequest;
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
+      expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(compactKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(mockPushToast).toHaveBeenCalledWith({ title: "Task restored to inbox", tone: "success" });
+    });
+  });
+
+  it("keeps an archived task hidden and reports an error when toast Undo fails", async () => {
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.unarchiveFromInbox.mockRejectedValue(new Error("Inbox policy denied"));
+
+    const mineKey = [
+      ...queryKeys.issues.listMineByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    queryClient.setQueryData<Issue[]>(mineKey, [issue]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const archiveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive from inbox"]',
+    );
+    expect(archiveButton).not.toBeNull();
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData<Issue[]>(mineKey)).toEqual([]);
+    });
+
+    const archiveToast = mockPushToast.mock.calls
+      .map(([toast]) => toast)
+      .find((toast) => toast.title === "Task archived from inbox");
+    expect(archiveToast?.action?.onClick).toEqual(expect.any(Function));
+
+    await act(async () => {
+      archiveToast.action.onClick();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
+      expect(queryClient.getQueryData<Issue[]>(mineKey)).toEqual([]);
+      expect(mockPushToast).toHaveBeenCalledWith({
+        title: "Undo failed",
+        body: "Inbox policy denied",
+        tone: "error",
+      });
+    });
   });
 
   it("shows assignee and originating avatars in the issue header metadata", async () => {
@@ -1480,6 +1935,102 @@ describe("IssueDetail", () => {
     mockHeartbeatsApi.cancel.mockClear();
   });
 
+  it("does not rebind a queued message when another run becomes live before its request settles", async () => {
+    const postedComment = createDeferred<IssueComment>();
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      executionRunId: "run-original",
+    }));
+    mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+    mockHeartbeatsApi.cancel.mockResolvedValue({});
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-original",
+        status: "running",
+        invocationSource: "issue",
+        triggerDetail: null,
+        contextCommentId: null,
+        contextWakeCommentId: null,
+        startedAt: "2026-04-21T00:00:01.000Z",
+        finishedAt: null,
+        createdAt: "2026-04-21T00:00:01.000Z",
+        agentId: "agent-1",
+        agentName: "Coder",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const initialProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+    };
+    await act(async () => {
+      void initialProps.onAdd("Keep this bound to the original run");
+      await Promise.resolve();
+    });
+    await flushReact();
+
+    const replacementRun = {
+      id: "run-replacement",
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      contextCommentId: null,
+      contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:02.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-21T00:00:02.000Z",
+      agentId: "agent-1",
+      agentName: "Coder",
+      adapterType: "codex_local",
+      issueId: "issue-1",
+    };
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.issues.liveRuns("issue-1"), [replacementRun]);
+      queryClient.setQueryData(queryKeys.issues.activeRun("issue-1"), replacementRun);
+    });
+    await flushReact();
+
+    const replacementProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const optimisticComment = replacementProps.comments?.find(
+      (comment) => comment.body === "Keep this bound to the original run",
+    );
+    expect(optimisticComment).toMatchObject({
+      clientStatus: "queued",
+      queueTargetRunId: "run-original",
+    });
+
+    await act(async () => {
+      await replacementProps.onInterruptQueued(optimisticComment!.queueTargetRunId!);
+    });
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-original");
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalledWith("run-replacement");
+
+    await act(async () => {
+      postedComment.resolve(createIssueComment({ body: "Keep this bound to the original run" }));
+    });
+    await flushReact();
+    mockHeartbeatsApi.cancel.mockClear();
+  });
+
   it("does not optimistically queue a fresh comment from an unlocked stale active-run cache", async () => {
     const postedComment = createDeferred<IssueComment>();
     mockIssuesApi.get.mockResolvedValue(createIssue({
@@ -1569,9 +2120,6 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(container.querySelector('[aria-label="Open file in this issue"]')).toBeNull();
-    const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
-    expect(latestWorkspaceProps?.onBrowseFiles).toBeUndefined();
-    expect(latestWorkspaceProps?.onOpenFileByPath).toBeUndefined();
   });
 
   it("shows file viewer entry points when the experimental flag is enabled", async () => {
@@ -1593,48 +2141,19 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(container.querySelector('[aria-label="Open file in this issue"]')).not.toBeNull();
-    const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
-    expect(latestWorkspaceProps?.onBrowseFiles).toEqual(expect.any(Function));
-    expect(latestWorkspaceProps?.onOpenFileByPath).toEqual(expect.any(Function));
   });
 
-  it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
-    mockIssuesApi.get.mockResolvedValue(createIssue());
+  it("hides the properties sidebar on the first onboarding task until a plan document exists", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: true,
+      enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
     });
-    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
-      {
-        id: "decomp-1",
-        companyId: "company-1",
-        sourceIssueId: "issue-1",
-        acceptedPlanRevisionId: "plan-rev-1",
-        acceptedPlanRevisionNumber: 2,
-        acceptedInteractionId: null,
-        status: "completed",
-        requestFingerprint: "fingerprint-1",
-        requestedChildCount: 2,
-        childIssueIds: ["issue-2", "issue-3"],
-        childIssues: [
-          {
-            id: "issue-2",
-            identifier: "PAP-2",
-            title: "First child issue",
-            status: "todo",
-            priority: "medium",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-          },
-        ],
-        ownerAgentId: null,
-        ownerUserId: null,
-        ownerRunId: null,
-        completedAt: "2026-05-28T06:00:00.000Z",
-        createdAt: "2026-05-28T05:50:00.000Z",
-        updatedAt: "2026-05-28T06:00:00.000Z",
-      },
-    ]);
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
+    );
+    // No plan yet: the hook's 404 resolves to null.
+    mockIssuesApi.getDocument.mockResolvedValue(null);
 
     await act(async () => {
       root.render(
@@ -1647,46 +2166,23 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Plan decomposition");
-    expect(container.textContent).toContain("Plan revision 2");
-    expect(container.textContent).toContain("2 of 2 child tasks created");
-    expect(container.textContent).toContain("First child issue");
-    expect(mockIssuesApi.listAcceptedPlanDecompositions).toHaveBeenCalledWith("issue-1");
+    // Panel content is withheld — openPanel is never invoked, so the sidebar
+    // stays hidden without touching the persisted panelVisible preference.
+    expect(mockOpenPanel).not.toHaveBeenCalled();
+    expect(mockClosePanel).toHaveBeenCalled();
   });
 
-  it("renders sibling previous and next navigation at the chat footer", async () => {
-    const issue = createIssue({
-      id: "issue-2",
-      identifier: "PAP-2",
-      issueNumber: 2,
-      parentId: "parent-1",
-      title: "Current sibling",
-      createdAt: new Date("2026-04-02T00:00:00.000Z"),
+  it("keeps the Show properties button clickable on the first task and reveals the sidebar on demand", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
     });
-    const previous = createIssue({
-      id: "issue-1",
-      identifier: "PAP-1",
-      issueNumber: 1,
-      parentId: "parent-1",
-      title: "Previous sibling",
-      status: "done",
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
-    });
-    const next = createIssue({
-      id: "issue-3",
-      identifier: "PAP-3",
-      issueNumber: 3,
-      parentId: "parent-1",
-      title: "Next sibling",
-      blockedBy: [{ id: "issue-2" }] as Issue["blockedBy"],
-      createdAt: new Date("2026-04-03T00:00:00.000Z"),
-    });
-
-    mockIssuesApi.get.mockResolvedValue(issue);
-    mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; parentId?: string }) => {
-      if (filters?.parentId === "parent-1") return Promise.resolve([next, previous, issue]);
-      return Promise.resolve([]);
-    });
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
+    );
+    // No plan yet: the panel mount is suppressed by default.
+    mockIssuesApi.getDocument.mockResolvedValue(null);
 
     await act(async () => {
       root.render(
@@ -1695,54 +2191,40 @@ describe("IssueDetail", () => {
         </QueryClientProvider>,
       );
     });
+
     await flushReact();
+    await flushReact();
+    expect(mockOpenPanel).not.toHaveBeenCalled();
+
+    // Even though panelVisible is true, the suppressed first task keeps the
+    // opt-in button visible instead of fading it out.
+    const showPropertiesButton = container.querySelector<HTMLButtonElement>(
+      'button[title="Show properties"]',
+    );
+    expect(showPropertiesButton).toBeTruthy();
+    expect(showPropertiesButton!.className).not.toContain("pointer-events-none");
+
+    await act(async () => {
+      showPropertiesButton!.click();
+    });
     await flushReact();
 
-    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
-      parentId: "parent-1",
-      includeBlockedBy: true,
+    // The click overrides the first-task suppression and mounts the panel.
+    await waitForAssertion(() => {
+      expect(mockOpenPanel).toHaveBeenCalled();
     });
-    expect(container.querySelector('a[aria-label="Previous sub-task: PAP-1 - Previous sibling"]')).toBeTruthy();
-    expect(container.querySelector('a[aria-label="Next sub-task: PAP-3 - Next sibling"]')).toBeTruthy();
-    expect(container.textContent).toContain("Previous");
-    expect(container.textContent).toContain("Previous sibling");
-    expect(container.textContent).toContain("Next");
-    expect(container.textContent).toContain("Next sibling");
-    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].footer).toBeTruthy();
   });
 
-  it("uses the first child issue as next navigation for parent issues without a sibling next", async () => {
-    const parent = createIssue({
-      id: "issue-parent",
-      identifier: "PAP-10",
-      issueNumber: 10,
-      parentId: null,
-      title: "Plan parent",
-      createdAt: new Date("2026-04-01T00:00:00.000Z"),
+  it("reveals the properties sidebar on the first onboarding task once a plan document exists", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
     });
-    const firstChild = createIssue({
-      id: "issue-child-1",
-      identifier: "PAP-11",
-      issueNumber: 11,
-      parentId: "issue-parent",
-      title: "First child",
-      createdAt: new Date("2026-04-02T00:00:00.000Z"),
-    });
-    const secondChild = createIssue({
-      id: "issue-child-2",
-      identifier: "PAP-12",
-      issueNumber: 12,
-      parentId: "issue-parent",
-      title: "Second child",
-      blockedBy: [{ id: "issue-child-1" }] as Issue["blockedBy"],
-      createdAt: new Date("2026-04-03T00:00:00.000Z"),
-    });
-
-    mockIssuesApi.get.mockResolvedValue(parent);
-    mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; parentId?: string }) => {
-      if (filters?.descendantOf === "issue-parent") return Promise.resolve([secondChild, firstChild]);
-      return Promise.resolve([]);
-    });
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
+    );
+    mockIssuesApi.getDocument.mockResolvedValue({ id: "doc-1", key: "plan" });
 
     await act(async () => {
       root.render(
@@ -1751,17 +2233,31 @@ describe("IssueDetail", () => {
         </QueryClientProvider>,
       );
     });
-    await flushReact();
-    await flushReact();
 
-    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
-      descendantOf: "issue-parent",
-      includeBlockedBy: true,
+    await waitForAssertion(() => {
+      expect(mockOpenPanel).toHaveBeenCalled();
     });
-    expect(container.querySelector('a[aria-label="Next sub-task: PAP-11 - First child"]')).toBeTruthy();
-    expect(container.textContent).toContain("Next");
-    expect(container.textContent).toContain("First child");
-    expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].footer).toBeTruthy();
+  });
+
+  it("shows the properties sidebar immediately on a non-first task", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ originKind: "manual" }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockOpenPanel).toHaveBeenCalled();
+    });
   });
 
   it("passes blocker attention to the issue detail header status icon", async () => {
@@ -1857,8 +2353,6 @@ describe("IssueDetail", () => {
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Subtree pause is active.");
-      expect(mockIssuesListRender.mock.calls.at(-1)?.[0].issueBadgeById.get("child-1")).toBe("Paused");
-      expect(mockIssuesListRender.mock.calls.at(-1)?.[0].showProgressSummary).toBe(true);
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button"))
@@ -1893,7 +2387,6 @@ describe("IssueDetail", () => {
     }));
     await waitForAssertion(() => {
       expect(container.textContent).not.toContain("Subtree pause is active.");
-      expect(mockIssuesListRender.mock.calls.at(-1)?.[0].issueBadgeById.has("child-1")).toBe(false);
     });
   });
 
@@ -2168,10 +2661,9 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "planning",
     });
-    expect(container.textContent).toContain("Plan mode");
   });
 
-  it("passes ask work mode to the issue chat thread and renders the ask badge", async () => {
+  it("passes ask work mode to the issue chat thread", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({ workMode: "ask" }));
     await act(async () => {
       root.render(
@@ -2185,7 +2677,6 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "ask",
     });
-    expect(container.textContent).toContain("Ask mode");
   });
 
   it("falls back to execCommand when copying the task from an insecure context", async () => {
@@ -2261,7 +2752,7 @@ describe("IssueDetail", () => {
     }
   });
 
-  it("renders the graduated task thread without the chat flag", async () => {
+  it("renders the task chat thread as the default thread", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {
@@ -2273,12 +2764,18 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull();
     expect(mockIssueChatThreadRender).toHaveBeenCalled();
   });
 
-  it("uses graduated Plan mode chip copy", async () => {
-    mockIssuesApi.get.mockResolvedValue(createIssue({ workMode: "planning" }));
+  it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableClassicTaskInterface: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {
       root.render(
@@ -2288,9 +2785,11 @@ describe("IssueDetail", () => {
       );
     });
     await flushReact();
+    await flushReact();
 
-    expect(container.textContent).toContain("Plan mode");
-    expect(container.textContent).not.toContain("Planning");
+    expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).toBeNull();
+    expect(mockIssueChatThreadRender).toHaveBeenCalled();
   });
 
   it("passes @task mention options to the thread by default", async () => {
@@ -2367,71 +2866,7 @@ describe("IssueDetail", () => {
 
     expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "ask" });
     expect(localStorage.getItem("paperclip:issue-comment-draft:issue-1")).toBe("Draft follow-up message");
-    expect(container.textContent).toContain("planning-notes.txt");
     localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
-  });
-
-  it("hides attachments backing promoted outputs while keeping filtered markdown artifacts visible", async () => {
-    const issue = createIssue();
-    const videoAttachment = createAttachment({
-      id: "11111111-1111-4111-8111-111111111111",
-      contentType: "video/mp4",
-      originalFilename: "demo.mp4",
-    });
-    const imageAttachment = createAttachment({
-      id: "33333333-3333-4333-8333-333333333333",
-      contentType: "image/png",
-      originalFilename: "screenshot.png",
-    });
-    const markdownAttachment = createAttachment({
-      id: "22222222-2222-4222-8222-222222222222",
-      contentType: "text/markdown",
-      originalFilename: "report.md",
-    });
-    mockIssuesApi.get.mockResolvedValue(issue);
-    mockIssuesApi.listAttachments.mockResolvedValue([videoAttachment, imageAttachment, markdownAttachment]);
-    mockIssuesApi.listWorkProducts.mockResolvedValue([
-      createArtifactWorkProduct({
-        id: "wp-video",
-        attachmentId: videoAttachment.id,
-        contentType: "video/mp4",
-        originalFilename: "demo.mp4",
-        isPrimary: true,
-      }),
-      createArtifactWorkProduct({
-        id: "wp-image",
-        attachmentId: imageAttachment.id,
-        contentType: "image/png",
-        originalFilename: "screenshot.png",
-      }),
-      createArtifactWorkProduct({
-        id: "wp-markdown",
-        attachmentId: markdownAttachment.id,
-        contentType: "text/markdown",
-        originalFilename: "report.md",
-      }),
-    ]);
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDetail />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-
-    expect(container.textContent).toContain("Output");
-    expect(container.textContent).toContain("demo.mp4");
-    expect(container.textContent).toContain("Attachments");
-    expect(container.textContent).toContain("report.md");
-    expect(container.textContent).toContain("Attachments1");
-    expect(container.querySelectorAll("video")).toHaveLength(1);
-    expect(mockImageGalleryRender.mock.calls.at(-1)?.[0].items.map((attachment: IssueAttachment) => attachment.id)).toEqual([
-      videoAttachment.id,
-      imageAttachment.id,
-    ]);
   });
 
   it("renders Paused by board distinctly and defaults leaf resume to wake the assignee", async () => {

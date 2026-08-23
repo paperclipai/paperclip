@@ -12,7 +12,6 @@ import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
 import { Button } from "../components/ui/button";
-import { Card } from "@/components/ui/card";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -21,7 +20,7 @@ import { useSignOut } from "@/hooks/useSignOut";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
-export function InstanceGeneralSettings() {
+export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -29,12 +28,12 @@ export function InstanceGeneralSettings() {
   const signOutMutation = useSignOut();
 
   useEffect(() => {
+    if (embedded) return;
     setBreadcrumbs([
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings" },
       { label: "General" },
     ]);
-  }, [setBreadcrumbs]);
+  }, [embedded, setBreadcrumbs]);
 
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -62,7 +61,7 @@ export function InstanceGeneralSettings() {
     },
   });
 
-  if (generalQuery.isLoading) {
+  if (generalQuery.isLoading || healthQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
   }
 
@@ -80,6 +79,22 @@ export function InstanceGeneralSettings() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const hiddenSettings = new Set(healthQuery.data?.hiddenSettings ?? []);
+  const showDeploymentStatus = !hiddenSettings.has("instance.general.deploymentStatus");
+  const showCensorUsernameInLogs = !hiddenSettings.has("instance.general.censorUsernameInLogs");
+  const showKeyboardShortcuts = !hiddenSettings.has("instance.general.keyboardShortcuts");
+  const showBackupRetention = !hiddenSettings.has("instance.general.backupRetention");
+  const showFeedbackDataSharing = !hiddenSettings.has("instance.general.feedbackDataSharingPreference");
+  const showSignOut = !hiddenSettings.has("instance.general.signOut");
+  const visibleTopics = [
+    ...(showCensorUsernameInLogs ? ["log display"] : []),
+    ...(showKeyboardShortcuts ? ["keyboard shortcuts"] : []),
+    ...(showBackupRetention ? ["backup retention"] : []),
+    ...(showFeedbackDataSharing ? ["data sharing"] : []),
+  ];
+  const topicSummary = visibleTopics.length > 2
+    ? `${visibleTopics.slice(0, -1).join(", ")}, and ${visibleTopics[visibleTopics.length - 1]}`
+    : visibleTopics.join(" and ");
   const visibleActionError = signOutMutation.error instanceof Error
     ? signOutMutation.error.message
     : signOutMutation.error
@@ -87,17 +102,19 @@ export function InstanceGeneralSettings() {
       : actionError;
 
   return (
-    <div className="max-w-4xl space-y-6">
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+    <div className={embedded ? "space-y-8" : "max-w-4xl space-y-8"}>
+      {!embedded ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
+            <h1 className="text-lg font-semibold">General</h1>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Configure instance-wide preferences
+            {visibleTopics.length > 0 ? <> including {topicSummary}</> : null}.
+          </p>
         </div>
-        <p className="text-sm text-muted-foreground">
-          Configure instance-wide preferences including log display, keyboard shortcuts, backup
-          retention, and data sharing.
-        </p>
-      </div>
+      ) : null}
 
       {visibleActionError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -105,7 +122,8 @@ export function InstanceGeneralSettings() {
         </div>
       )}
 
-      <Card className="block p-5">
+      {showDeploymentStatus && (
+      <section>
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">Deployment and auth</h2>
@@ -136,9 +154,11 @@ export function InstanceGeneralSettings() {
             />
           </div>
         </div>
-      </Card>
+      </section>
+      )}
 
-      <Card className="block p-5">
+      {showCensorUsernameInLogs && (
+      <section>
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Censor username in logs</h2>
@@ -155,9 +175,11 @@ export function InstanceGeneralSettings() {
             aria-label="Toggle username log censoring"
           />
         </div>
-      </Card>
+      </section>
+      )}
 
-      <Card className="block p-5">
+      {showKeyboardShortcuts && (
+      <section>
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
@@ -173,9 +195,11 @@ export function InstanceGeneralSettings() {
             aria-label="Toggle keyboard shortcuts"
           />
         </div>
-      </Card>
+      </section>
+      )}
 
-      <Card className="block p-5">
+      {showBackupRetention && (
+      <section>
         <div className="space-y-5">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Backup retention</h2>
@@ -275,9 +299,11 @@ export function InstanceGeneralSettings() {
             </div>
           </div>
         </div>
-      </Card>
+      </section>
+      )}
 
-      <Card className="block p-5">
+      {showFeedbackDataSharing && (
+      <section>
         <div className="space-y-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">AI feedback sharing</h2>
@@ -297,7 +323,7 @@ export function InstanceGeneralSettings() {
             ) : null}
           </div>
           {feedbackDataSharingPreference === "prompt" ? (
-            <div className="rounded-lg border border-border/70 bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
+            <div className="rounded-lg bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
               No default is saved yet. The next thumbs up or thumbs down choice will ask once and
               then save the answer here.
             </div>
@@ -351,9 +377,12 @@ export function InstanceGeneralSettings() {
             chosen yet.
           </p>
         </div>
-      </Card>
+      </section>
 
-      <Card className="block p-5">
+      )}
+
+      {showSignOut && (
+      <section>
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Sign out</h2>
@@ -374,16 +403,17 @@ export function InstanceGeneralSettings() {
             {signOutMutation.isPending ? "Signing out..." : "Sign out"}
           </Button>
         </div>
-      </Card>
+      </section>
+      )}
     </div>
   );
 }
 
 function StatusBox({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-border bg-background px-3 py-3">
+    <div className="space-y-1">
       <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-2 text-sm font-medium">{value}</div>
+      <div className="text-sm font-medium">{value}</div>
     </div>
   );
 }

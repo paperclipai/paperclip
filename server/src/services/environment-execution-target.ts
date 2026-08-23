@@ -5,6 +5,8 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
+import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import {
   clampSpanLabel,
   getActiveStepContext,
@@ -67,6 +69,28 @@ function toFiniteNumber(value: unknown): number | undefined {
  * omits or mistypes it yields no attribute — never a misleading `false`. */
 function toBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * Compute the tail of `final` that the provider did NOT already stream.
+ *
+ * The provider streams output chunks in order. Those chunks form `delivered`.
+ * The final result is `final`. In the normal path `final` continues
+ * `delivered`, so the tail is `final` past the delivered length.
+ *
+ * A provider can stream a prefix and then fall back to a poll that returns a
+ * different buffer. When `final` does not start with `delivered`, a length
+ * slice would drop unrelated leading output or cut a chunk mid-text, so the
+ * durable log would hold truncated or corrupt output. In that case this
+ * function returns the whole `final` instead. That can repeat the streamed
+ * prefix in the log, but the complete final output always reaches the log.
+ * Repetition is safer than a silent loss of output.
+ */
+function undeliveredSuffix(delivered: string, final: string): string {
+  if (!final) return "";
+  if (delivered.length === 0) return final;
+  if (final.startsWith(delivered)) return final.slice(delivered.length);
+  return final;
 }
 
 /**
@@ -178,6 +202,15 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
   tracer?: ExecTracer;
+  // The host duplex telemetry recorder. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the safe no-op default in the
+  // bridge, so the surface stays inert until the host injects a real recorder.
+  duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
+  // The process-owned aggregate byte ledger. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the bridge inert for this seam.
+  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -221,12 +254,85 @@ export async function resolveEnvironmentExecutionTarget(input: {
     // a recording tracer.
     const tracer = input.tracer ?? getStartupTracer();
 
+    // Resolve the read-only effective capability snapshot for this lease. The
+    // runtime resolves it as the provider declaration ∩ the verified worker
+    // methods ∩ narrowing. Freeze it so a consumer reads it but never changes
+    // it. Track a resolution error apart from a genuinely absent snapshot: a
+    // rejected resolution must not read as an open grant.
+    let effectiveCapabilities: Awaited<
+      ReturnType<NonNullable<EnvironmentRuntimeService["effectiveSandboxCapabilities"]>>
+    > | null = null;
+    let capabilityResolutionFailed = false;
+    if (input.environmentRuntime?.effectiveSandboxCapabilities && input.lease) {
+      try {
+        effectiveCapabilities = await input.environmentRuntime.effectiveSandboxCapabilities({
+          environment: input.environment as Environment,
+          lease: input.lease,
+        });
+      } catch {
+        // The runtime could not resolve the snapshot. Fail closed for the
+        // persistent-session gates below; never grant persistent-session
+        // behavior from an unknown capability set.
+        capabilityResolutionFailed = true;
+        effectiveCapabilities = null;
+      }
+    }
+
+    // Gate the sync, session, and execution decisions below on the effective
+    // snapshot. A genuinely absent snapshot (no runtime, no lease) keeps the
+    // prior behavior, so it never removes a working path. A present snapshot
+    // can only remove a capability, never add one back.
+    //
+    // Native file sync needs BOTH sync verbs: the runner exposes syncIn and
+    // syncOut both-or-neither, so a consumer either uses the native path for
+    // both directions or keeps the base64 fallback for both. When the snapshot
+    // removes either verb, keep the byte-identical base64 fallback. When the
+    // resolution failed, fail closed and keep the base64 fallback too: an
+    // unverified provider never gets the native sync path. This preserves the
+    // existing reusable-lease sync enforcement unchanged.
+    const nativeSyncAllowed =
+      !capabilityResolutionFailed &&
+      (!effectiveCapabilities ||
+        (effectiveCapabilities.nativeSyncIn && effectiveCapabilities.nativeSyncOut));
+    // A command that opts onto the persistent session needs the provider to keep
+    // persistent process sessions. When the snapshot removes that capability,
+    // never force the session; the command runs one-shot instead. When the
+    // resolution failed, fail closed and never force the session.
+    const persistentSessionsAllowed =
+      !capabilityResolutionFailed &&
+      (!effectiveCapabilities || effectiveCapabilities.persistentProcessSessions);
+
+    // Resolve the per-run duplex bridge kill switch. It rides the host-side
+    // sandbox target on the same seam as `effectiveCapabilities`, so the value
+    // stays on the host and never enters the sandbox environment. Fail closed:
+    // an absent runtime, an absent method, or a read error keeps the file
+    // bridge. The stamp never turns a read error into a grant.
+    let enableSandboxDuplexBridge = false;
+    if (input.environmentRuntime?.readSandboxDuplexBridgeInput) {
+      try {
+        const duplexBridgeInput = await input.environmentRuntime.readSandboxDuplexBridgeInput();
+        enableSandboxDuplexBridge = duplexBridgeInput.enableDuplexBridge === true;
+      } catch {
+        enableSandboxDuplexBridge = false;
+      }
+    }
+
     return {
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
       shellCommand,
       remoteCwd,
+      enableSandboxDuplexBridge,
+      // Attach the host duplex telemetry recorder next to the runner. The bridge
+      // binds it to the fixed observability surface. Absent keeps the no-op
+      // default, so the surface stays inert on a run with no injected recorder.
+      duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
+      // Attach the process-owned aggregate byte ledger next to the runner. The
+      // bridge passes it to the broker, the decoder, and the response-body reader.
+      // Absent keeps the bridge inert for this seam.
+      duplexAggregateByteLedger: input.duplexAggregateByteLedger ?? null,
+      ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
@@ -234,6 +340,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
       // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
       // opt-out back to batch-at-end delivery.
       streamRunLogs: parsed.config.streamRunLogs !== false,
+      // Interactive ACP output streaming is decided downstream from the effective
+      // capability snapshot alone: the process session bridge streams only when
+      // the provider keeps persistent process sessions and runs independent
+      // control commands. The snapshot is absent when resolution failed, so the
+      // bridge fails closed to the output-file poll.
       runner: input.environmentRuntime && input.lease
         ? {
             // Provider-backed sandbox RPCs do not surface bounded mid-stream
@@ -241,6 +352,12 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // here. The client falls back to the chunked upload path when this is
             // false.
             supportsSingleStreamStdinProgress: false,
+            // Carry the verified concurrent-sync opt-in to the sync client. The
+            // client copies it onto the native path and ignores it on the base64
+            // fallback, which always permits concurrency. A null snapshot or a
+            // provider that never opted in keeps it false, so an unverified
+            // provider never permits concurrent sync operations.
+            allowConcurrentSyncOperations: effectiveCapabilities?.concurrentSyncOperations === true,
             execute: async (commandInput) => {
               // Record true start and stop timestamps around the provider await,
               // so the exec span and the result carry a real wall time.
@@ -266,6 +383,27 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // provider execution marks the span failed. A later log-callback
                 // rejection sits outside this block and never flips a successful
                 // execution to failed.
+                // Incremental log sink. The provider streams each output chunk
+                // through the execute.log notification while the command runs.
+                // Serialize the delivery per execute call so the runner sees the
+                // chunks in order, and keep the delivered text per stream, so the
+                // final-result delivery below emits only the un-streamed suffix
+                // and can detect a provider poll fallback that returns a
+                // different buffer.
+                let incrementalLogChain: Promise<void> = Promise.resolve();
+                let deliveredStdout = "";
+                let deliveredStderr = "";
+                const onIncrementalLog = (
+                  stream: "stdout" | "stderr",
+                  chunk: string,
+                ): Promise<void> => {
+                  if (stream === "stdout") deliveredStdout += chunk;
+                  else deliveredStderr += chunk;
+                  incrementalLogChain = incrementalLogChain.then(() =>
+                    commandInput.onLog?.(stream, chunk),
+                  );
+                  return incrementalLogChain;
+                };
                 let result;
                 try {
                   result = await input.environmentRuntime!.execute({
@@ -277,6 +415,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    onLog: commandInput.onLog ? onIncrementalLog : undefined,
+                    // The ACP process session bridge sets `useSession` so its
+                    // long-lived agent command opens the persistent session and
+                    // streams output, even though it runs with no active step.
+                    // The effective snapshot gates it: a provider that cannot
+                    // keep persistent process sessions never forces the session,
+                    // so the command runs one-shot instead.
+                    forceSession: persistentSessionsAllowed ? commandInput.useSession : false,
+                    // The bridge control-plane execs set `bypassSession` so they
+                    // run one-shot and never queue behind the long-lived agent
+                    // command on the persistent session. An explicit bypass wins
+                    // over `forceSession` and over the active-step selection.
+                    bypassSession: commandInput.bypassSession,
                   });
                 } catch (error) {
                   // The provider execution threw. Mark the span failed with the
@@ -322,12 +473,28 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     // Observability must not change execution control flow.
                   }
                 }
-                // Deliver the captured output. A rejected `onLog` still
-                // propagates to the caller (control flow is unchanged), but the
-                // span already carries the successful outcome, so a log failure
-                // never marks the execution failed.
-                if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-                if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+                // Drain the ordered incremental delivery before the final
+                // result. The provider streamed chunks arrive as execute.log
+                // notifications while the command runs; awaiting the chain keeps
+                // the runner order and surfaces a log-sink rejection.
+                await incrementalLogChain;
+                // Deliver only the suffix the provider did NOT already stream.
+                // The streamed chunks usually form an in-order prefix of the
+                // final result, so the remaining output is the final text past
+                // the delivered text. When the provider streamed nothing, the
+                // whole output is the suffix. When it streamed the complete
+                // output, the suffix is empty and nothing repeats. When it
+                // streamed a prefix and then fell back to a poll whose buffer
+                // does not continue that prefix, `undeliveredSuffix` returns the
+                // whole final output, so the durable log keeps the complete
+                // result and never holds a truncated slice. A rejected `onLog`
+                // still propagates to the caller (control flow is unchanged),
+                // but the span already carries the successful outcome, so a log
+                // failure never marks the execution failed.
+                const stdoutSuffix = undeliveredSuffix(deliveredStdout, result.stdout ?? "");
+                if (stdoutSuffix) await commandInput.onLog?.("stdout", stdoutSuffix);
+                const stderrSuffix = undeliveredSuffix(deliveredStderr, result.stderr ?? "");
+                if (stderrSuffix) await commandInput.onLog?.("stderr", stderrSuffix);
                 return {
                   exitCode: result.exitCode,
                   signal: result.signal ?? null,
@@ -350,9 +517,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
               }
             },
             // Expose the native file-sync capability only when the provider's
-            // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut
-            // undefined so the orchestrator keeps the byte-identical base64 path.
-            ...(input.environmentRuntime.supportsSync({
+            // worker advertises BOTH sync verbs AND the effective snapshot still
+            // grants native sync; otherwise leave syncIn/syncOut undefined so
+            // the orchestrator keeps the byte-identical base64 path.
+            ...(nativeSyncAllowed &&
+            input.environmentRuntime.supportsSync({
               environment: input.environment as Environment,
               lease: input.lease,
             })
@@ -368,6 +537,21 @@ export async function resolveEnvironmentExecutionTarget(input: {
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                    }),
+                }
+              : {}),
+            // Expose the duplex channel only when the effective snapshot grants
+            // the opt-in `duplexCommandStream` capability. A null snapshot
+            // (resolution failed or the snapshot is not resolvable) leaves the
+            // member undefined, so the caller keeps the file bridge. This mirrors
+            // the syncIn/syncOut gate above and fails closed.
+            ...(effectiveCapabilities?.duplexCommandStream
+              ? {
+                  openDuplexChannel: (channelInput) =>
+                    input.environmentRuntime!.openDuplexChannel({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      command: channelInput.command,
                     }),
                 }
               : {}),

@@ -22,6 +22,7 @@ import {
   usePluginToast,
 } from "./bridge.js";
 import { Component, createElement, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import * as ReactJsxRuntimeModule from "react/jsx-runtime";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { User } from "lucide-react";
 import {
@@ -72,6 +73,14 @@ import { copyTextToClipboard } from "@/lib/clipboard";
  */
 export interface PluginBridgeRegistry {
   react: unknown;
+  /**
+   * The host's real `react/jsx-runtime` module. Plugin bundles compiled with
+   * the automatic JSX transform must use these `jsx`/`jsxs` implementations:
+   * reconstructing them via `createElement(type, { children })` loses React's
+   * static-children marking, so dev React demands a key on every multi-child
+   * element inside plugin components.
+   */
+  reactJsxRuntime: unknown;
   reactDom: unknown;
   sdkUi: Record<string, unknown>;
 }
@@ -289,13 +298,12 @@ function PluginSdkIssuesList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: issuesQueryKey,
     queryFn: () => issuesApi.list(companyId!, issueFilters),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -674,6 +682,7 @@ export function initPluginBridge(
 ): void {
   globalThis.__paperclipPluginBridge__ = {
     react,
+    reactJsxRuntime: ReactJsxRuntimeModule,
     reactDom,
     sdkUi: {
       usePluginData,

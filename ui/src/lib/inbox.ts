@@ -26,6 +26,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
+export const INBOX_COLLAPSED_PARENTS_KEY_PREFIX = "paperclip:inbox:collapsed-parents";
 export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
@@ -187,6 +188,11 @@ function getInboxCollapsedGroupsStorageKey(companyId: string | null | undefined)
   return `${INBOX_COLLAPSED_GROUPS_KEY_PREFIX}:${companyId}`;
 }
 
+function getInboxCollapsedParentsStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${INBOX_COLLAPSED_PARENTS_KEY_PREFIX}:${companyId}`;
+}
+
 export function loadInboxFilterPreferences(
   companyId: string | null | undefined,
 ): InboxFilterPreferences {
@@ -266,6 +272,36 @@ export function saveCollapsedInboxGroupKeys(
 
   try {
     localStorage.setItem(storageKey, JSON.stringify([...groupKeys]));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function loadCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+): Set<string> {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return new Set();
+
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+  parentIds: ReadonlySet<string>,
+) {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return;
+
+  try {
+    localStorage.setItem(storageKey, JSON.stringify([...parentIds]));
   } catch {
     // Ignore localStorage failures.
   }

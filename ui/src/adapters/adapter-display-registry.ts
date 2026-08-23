@@ -10,6 +10,7 @@ import {
   Bot,
   Code,
   Gem,
+  Moon,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -88,6 +89,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Grok Build",
     description: "Grok Build harness",
     icon: Bot,
+  },
+  kimi_local: {
+    label: "Kimi Code",
+    description: "Kimi Code CLI harness",
+    icon: Moon,
   },
   hermes_gateway: {
     label: "Hermes Gateway",
