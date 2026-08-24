@@ -257,6 +257,40 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("shows no environment-check card on the model step, and no Mission row on review", async () => {
+      // Round-3 walk feedback: the adapter environment check still runs —
+      // Connect probes before hiring and blocks on a fail — but its idle card
+      // (explainer plus "Test now") is gone. And the review checklist lost its
+      // "Mission" row: onboarding stopped asking, so the row could only ever
+      // render unchecked. Both asserted against positive anchors so an
+      // unrendered step cannot pass as an absence.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      // Step 3 → 4 needs an agent name; choosing a role fills it.
+      const roleTrigger = document.body.querySelector("#onboarding-agent-role") as HTMLElement;
+      await act(async () => {
+        roleTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      const ceo = [...document.body.querySelectorAll('[role="option"]')].find(
+        (o) => o.textContent?.trim() === "CEO",
+      ) as HTMLElement;
+      await act(async () => {
+        ceo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+
+      expect(document.body.textContent).toContain("Connect a model");
+      expect(document.body.textContent).not.toContain("Adapter environment check");
+      expect(document.body.textContent).not.toContain("Test now");
+
+      await act(async () => root.unmount());
+    });
+
     it("creates one company for one keystroke, modifier or not", async () => {
       // The name field handles Enter itself and does not check for a modifier,
       // so Cmd+Enter in that field reaches the field's handler *and* the

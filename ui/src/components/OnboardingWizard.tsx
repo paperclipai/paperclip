@@ -1293,7 +1293,13 @@ function OnboardingWizardInner({
       }
 
       if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+        // A cached pass or warn is still good; a cached fail is retried. With
+        // the "Test now" card gone, this button is the only way to re-probe,
+        // and reusing a stale fail would lock a customer out of a machine
+        // they have since fixed.
+        const cachedUsable =
+          adapterEnvResult && adapterEnvResult.status !== "fail" ? adapterEnvResult : null;
+        const result = cachedUsable ?? (await runAdapterEnvironmentTest());
         if (!result) return;
         // Block the hire on a failed environment test. A pass or a warn may
         // proceed; a fail means the agent cannot run as configured.
@@ -2232,29 +2238,15 @@ function OnboardingWizardInner({
                     </div>
                   )}
 
-                  {isLocalAdapter && (
+                  {/* The environment check runs without being shown: Connect
+                      probes the adapter before hiring (see handleGiveHeartbeat)
+                      and blocks the hire on a fail. The idle card — probe
+                      explainer plus a "Test now" button — is gone from this
+                      step, so this block renders only when a probe has actually
+                      found something: the checks the blocking error tells the
+                      customer to fix have to be visible somewhere. */}
+                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-xs font-medium">
-                            Adapter environment check
-                          </p>
-                          <p className="text-(length:--text-micro) text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
-                          </p>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2.5 text-xs"
-                          disabled={adapterEnvLoading}
-                          onClick={() => void runAdapterEnvironmentTest()}
-                        >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
-                        </Button>
-                      </div>
-
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
                           {adapterEnvError}
@@ -2397,9 +2389,11 @@ function OnboardingWizardInner({
                 <div className="space-y-5 py-1">
                   {/* Review checklist — everything that's now set up */}
                   <div className="space-y-1.5">
+                    {/* No "Mission" row: onboarding stopped asking for one, so a
+                        checklist item for it could only ever render unchecked —
+                        a permanent red mark for a question nobody was asked. */}
                     {[
                       { label: "Organization name", done: Boolean(companyName.trim()) },
-                      { label: "Mission", done: Boolean(companyGoal.trim()) },
                       { label: "Agent created", done: Boolean(createdAgentId) },
                       { label: "Model connected", done: Boolean(createdAgentId) },
                     ].map(({ label, done }) => (
