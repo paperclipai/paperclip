@@ -85,6 +85,16 @@ function readUsageRecord(value: unknown): TokenUsage {
     // runs in 24h), so the weighted token governor could never see the lane.
     asRecord(root.result),
     asRecord(asRecord(root.result).usage),
+    // 2026-08-24 (TSMC-21362): agy reports usage PER STEP as
+    // {"event":"step_update","step_update":{...,"usage":{...}}}, and only the
+    // final total lands in the result envelope. Without this candidate the
+    // mid-stream budget observer in execute.ts saw nothing until the run was
+    // already over, so `maxTokensPerRun` could never do what it exists for --
+    // stop a run BEFORE another model turn. Measured: a one-page content task
+    // reached 258,396 fresh input tokens against a 200,000 cap and was only
+    // failed afterwards, with every token already spent.
+    asRecord(root.step_update),
+    asRecord(asRecord(root.step_update).usage),
   ];
   let inputTokens = 0;
   let cachedInputTokens = 0;

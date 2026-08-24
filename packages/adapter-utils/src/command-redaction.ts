@@ -1,17 +1,40 @@
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
+/*
+ * JSON SAFETY (TSMC-21361, 2026-08-24).
+ *
+ * These patterns match a secret as "everything up to whitespace or a quote". A
+ * BACKSLASH was not excluded, so when the text being redacted is itself inside
+ * a JSON string -- exactly the case for adapter stream logs -- the match
+ * swallowed the backslash that ESCAPES the closing quote:
+ *
+ *   before:  ... Bearer sk-abc123\\"  ...     (valid JSON)
+ *   after:   ... Bearer ***REDACTED***"  ...  (escape gone, JSON broken)
+ *
+ * The orphaned quote ends the JSON string early and the line becomes
+ * unparseable. Measured on antigravity: 124 of 316 "silent exit" failures in
+ * 48h were runs whose result event WAS emitted and was destroyed here.
+ * inspectAntigravityStream skips unparseable lines, so those runs lost their
+ * resultStatus, error text, usage AND their PAPERCLIP_DISPOSITION -- then were
+ * misdiagnosed as the CLI dying mutely.
+ *
+ * Excluding the backslash stops the match one character earlier. The secret is
+ * still fully redacted (bearer tokens and API keys contain no backslash) and
+ * the surrounding JSON escaping survives.
+ */
+
 const SECRET_NAME_PATTERN =
   String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
-  String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` + "`" + String.raw`]+(\2)`,
+  String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` + "`" + String.raw`\\]+(\2)`,
   "gi",
 );
 const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
-  String.raw`(\b${SECRET_NAME_PATTERN}\s*=\s*)(?:(["'])([^"'` + "`" + String.raw`\r\n]*)\2|([^\s"'` + "`" + String.raw`]+))`,
+  String.raw`(\b${SECRET_NAME_PATTERN}\s*=\s*)(?:(["'])([^"'` + "`" + String.raw`\r\n]*)\2|([^\s"'` + "`" + String.raw`\\]+))`,
   "gi",
 );
-const COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
+const COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`\\]+/gi;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
 const COMMAND_JWT_RE =

@@ -175,3 +175,26 @@ describe("the shape production actually emits (TSMC-21352)", () => {
     expect(isAntigravityTransientSilentExit({ exitCode: 1, stderr: STDERR })).toBe(false);
   });
 });
+
+describe("per-step usage must be visible to the budget guard (TSMC-21362)", () => {
+  // agy emits usage on every step_update and only the final total in the
+  // result envelope. The mid-stream observer reads inspectAntigravityStream on
+  // the partial stdout, so it can only stop a run early if step usage parses.
+  const STEPS = [
+    '{"event":"init","conversation_id":"c1","init":{"model":"Gemini 3.1 Pro (High)"}}',
+    '{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":22021,"output_tokens":700,"cache_read_tokens":50000}}}',
+    '{"event":"step_update","step_update":{"conversation_id":"c1","step_index":6,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":258396,"output_tokens":9641,"cache_read_tokens":684996}}}',
+  ].join("\n");
+
+  it("sees step usage before any result event arrives", () => {
+    const mid = inspectAntigravityStream(STEPS);
+    expect(mid.usage.inputTokens).toBe(258396);
+    expect(mid.usage.outputTokens).toBe(9641);
+    expect(mid.usage.cachedInputTokens).toBe(684996);
+  });
+
+  it("sees the FIRST step's usage from a partial stream, so the guard can act early", () => {
+    const partial = STEPS.split("\n").slice(0, 2).join("\n");
+    expect(inspectAntigravityStream(partial).usage.inputTokens).toBe(22021);
+  });
+});

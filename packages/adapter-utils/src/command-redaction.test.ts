@@ -79,3 +79,44 @@ describe("redactDiagnosticText", () => {
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
   });
 });
+
+describe("redaction must not break JSON it is embedded in (TSMC-21361)", () => {
+  // Verbatim shape from run 064e0e3e, 2026-08-22T23Z. The result event was
+  // emitted correctly by the agy CLI and destroyed by redaction: the match
+  // consumed the backslash escaping the closing quote, orphaning the quote and
+  // ending the JSON string early. 124 of 316 antigravity "silent exit"
+  // failures in 48h were this, losing resultStatus, error text, usage and the
+  // PAPERCLIP_DISPOSITION marker with it.
+  const REAL = String.raw`{"event":"result","result":{"status":"ERROR","error":"permission check failed for command \"curl -s -H \\\"Authorization: Bearer sk-live-abc123XYZ456\\\" \\\"$PAPERCLIP_API_URL/issues/TSB-5555\\\"\": user denied"}}`;
+
+  it("leaves the line parseable after redacting a bearer token", () => {
+    expect(() => JSON.parse(REAL)).not.toThrow();
+    const redacted = redactDiagnosticText(REAL);
+    expect(() => JSON.parse(redacted)).not.toThrow();
+  });
+
+  it("still removes the secret", () => {
+    const redacted = redactDiagnosticText(REAL);
+    expect(redacted).not.toContain("sk-live-abc123XYZ456");
+    expect(redacted).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("preserves the surrounding structure the parser reads", () => {
+    const parsed = JSON.parse(redactDiagnosticText(REAL));
+    expect(parsed.event).toBe("result");
+    expect(parsed.result.status).toBe("ERROR");
+  });
+
+  it("keeps a disposition marker intact through redaction", () => {
+    const withMarker = String.raw`{"event":"result","result":{"response":"done. curl -H \"Authorization: Bearer sk-tok-1234567890ab\" ok\n{\"PAPERCLIP_DISPOSITION\": \"done\"}"}}`;
+    const redacted = redactDiagnosticText(withMarker);
+    expect(() => JSON.parse(redacted)).not.toThrow();
+    expect(JSON.parse(redacted).result.response).toContain("PAPERCLIP_DISPOSITION");
+  });
+
+  it("redacts an unquoted env assignment without eating a trailing escape", () => {
+    const line = String.raw`{"cmd":"API_TOKEN=abcdef123456\" next"}`;
+    expect(() => JSON.parse(redactDiagnosticText(line))).not.toThrow();
+    expect(redactDiagnosticText(line)).not.toContain("abcdef123456");
+  });
+});
