@@ -53,6 +53,21 @@ export function registerCostCommands(program: Command): void {
   );
 
   addCompanyPostJson(cost, "event:create", "Record a cost event", "cost-events");
+  addCommonClientOptions(
+    cost
+      .command("backfill-pricing")
+      .description("Audit or repair historical cost pricing")
+      .option("-C, --company-id <id>", "Company ID")
+      .option("--apply", "Apply confidently matched catalog prices")
+      .action(async (opts: CompanyOptions & { apply?: boolean }) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/costs/backfill-pricing?apply=${opts.apply ? "true" : "false"}`, {});
+          printOutput(result, { json: ctx.json });
+        } catch (err) { handleCommandError(err); }
+      }),
+    { includeCompany: false },
+  );
 
   const finance = program.command("finance").description("Finance event and summary operations");
   addCompanyPostJson(finance, "event:create", "Record a finance event", "finance-events");

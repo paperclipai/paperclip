@@ -12,6 +12,7 @@ export const createCostEventSchema = z.object({
   biller: z.string().min(1).optional(),
   billingType: z.enum(BILLING_TYPES).optional().default("unknown"),
   costStatus: z.enum(COST_STATUSES).optional().default("reported"),
+  pricingCatalogVersion: z.string().min(1).optional().nullable(),
   model: z.string().min(1),
   inputTokens: z.number().int().nonnegative().optional().default(0),
   cachedInputTokens: z.number().int().nonnegative().optional().default(0),

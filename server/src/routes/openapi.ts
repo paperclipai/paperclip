@@ -852,6 +852,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "POST /api/companies/{companyId}/costs/backfill-pricing",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
   "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
@@ -3366,6 +3367,21 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createCostEventSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/costs/backfill-pricing",
+  tags: ["costs"],
+  summary: "Attribute historical cost events that carry no cost to the pricing catalog",
+  description:
+    "Reports what the repair would write. It writes nothing unless apply is true. A cost event that already names a catalog version, that carries a cost the provider reported, or that is billed as subscription_included is never rewritten.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ apply: z.enum(["true", "false"]).optional() }),
+    body: jsonBody(z.object({ apply: z.boolean().optional() })),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });

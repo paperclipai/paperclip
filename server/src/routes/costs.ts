@@ -24,6 +24,7 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo }
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { repairHistoricalPricing } from "../services/pricing-catalog.js";
 
 export function parseCostDateRange(query: Record<string, unknown>) {
   const fromRaw = query.from as string | undefined;
@@ -138,6 +139,26 @@ export function costRoutes(
     });
 
     res.status(201).json(event);
+  });
+
+  router.post("/companies/:companyId/costs/backfill-pricing", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const apply = req.query.apply === "true" || req.body?.apply === true;
+    const result = await repairHistoricalPricing(db, { companyId, apply });
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "cost.pricing_backfill",
+      entityType: "company",
+      entityId: companyId,
+      details: result,
+    });
+    res.json(result);
   });
 
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {
