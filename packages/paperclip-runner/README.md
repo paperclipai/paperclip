@@ -18,9 +18,9 @@ pnpm --filter @paperclipai/paperclip-runner check:protocol
 
 Use `generate:protocol-manifest` after a schema or fixture change. Commit the
 updated manifest with its source change. Do not edit the manifest by hand.
-The gate compiles every schema with AJV 2020-12. It validates accepted replay
-and question fixtures against the declared schemas, and it proves that the
-unsupported required-version fixture is rejected.
+The gate compiles every schema with AJV 2020-12. It validates accepted replay,
+question, and cross-language conformance fixtures against the declared schemas.
+It also proves that the unsupported required-version fixture is rejected.
 
 The next pull request will add TypeScript validation and replay behavior. The
 public root and `./testing` exports will arrive with the package boundary pull

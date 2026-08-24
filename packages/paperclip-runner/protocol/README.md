@@ -28,5 +28,5 @@ Discovery and authorization are separate contracts.
 The conformance manifest records every source file and its SHA-256 digest. Run
 `pnpm generate:protocol-manifest` from this package after a source change. CI
 runs the same generator with `--check` to reject drift. This check also compiles
-the JSON Schemas and validates every replay and question fixture against its
-declared schema.
+the JSON Schemas and validates every replay, question, and cross-language
+conformance fixture against its declared schema.

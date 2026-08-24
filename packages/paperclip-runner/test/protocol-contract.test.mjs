@@ -24,7 +24,7 @@ async function fixture(relativePath) {
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
-  assert.equal(schemas.length, 18);
+  assert.equal(schemas.length, 20);
   assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 
@@ -94,6 +94,17 @@ test("the Codex question fixture uses stable provider-neutral IDs", async () => 
 test("the cross-language conformance input and output have one stable identity", async () => {
   const input = await fixture("conformance-minimal-run.json");
   const output = await fixture("conformance-expected-output.json");
+  const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
+  const validators = compileProtocolValidators(schemas);
+  assert.doesNotThrow(() => assertSchemaInstance(validators.conformanceFixture, input, "conformance-input"));
+  assert.doesNotThrow(() => assertSchemaInstance(validators.conformanceOutput, output, "conformance-output"));
   assert.doesNotThrow(() => assertConformanceFixturePair(input, output));
   assert.equal(input.result.summary, output.result.summary);
+
+  const missingSessionId = structuredClone(output);
+  delete missingSessionId.runIdentity.sessionId;
+  assert.throws(
+    () => assertSchemaInstance(validators.conformanceOutput, missingSessionId, "missing-session-id"),
+    /schema_validation_failed: missing-session-id must be accepted: \/runIdentity must have required property 'sessionId'/,
+  );
 });

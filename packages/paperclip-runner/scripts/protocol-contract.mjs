@@ -119,6 +119,8 @@ export function compileProtocolValidators(schemaRecords) {
     return validator;
   };
   return {
+    conformanceFixture: get("conformance-fixture"),
+    conformanceOutput: get("conformance-output"),
     fixture: get("fixture"),
     questionAdapterFixture: get("question-adapter-fixture"),
   };

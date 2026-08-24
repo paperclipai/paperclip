@@ -60,6 +60,12 @@ export async function buildProtocolManifest() {
       assertCodexQuestionFixture(value);
       assertSchemaInstance(validators.questionAdapterFixture, value, relativePath);
       compatibilityCase = "codex-structured-input";
+    } else if (relativePath === "fixtures/conformance-minimal-run.json") {
+      assertSchemaInstance(validators.conformanceFixture, value, relativePath);
+      compatibilityCase = "cross-language-input";
+    } else if (relativePath === "fixtures/conformance-expected-output.json") {
+      assertSchemaInstance(validators.conformanceOutput, value, relativePath);
+      compatibilityCase = "cross-language-output";
     }
 
     fixtures.push({
