@@ -4,6 +4,8 @@ import {
   DEFAULT_ANTIGRAVITY_MAX_TOKENS_PER_RUN,
   execute,
   resolveAntigravityMaxTokensPerRun,
+  resolveAntigravityMaxToolCallsPerRun,
+  DEFAULT_ANTIGRAVITY_MAX_TOOL_CALLS_PER_RUN,
 } from "./execute.js";
 import { parseAntigravityOutput } from "./parse.js";
 import { models } from "../index.js";
@@ -180,5 +182,23 @@ describe("antigravity_local model selection", () => {
       errorCode: "antigravity_live_token_cancellation_unavailable",
       resultJson: { modelDispatched: false },
     });
+  });
+});
+
+
+describe("tool-call ceiling (TSMC-21369)", () => {
+  it("defaults above every SUCCESS run observed and below the pathological tail", () => {
+    // 600 antigravity runs over 72h: SUCCESS p50=7, p90=28, p95=36, max=49;
+    // a tail of 11 runs reached 61+ (max 133). The default must not be able to
+    // truncate work that was going to succeed.
+    expect(DEFAULT_ANTIGRAVITY_MAX_TOOL_CALLS_PER_RUN).toBeGreaterThan(49);
+    expect(DEFAULT_ANTIGRAVITY_MAX_TOOL_CALLS_PER_RUN).toBeLessThan(61);
+  });
+
+  it("is configurable and never resolves below 1", () => {
+    expect(resolveAntigravityMaxToolCallsPerRun({})).toBe(DEFAULT_ANTIGRAVITY_MAX_TOOL_CALLS_PER_RUN);
+    expect(resolveAntigravityMaxToolCallsPerRun({ maxToolCallsPerRun: 12 })).toBe(12);
+    expect(resolveAntigravityMaxToolCallsPerRun({ maxToolCallsPerRun: 0 })).toBe(1);
+    expect(resolveAntigravityMaxToolCallsPerRun({ maxToolCallsPerRun: -5 })).toBe(1);
   });
 });

@@ -225,3 +225,32 @@ describe("search fanout is counted so the cause is visible (TSMC-21368)", () => 
     expect(inspectAntigravityStream(hunting).searchToolCalls).toBe(14);
   });
 });
+
+describe("total tool-call counting feeds the ceiling (TSMC-21369)", () => {
+  const line = (i: number, tool: string, state = "DONE") =>
+    `{"event":"step_update","step_update":{"conversation_id":"c1","step_index":${i},"state":"${state}","step_type":"tool","tool_name":"${tool}"}}`;
+
+  it("counts every tool, not just searches, and counts each call once", () => {
+    const stream = [
+      line(1, "grep_search", "ACTIVE"), line(1, "grep_search", "DONE"),
+      line(2, "view_file"), line(3, "run_command"), line(4, "write_to_file"),
+    ].join("\n");
+    const parsed = inspectAntigravityStream(stream);
+    expect(parsed.toolCalls).toBe(4);
+    expect(parsed.searchToolCalls).toBe(1);
+  });
+
+  it("rises monotonically as the partial stream grows, so the guard can trip mid-run", () => {
+    const lines = Array.from({ length: 70 }, (_, i) => line(i, "view_file"));
+    expect(inspectAntigravityStream(lines.slice(0, 10).join("\n")).toolCalls).toBe(10);
+    expect(inspectAntigravityStream(lines.slice(0, 61).join("\n")).toolCalls).toBe(61);
+  });
+
+  it("ignores non-tool steps", () => {
+    const stream = [
+      '{"event":"step_update","step_update":{"step_index":0,"state":"DONE","step_type":"user_input"}}',
+      '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response"}}',
+    ].join("\n");
+    expect(inspectAntigravityStream(stream).toolCalls).toBe(0);
+  });
+});

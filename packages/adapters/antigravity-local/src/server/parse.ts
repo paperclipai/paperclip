@@ -6,6 +6,8 @@ export interface ParsedAntigravityOutput {
   errorMessage: string | null;
   /** Count of search-class tool calls; see SEARCH_TOOL_NAMES. */
   searchToolCalls: number;
+  /** Count of ALL distinct tool calls in the turn. */
+  toolCalls: number;
   usage: {
     inputTokens: number;
     cachedInputTokens: number;
@@ -196,6 +198,8 @@ export function inspectAntigravityStream(stdout: string) {
   // and 368K -- past the 200K cap. Counting the calls makes the CAUSE visible
   // instead of only the symptom the token guard reports.
   const searchToolCalls = new Set<string>();
+  // All tool calls, not just search ones: the cap below bounds total fanout.
+  const toolCalls = new Set<string>();
   // The agy CLI reports WHY a turn ended inside the result envelope
   // ({"event":"result","result":{"status":"ERROR","error":"Individual quota
   // reached ... Resets in 14m32s."}}). Paperclip discarded it and reported the
@@ -225,6 +229,10 @@ export function inspectAntigravityStream(stdout: string) {
     summary = readEventText(event) ?? summary;
     const stepUpdate = asRecord(event.step_update);
     const toolName = typeof stepUpdate.tool_name === "string" ? stepUpdate.tool_name : "";
+    if (toolName) {
+      // step_index keys the call, so ACTIVE + DONE for one tool counts once.
+      toolCalls.add(`${toolName}:${String(stepUpdate.step_index ?? toolCalls.size)}`);
+    }
     if (SEARCH_TOOL_NAMES.has(toolName)) {
       // step_index makes the count per distinct call, not per state transition
       // (a tool emits ACTIVE then DONE for the same step).
@@ -241,7 +249,11 @@ export function inspectAntigravityStream(stdout: string) {
       }
     }
   }
-  return { sessionId, summary, usage, sawJsonEvent, resultStatus, errorText, searchToolCalls: searchToolCalls.size };
+  return {
+    sessionId, summary, usage, sawJsonEvent, resultStatus, errorText,
+    searchToolCalls: searchToolCalls.size,
+    toolCalls: toolCalls.size,
+  };
 }
 
 export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntigravityOutput {
@@ -258,6 +270,7 @@ export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntig
     summary: cleanedText,
     errorMessage: stream.errorText,
     searchToolCalls: stream.searchToolCalls,
+    toolCalls: stream.toolCalls,
     usage: stream.usage,
     disposition,
     resultStatus: stream.resultStatus,

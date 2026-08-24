@@ -207,6 +207,32 @@ export function buildAntigravityArgs(input: {
   return args;
 }
 
+/**
+ * Tool-call ceiling per run (TSMC-21369).
+ *
+ * agy has NO native turn or tool cap -- `agy --help` offers neither --max-turns
+ * nor --max-tool-calls -- and unlike claude_local and hermes (both of which set
+ * maxTurnsPerRun) antigravity had no bound at all beyond tokens and wall clock.
+ *
+ * Threshold taken from measurement, not guessed. Across 600 antigravity runs in
+ * 72h: SUCCESS runs ran p50=7, p90=28, p95=36, **max=49** tool calls, while a
+ * pathological tail of 11 runs reached 61+ (max 133). 60 therefore sits above
+ * every successful run observed and below the tail -- it cannot truncate work
+ * that was going to succeed, and it stops a run that is grinding.
+ *
+ * This is the cheaper guard of the two: a run hunting through tool calls blows
+ * the token budget eventually anyway, but only after paying for every result
+ * again on every later turn, because tool output is never cached.
+ */
+export const DEFAULT_ANTIGRAVITY_MAX_TOOL_CALLS_PER_RUN = 60;
+
+export function resolveAntigravityMaxToolCallsPerRun(config: Record<string, unknown>): number {
+  return Math.max(
+    1,
+    Math.floor(asNumber(config.maxToolCallsPerRun, DEFAULT_ANTIGRAVITY_MAX_TOOL_CALLS_PER_RUN)),
+  );
+}
+
 export function resolveAntigravityMaxTokensPerRun(config: Record<string, unknown>): number {
   return Math.max(
     1,
@@ -418,14 +444,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const maxTokensPerRun = resolveAntigravityMaxTokensPerRun(config);
     let tokenBudgetExceeded = false;
     let tokenBudgetObserved = 0;
+    const maxToolCallsPerRun = resolveAntigravityMaxToolCallsPerRun(config);
+    let toolBudgetExceeded = false;
+    let toolCallsObserved = 0;
     let observedStdout = "";
     let forceKillTimer: NodeJS.Timeout | null = null;
 
     const boundedOnLog: AdapterExecutionContext["onLog"] = async (stream, chunk) => {
       await onLog(stream, chunk);
-      if (stream !== "stdout" || tokenBudgetExceeded) return;
+      if (stream !== "stdout" || tokenBudgetExceeded || toolBudgetExceeded) return;
       observedStdout = `${observedStdout}${chunk}`.slice(-1024 * 1024);
-      const observedUsage = inspectAntigravityStream(observedStdout).usage;
+      const observedStream = inspectAntigravityStream(observedStdout);
+      const observedUsage = observedStream.usage;
+      toolCallsObserved = Math.max(toolCallsObserved, observedStream.toolCalls);
+      if (observedStream.toolCalls > maxToolCallsPerRun) {
+        toolBudgetExceeded = true;
+        await onLog(
+          "stderr",
+          `[paperclip] Antigravity maxToolCallsPerRun of ${maxToolCallsPerRun} exceeded `
+          + `(observed ${observedStream.toolCalls}, ${observedStream.searchToolCalls} of them searches); `
+          + `stopping before another model turn.\n`,
+        );
+        const runningProc = runningProcesses.get(runId);
+        if (runningProc) signalRunningProcess(runningProc, "SIGTERM");
+        return;
+      }
       // Budget-weighted: cache reads at reduced weight (TSMC-20840).
       const observed = weightedBudgetTokens(observedUsage);
       tokenBudgetObserved = Math.max(tokenBudgetObserved, observed);
@@ -564,9 +607,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorMessage: tokenBudgetExceeded
           ? `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}).`
-          : failed ? fallbackErrorMessage : null,
+          : toolBudgetExceeded
+            ? `Paperclip maxToolCallsPerRun of ${maxToolCallsPerRun} exceeded (observed ${toolCallsObserved}).`
+            : failed ? fallbackErrorMessage : null,
         errorCode: tokenBudgetExceeded
           ? "antigravity_token_budget_exhausted"
+          : toolBudgetExceeded ? "antigravity_tool_budget_exhausted"
           : failed && quotaMeta.exhausted ? "antigravity_quota_exhausted"
             : transientSilentExit ? "antigravity_transient_silent_exit" : null,
         errorFamily: transientSilentExit ? "transient_upstream" : null,
@@ -619,6 +665,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             // Surfaced so search fanout is measurable per run rather than only
             // showing up later as an unexplained token-budget kill.
             searchToolCalls: attempt.parsed.searchToolCalls,
+            toolCalls: attempt.parsed.toolCalls,
+            ...(toolBudgetExceeded
+              ? {
+                toolBudget: {
+                  exhausted: true,
+                  maxToolCallsPerRun,
+                  observedToolCalls: toolCallsObserved,
+                },
+              }
+              : {}),
             ...(attempt.parsed.resultStatus && attempt.parsed.resultStatus !== "SUCCESS"
               ? { stopReason: `antigravity_${attempt.parsed.resultStatus.toLowerCase()}` }
               : {}),
