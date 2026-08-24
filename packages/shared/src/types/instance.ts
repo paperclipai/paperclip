@@ -7,6 +7,21 @@ export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
 export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
 export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
 
+/**
+ * How long a run lease held by a driver with no provider-side lease of its own
+ * (`local`, `ssh`) stays valid when nothing releases it.
+ *
+ * Six hours against a longest-observed run of about two and a half. The margin
+ * is deliberate but it is not what makes the sweep safe: the expired-lease
+ * sweep releases a lease only when the run that holds it is *also* terminal, so
+ * this value can never cut a live run's environment out from under it. It sets
+ * how long a genuinely abandoned lease lingers before collection, which is why
+ * a generous default costs little and is safe to tune per instance.
+ */
+export const DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS = 6;
+export const MIN_IN_PROCESS_RUN_LEASE_TTL_HOURS = 1;
+export const MAX_IN_PROCESS_RUN_LEASE_TTL_HOURS = 24 * 7;
+
 export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
@@ -114,6 +129,12 @@ export interface InstanceExperimentalSettings {
    */
   worktreeRunExecutionActivationInstanceId: string | null;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  /**
+   * TTL stamped on a `local`/`ssh` run lease at acquisition. Tunable per
+   * instance because how long an abandoned lease may linger is a deployment
+   * choice; the sweep's terminal-run requirement is what keeps any value safe.
+   */
+  inProcessRunLeaseTtlHours: number;
 }
 
 /**

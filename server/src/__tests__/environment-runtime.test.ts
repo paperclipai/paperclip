@@ -30,11 +30,18 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "../services/environment-config.ts";
 import {
+  DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS,
+  MAX_IN_PROCESS_RUN_LEASE_TTL_MS,
+  MIN_IN_PROCESS_RUN_LEASE_TTL_MS,
+  resolveInProcessRunLeaseTtlMs,
   SANDBOX_CAPABILITY_KEYS,
   environmentRuntimeService,
   findReusableSandboxLeaseId,
   SandboxOrphanCleanupWriteError,
 } from "../services/environment-runtime.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
+import { DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS } from "@paperclipai/shared";
+import { ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS } from "../services/recovery/service.ts";
 import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import * as environmentsModule from "../services/environments.ts";
 import { logger } from "../middleware/logger.ts";
@@ -464,6 +471,60 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .from(environmentLeases)
       .where(eq(environmentLeases.id, acquired.lease.id));
     expect(rows[0]?.status).toBe("released");
+  });
+
+  it("persists the run's failure reason on a failed local lease release", async () => {
+    const { companyId, environment, runId } = await seedEnvironment();
+
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    const released = await runtime.releaseRunLeases(
+      runId,
+      "failed",
+      undefined,
+      "adapter exited with code 137",
+    );
+
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease.failureReason).toBe("adapter exited with code 137");
+
+    // The row itself must carry the reason. A value that lives only in the
+    // activity log is exactly the leak this guards against.
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(rows[0]?.status).toBe("failed");
+    expect(rows[0]?.failureReason).toBe("adapter exited with code 137");
+    expect(rows[0]?.cleanupStatus).toBe("success");
+  });
+
+  it("invents no failure reason when a local lease is released cleanly", async () => {
+    const { companyId, environment, runId } = await seedEnvironment();
+
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    await runtime.releaseRunLeases(runId);
+
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(rows[0]?.status).toBe("released");
+    expect(rows[0]?.failureReason).toBeNull();
+    expect(rows[0]?.cleanupStatus).toBe("success");
   });
 
   it("allows projectless runs through the runtime seam", async () => {
@@ -6381,6 +6442,218 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       }),
     });
     expect(released[0]?.lease.status).toBe("released");
+
+    // A clean release invents no reason, but cleanup is still recorded: the
+    // teardown RPC above returned, so the provider resource is genuinely gone.
+    // Leaving `cleanup_status` null would read as cleanup that never ran.
+    const cleanRows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(cleanRows[0]?.failureReason).toBeNull();
+    expect(cleanRows[0]?.cleanupStatus).toBe("success");
+  });
+
+  it("stamps an expiry on a local run lease so a sweep can find it", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({ driver: "local" });
+
+    const before = Date.now();
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+    const after = Date.now();
+
+    // Every historical row has a null expires_at because this driver passed
+    // none. A lease with no expiry is a waiting state no reaper can select on,
+    // which is why no reaper was ever written.
+    const row = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id))
+      .then((rows) => rows[0]);
+    expect(row?.expiresAt).toBeInstanceOf(Date);
+    const expiresAt = row!.expiresAt!.getTime();
+    expect(expiresAt).toBeGreaterThanOrEqual(before + DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS);
+    expect(expiresAt).toBeLessThanOrEqual(after + DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS);
+  });
+
+  it("stamps the instance-configured TTL instead of the default when one is set", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({ driver: "local" });
+
+    // The override is the point of the setting: an operator whose runs are
+    // longer (or whose collection window should be tighter) tunes this without
+    // a code change. Twelve hours is deliberately not the 6h default, so a
+    // regression that ignores the setting cannot pass this by coincidence.
+    const expectedTtlMs = 12 * 60 * 60 * 1000;
+    expect(expectedTtlMs).not.toBe(DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS);
+    await instanceSettingsService(db).updateExperimental({ inProcessRunLeaseTtlHours: 12 });
+
+    try {
+      const before = Date.now();
+      const acquired = await runtime.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      });
+      const after = Date.now();
+
+      const row = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.id, acquired.lease.id))
+        .then((rows) => rows[0]);
+      const expiresAt = row!.expiresAt!.getTime();
+      expect(expiresAt).toBeGreaterThanOrEqual(before + expectedTtlMs);
+      expect(expiresAt).toBeLessThanOrEqual(after + expectedTtlMs);
+    } finally {
+      // The settings row outlives this test's fixtures -- it is instance-wide,
+      // not company-scoped, so `afterEach` never clears it. Leaving 12h set
+      // would silently re-tune every later acquisition in this file.
+      await instanceSettingsService(db).updateExperimental({
+        inProcessRunLeaseTtlHours: DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS,
+      });
+    }
+  });
+
+  it("honours a caller-supplied lease expiry instead of the default TTL", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({ driver: "local" });
+
+    // Adapter logins negotiate their own window. The default is a fallback for
+    // callers that ask for nothing, not an override of one that does.
+    const requestedExpiresAt = new Date(Date.now() + 90 * 1000);
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+      requestedExpiresAt,
+    });
+
+    const row = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id))
+      .then((rows) => rows[0]);
+    expect(row?.expiresAt?.getTime()).toBe(requestedExpiresAt.getTime());
+  });
+
+  // The default outlasts recovery's own patience with a silent run. By the time
+  // a lease can expire, recovery has already had its say about the run holding
+  // it -- so an expired lease with a still-live run is a state the sweep should
+  // never have to reason about, and the sweep's terminal-run guard is a second
+  // lock on a door that is already shut.
+  it("defaults the in-process lease TTL past the recovery critical threshold", () => {
+    expect(DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS).toBeGreaterThan(
+      ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+    );
+  });
+
+  it("clamps a configured TTL to the supported bounds instead of refusing it", () => {
+    // The settings schema already rejects out-of-range writes, so a value that
+    // reaches here came from an older build or a hand-edited row. Refusing it
+    // would fail every lease acquisition -- taking runs down over a tuning
+    // value -- so the resolver floors and caps instead.
+    expect(resolveInProcessRunLeaseTtlMs(6)).toBe(DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS);
+    expect(resolveInProcessRunLeaseTtlMs(0)).toBe(MIN_IN_PROCESS_RUN_LEASE_TTL_MS);
+    expect(resolveInProcessRunLeaseTtlMs(-40)).toBe(MIN_IN_PROCESS_RUN_LEASE_TTL_MS);
+    expect(resolveInProcessRunLeaseTtlMs(10_000)).toBe(MAX_IN_PROCESS_RUN_LEASE_TTL_MS);
+    expect(resolveInProcessRunLeaseTtlMs(Number.NaN)).toBe(DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS);
+    expect(resolveInProcessRunLeaseTtlMs(null)).toBe(DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS);
+    expect(resolveInProcessRunLeaseTtlMs(undefined)).toBe(DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS);
+  });
+
+  it("persists the run's failure reason on a failed plugin environment lease release", async () => {
+    const pluginId = randomUUID();
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: "plugin-lease-failed", metadata: {} };
+        }
+        return undefined;
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+    });
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "plugin",
+      name: "Plugin Fake plugin",
+      config: {
+        pluginKey: "acme.environments",
+        driverKey: "fake-plugin",
+        driverConfig: {
+          template: "base",
+        },
+      },
+    });
+
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.environments",
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.environments",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Environments",
+        description: "Test plugin environment driver",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            displayName: "Fake plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    const released = await runtimeWithPlugin.releaseRunLeases(
+      runId,
+      "failed",
+      undefined,
+      "adapter exited with code 137",
+    );
+
+    expect(released).toHaveLength(1);
+
+    // The row must carry the reason the run computed. The plugin driver used to
+    // call `releaseLease(id, status)` with no options, so a plugin-backed run
+    // failure was undiagnosable the moment its log rotated away -- the same leak
+    // already closed for the local, ssh, and sandbox drivers.
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, acquired.lease.id));
+    expect(rows[0]?.status).toBe("failed");
+    expect(rows[0]?.failureReason).toBe("adapter exited with code 137");
+    expect(rows[0]?.cleanupStatus).toBe("success");
   });
 
   async function seedPluginDriverEnvironment(pluginId: string) {

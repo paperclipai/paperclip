@@ -8,6 +8,9 @@ import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS,
+  MAX_IN_PROCESS_RUN_LEASE_TTL_HOURS,
+  MIN_IN_PROCESS_RUN_LEASE_TTL_HOURS,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
@@ -83,6 +86,12 @@ export const instanceExperimentalSettingsSchema = z.object({
     .min(MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .max(MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
+  inProcessRunLeaseTtlHours: z
+    .number()
+    .int()
+    .min(MIN_IN_PROCESS_RUN_LEASE_TTL_HOURS)
+    .max(MAX_IN_PROCESS_RUN_LEASE_TTL_HOURS)
+    .default(DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = z

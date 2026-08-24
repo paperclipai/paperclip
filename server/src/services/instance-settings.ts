@@ -15,6 +15,7 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -253,6 +254,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+      inProcessRunLeaseTtlHours:
+        parsed.data.inProcessRunLeaseTtlHours ?? DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS,
     };
   }
   return {
@@ -289,6 +292,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     worktreeRunExecutionActivationInstanceId: null,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+    inProcessRunLeaseTtlHours: DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS,
   };
 }
 

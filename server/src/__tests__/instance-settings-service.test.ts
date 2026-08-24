@@ -57,6 +57,7 @@ describe("instance settings service", () => {
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
+      inProcessRunLeaseTtlHours: 6,
     });
   });
 

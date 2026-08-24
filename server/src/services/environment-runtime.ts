@@ -5,6 +5,7 @@ import { companySecrets, companySecretVersions, environmentLeases, heartbeatRuns
 import type {
   Environment,
   EnvironmentLease,
+  EnvironmentLeaseCleanupStatus,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   InstanceExperimentalSettings,
@@ -13,7 +14,12 @@ import type {
   SandboxEnvironmentConfig,
   SandboxProviderCapabilities,
 } from "@paperclipai/shared";
-import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
+import {
+  resolveDeclaredSandboxCapabilities,
+  DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS,
+  MAX_IN_PROCESS_RUN_LEASE_TTL_HOURS,
+  MIN_IN_PROCESS_RUN_LEASE_TTL_HOURS,
+} from "@paperclipai/shared";
 import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import type {
   CommandManagedDuplexChannel,
@@ -457,6 +463,14 @@ export interface EnvironmentDriverAcquireInput {
    */
   requestedExpiresAt?: Date | null;
   /**
+   * The instance-configured TTL for a lease held by a driver with no
+   * provider-side lease of its own (`local`, `ssh`), in hours. Resolved once by
+   * the runtime so a driver never reads settings itself. Absent or invalid
+   * falls back to `DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS`; ignored entirely
+   * when the caller supplies its own `requestedExpiresAt`.
+   */
+  inProcessLeaseTtlHours?: number | null;
+  /**
    * Re-check the environment company binding inside the lease insert
    * transaction. The login acquire paths set this so a managed reconciliation
    * that binds the sandbox to another company between the route guard and this
@@ -473,6 +487,13 @@ export interface EnvironmentDriverReleaseInput {
   environment: Environment;
   lease: EnvironmentLease;
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
+  /**
+   * Why the run that held this lease ended, when it ended badly. The heartbeat
+   * already computes this from the run's own error, so drivers persist it on
+   * the lease instead of letting the release drop it. Absent for a clean
+   * release; a driver must not invent one from the status alone.
+   */
+  failureReason?: string;
 }
 
 function resolvePluginSandboxRpcTimeoutMs(config: Record<string, unknown>): number | undefined {
@@ -1015,6 +1036,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         heartbeatRunId: input.heartbeatRunId,
         leasePolicy: "ephemeral",
         provider: "local",
+        expiresAt: inProcessRunLeaseExpiry(input),
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
@@ -1024,7 +1046,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, inProcessTeardownRelease(input));
     },
 
     async realizeWorkspace(input) {
@@ -1054,6 +1076,80 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   };
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * How long an in-process run lease (local, ssh) stays valid when nothing
+ * releases it, absent an instance override.
+ *
+ * Six hours against a longest-observed run of about two and a half. The margin
+ * matters less than it looks: the expired-lease sweep releases a lease only
+ * when the run holding it is *also* terminal, so this value cannot cut a live
+ * run's environment out from under it however tight it gets set. What it
+ * actually controls is how long an abandoned lease lingers before collection —
+ * a detection bound, not a kill switch.
+ *
+ * That separation is the whole design. A TTL-only reaper would recreate the
+ * state-leak class this work exists to close, from the other direction: instead
+ * of leases that never end, leases that end while their run is still using
+ * them.
+ */
+export const DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS =
+  DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS * HOUR_MS;
+
+export const MIN_IN_PROCESS_RUN_LEASE_TTL_MS = MIN_IN_PROCESS_RUN_LEASE_TTL_HOURS * HOUR_MS;
+export const MAX_IN_PROCESS_RUN_LEASE_TTL_MS = MAX_IN_PROCESS_RUN_LEASE_TTL_HOURS * HOUR_MS;
+
+/**
+ * The configured in-process lease TTL, in milliseconds.
+ *
+ * Clamped rather than rejected. The schema already bounds what can be written
+ * through the settings API, so an out-of-range value here means a row written
+ * by an older build or edited directly — cases where refusing to acquire a
+ * lease would take runs down over a tuning value. Clamping keeps the instance
+ * running on the nearest legal bound.
+ */
+export function resolveInProcessRunLeaseTtlMs(hours: number | null | undefined): number {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return DEFAULT_IN_PROCESS_RUN_LEASE_TTL_MS;
+  }
+  return Math.min(
+    MAX_IN_PROCESS_RUN_LEASE_TTL_MS,
+    Math.max(MIN_IN_PROCESS_RUN_LEASE_TTL_MS, Math.round(hours * HOUR_MS)),
+  );
+}
+
+/**
+ * The expiry to stamp on a lease held by a driver with no provider-side lease
+ * of its own. A caller-supplied expiry wins — adapter logins negotiate their
+ * own — but absent one, the lease still gets a bound. A lease with a null
+ * `expires_at` is a waiting state with no recorded way out, which is why every
+ * one of these rows leaked: no sweep can select on a column nothing writes.
+ */
+function inProcessRunLeaseExpiry(input: EnvironmentDriverAcquireInput, now: Date = new Date()): Date {
+  return input.requestedExpiresAt instanceof Date && !Number.isNaN(input.requestedExpiresAt.getTime())
+    ? input.requestedExpiresAt
+    : new Date(now.getTime() + resolveInProcessRunLeaseTtlMs(input.inProcessLeaseTtlHours));
+}
+
+/**
+ * Release options for the drivers that hold no provider-side resource (local,
+ * ssh). There is nothing to tear down, so cleanup is complete the moment the
+ * row flips — `success`, not a permanently-`pending` value that reads as
+ * unfinished work. The failure reason is whatever the heartbeat computed from
+ * the run's own error; these drivers never synthesize one, so a lease with a
+ * null reason means the caller genuinely had none.
+ */
+function inProcessTeardownRelease(input: EnvironmentDriverReleaseInput): {
+  failureReason?: string;
+  cleanupStatus: EnvironmentLeaseCleanupStatus;
+} {
+  return {
+    ...(input.failureReason ? { failureReason: input.failureReason } : {}),
+    cleanupStatus: "success",
+  };
+}
+
 function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   const environmentsSvc = environmentService(db);
 
@@ -1080,6 +1176,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         leasePolicy: "ephemeral",
         provider: "ssh",
         providerLeaseId: `ssh://${parsed.config.username}@${parsed.config.host}:${parsed.config.port}${remoteCwd}`,
+        expiresAt: inProcessRunLeaseExpiry(input),
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
@@ -1094,7 +1191,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, inProcessTeardownRelease(input));
     },
 
     async realizeWorkspace(input) {
@@ -2217,7 +2314,10 @@ function createSandboxEnvironmentDriver(
         ? "retained" as const
         : input.status;
       return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
-        failureReason: input.status === "failed" ? "adapter_or_run_failure" : undefined,
+        // Prefer the caller's concrete reason; fall back to the generic class
+        // only when the run supplied nothing.
+        failureReason:
+          input.status === "failed" ? input.failureReason ?? "adapter_or_run_failure" : undefined,
         cleanupStatus,
       });
     },
@@ -2749,9 +2849,9 @@ function createSandboxEnvironmentDriver(
         : input.status;
     const failureReason =
       input.status === "failed"
-        ? "adapter_or_run_failure"
+        ? input.failureReason ?? "adapter_or_run_failure"
         : cleanupStatus === "failed"
-          ? "release_cleanup_failed"
+          ? input.failureReason ?? "release_cleanup_failed"
           : undefined;
     return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
       failureReason,
@@ -3072,7 +3172,23 @@ function createPluginEnvironmentDriver(
         providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
       });
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      // Reached only once the plugin teardown above returned, so the provider
+      // resource is gone and cleanup is genuinely complete.
+      //
+      // A throwing teardown keeps its current behavior on purpose: the error
+      // propagates to `releaseRunLeases`, which reports it through
+      // `onLeaseReleaseError` and leaves the row `active`. Do not route that
+      // case to `pending_cleanup` the way the plugin-backed *sandbox* path
+      // does -- this driver implements no `retryPendingSandboxTeardown`, so the
+      // cleanup sweep can only throw on such a row, stranding it permanently.
+      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+        // Prefer the caller's concrete reason; fall back to the generic class
+        // only when the run supplied nothing, matching the sibling
+        // plugin-backed sandbox release.
+        failureReason:
+          input.status === "failed" ? input.failureReason ?? "adapter_or_run_failure" : undefined,
+        cleanupStatus: "success",
+      });
     },
 
     async resumeRunLease(input) {
@@ -3306,6 +3422,27 @@ export function environmentRuntimeService(
     return driver;
   }
 
+  /**
+   * The instance's configured in-process lease TTL, read once per acquisition.
+   *
+   * A settings read must never be what stops a run from starting, so a failure
+   * here falls back to the default instead of propagating. Losing the override
+   * costs a lease a longer or shorter collection window; losing the lease costs
+   * the run.
+   */
+  async function readInProcessLeaseTtlHours(): Promise<number> {
+    try {
+      const experimental = await instanceSettingsService(db).getExperimental();
+      return experimental.inProcessRunLeaseTtlHours;
+    } catch (err) {
+      logger.warn(
+        { err },
+        "failed to read the configured in-process lease TTL; using the default",
+      );
+      return DEFAULT_IN_PROCESS_RUN_LEASE_TTL_HOURS;
+    }
+  }
+
   return {
     getDriver,
 
@@ -3359,6 +3496,7 @@ export function environmentRuntimeService(
       });
       const driver = requireDriver(input.environment);
       const lease = await driver.acquireRunLease({
+        inProcessLeaseTtlHours: await readInProcessLeaseTtlHours(),
         companyId: input.companyId,
         environment: input.environment,
         issueId: input.issueId,
@@ -3384,6 +3522,7 @@ export function environmentRuntimeService(
       heartbeatRunId: string,
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
+      failureReason?: string,
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -3417,8 +3556,11 @@ export function environmentRuntimeService(
                 environment,
                 lease: leaseSnapshot,
                 status,
+                ...(failureReason ? { failureReason } : {}),
               })
-            : await environmentsSvc.releaseLease(leaseRow.id, status);
+            : await environmentsSvc.releaseLease(leaseRow.id, status, {
+                ...(failureReason ? { failureReason } : {}),
+              });
           if (!lease) continue;
 
           released.push({

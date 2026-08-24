@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -361,6 +361,12 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+/**
+ * Wakeup request statuses that are still awaiting an outcome. Every other
+ * status is terminal, so a row in one of these has not yet recorded how it
+ * left the waiting state.
+ */
+const OPEN_WAKEUP_REQUEST_STATUSES = ["queued", "deferred_issue_execution", "claimed"] as const;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -386,6 +392,15 @@ const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
 // catch site logs a constant, locally generated `errorKind` instead.
 const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
 const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
+
+// The reaper releases at most this many expired leases per tick.
+const EXPIRED_LEASE_SWEEP_PAGE_SIZE = 20;
+// Recorded on the lease so a swept row says why it left `active`, rather than
+// looking like an ordinary release.
+const EXPIRED_LEASE_SWEEP_FAILURE_REASON = "lease_expired: past expires_at with a terminal run";
+// Same reasoning as PENDING_CLEANUP_SWEEP_ERROR_KIND: a driver teardown
+// rejection can carry a credential, so the sweep logs a constant instead.
+const EXPIRED_LEASE_SWEEP_ERROR_KIND = "expired_lease_sweep_failed";
 
 // Read the stored retry attempt count as a safe value, directly in SQL. A
 // provider can write a malformed value under the attempts key. The type guard
@@ -9112,6 +9127,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return write.run ?? run;
     }
 
+    // The run row is terminal now, so its wakeup must be too. This teardown is
+    // the one terminal path that never went through an explicit
+    // success/failure branch, so without this the wakeup row is stranded at
+    // "claimed" forever -- a waiting state with no recorded exit. Mirror the
+    // mapping the explicit branches use: a succeeded run completes its wakeup,
+    // and anything cut short cancels it.
+    await closeWakeupOnTerminalRun(
+      run.wakeupRequestId,
+      terminalStatus === "succeeded" ? "completed" : "cancelled",
+      terminalStatus === "succeeded" ? null : message,
+    ).catch((wakeupErr) => {
+      logger.warn(
+        { err: wakeupErr, runId: run.id, wakeupRequestId: run.wakeupRequestId },
+        "failed to close wakeup request on lease-release terminalization",
+      );
+    });
+
     const terminalRun = write.run;
     if (terminalRun) {
       await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
@@ -9183,6 +9215,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .update(agentWakeupRequests)
       .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+  }
+
+  /**
+   * Close a wakeup that is still open, without disturbing one that another path
+   * already finished. Used by the teardown safety net, which can run after an
+   * explicit branch has already recorded the real outcome -- the status
+   * predicate makes it a no-op in that case rather than overwriting a precise
+   * status with a generic one.
+   */
+  async function closeWakeupOnTerminalRun(
+    wakeupRequestId: string | null | undefined,
+    status: "completed" | "cancelled",
+    error: string | null,
+  ) {
+    if (!wakeupRequestId) return;
+    await db
+      .update(agentWakeupRequests)
+      .set({ status, finishedAt: new Date(), ...(error ? { error } : {}), updatedAt: new Date() })
+      .where(
+        and(
+          eq(agentWakeupRequests.id, wakeupRequestId),
+          inArray(agentWakeupRequests.status, [...OPEN_WAKEUP_REQUEST_STATUSES]),
+        ),
+      );
   }
 
   async function addContinuationExhaustedCommentOnce(input: {
@@ -9501,7 +9557,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             and(
               eq(agentWakeupRequests.companyId, issue.companyId),
               eq(agentWakeupRequests.agentId, run.agentId),
-              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+              inArray(agentWakeupRequests.status, [...OPEN_WAKEUP_REQUEST_STATUSES]),
               sql`(
                 ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
                 or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
@@ -13636,6 +13692,140 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { swept: rows.length, destroyed, capped };
   }
 
+  /**
+   * Release the leases that outlived the run holding them.
+   *
+   * This is the second half of giving a lease an exit condition: the acquire
+   * side stamps `expires_at`, and nothing sweeps it without this. It is a
+   * backstop, not the primary path — a run that terminalizes normally releases
+   * its own leases through `releaseRunLeases`. What lands here is the residue:
+   * a run whose terminalization skipped the release, or one terminalized by a
+   * path that never reached the orchestrator.
+   *
+   * Two guards make it safe to run unattended:
+   *
+   * - **The run must already be terminal.** Expiry alone never releases a
+   *   lease. A long-running job that outlives its TTL keeps its lease, because
+   *   the row that decides is the run's status, not the clock. Without this an
+   *   over-tight TTL would tear the environment out from under live work — the
+   *   exact failure the issue's "do NOT touch execution locks mechanically"
+   *   note warns about.
+   * - **Release goes through the driver**, via `releaseRunLeases`, so a
+   *   provider-backed lease is torn down rather than merely marked. A driver
+   *   that throws leaves its lease `active` for the next tick, the same as
+   *   every other release path.
+   */
+  async function sweepExpiredRunLeases(): Promise<{
+    swept: number;
+    released: number;
+    deferred: number;
+    skippedWithoutRun: number;
+  }> {
+    const now = new Date();
+
+    // Leases whose run row was deleted have a null `heartbeat_run_id` (the FK
+    // is `on delete set null`), so `releaseRunLeases` cannot reach them. Count
+    // them rather than silently omitting them: a growing number here means a
+    // second sweep is needed, and a zero says this one covers the population.
+    const [orphanCount] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(environmentLeases)
+      .where(
+        and(
+          eq(environmentLeases.status, "active"),
+          isNotNull(environmentLeases.expiresAt),
+          lt(environmentLeases.expiresAt, now),
+          isNull(environmentLeases.heartbeatRunId),
+        ),
+      );
+
+    const rows = await db
+      .select({
+        leaseId: environmentLeases.id,
+        heartbeatRunId: environmentLeases.heartbeatRunId,
+      })
+      .from(environmentLeases)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
+      .where(
+        and(
+          eq(environmentLeases.status, "active"),
+          isNotNull(environmentLeases.expiresAt),
+          lt(environmentLeases.expiresAt, now),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+        ),
+      )
+      // Oldest-touched first, not oldest-expired first. A lease whose release
+      // keeps failing holds its `expires_at` forever, so ordering by expiry
+      // would re-select the same full page every tick and starve every lease
+      // behind it. The deferral below moves a failed lease to the back of this
+      // order, which is the same rotation `sweepPendingCleanupLeases` uses.
+      .orderBy(asc(environmentLeases.updatedAt), asc(environmentLeases.expiresAt))
+      .limit(EXPIRED_LEASE_SWEEP_PAGE_SIZE);
+
+    // One release call per run: `releaseRunLeases` is keyed by run, and a run
+    // with several expired leases would otherwise be swept once per lease.
+    const runIds = [...new Set(rows.flatMap((row) => (row.heartbeatRunId ? [row.heartbeatRunId] : [])))];
+
+    let released = 0;
+    for (const runId of runIds) {
+      const errors: Array<{ leaseId: string }> = [];
+      try {
+        const releasedLeases = await environmentRuntime.releaseRunLeases(
+          runId,
+          "expired",
+          (leaseId) => errors.push({ leaseId }),
+          EXPIRED_LEASE_SWEEP_FAILURE_REASON,
+        );
+        released += releasedLeases.length;
+      } catch {
+        // One run's release must not abandon the rest of the page. The lease
+        // stays active and the deferral below rotates it to the back. Log a
+        // constant errorKind only: the exception can carry a credential in its
+        // name, code, message, cause, or stack.
+        errors.push(...rows.filter((row) => row.heartbeatRunId === runId).map((row) => ({ leaseId: row.leaseId })));
+      }
+      if (errors.length > 0) {
+        logger.warn(
+          { errorKind: EXPIRED_LEASE_SWEEP_ERROR_KIND, runId, leaseIds: errors.map((e) => e.leaseId) },
+          "expired lease release failed; the lease stays active for the next sweep",
+        );
+      }
+    }
+
+    // Rotate whatever this page failed to release. Any row still `active` was
+    // not released, whether the driver threw, reported an error, or simply
+    // returned nothing for it — touching `updated_at` is what stops the next
+    // tick handing it the identical page. This is deliberately keyed on the
+    // observed row state rather than on the error callback, because a silent
+    // no-op would starve the sweep just as effectively as a loud failure.
+    const deferred = rows.length > 0
+      ? await db
+        .update(environmentLeases)
+        .set({ updatedAt: new Date() })
+        .where(
+          and(
+            inArray(environmentLeases.id, rows.map((row) => row.leaseId)),
+            eq(environmentLeases.status, "active"),
+          ),
+        )
+        .returning({ id: environmentLeases.id })
+      : [];
+
+    if (orphanCount && orphanCount.count > 0) {
+      logger.warn(
+        { count: orphanCount.count },
+        "expired leases with no heartbeat run are not swept by this path",
+      );
+    }
+
+    return {
+      swept: rows.length,
+      released,
+      deferred: deferred.length,
+      skippedWithoutRun: orphanCount?.count ?? 0,
+    };
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -13847,6 +14037,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.error(
         { errorKind: PENDING_CLEANUP_SWEEP_ERROR_KIND },
         "pending_cleanup lease sweep failed",
+      );
+    }
+
+    // Release leases that outlived their run, on the same tick and with the
+    // same isolation: this sweep's failure must not hide the reaper result or
+    // the sweep above it.
+    try {
+      const expired = await sweepExpiredRunLeases();
+      if (expired.released > 0) {
+        logger.warn(
+          { released: expired.released, swept: expired.swept },
+          "released expired environment leases",
+        );
+      }
+    } catch {
+      logger.error(
+        { errorKind: EXPIRED_LEASE_SWEEP_ERROR_KIND },
+        "expired environment lease sweep failed",
       );
     }
 
@@ -19587,6 +19795,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileHotRestartAdoption,
     reapOrphanedRuns,
     sweepPendingCleanupLeases,
+    sweepExpiredRunLeases,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
