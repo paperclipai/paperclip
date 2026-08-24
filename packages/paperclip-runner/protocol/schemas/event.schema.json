@@ -19,7 +19,7 @@
   "properties": {
     "schema": { "const": "paperclip.prp.event.v1" },
     "sourceEventId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "sourceSeq": { "type": "integer", "minimum": 1 },
+    "sourceSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "sourceInstanceId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "sourceKind": { "enum": ["runner", "control_plane"] },
     "runId": { "type": "string", "minLength": 1, "maxLength": 160 },

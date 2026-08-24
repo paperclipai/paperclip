@@ -36,8 +36,12 @@ export interface SequenceGap {
   sourceKey: string;
   expected: number;
   received: number;
+  missingCount: number;
   missing: number[];
+  truncated: boolean;
 }
+
+export const MAX_RECORDED_MISSING_SEQUENCES = 256;
 
 export interface SessionSnapshot {
   schema: "paperclip.prp.session-snapshot.v1";
@@ -292,14 +296,18 @@ function addGap(
   ) {
     return;
   }
+  const missingCount = event.sourceSeq - expected;
+  const recordedCount = Math.min(missingCount, MAX_RECORDED_MISSING_SEQUENCES);
   snapshot.gaps.push({
     sourceKey: key,
     expected,
     received: event.sourceSeq,
+    missingCount,
     missing: Array.from(
-      { length: event.sourceSeq - expected },
+      { length: recordedCount },
       (_, index) => expected + index,
     ),
+    truncated: recordedCount < missingCount,
   });
 }
 

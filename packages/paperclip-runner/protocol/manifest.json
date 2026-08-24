@@ -30,7 +30,7 @@
     {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "b930af4a187c26312b4fff66813498b95332cb4e972f8b9282cdceafdf0de32c"
+      "sha256": "d69ac4acfd9cd265f9dcb6a6580e949a67a50347093d0a7c12c2000a2da6d482"
     },
     {
       "path": "schemas/fixture.schema.json",
@@ -189,13 +189,13 @@
     },
     {
       "path": "fixtures/replay/golden/source-gap.snapshot.json",
-      "sha256": "4795595971d29b4d52c31063911c8dbfa9860997f98e7f16cd34decccf49992e",
+      "sha256": "7db7f25e423a721e60adfcdfee02db6d5e6fcd4a644ee180f5e29810ebbc0d78",
       "expectation": "accept",
       "compatibilityCase": "deterministic-replay-oracle"
     },
     {
       "path": "fixtures/replay/golden/source-gap.summary.json",
-      "sha256": "956d3982c714785bc5f2b003235850fbcfcd685d963de2d548d1fb660c7b1a85",
+      "sha256": "861d0ee3fafe13bf8bf0fb71b7c1ef9a62cb26efba4dc8db889f36d27a14a813",
       "expectation": "accept",
       "compatibilityCase": "deterministic-replay-oracle"
     },

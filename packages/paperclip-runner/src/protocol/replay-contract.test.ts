@@ -88,6 +88,21 @@ describe("PRP v1 JSON Schema contract", () => {
     });
   });
 
+  it("rejects source sequences that cannot be represented exactly", async () => {
+    const fixture = await readFixture();
+    const events = fixture.events as Array<Record<string, unknown>>;
+    events[0]!.sourceSeq = Number.MAX_SAFE_INTEGER + 1;
+    expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
+      ok: false,
+      issues: [
+        {
+          code: "schema_validation",
+          path: "/events/0/sourceSeq",
+        },
+      ],
+    });
+  });
+
   it("requires the declared result to match the replayed result event", async () => {
     const fixture = await readFixture();
     const result = fixture.result as Record<string, unknown>;

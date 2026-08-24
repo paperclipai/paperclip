@@ -9,6 +9,7 @@ import {
 } from "../protocol/replay-contract.js";
 import {
   createSessionSnapshot,
+  MAX_RECORDED_MISSING_SEQUENCES,
   reducePrpFixture,
   reduceSessionEvents,
   type SessionSnapshot,
@@ -77,9 +78,38 @@ describe("deterministic PRP session reducer", () => {
         sourceKey: "runner:runner_replay",
         expected: 3,
         received: 4,
+        missingCount: 1,
         missing: [3],
+        truncated: false,
       },
     ]);
+  });
+
+  it("bounds sequence-gap details for an untrusted large cursor jump", async () => {
+    const fixture = await loadFixture("source-gap");
+    const event: PrpEvent = {
+      ...fixture.events[0]!,
+      sourceEventId: "event_large_gap",
+      sourceSeq: Number.MAX_SAFE_INTEGER,
+    };
+
+    const snapshot = reduceSessionEvents(createSessionSnapshot(fixture), [
+      event,
+    ]);
+
+    expect(snapshot.gaps).toHaveLength(1);
+    expect(snapshot.gaps[0]).toMatchObject({
+      expected: 1,
+      received: Number.MAX_SAFE_INTEGER,
+      missingCount: Number.MAX_SAFE_INTEGER - 1,
+      truncated: true,
+    });
+    expect(snapshot.gaps[0]?.missing).toHaveLength(
+      MAX_RECORDED_MISSING_SEQUENCES,
+    );
+    expect(snapshot.gaps[0]?.missing.at(-1)).toBe(
+      MAX_RECORDED_MISSING_SEQUENCES,
+    );
   });
 
   it("summarizes runtime request creation and resolution with type and prompt", async () => {

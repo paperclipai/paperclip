@@ -2930,7 +2930,8 @@ export const eventSchema = {
     },
     "sourceSeq": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 9007199254740991
     },
     "sourceInstanceId": {
       "type": "string",
