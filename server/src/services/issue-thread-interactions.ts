@@ -57,6 +57,7 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 
@@ -1129,6 +1130,7 @@ export function issueThreadInteractionService(db: Db) {
         : undefined;
 
     const now = new Date();
+    const activityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
       const [updated] = await tx
         .update(issueThreadInteractions)
@@ -1172,7 +1174,23 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       let continuationIssue: IssueWakeTarget | null = null;
-      if (shouldReturnAcceptedConfirmationToCreatorAgent({
+      const transitionIssueStatus = args.actor.userId && !isTerminalIssueStatus(issueContext.status)
+        ? interaction.payload.onAccept?.transitionIssueStatus
+        : undefined;
+      if (transitionIssueStatus) {
+        const transitionedIssue = await issueService(db).update(args.issue.id, {
+          status: transitionIssueStatus,
+          actorAgentId: null,
+          actorUserId: args.actor.userId,
+        }, tx, activityPublications);
+        if (!transitionedIssue) throw notFound("Issue not found");
+        continuationIssue = {
+          id: transitionedIssue.id,
+          assigneeAgentId: transitionedIssue.assigneeAgentId ?? null,
+          assigneeUserId: transitionedIssue.assigneeUserId ?? null,
+          status: transitionedIssue.status,
+        };
+      } else if (shouldReturnAcceptedConfirmationToCreatorAgent({
         issue: issueContext,
         current: args.current,
         actor: args.actor,
@@ -1203,6 +1221,7 @@ export function issueThreadInteractionService(db: Db) {
         continuationIssue,
       };
     });
+    for (const publication of activityPublications) publishActivity(publication);
     await emitInteractionResolvedTelemetry(db, result.interaction);
     return result;
   }

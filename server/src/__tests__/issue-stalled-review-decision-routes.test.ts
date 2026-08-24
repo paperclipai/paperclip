@@ -21,6 +21,8 @@ import {
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { issueService } from "../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -223,6 +225,109 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ status: "done" })
       .expect(403, { error: "Agents cannot approve their own in-review work" });
+  });
+
+  it("atomically closes an agent-owned review when a board user accepts an explicit close card", async () => {
+    const seeded = await seedCompany("CLS");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "CLS-1",
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId: seeded.companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        prompt: "Close the accepted work?",
+        onAccept: { transitionIssueStatus: "done" },
+      } as never,
+      createdByAgentId: seeded.peerAgentId,
+    }).returning();
+
+    const before = (await issueService(db).list(seeded.companyId, { status: "in_review" }))
+      .find((issue) => issue.id === issueId);
+    expect(before?.reviewAttention).toMatchObject({
+      state: "covered",
+      paths: [expect.objectContaining({ kind: "interaction" })],
+    });
+
+    await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" })
+      .expect(403, { error: "Agents cannot approve their own in-review work" });
+
+    const accepted = await request(app(boardActor(seeded.companyId, seeded.memberUserId)))
+      .post(`/api/issues/${issueId}/interactions/${interaction!.id}/accept`)
+      .send({})
+      .expect(200);
+    expect(accepted.body).toMatchObject({ status: "accepted" });
+
+    const [closedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(closedIssue?.status).toBe("done");
+    expect(closedIssue?.completedAt).toBeInstanceOf(Date);
+    const issueActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(issueActivity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "issue.updated",
+        actorType: "user",
+        actorId: seeded.memberUserId,
+        details: expect.objectContaining({
+          status: "done",
+          source: "request_confirmation_accept",
+          interactionId: interaction!.id,
+        }),
+      }),
+    ]));
+
+    const reviewAttention = await issueService(db).listReviewAttention(seeded.companyId, [closedIssue!]);
+    expect(reviewAttention.get(issueId)).toEqual({ state: "none", paths: [], reason: null });
+
+    await request(app(boardActor(seeded.companyId, seeded.memberUserId)))
+      .get(`/api/issues/${issueId}/interactions`)
+      .expect(200);
+    const lostPathWakes = await db.select().from(agentWakeupRequests);
+    expect(lostPathWakes.filter((wake) => wake.reason === "issue_review_path_lost")).toHaveLength(0);
+
+    const agentIssueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "CLS-2",
+    });
+    const [agentCard] = await db.insert(issueThreadInteractions).values({
+      companyId: seeded.companyId,
+      issueId: agentIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
+      payload: {
+        version: 1,
+        prompt: "Close the accepted work?",
+        onAccept: { transitionIssueStatus: "done" },
+      } as never,
+      createdByAgentId: seeded.peerAgentId,
+    }).returning();
+    const agentRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: agentRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.assigneeAgentId,
+      status: "running",
+    });
+
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: agentIssueId, companyId: seeded.companyId, projectId: null, goalId: null },
+      agentCard!.id,
+      {},
+      { agentId: seeded.assigneeAgentId, runId: agentRunId },
+    );
+    const [agentAcceptedIssue] = await db.select().from(issues).where(eq(issues.id, agentIssueId));
+    expect(agentAcceptedIssue?.status).toBe("in_review");
   });
 
   it("still lets the pending execution-policy stage participant sign off as done", async () => {

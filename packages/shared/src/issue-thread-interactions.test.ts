@@ -3,6 +3,7 @@ import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
@@ -82,6 +83,31 @@ describe("issue thread interaction schemas", () => {
     expect(result.toolAction).toMatchObject({ version: 1, status: "executed" });
     expect(requestConfirmationPayloadSchema.parse({ version: 1, prompt: "Legacy confirmation?" }).toolAction)
       .toBeUndefined();
+  });
+
+  it("parses optional user-authorized close intents for confirmation payloads", () => {
+    expect(requestConfirmationPayloadSchema.parse({
+      version: 1,
+      prompt: "Close this issue?",
+      onAccept: { transitionIssueStatus: "done" },
+    }).onAccept).toEqual({ transitionIssueStatus: "done" });
+
+    expect(requestCheckboxConfirmationPayloadSchema.parse({
+      version: 1,
+      prompt: "Cancel this issue after confirming the checklist?",
+      options: [{ id: "confirmed", label: "Checklist confirmed" }],
+      onAccept: { transitionIssueStatus: "cancelled" },
+    }).onAccept).toEqual({ transitionIssueStatus: "cancelled" });
+
+    expect(requestConfirmationPayloadSchema.safeParse({
+      version: 1,
+      prompt: "Close this issue?",
+      onAccept: { transitionIssueStatus: "in_review" },
+    }).success).toBe(false);
+    expect(requestConfirmationPayloadSchema.parse({
+      version: 1,
+      prompt: "Legacy confirmation?",
+    }).onAccept).toBeUndefined();
   });
 
   it("parses superseded confirmation results with a replacement pointer", () => {

@@ -1688,6 +1688,7 @@ export {
   requestConfirmationIssueDocumentTargetSchema,
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
+  requestConfirmationOnAcceptSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResumeFailureSchema,
   requestConfirmationResultSchema,

@@ -864,6 +864,10 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationOnAcceptSchema = z.object({
+  transitionIssueStatus: z.enum(["done", "cancelled"]),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -877,6 +881,7 @@ export const requestConfirmationPayloadSchema = z.object({
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
+  onAccept: requestConfirmationOnAcceptSchema.optional(),
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({
@@ -906,6 +911,7 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
+  onAccept: requestConfirmationOnAcceptSchema.optional(),
 }).superRefine((value, ctx) => {
   const optionIds = new Set<string>();
   for (const [index, option] of value.options.entries()) {
