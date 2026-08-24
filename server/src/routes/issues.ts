@@ -27,6 +27,7 @@ import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
+import { paperclipWritebackRedactionMiddleware } from "../writeback-redaction.js";
 import {
   accessService,
   agentService,
@@ -70,6 +71,15 @@ export function issueRoutes(
   },
 ) {
   const router = Router();
+
+  // RPAA-9600 mandatory writeback redaction. The middleware sits in front
+  // of every POST/PUT/PATCH handler below so that issue comments, issue
+  // titles/descriptions, and document bodies are sanitized before they
+  // land in storage. The middleware is fail-closed: if sanitization
+  // cannot run, the request is rejected with 503
+  // writeback_sanitizer_unavailable rather than passing unsanitized
+  // content to storage.
+  router.use(paperclipWritebackRedactionMiddleware({ failClosed: true }));
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
