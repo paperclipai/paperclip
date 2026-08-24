@@ -5,12 +5,13 @@ import {
   instanceUserRoles,
   issues,
   principalPermissionGrants,
+  principalRoleDefaultSeeds,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
-import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
+import { ensureHumanRoleDefaultGrants, settleRoleDefaults } from "./principal-access-compatibility.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -155,6 +156,18 @@ export function accessService(db: Db) {
           })),
         );
       }
+      // This set is now the answer, so the role-default seeder has nothing left
+      // to bootstrap. Without the marker it would put back every default this
+      // replacement left out at the next sweep, which is the whole defect
+      // (FAI-10190).
+      await settleRoleDefaults(tx, {
+        companyId,
+        principalType: member.principalType as PrincipalType,
+        principalId: member.principalId,
+        membershipStatus: member.status,
+        membershipRole: member.membershipRole,
+        settledByUserId: grantedByUserId,
+      });
     });
 
     return member;
@@ -250,6 +263,20 @@ export function accessService(db: Db) {
           })),
         );
       }
+      // Settled against the role being written, not the one being replaced.
+      // This is the one writer that changes the role and the grant set
+      // together, so it is also the only one where recording the previous role
+      // would leave the seeder a mismatch to act on — and it would act on it by
+      // adding the new role's whole default set on top of the set the operator
+      // just chose.
+      await settleRoleDefaults(tx, {
+        companyId,
+        principalType: existing.principalType as PrincipalType,
+        principalId: existing.principalId,
+        membershipStatus: nextStatus,
+        membershipRole: nextMembershipRole,
+        settledByUserId: grantedByUserId,
+      });
 
       return updated;
     });
@@ -393,6 +420,20 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.principalId, existing.principalId),
           ),
         );
+      // The marker goes with the grants it was protecting. It says "this
+      // principal's set is settled, do not bootstrap it", and once the set is
+      // deleted that is no longer true: leaving it behind would mean a re-added
+      // member arrived with no permissions at all rather than their role's
+      // defaults (FAI-10190).
+      await tx
+        .delete(principalRoleDefaultSeeds)
+        .where(
+          and(
+            eq(principalRoleDefaultSeeds.companyId, companyId),
+            eq(principalRoleDefaultSeeds.principalType, existing.principalType),
+            eq(principalRoleDefaultSeeds.principalId, existing.principalId),
+          ),
+        );
 
       const archived = await tx
         .update(companyMemberships)
@@ -502,6 +543,19 @@ export function accessService(db: Db) {
               inArray(principalPermissionGrants.companyId, toArchive.map((row) => row.companyId)),
             ),
           );
+        // Same rule as `archiveMember`: the settled marker only means anything
+        // for as long as the grants it describes exist, and a principal whose
+        // grants have been dropped has to be bootstrapped again if they are
+        // ever re-added (FAI-10190).
+        await tx
+          .delete(principalRoleDefaultSeeds)
+          .where(
+            and(
+              eq(principalRoleDefaultSeeds.principalType, "user"),
+              eq(principalRoleDefaultSeeds.principalId, userId),
+              inArray(principalRoleDefaultSeeds.companyId, toArchive.map((row) => row.companyId)),
+            ),
+          );
       }
 
       for (const companyId of target) {
@@ -573,6 +627,7 @@ export function accessService(db: Db) {
     grants: GrantInput[],
     grantedByUserId: string | null,
   ) {
+    const membership = await getMembership(companyId, principalType, principalId);
     await db.transaction(async (tx) => {
       await tx
         .delete(principalPermissionGrants)
@@ -583,19 +638,32 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.principalId, principalId),
           ),
         );
-      if (grants.length === 0) return;
-      await tx.insert(principalPermissionGrants).values(
-        grants.map((grant) => ({
-          companyId,
-          principalType,
-          principalId,
-          permissionKey: grant.permissionKey,
-          scope: grant.scope ?? null,
-          grantedByUserId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })),
-      );
+      if (grants.length > 0) {
+        await tx.insert(principalPermissionGrants).values(
+          grants.map((grant) => ({
+            companyId,
+            principalType,
+            principalId,
+            permissionKey: grant.permissionKey,
+            scope: grant.scope ?? null,
+            grantedByUserId,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })),
+        );
+      }
+      // The invite and plugin flows reach this with a set deliberately narrower
+      // than the role's defaults — a human accepted onto an invite that grants
+      // less than `operator` carries. Without the marker the next seeder sweep
+      // read that narrowing as a gap and filled it (FAI-10190).
+      await settleRoleDefaults(tx, {
+        companyId,
+        principalType,
+        principalId,
+        membershipStatus: membership?.status,
+        membershipRole: membership?.membershipRole,
+        settledByUserId: grantedByUserId,
+      });
     });
   }
 
@@ -661,16 +729,37 @@ export function accessService(db: Db) {
     scope: Record<string, unknown> | null = null,
   ) {
     if (!enabled) {
-      await db
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, principalType),
-            eq(principalPermissionGrants.principalId, principalId),
-            eq(principalPermissionGrants.permissionKey, permissionKey),
-          ),
-        );
+      const membership = await getMembership(companyId, principalType, principalId);
+      // The delete and the marker commit together. Deleted-then-unmarked is the
+      // reported defect in miniature: the revocation holds until the next
+      // seeder sweep and then silently reverses.
+      //
+      // Only the revoking branch settles. The marker exists to stop the seeder
+      // *widening* a set someone narrowed, and a wholesale replacement and a
+      // revoke both narrow. Enabling one permission narrows nothing, and
+      // treating it as a statement of the whole set would mean a principal who
+      // was handed a single key before their first bootstrap never received
+      // their role's remaining defaults at all (FAI-10190).
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(principalPermissionGrants)
+          .where(
+            and(
+              eq(principalPermissionGrants.companyId, companyId),
+              eq(principalPermissionGrants.principalType, principalType),
+              eq(principalPermissionGrants.principalId, principalId),
+              eq(principalPermissionGrants.permissionKey, permissionKey),
+            ),
+          );
+        await settleRoleDefaults(tx, {
+          companyId,
+          principalType,
+          principalId,
+          membershipStatus: membership?.status,
+          membershipRole: membership?.membershipRole,
+          settledByUserId: grantedByUserId,
+        });
+      });
       return;
     }
 

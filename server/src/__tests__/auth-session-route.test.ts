@@ -22,6 +22,19 @@ function createSelectChain(rows: unknown[]) {
   };
 }
 
+/**
+ * The cloud-tenant sync seeds role-default grants, and since FAI-10190 that
+ * seeder reads its seed marker and the principal's membership standing in the
+ * same transaction it writes the grants in. Every double on this path has to
+ * offer one; it runs the callback on the double itself, because there is no
+ * isolation to model here, only the call shape.
+ */
+function withGrantSeederTransaction<T extends Record<string, unknown>>(db: T): T {
+  return Object.assign(db, {
+    transaction: vi.fn(async (run: (tx: T) => unknown) => run(db)),
+  });
+}
+
 function createDb() {
   return {
     select: vi
@@ -102,6 +115,7 @@ describe("actorMiddleware authenticated session profile", () => {
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
       select: vi.fn(() => createSelectChain([])),
     } as any;
+    withGrantSeederTransaction(db);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -186,6 +200,7 @@ describe("actorMiddleware authenticated session profile", () => {
       insert: vi.fn(() => insertChain),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
     } as any;
+    withGrantSeederTransaction(db);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -362,6 +377,7 @@ describe("actorMiddleware authenticated session profile", () => {
         },
       })),
     } as any;
+    withGrantSeederTransaction(db);
     const app = express();
     app.use(
       actorMiddleware(db, {

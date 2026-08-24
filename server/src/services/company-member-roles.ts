@@ -18,6 +18,28 @@ export function normalizeHumanRole(
     : fallback;
 }
 
+/**
+ * A role's default grant set, applied once when a principal first holds that
+ * role and never again (`insertMissingPrincipalGrants`).
+ *
+ * **Adding a permission key here does not reach existing members.** Since
+ * FAI-10190 the seeder is a bootstrap: a principal already settled at this role
+ * is skipped outright, because "missing" has to be allowed to mean "revoked"
+ * for a revocation to survive a server restart. Propagation is therefore an
+ * explicit step, not a side effect of editing this function.
+ *
+ * Write the propagation as a backfill migration, the way
+ * `0087_backfill_environment_manage_human_defaults.sql` and
+ * `0111_backfill_skill_create_human_defaults.sql` already do: insert the one
+ * new key for the memberships whose role now carries it, `ON CONFLICT DO
+ * NOTHING`. That is deliberate rather than incidental — it states in the
+ * migration exactly which existing members gain the new authority, which a
+ * background sweep silently widening every member's grant set never did.
+ *
+ * Removing a key here is the mirror image: it stops being granted to principals
+ * seeded from now on, and members who already hold it keep it until a migration
+ * deletes it.
+ */
 export function grantsForHumanRole(
   role: HumanCompanyMembershipRole
 ): Array<{
