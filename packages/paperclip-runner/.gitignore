@@ -1,0 +1,6 @@
+/dist-browser/
+/dist-phase5/
+/playwright-report/
+/test-results/
+!scripts/check-forbidden-imports.mjs
+!scripts/check-forbidden-imports.test.mjs

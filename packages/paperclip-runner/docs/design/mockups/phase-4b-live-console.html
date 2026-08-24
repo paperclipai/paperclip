@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase 4b Live Console — annotated mockup (PAP-16832)</title>
+<style>
+  /* Token layer: values mirror devtools/browser/src/styles.css, plus the
+     Phase 4b token additions proposed in the component decision record §5. */
+  :root {
+    color-scheme: light;
+    --background: #f7f7f5; --foreground: #191917;
+    --card: #ffffff; --card-foreground: #191917;
+    --muted: #efefeb; --muted-foreground: #66665f;
+    --border: #deded7;
+    --primary: #242420; --primary-foreground: #ffffff;
+    --success: #17633a; --success-surface: #e9f5ed;
+    --warning: #8a5a10; --warning-surface: #fff4dc;
+    --danger: #a02f2f; --danger-surface: #fceaea;
+    --accent: #2f5fa8; --accent-surface: #e9f0fa;
+    --surface-raised: #fcfcfa;
+    --ring: #66665f;
+    --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --fs-xs: 0.75rem; --fs-sm: 0.875rem; --fs-md: 1rem; --fs-lg: 1.25rem;
+    --w-med: 500; --w-semi: 600;
+    --s-1: 0.25rem; --s-2: 0.5rem; --s-3: 0.75rem; --s-4: 1rem; --s-5: 1.25rem; --s-6: 1.5rem; --s-8: 2rem;
+    --r-sm: 0.375rem; --r-md: 0.625rem;
+    --shadow-sm: 0 0.0625rem 0.125rem rgb(0 0 0 / 0.05);
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--background); color:var(--foreground);
+         font:var(--fs-sm)/1.5 var(--font-sans); }
+  code, .mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
+  h1,h2,h3,p { margin:0; }
+
+  .console { display:grid; grid-template-columns: 17rem minmax(0,1fr) 24rem;
+             gap:var(--s-4); width:min(100%,90rem); margin-inline:auto; padding:var(--s-4); }
+  header.top { grid-column:1/-1; display:flex; align-items:center; gap:var(--s-3);
+               padding:var(--s-2) var(--s-1); }
+  .eyebrow { font-size:var(--fs-xs); letter-spacing:.08em; text-transform:uppercase;
+             color:var(--muted-foreground); font-weight:var(--w-semi); }
+  header.top h1 { font-size:var(--fs-lg); font-weight:var(--w-semi); margin-right:auto; }
+
+  .panel { background:var(--card); border:1px solid var(--border); border-radius:var(--r-md);
+           box-shadow:var(--shadow-sm); }
+  .panel + .panel { margin-top:var(--s-4); }
+  .panel-h { display:flex; align-items:center; gap:var(--s-2); padding:var(--s-3) var(--s-4);
+             border-bottom:1px solid var(--border); font-weight:var(--w-semi); font-size:var(--fs-sm); }
+  .panel-b { padding:var(--s-3) var(--s-4); }
+
+  .badge { display:inline-flex; align-items:center; gap:var(--s-1); border-radius:999px;
+           padding:0 var(--s-2); font-size:var(--fs-xs); font-weight:var(--w-med);
+           border:1px solid var(--border); background:var(--muted); color:var(--muted-foreground); height:1.25rem;}
+  .badge.ok { background:var(--success-surface); color:var(--success); border-color:transparent;}
+  .badge.warn { background:var(--warning-surface); color:var(--warning); border-color:transparent;}
+  .badge.err { background:var(--danger-surface); color:var(--danger); border-color:transparent;}
+  .badge.info { background:var(--accent-surface); color:var(--accent); border-color:transparent;}
+  .dot { width:.5rem; height:.5rem; border-radius:999px; display:inline-block; }
+  .dot.ok{background:var(--success);} .dot.run{background:var(--accent);}
+  .dot.err{background:var(--danger);} .dot.mut{background:var(--muted-foreground);}
+
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:var(--s-1);
+         height:2.25rem; padding:0 var(--s-4); border-radius:var(--r-sm); font-weight:var(--w-med);
+         font-size:var(--fs-sm); border:1px solid var(--border); background:var(--card); cursor:default;}
+  .btn.primary { background:var(--primary); color:var(--primary-foreground); border-color:var(--primary);}
+  .btn.danger { background:var(--danger-surface); color:var(--danger); border-color:transparent;}
+  .btn.ghost { border-color:transparent; background:transparent; color:var(--muted-foreground);}
+  .btn.sm { height:1.75rem; padding:0 var(--s-3); font-size:var(--fs-xs);}
+  .btn[aria-disabled="true"] { opacity:.5; }
+
+  /* left rail */
+  .manifest { display:flex; flex-direction:column; gap:var(--s-1); padding:var(--s-2) var(--s-3);
+              border-radius:var(--r-sm); border:1px solid transparent; }
+  .manifest.active { border-color:var(--accent); background:var(--accent-surface); }
+  .manifest .t { font-weight:var(--w-med); display:flex; justify-content:space-between; align-items:center;}
+  .manifest .d { color:var(--muted-foreground); font-size:var(--fs-xs); }
+  .kv { display:flex; justify-content:space-between; gap:var(--s-2); padding:var(--s-1) 0;
+        font-size:var(--fs-xs); }
+  .kv .k { color:var(--muted-foreground); }
+  .goal { border-left:3px solid var(--accent); background:var(--accent-surface);
+          border-radius:var(--r-sm); padding:var(--s-2) var(--s-3); font-size:var(--fs-xs); }
+  .tree { list-style:none; margin:0; padding:0; font-size:var(--fs-xs); }
+  .tree li { display:flex; align-items:center; gap:var(--s-2); padding:var(--s-1) var(--s-2);
+             border-radius:var(--r-sm);}
+  .tree li.cur { background:var(--muted); font-weight:var(--w-med); }
+  .tree li.child { padding-left:var(--s-6); }
+
+  /* transcript */
+  .chat { display:flex; flex-direction:column; min-height:34rem; }
+  .stream { flex:1; display:flex; flex-direction:column; gap:var(--s-3); padding:var(--s-4); }
+  .msg { max-width:85%; }
+  .msg.user { align-self:flex-end; background:var(--primary); color:var(--primary-foreground);
+              border-radius:var(--r-md); padding:var(--s-2) var(--s-3); }
+  .msg.assistant { align-self:stretch; max-width:100%; }
+  .item-label { font-size:var(--fs-xs); color:var(--muted-foreground); margin-bottom:var(--s-1);
+                display:flex; gap:var(--s-2); align-items:center;}
+  details.fold { border:1px solid var(--border); border-radius:var(--r-sm);
+                 background:var(--surface-raised); font-size:var(--fs-xs); }
+  details.fold summary { list-style:none; cursor:default; padding:var(--s-2) var(--s-3);
+                 display:flex; align-items:center; gap:var(--s-2); color:var(--muted-foreground);}
+  details.fold pre { margin:0; padding:var(--s-2) var(--s-3); border-top:1px solid var(--border);
+                     overflow:auto; font-size:var(--fs-xs); }
+  .chip { display:inline-flex; align-items:center; gap:var(--s-2); border-radius:999px;
+          padding:var(--s-1) var(--s-3); font-size:var(--fs-xs); border:1px dashed var(--border);
+          color:var(--muted-foreground); align-self:flex-end; }
+  .chip.ack { border-style:solid; border-color:var(--success); color:var(--success);
+              background:var(--success-surface);}
+  .chip.rej { border-style:solid; border-color:var(--danger); color:var(--danger);
+              background:var(--danger-surface);}
+  .divider { display:flex; align-items:center; gap:var(--s-2); color:var(--warning);
+             font-size:var(--fs-xs); }
+  .divider::before,.divider::after { content:""; flex:1; border-top:1px dashed var(--warning); }
+
+  /* request card */
+  .req { border:1px solid var(--border); border-left:3px solid var(--accent);
+         border-radius:var(--r-sm); background:var(--card); }
+  .req .rh { display:flex; gap:var(--s-2); align-items:center; padding:var(--s-2) var(--s-3);
+             font-weight:var(--w-med); font-size:var(--fs-sm);}
+  .req .rid { margin-left:auto; color:var(--muted-foreground); }
+  .req pre { margin:0 var(--s-3); padding:var(--s-2) var(--s-3); background:var(--muted);
+             border-radius:var(--r-sm); overflow:auto;}
+  .req .ra { display:flex; gap:var(--s-2); padding:var(--s-3); flex-wrap:wrap;}
+  .req.resolved { border-left-color:var(--success); }
+  .req.resolved .rh { color:var(--muted-foreground); font-weight:var(--w-med); }
+
+  .streaming-cursor { display:inline-block; width:.5em; height:1em; background:var(--accent);
+                      vertical-align:text-bottom; }
+  .jump { position:sticky; bottom:5.5rem; align-self:center; }
+
+  /* composer */
+  .composer { border-top:1px solid var(--border); padding:var(--s-3) var(--s-4); display:flex;
+              flex-direction:column; gap:var(--s-2); background:var(--surface-raised);
+              border-radius:0 0 var(--r-md) var(--r-md); }
+  .composer .row { display:flex; gap:var(--s-3); align-items:flex-end; }
+  .composer textarea { flex:1; min-height:2.5rem; resize:none; border:1px solid var(--border);
+              border-radius:var(--r-sm); padding:var(--s-2) var(--s-3); font:inherit; background:var(--card);}
+  .status-line { font-size:var(--fs-xs); color:var(--muted-foreground); display:flex; gap:var(--s-2);
+                 align-items:center;}
+  .banner { display:flex; gap:var(--s-2); align-items:center; padding:var(--s-2) var(--s-4);
+            font-size:var(--fs-xs); border-top:1px solid var(--border); }
+  .banner.pending { background:var(--warning-surface); color:var(--warning); }
+  kbd { font-family:var(--font-mono); font-size:var(--fs-xs); background:var(--muted);
+        border:1px solid var(--border); border-bottom-width:2px; border-radius:var(--r-sm);
+        padding:0 var(--s-1); }
+
+  /* inspector */
+  .tabs { display:flex; gap:var(--s-1); padding:var(--s-2) var(--s-3) 0; border-bottom:1px solid var(--border);}
+  .tab { padding:var(--s-1) var(--s-3); border-radius:var(--r-sm) var(--r-sm) 0 0; font-size:var(--fs-xs);
+         color:var(--muted-foreground);}
+  .tab.on { background:var(--muted); color:var(--foreground); font-weight:var(--w-med); }
+  .evt { display:grid; grid-template-columns:2.5rem 1fr auto; gap:var(--s-2); padding:var(--s-1) var(--s-3);
+         font-size:var(--fs-xs); font-family:var(--font-mono); border-bottom:1px solid var(--border); }
+  .evt .seq { color:var(--muted-foreground); }
+  .evt.hl { background:var(--accent-surface); }
+  .cap { display:flex; justify-content:space-between; gap:var(--s-2); padding:var(--s-1) var(--s-3);
+         font-size:var(--fs-xs); border-bottom:1px solid var(--border);}
+
+  /* annotation markers */
+  .anno { position:relative; }
+  .pin { position:absolute; z-index:5; width:1.4rem; height:1.4rem; border-radius:999px;
+         background:var(--accent); color:#fff; font-size:var(--fs-xs); font-weight:var(--w-semi);
+         display:flex; align-items:center; justify-content:center; box-shadow:0 0 0 3px var(--accent-surface); }
+  .legend { grid-column:1/-1; }
+  .legend ol { margin:var(--s-2) 0 0; padding-left:1.2rem; font-size:var(--fs-xs);
+               columns:2; column-gap:var(--s-8); }
+  .legend li { margin-bottom:var(--s-1); }
+
+  /* mobile */
+  .seg { display:none; }
+  @media (max-width: 64rem) {
+    .console { grid-template-columns: minmax(0,1fr); padding:var(--s-3); }
+    .rail-left, .rail-right { display:none; }
+    header.top { flex-wrap:wrap; row-gap:var(--s-2); }
+    header.top h1 { font-size:var(--fs-md); }
+    header.top .btn.ghost, header.top .badge.mono { display:none; }
+    .eyebrow { letter-spacing:.04em; }
+    .seg { display:flex; gap:var(--s-1); background:var(--muted); border-radius:var(--r-sm);
+           padding:var(--s-1); }
+    .seg span { flex:1; text-align:center; padding:var(--s-1) 0; border-radius:var(--r-sm);
+                font-size:var(--fs-xs); color:var(--muted-foreground);}
+    .seg span.on { background:var(--card); color:var(--foreground); font-weight:var(--w-med);
+                   box-shadow:var(--shadow-sm);}
+    .legend ol { columns:1; }
+    .msg { max-width:92%; }
+    .btn { height:2.75rem; } /* V2: 44px touch targets */
+  }
+</style>
+</head>
+<body>
+<div class="console anno">
+  <header class="top">
+    <div>
+      <div class="eyebrow">Paperclip Runner Protocol · Phase 4b</div>
+      <h1>Live Codex console</h1>
+    </div>
+    <span class="badge info"><span class="dot run"></span> connected</span>
+    <span class="badge mono">session prp-7f3a…c2</span>
+    <button class="btn">Goal ▾</button>
+    <button class="btn ghost">Inspector</button>
+  </header>
+
+  <!-- LEFT RAIL -->
+  <aside class="rail-left" style="position:relative">
+    <span class="pin" style="top:-0.5rem; left:-0.5rem">9</span>
+    <section class="panel">
+      <div class="panel-h">Demo chats</div>
+      <div class="panel-b" style="display:flex;flex-direction:column;gap:var(--s-1)">
+        <div class="manifest active">
+          <div class="t">Steer &amp; interrupt <span class="badge info">running</span></div>
+          <div class="d">Mid-turn steering ack, stale rejection, 3 interrupt races</div>
+        </div>
+        <div class="manifest">
+          <div class="t">Approvals <span class="badge ok">passed</span></div>
+          <div class="d">Command, file-change, permission, input requests</div>
+        </div>
+        <div class="manifest">
+          <div class="t">Reconnect &amp; replay <span class="badge">not run</span></div>
+          <div class="d">Drop socket, refresh, byte-identical replay</div>
+        </div>
+        <button class="btn ghost sm">Reset demo state…</button>
+      </div>
+    </section>
+
+    <section class="panel" style="position:relative">
+      <span class="pin" style="top:-0.5rem; right:-0.5rem">5</span>
+      <div class="panel-h">Session</div>
+      <div class="panel-b">
+        <div class="kv"><span class="k">Connection</span><span><span class="dot ok"></span> connected</span></div>
+        <div class="kv"><span class="k">Turn</span><span class="mono">turn-19 · active</span></div>
+        <div class="kv"><span class="k">Pending requests</span><span class="badge warn">1</span></div>
+        <div class="goal" style="margin-top:var(--s-2)">
+          <strong>Goal · active</strong><br/>
+          Ship the fixture validator with tests
+          <div style="margin-top:var(--s-1)"><button class="btn ghost sm">Pause</button>
+          <button class="btn ghost sm" aria-disabled="true" title="Goal is active">Resume</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="position:relative">
+      <span class="pin" style="top:-0.5rem; right:-0.5rem">6</span>
+      <div class="panel-h">Threads</div>
+      <div class="panel-b">
+        <ul class="tree">
+          <li class="cur"><span class="dot run"></span> <span class="mono">root · thr-a91f</span></li>
+          <li class="child"><span class="dot run"></span> <span class="mono">child · thr-b02c</span> <span class="badge info">running</span></li>
+          <li class="child"><span class="dot mut"></span> <span class="mono">child · thr-9d44</span> <span class="badge ok">done</span></li>
+        </ul>
+      </div>
+    </section>
+  </aside>
+
+  <!-- CENTER: transcript + composer -->
+  <main class="panel chat anno" style="position:relative">
+    <span class="pin" style="top:-0.5rem; left:-0.5rem">1</span>
+    <div class="seg" role="tablist" aria-label="Console sections">
+      <span class="on">Chat</span><span>Session</span><span>Inspector</span>
+    </div>
+    <div class="stream" role="log" aria-label="Session transcript">
+      <div class="msg user">Validate the fixture corpus and summarize gaps.</div>
+
+      <div class="msg assistant">
+        <div class="item-label"><span class="badge">reasoning</span> 2.1s</div>
+        <details class="fold"><summary>▸ Planned validation order and edge cases…</summary></details>
+      </div>
+
+      <div class="msg assistant" style="position:relative">
+        <span class="pin" style="top:-0.6rem; right:0">4</span>
+        <div class="req">
+          <div class="rh"><span class="badge warn">Command</span> Approve running this command?
+            <span class="rid mono">req-77b1…</span></div>
+          <pre>pnpm vitest run protocol/fixtures --reporter=json</pre>
+          <div class="ra">
+            <button class="btn primary">Approve</button>
+            <button class="btn">Approve for session</button>
+            <button class="btn danger">Reject</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg assistant">
+        <div class="item-label"><span class="badge ok">tool · resolved</span> validate_fixtures</div>
+        <details class="fold"><summary>▸ 37 fixtures validated · 0 gaps</summary></details>
+      </div>
+
+      <div class="divider" style="position:relative">
+        <span class="pin" style="top:-1.4rem; left:40%">3</span>
+        turn-18 interrupted — partial output preserved
+      </div>
+
+      <div class="chip ack" style="position:relative">
+        <span class="pin" style="top:-1.2rem; right:-0.5rem">2</span>
+        ✓ Steering acknowledged · “prefer the JSON reporter”
+      </div>
+      <div class="chip rej">✕ Steering rejected — turn already ended · <u>Send as new message</u></div>
+
+      <div class="msg assistant">
+        <div class="item-label"><span class="badge info">assistant · streaming</span></div>
+        <p>Re-running with the JSON reporter. Two fixtures need regenerated goldens: <code>source-gap</code> and <code>duplicate-event</code>. Starting with<span class="streaming-cursor"></span></p>
+      </div>
+
+      <button class="btn sm jump">↓ Jump to latest · 2 new</button>
+    </div>
+
+    <div class="banner pending" style="position:relative">
+      <span class="pin" style="top:-0.7rem; left:30%">4</span>
+      ⏳ 1 request waiting — the turn is paused until you respond. <u>Review</u>
+    </div>
+
+    <div class="composer anno" style="position:relative">
+      <span class="pin" style="top:-0.7rem; right:-0.5rem">2</span>
+      <div class="status-line" aria-live="polite"><span class="dot run"></span> Turn running · steering will apply to <span class="mono">turn-19</span></div>
+      <div class="row">
+        <textarea aria-label="Steer the active turn">Focus only on the two failing goldens.</textarea>
+        <button class="btn primary">Steer</button>
+        <button class="btn danger" aria-label="Stop turn">■ Stop</button>
+      </div>
+      <div class="status-line"><kbd>Enter</kbd> steer · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · <kbd>End</kbd> jump to latest</div>
+    </div>
+  </main>
+
+  <!-- RIGHT RAIL: inspector -->
+  <aside class="rail-right anno" style="position:relative">
+    <span class="pin" style="top:-0.5rem; left:-0.5rem">8</span>
+    <section class="panel">
+      <div class="panel-h">Protocol inspector <span class="badge">live</span></div>
+      <div class="tabs">
+        <span class="tab on">Events</span><span class="tab">Requests</span>
+        <span class="tab">Capabilities</span><span class="tab">Session</span>
+      </div>
+      <div>
+        <div class="evt"><span class="seq">41</span><span>turn.started</span><span class="mono">turn-19</span></div>
+        <div class="evt hl"><span class="seq">42</span><span>item.delta</span><span class="mono">item-63</span></div>
+        <div class="evt"><span class="seq">43</span><span>runtime_request.created</span><span class="mono">req-77b1</span></div>
+        <div class="evt"><span class="seq">44</span><span>item.delta</span><span class="mono">item-63</span></div>
+      </div>
+      <div class="panel-b" style="border-top:1px solid var(--border)">
+        <div class="eyebrow" style="margin-bottom:var(--s-1)">Capabilities</div>
+        <div class="cap"><span>turn/steer</span><span class="badge ok">supported</span></div>
+        <div class="cap"><span>turn/interrupt</span><span class="badge ok">supported</span></div>
+        <div class="cap" style="position:relative"><span class="pin" style="right:-0.9rem; top:-0.2rem">5</span>
+          <span>goals/pause</span><span class="badge err" title="app-server 0.132.0 does not advertise goals.pause">unsupported</span></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-b" style="font-size:var(--fs-xs); color:var(--muted-foreground)">
+        <strong style="color:var(--foreground)">Replay state</strong>
+        <div class="kv"><span class="k">Cursor</span><span class="mono">seq 44 · no gaps</span></div>
+        <div class="kv"><span class="k">Mode</span><span><span class="badge info">LIVE</span> <span style="position:relative"><span class="pin" style="top:-1rem; right:-1.4rem">7</span></span></span></div>
+      </div>
+    </section>
+  </aside>
+
+  <!-- LEGEND -->
+  <section class="panel legend">
+    <div class="panel-b">
+      <div class="eyebrow">Annotations — interaction map sections (docs/design/phase-4b-interaction-map.md)</div>
+      <ol>
+        <li><strong>§1 Transcript & composer</strong> — reducer-ordered `role="log"`, streaming affordance, jump-to-latest pill, composer tri-state (Send → Steer/Stop).</li>
+        <li><strong>§2 Steering</strong> — pending chip → acknowledged / stale-rejected with “Send as new message” recovery; `expectedTurnId` shown in status line.</li>
+        <li><strong>§3 Interruption</strong> — interrupted divider preserves partial output; three races get distinct terminal states; session never replaced.</li>
+        <li><strong>§4 Request cards</strong> — inline at timeline position + blocking banner; actions only as offered upstream; single-response guarantee.</li>
+        <li><strong>§5 Goal capability</strong> — durable banner + fixed five-verb menu; unsupported verbs disabled with the exact upstream diagnostic.</li>
+        <li><strong>§6 Lineage</strong> — parent/child tree from upstream identities; child steering shown as unsupported, never emulated.</li>
+        <li><strong>§7 Reconnect/replay</strong> — connection status, replayed-to-here divider, REPLAY vs LIVE eyebrow badge, cursor/gap state.</li>
+        <li><strong>§8 Protocol inspector</strong> — canonical events + raw upstream names, requests, capabilities, identities; redaction markers verbatim.</li>
+        <li><strong>§9 Demo manifests</strong> — scenario list with expected observations, per-manifest outcome, reset with explicit destruction copy.</li>
+      </ol>
+    </div>
+  </section>
+</div>
+</body>
+</html>
