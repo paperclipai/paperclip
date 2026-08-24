@@ -1121,19 +1121,19 @@ describe("renderPaperclipWakePrompt", () => {
       "POST /api/issues/$PAPERCLIP_TASK_ID/interactions",
     );
     // The contract names bare /api/... endpoint paths, so it must also teach
-    // how to compose the full URL: PAPERCLIP_API_URL is the server root
-    // without the /api prefix, and omitting the prefix returns SPA HTML
-    // instead of JSON (a recurring agent-runtime failure mode). The rule must
-    // also stay tolerant of values that already carry the /api suffix, or
-    // agents would request /api/api/... routes.
+    // how to compose the full URL deterministically: normalize the base first
+    // (strip trailing slashes and any existing /api suffix), then append
+    // /api/... once. A direct composition example invites /api/api/... when
+    // the value already carries the suffix, and omitting the prefix returns
+    // SPA HTML instead of JSON (a recurring agent-runtime failure mode).
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "$PAPERCLIP_API_URL/api/...",
+      'PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"',
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "usually does not include the `/api` prefix",
+      "$PAPERCLIP_API_BASE/api/...",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
-      "already ends in `/api`, use it as-is instead of appending another",
+      "may or may not already end in `/api`",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "returns the web app's HTML, not JSON",
