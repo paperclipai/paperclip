@@ -381,7 +381,14 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
   const args = ["--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts"];
   const env: Record<string, string | undefined> = {};
   let cleanup: (() => Promise<void>) | undefined;
-  let executable = input.executable;
+  // A configured executable can sit below a moving symlink such as
+  // `.../current/node_modules/.bin/tool`. The fresh sandbox root mounts the
+  // real package, but it does not recreate every intermediate host symlink.
+  // Launch the resolved target so the executable remains reachable there.
+  const sandboxedInputExecutable = filesystemScope === "workspace"
+    ? await fs.realpath(input.executable).catch(() => input.executable)
+    : input.executable;
+  let executable = sandboxedInputExecutable;
   let executableArgs = input.args;
 
   if (filesystemScope === "workspace") {
@@ -403,7 +410,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
       created.add(normalized);
     };
     for (const systemPath of SYSTEM_READ_PATHS) await mount(systemPath, "ro");
-    for (const executablePath of await executableReadPaths(input.executable)) await mount(executablePath, "ro");
+    for (const executablePath of await executableReadPaths(sandboxedInputExecutable)) await mount(executablePath, "ro");
     if (networkScope === "allowlist") {
       for (const nodePath of await executableReadPaths(process.execPath)) await mount(nodePath, "ro");
     }
@@ -442,7 +449,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
       });
       await mount(tempDir, "rw");
       executable = process.execPath;
-      executableArgs = [bridgePath, socketPath, input.executable, ...input.args];
+      executableArgs = [bridgePath, socketPath, sandboxedInputExecutable, ...input.args];
       cleanup = async () => {
         await proxy.close();
         await fs.rm(tempDir, { recursive: true, force: true });
