@@ -71,7 +71,7 @@ import {
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { getStartupTraceContext, getStartupTracer } from "../instrumentation.js";
-import { createHostDuplexTelemetryRecorder } from "./duplex-telemetry-recorder.js";
+import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
 import { logger } from "../middleware/logger.js";
@@ -15358,13 +15358,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lease: acquiredEnvironment.lease,
       leaseContext: acquiredEnvironment.leaseContext,
     };
-    // The host duplex telemetry recorder for this run. It binds the fixed duplex
+    // The host duplex observability recorder for this run. It binds the fixed duplex
     // observability surface to real sinks: the spans to the OTel tracer, the
     // guarded counters to the tool-runtime metric store, and the transport event
     // to the run-event path. Each sink runs guarded and fire-and-forget, so a
     // telemetry failure never breaks the run. The orchestrator stamps it on the
     // sandbox target; a non-duplex run keeps the safe no-op default in the bridge.
-    const duplexTelemetryRecorder = createHostDuplexTelemetryRecorder({
+    const duplexObservabilityRecorder = createHostDuplexObservabilityRecorder({
       tracer: getStartupTracer(),
       incrementCounter: (metric) => {
         void incrementToolRuntimeMetricCounter(db, {
@@ -15395,7 +15395,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       executionWorkspace,
       effectiveExecutionWorkspaceMode,
       persistedExecutionWorkspace,
-      duplexTelemetryRecorder,
+      duplexObservabilityRecorder,
     });
     activeEnvironmentLease = {
       ...activeEnvironmentLease,

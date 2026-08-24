@@ -5,7 +5,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
-import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
+import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
 import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import {
   clampSpanLabel,
@@ -203,11 +203,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
   tracer?: ExecTracer;
-  // The host duplex telemetry recorder. The seam stamps it onto the sandbox
+  // The host duplex observability recorder. The seam stamps it onto the sandbox
   // target next to the runner, so the live object stays on the host and never
   // enters the sandbox environment. Absent keeps the safe no-op default in the
   // bridge, so the surface stays inert until the host injects a real recorder.
-  duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
+  duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
   // The process-owned aggregate byte ledger. The seam stamps it onto the sandbox
   // target next to the runner, so the live object stays on the host and never
   // enters the sandbox environment. Absent keeps the bridge inert for this seam.
@@ -336,10 +336,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
       shellCommand,
       remoteCwd,
       enableSandboxDuplexBridge,
-      // Attach the host duplex telemetry recorder next to the runner. The bridge
+      // Attach the host duplex observability recorder next to the runner. The bridge
       // binds it to the fixed observability surface. Absent keeps the no-op
       // default, so the surface stays inert on a run with no injected recorder.
-      duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
+      duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       // Attach the process-owned aggregate byte ledger next to the runner. The
       // bridge passes it to the broker, the decoder, and the response-body reader.
       // Absent keeps the bridge inert for this seam.

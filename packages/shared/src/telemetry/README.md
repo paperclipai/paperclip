@@ -310,7 +310,7 @@ Paperclip opens a fixed observability surface for the sandbox duplex transport.
 This surface is separate from the first-party events and from the startup spans
 above. The generated telemetry contract does not cover it, so this section is its
 canonical contract. The code owner is
-`packages/adapter-utils/src/duplex-telemetry.ts`. That module holds each name and
+`packages/adapter-utils/src/duplex-observability.ts`. That module holds each name and
 each enum value as a literal constant, so the surface never drifts.
 
 The surface is opt-in. The host injects a recorder that binds the span to the
@@ -360,7 +360,7 @@ These records carry no dimension label. The guarded counter store keys each
 counter on `(companyId, metric)`, and the gauge reports one process value, so no
 dynamic dimension rides them. The code owner is
 `packages/adapter-utils/src/duplex-aggregate-byte-ledger.ts`, and the metric
-names are literal constants in `duplex-telemetry.ts`.
+names are literal constants in `duplex-observability.ts`.
 
 | Metric | Type | Scope |
 | --- | --- | --- |
@@ -387,7 +387,7 @@ key never reaches a sink by accident.
 | `loss_reason` | string | yes | `stdin_eof`, `provider_exit`, `heartbeat_timeout`, `rpc_failure`, `write_error`, `transport_closed`, or `other`. The host maps every loss cause to one of these values, so no raw provider text reaches a sink. `write_error` marks a rejected host-to-sandbox write. `transport_closed` marks a reason-less provider transport close with no exit data. It rides only a loss record. |
 
 To add a name or an enum value, extend the literal constant in
-`duplex-telemetry.ts` first, then update the test that asserts the closed set.
+`duplex-observability.ts` first, then update the test that asserts the closed set.
 Keep every dimension low-cardinality and free of user content.
 
 ## Sandbox Startup Run-Log Event

@@ -15,7 +15,7 @@ import type {
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
-  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
@@ -33,7 +33,7 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
-import type { DuplexLossReason } from "../duplex-telemetry.js";
+import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../duplex-bridge-broker.js";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -2052,7 +2052,7 @@ async function buildRuntime(input: {
           timeoutSec,
           hostApiToken: env.PAPERCLIP_API_KEY,
           enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
-          duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(remoteTarget),
+          duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(remoteTarget),
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
           runtimeSpan: input.runtimeSpan,
