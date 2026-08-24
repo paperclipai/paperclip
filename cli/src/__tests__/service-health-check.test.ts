@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -123,6 +125,36 @@ describe("service health doctor checks", () => {
 
     expect(results.every((result) => result.status === "pass")).toBe(true);
   });
+
+  it("reports a healthy instance that answers slower than the previous 2s probe budget", async () => {
+    // The instance is healthy. It is only slow to answer, which is what a
+    // server does while it warms up. A 2s budget aborted this probe and made
+    // doctor report a serving instance as unreachable.
+    delete process.env.PAPERCLIP_SERVICE_MANAGED;
+    const responseDelayMs = 3_000;
+    const server = http.createServer((_request, response) => {
+      setTimeout(() => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ok", serverVersion: "1.2.3" }));
+      }, responseDelayMs);
+    });
+    await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", () => resolve()); });
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      // No `probe` override here: this drives the real probe and its timeout.
+      const results = await serviceHealthChecks(
+        { server: { host: "127.0.0.1", port } } as PaperclipConfig,
+        { detect: vi.fn(async () => ({ supported: true as const, manager: managerFixture() })) },
+      );
+
+      expect(results).toContainEqual(
+        expect.objectContaining({ name: "Service health", status: "pass" }),
+      );
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
+  }, 20_000);
 
   it("detects a foreground process on the configured port while the service is inactive", async () => {
     const manager = managerFixture(false);
