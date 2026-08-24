@@ -1,0 +1,25 @@
+{
+  "name": "@chimeric/starter-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reusable solutions starter kit: provider-agnostic LLM orchestration + RAG/agent skeleton + eval harness. Every client engagement builds from this.",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "eval": "vitest run src/evals",
+    "eval:report": "vitest run src/evals --reporter=default"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.8"
+  }
+}
