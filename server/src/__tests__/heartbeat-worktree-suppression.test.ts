@@ -262,6 +262,35 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     expect(runningCount).toBe(0);
   });
 
+  it("filters timer agents by the armed worktree cutoff and loses duplicate timer claims safely", async () => {
+    const { agentId, issueId } = await insertAgentAndIssue();
+    const cutoff = new Date("2026-07-07T00:00:00.000Z");
+    await db.update(issues).set({ createdAt: new Date("2026-07-06T23:59:00.000Z") }).where(eq(issues.id, issueId));
+    await db.update(agents).set({ lastHeartbeatAt: new Date("2026-07-06T23:58:00.000Z") }).where(eq(agents.id, agentId));
+    await armWorktreeRunExecution(cutoff);
+    const options = {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    } as const;
+
+    expect(await heartbeatService(db, options).tickTimers(new Date("2026-07-07T00:02:00.000Z"))).toEqual({
+      checked: 0,
+      enqueued: 0,
+      skipped: 0,
+    });
+
+    await db.update(issues).set({ createdAt: new Date("2026-07-07T00:01:00.000Z") }).where(eq(issues.id, issueId));
+    const now = new Date("2026-07-07T00:03:00.000Z");
+    const ticks = await Promise.all([
+      heartbeatService(db, options).tickTimers(now),
+      heartbeatService(db, options).tickTimers(now),
+    ]);
+    expect(ticks.reduce((sum, tick) => sum + tick.enqueued, 0)).toBe(1);
+    expect(ticks.reduce((sum, tick) => sum + tick.checked, 0)).toBe(2);
+  });
+
   it("skips pre-cutoff system wakes but allows user wakes in an armed worktree", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
     await armWorktreeRunExecution(new Date(Date.now() + 1_000));
@@ -303,6 +332,37 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     expect(userRun).not.toBeNull();
     await heartbeat.waitForRunExecutionDrain(userRun!.id);
   }, 10_000);
+
+  it("applies the cutoff inside issue locking when project context bypasses the preliminary issue lookup", async () => {
+    const { agentId, issueId } = await insertAgentAndIssue();
+    await armWorktreeRunExecution(new Date(Date.now() + 1_000));
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      payload: { issueId },
+      contextSnapshot: { issueId, projectId: randomUUID() },
+      requestedByActorType: "system",
+    });
+
+    expect(run).toBeNull();
+    const skippedWake = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .orderBy(sql`${agentWakeupRequests.createdAt} desc`)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({
+      reason: "heartbeat.worktree_execution_cutoff",
+      payload: { heartbeatSkip: { reason: "worktree_execution_cutoff", issueId } },
+    });
+  });
 
   it("still creates live-plane assignment runs when suppression is not active", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();

@@ -13881,19 +13881,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.sweepStaleIssueLocks();
   }
 
-  function issueIdFromRunContext(contextSnapshot: unknown) {
-    const context = parseObject(contextSnapshot);
-    return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
-  }
-
-  function issueIdFromWakePayload(payload: unknown) {
-    const parsed = parseObject(payload);
-    const nestedContext = parseObject(parsed[DEFERRED_WAKE_CONTEXT_KEY]);
-    return readNonEmptyString(parsed.issueId) ??
-      readNonEmptyString(nestedContext.issueId) ??
-      readNonEmptyString(nestedContext.taskId);
-  }
-
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     return recovery.scanSilentActiveRuns({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
@@ -15272,17 +15259,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       previousWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
       activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
     });
-    if (
-      reusableExistingExecutionWorkspace &&
-      persistedExecutionWorkspace &&
-      reusableExistingExecutionWorkspace.id !== persistedExecutionWorkspace.id &&
-      reusableExistingExecutionWorkspace.status === "active"
-    ) {
-      await executionWorkspacesSvc.update(reusableExistingExecutionWorkspace.id, {
-        status: "idle",
-        cleanupReason: null,
-      });
-    }
     if (issueId && persistedExecutionWorkspace) {
       const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
       const shouldSwitchIssueToExistingWorkspace =
@@ -16003,15 +15979,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : persistedExecutionWorkspace;
         if (workspaceRecord?.strategyType !== "git_worktree") return null;
 
-        const worktreePath =
+        const worktreePath = (
           readNonEmptyString(workspaceRecord.providerRef) ??
           readNonEmptyString(workspaceRecord.cwd) ??
           readNonEmptyString(executionWorkspace.worktreePath) ??
-          readNonEmptyString(executionWorkspace.cwd);
-        const expectedBranchName =
+          readNonEmptyString(executionWorkspace.cwd)
+        )!;
+        const expectedBranchName = (
           readNonEmptyString(workspaceRecord.branchName) ??
-          readNonEmptyString(executionWorkspace.branchName);
-        if (!worktreePath || !expectedBranchName) return null;
+          readNonEmptyString(executionWorkspace.branchName)
+        )!;
 
         const inspection = await inspectManagedGitWorktreeBranch({
           worktreePath,
@@ -16892,7 +16869,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
-              await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
+              await Promise.allSettled([refreshContinuationSummaryForRun(livenessRun, failedAgent)]);
               if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
@@ -17876,10 +17853,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
-    let hasResolvablePriorSessionWorkspace: boolean | null = null;
-    const resolveHasResolvablePriorSessionWorkspace = async () => {
-      if (hasResolvablePriorSessionWorkspace !== null) return hasResolvablePriorSessionWorkspace;
-      hasResolvablePriorSessionWorkspace = issueId
+    const resolveHasResolvablePriorSessionWorkspace = async () =>
+      issueId
         ? await hasResolvablePriorSessionWorkspaceForWake({
             agent,
             contextSnapshot: enrichedContextSnapshot,
@@ -17887,8 +17862,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             explicitResumeSession,
           })
         : false;
-      return hasResolvablePriorSessionWorkspace;
-    };
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);

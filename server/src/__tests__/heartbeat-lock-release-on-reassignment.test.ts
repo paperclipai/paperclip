@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
+  companySkills,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -37,10 +39,12 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(agentRuntimeState);
+    await db.delete(companySkills);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -131,6 +135,41 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       holderRunId,
       wakeupRequestId,
     };
+  }
+
+  function resolveMatchingQueries(pattern: RegExp, result: unknown, times = 1) {
+    let matchCount = 0;
+    const wrapped = new WeakMap<object, object>();
+    const wrap = (value: unknown): unknown => {
+      if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+      const objectValue = value as object;
+      const cached = wrapped.get(objectValue);
+      if (cached) return cached;
+      const proxy = new Proxy(objectValue, {
+        get(target, property, receiver) {
+          if (property === "then") {
+            return (onFulfilled?: (queryResult: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+              const query = "toSQL" in target
+                ? String((target as { toSQL(): { sql: string } }).toSQL().sql)
+                : "";
+              const matches = pattern.test(query) && matchCount < times;
+              if (matches) matchCount += 1;
+              const promise = matches
+                ? Promise.resolve(result)
+                : Promise.resolve(target as PromiseLike<unknown>);
+              return promise.then(onFulfilled, onRejected);
+            };
+          }
+          const nested = Reflect.get(target, property, receiver);
+          return typeof nested === "function"
+            ? (...args: unknown[]) => wrap(Reflect.apply(nested, target, args))
+            : wrap(nested);
+        },
+      });
+      wrapped.set(objectValue, proxy);
+      return proxy;
+    };
+    return { db: wrap(db) as ReturnType<typeof createDb>, matchCount: () => matchCount };
   }
 
   it("defers a cross-agent wake while the holder is still running and leaves the holder alone", async () => {
@@ -269,5 +308,125 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       .then((rows) => rows[0] ?? null);
 
     expect(issue?.executionRunId).toBe(holderRunId);
+  });
+
+  it("cancels a queued cross-agent holder and its wake before dispatching the new assignee", async () => {
+    const { companyId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =
+      await seedCrossAgentScenario({ holderStatus: "queued" });
+    await db
+      .update(companies)
+      .set({ defaultResponsibleUserId: "responsible-user" })
+      .where(eq(companies.id, companyId));
+
+    const heartbeat = heartbeatService(db);
+    const followupRun = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system",
+    });
+
+    expect(followupRun).not.toBeNull();
+    expect(await heartbeat.getRun(holderRunId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "lock_released_on_reassignment",
+    });
+    const heldWakeup = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(heldWakeup?.status).toBe("cancelled");
+
+    if (followupRun) await heartbeat.cancelRun(followupRun.id, "test cleanup");
+    await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("cancels a legacy scheduled retry discovered without an issue lock", async () => {
+    const { companyId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =
+      await seedCrossAgentScenario({ holderStatus: "queued" });
+    await db
+      .update(companies)
+      .set({ defaultResponsibleUserId: "responsible-user" })
+      .where(eq(companies.id, companyId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: new Date(Date.now() + 60_000),
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: "process_lost",
+      })
+      .where(eq(heartbeatRuns.id, holderRunId));
+    await db
+      .update(issues)
+      .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const followupRun = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system",
+    });
+
+    expect(followupRun).not.toBeNull();
+    expect(await heartbeat.getRun(holderRunId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+    });
+    const heldWakeup = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(heldWakeup?.status).toBe("cancelled");
+
+    if (followupRun) await heartbeat.cancelRun(followupRun.id, "test cleanup");
+    await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("falls through when scheduled-retry cancellation loses the status race", async () => {
+    const { companyId, reviewerAgentId, issueId, holderRunId } =
+      await seedCrossAgentScenario({ holderStatus: "queued" });
+    await db
+      .update(companies)
+      .set({ defaultResponsibleUserId: "responsible-user" })
+      .where(eq(companies.id, companyId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: new Date(Date.now() + 60_000),
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: "process_lost",
+      })
+      .where(eq(heartbeatRuns.id, holderRunId));
+    const cancelRace = resolveMatchingQueries(/update "heartbeat_runs" set "status"/, [], 2);
+    const heartbeat = heartbeatService(cancelRace.db);
+
+    const followupRun = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(followupRun).not.toBeNull();
+    expect(cancelRace.matchCount()).toBe(1);
+    expect(await heartbeat.getRun(holderRunId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+    });
+    if (followupRun) await heartbeat.cancelRun(followupRun.id, "test cleanup");
+    await heartbeat.drainActiveRunExecutions();
   });
 });

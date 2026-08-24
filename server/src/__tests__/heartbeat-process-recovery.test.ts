@@ -7,6 +7,7 @@ import { and, eq, or, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentTaskSessions,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
@@ -28,6 +29,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
@@ -41,6 +43,7 @@ import {
   plugins,
   projects,
   projectWorkspaces,
+  workspaceRuntimeServices,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -51,6 +54,23 @@ import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
+const mockEnvironmentOrchestratorReleaseFault = vi.hoisted(() => ({ current: null as Error | null }));
+const mockEnvironmentOrchestratorTargets = vi.hoisted(() => ({
+  acquireLocalInstead: false,
+  realizeRemoteInstead: false,
+}));
+const mockRunLogFinalizeFault = vi.hoisted(() => ({ current: null as Error | null }));
+const mockRuntimeServiceReleaseFault = vi.hoisted(() => ({ current: null as Error | null }));
+const mockRuntimeServicesForRun = vi.hoisted(() => ({
+  current: null as Array<Record<string, unknown>> | null,
+}));
+const mockScratchFaults = vi.hoisted(() => ({
+  prepare: null as Error | null,
+  cleanup: null as Error | null,
+  cleanupEventReady: false,
+}));
+const mockAdapterProfileResolutionFault = vi.hoisted(() => ({ current: null as Error | null }));
+const mockSupportsLocalAgentJwt = vi.hoisted(() => ({ current: false }));
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async (_input?: unknown) => ({
     exitCode: 0,
@@ -92,10 +112,116 @@ vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
   return {
     ...actual,
+    listAdapterModelProfiles: async (...args: Parameters<typeof actual.listAdapterModelProfiles>) => {
+      if (mockAdapterProfileResolutionFault.current) throw mockAdapterProfileResolutionFault.current;
+      return actual.listAdapterModelProfiles(...args);
+    },
     getServerAdapter: vi.fn(() => ({
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: mockSupportsLocalAgentJwt.current,
       execute: mockAdapterExecute,
     })),
+  };
+});
+
+vi.mock("../services/environment-run-orchestrator.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/environment-run-orchestrator.js")>(
+    "../services/environment-run-orchestrator.js",
+  );
+  return {
+    ...actual,
+    environmentRunOrchestrator: (...args: Parameters<typeof actual.environmentRunOrchestrator>) => {
+      const orchestrator = actual.environmentRunOrchestrator(...args);
+      return {
+        ...orchestrator,
+        acquireForRun: async (...acquireArgs: Parameters<typeof orchestrator.acquireForRun>) => {
+          if (!mockEnvironmentOrchestratorTargets.acquireLocalInstead) {
+            return orchestrator.acquireForRun(...acquireArgs);
+          }
+          const [input] = acquireArgs;
+          return orchestrator.acquireForRun({
+            ...input,
+            selectedEnvironmentId: input.localEnvironmentId,
+          });
+        },
+        realizeForRun: async (...realizeArgs: Parameters<typeof orchestrator.realizeForRun>) => {
+          const result = await orchestrator.realizeForRun(...realizeArgs);
+          if (!mockEnvironmentOrchestratorTargets.realizeRemoteInstead) return result;
+          return {
+            ...result,
+            executionTarget: {
+              kind: "remote" as const,
+              transport: "sandbox" as const,
+              providerKey: "test-sandbox",
+              environmentId: result.executionTarget?.environmentId ?? null,
+              leaseId: result.executionTarget?.leaseId ?? null,
+              remoteCwd: "/workspace",
+            },
+          };
+        },
+        releaseForRun: async (...releaseArgs: Parameters<typeof orchestrator.releaseForRun>) => {
+          if (mockEnvironmentOrchestratorReleaseFault.current) {
+            throw mockEnvironmentOrchestratorReleaseFault.current;
+          }
+          return orchestrator.releaseForRun(...releaseArgs);
+        },
+      };
+    },
+  };
+});
+
+vi.mock("../services/run-log-store.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/run-log-store.js")>(
+    "../services/run-log-store.js",
+  );
+  return {
+    ...actual,
+    getRunLogStore: () => {
+      const store = actual.getRunLogStore();
+      return {
+        ...store,
+        finalize: async (...args: Parameters<typeof store.finalize>) => {
+          if (mockRunLogFinalizeFault.current) throw mockRunLogFinalizeFault.current;
+          return store.finalize(...args);
+        },
+      };
+    },
+  };
+});
+
+vi.mock("../services/workspace-runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/workspace-runtime.js")>(
+    "../services/workspace-runtime.js",
+  );
+  return {
+    ...actual,
+    ensureRuntimeServicesForRun: async (...args: Parameters<typeof actual.ensureRuntimeServicesForRun>) =>
+      mockRuntimeServicesForRun.current ?? actual.ensureRuntimeServicesForRun(...args),
+    releaseRuntimeServicesForRun: async (...args: Parameters<typeof actual.releaseRuntimeServicesForRun>) => {
+      if (mockRuntimeServiceReleaseFault.current) throw mockRuntimeServiceReleaseFault.current;
+      return actual.releaseRuntimeServicesForRun(...args);
+    },
+  };
+});
+
+vi.mock("../services/run-scratch.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/run-scratch.js")>(
+    "../services/run-scratch.js",
+  );
+  return {
+    ...actual,
+    prepareHeartbeatRunScratch: async (...args: Parameters<typeof actual.prepareHeartbeatRunScratch>) => {
+      if (mockScratchFaults.prepare) throw mockScratchFaults.prepare;
+      return actual.prepareHeartbeatRunScratch(...args);
+    },
+    cleanupHeartbeatRunScratch: async (...args: Parameters<typeof actual.cleanupHeartbeatRunScratch>) => {
+      if (mockScratchFaults.cleanup) {
+        mockScratchFaults.cleanupEventReady = true;
+        throw mockScratchFaults.cleanup;
+      }
+      const result = await actual.cleanupHeartbeatRunScratch(...args);
+      mockScratchFaults.cleanupEventReady = true;
+      return result;
+    },
   };
 });
 
@@ -109,10 +235,14 @@ import {
 import {
   readHotRestartIntent,
   resolveLegacyHotRestartIntentPath,
+  resolveHotRestartIntentPath,
   resolveHotRestartReportPath,
   writeHotRestartIntent,
+  writeHotRestartShutdownSnapshot,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { environmentRuntimeService } from "../services/environment-runtime.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -142,6 +272,253 @@ function spawnAliveProcess() {
   return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
   });
+}
+
+function rejectIssueCommentInsertOnce(db: ReturnType<typeof createDb>, error: Error) {
+  let triggered = false;
+  const wrapBuilder = (builder: object): object => new Proxy(builder, {
+    get(target, property, receiver) {
+      if (property === "then") {
+        return (onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+          triggered = true;
+          return Promise.reject(error).then(onFulfilled, onRejected);
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function"
+        ? (...args: unknown[]) => wrapBuilder(Reflect.apply(value, target, args) as object)
+        : value;
+    },
+  });
+  const intercepted = new Proxy(db, {
+    get(target, property, receiver) {
+      if (property !== "insert") return Reflect.get(target, property, receiver);
+      return (table: object) => {
+        const builder = target.insert(table as never) as object;
+        return table === issueComments && !triggered ? wrapBuilder(builder) : builder;
+      };
+    },
+  }) as ReturnType<typeof createDb>;
+  return { db: intercepted, wasTriggered: () => triggered };
+}
+
+function rejectMatchingQueryOnce(
+  db: ReturnType<typeof createDb>,
+  pattern: RegExp,
+  error: Error,
+  matchNumber = 1,
+) {
+  let triggered = false;
+  let matches = 0;
+  const wrapped = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+    const objectValue = value as object;
+    const cached = wrapped.get(objectValue);
+    if (cached) return cached;
+    const proxy = new Proxy(objectValue, {
+      get(target, property, receiver) {
+        if (property === "then") {
+          return (onFulfilled?: (result: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+            const query = "toSQL" in target
+              ? String((target as { toSQL(): { sql: string } }).toSQL().sql)
+              : "";
+            if (pattern.test(query)) matches += 1;
+            const promise = !triggered && matches === matchNumber
+              ? (triggered = true, Promise.reject(error))
+              : Promise.resolve(target as PromiseLike<unknown>);
+            return promise.then(onFulfilled, onRejected);
+          };
+        }
+        const nested = Reflect.get(target, property, receiver);
+        return typeof nested === "function"
+          ? (...args: unknown[]) => wrap(Reflect.apply(nested, target, args))
+          : wrap(nested);
+      },
+    });
+    wrapped.set(objectValue, proxy);
+    return proxy;
+  };
+  return {
+    db: wrap(db) as ReturnType<typeof createDb>,
+    wasTriggered: () => triggered,
+  };
+}
+
+function resolveMatchingQueryOnce(
+  db: ReturnType<typeof createDb>,
+  pattern: RegExp,
+  result: unknown,
+  matchNumber = 1,
+) {
+  let triggered = false;
+  let matches = 0;
+  const wrapped = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+    const objectValue = value as object;
+    const cached = wrapped.get(objectValue);
+    if (cached) return cached;
+    const proxy = new Proxy(objectValue, {
+      get(target, property, receiver) {
+        if (property === "then") {
+          return (onFulfilled?: (queryResult: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+            const query = "toSQL" in target
+              ? String((target as { toSQL(): { sql: string } }).toSQL().sql)
+              : "";
+            if (pattern.test(query)) matches += 1;
+            const promise = !triggered && matches === matchNumber
+              ? (triggered = true, Promise.resolve(result))
+              : Promise.resolve(target as PromiseLike<unknown>);
+            return promise.then(onFulfilled, onRejected);
+          };
+        }
+        const nested = Reflect.get(target, property, receiver);
+        return typeof nested === "function"
+          ? (...args: unknown[]) => wrap(Reflect.apply(nested, target, args))
+          : wrap(nested);
+      },
+    });
+    wrapped.set(objectValue, proxy);
+    return proxy;
+  };
+  return {
+    db: wrap(db) as ReturnType<typeof createDb>,
+    wasTriggered: () => triggered,
+    matchCount: () => matches,
+  };
+}
+
+function tapMatchingQueryOnce(
+  db: ReturnType<typeof createDb>,
+  pattern: RegExp,
+  tap: () => void,
+) {
+  let triggered = false;
+  const wrapped = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+    const objectValue = value as object;
+    const cached = wrapped.get(objectValue);
+    if (cached) return cached;
+    const proxy = new Proxy(objectValue, {
+      get(target, property, receiver) {
+        if (property === "then") {
+          return (onFulfilled?: (queryResult: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+            const query = "toSQL" in target
+              ? String((target as { toSQL(): { sql: string } }).toSQL().sql)
+              : "";
+            return Promise.resolve(target as PromiseLike<unknown>).then((result) => {
+              if (!triggered && pattern.test(query)) {
+                triggered = true;
+                tap();
+              }
+              return result;
+            }).then(onFulfilled, onRejected);
+          };
+        }
+        const nested = Reflect.get(target, property, receiver);
+        return typeof nested === "function"
+          ? (...args: unknown[]) => wrap(Reflect.apply(nested, target, args))
+          : wrap(nested);
+      },
+    });
+    wrapped.set(objectValue, proxy);
+    return proxy;
+  };
+  return {
+    db: wrap(db) as ReturnType<typeof createDb>,
+    wasTriggered: () => triggered,
+    matchCount: () => matches,
+  };
+}
+
+function tapMatchingQueryOnceAsync(
+  db: ReturnType<typeof createDb>,
+  pattern: RegExp,
+  tap: () => Promise<void>,
+) {
+  let triggered = false;
+  const wrapped = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+    const objectValue = value as object;
+    const cached = wrapped.get(objectValue);
+    if (cached) return cached;
+    const proxy = new Proxy(objectValue, {
+      get(target, property, receiver) {
+        if (property === "then") {
+          return (onFulfilled?: (queryResult: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+            const query = "toSQL" in target
+              ? String((target as { toSQL(): { sql: string } }).toSQL().sql)
+              : "";
+            return Promise.resolve(target as PromiseLike<unknown>).then(async (result) => {
+              if (!triggered && pattern.test(query)) {
+                triggered = true;
+                await tap();
+              }
+              return result;
+            }).then(onFulfilled, onRejected);
+          };
+        }
+        const nested = Reflect.get(target, property, receiver);
+        return typeof nested === "function"
+          ? (...args: unknown[]) => wrap(Reflect.apply(nested, target, args))
+          : wrap(nested);
+      },
+    });
+    wrapped.set(objectValue, proxy);
+    return proxy;
+  };
+  return {
+    db: wrap(db) as ReturnType<typeof createDb>,
+    wasTriggered: () => triggered,
+  };
+}
+
+function rejectMatchingQueryWhen(
+  db: ReturnType<typeof createDb>,
+  pattern: RegExp,
+  enabled: () => boolean,
+  error: Error,
+  matchNumber = 1,
+) {
+  let triggered = false;
+  let matches = 0;
+  const wrapped = new WeakMap<object, object>();
+  const wrap = (value: unknown): unknown => {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+    const objectValue = value as object;
+    const cached = wrapped.get(objectValue);
+    if (cached) return cached;
+    const proxy = new Proxy(objectValue, {
+      get(target, property, receiver) {
+        if (property === "then") {
+          return (onFulfilled?: (queryResult: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+            const query = "toSQL" in target
+              ? String((target as { toSQL(): { sql: string } }).toSQL().sql)
+              : "";
+            if (enabled() && pattern.test(query)) matches += 1;
+            const promise = !triggered && matches === matchNumber
+              ? (triggered = true, Promise.reject(error))
+              : Promise.resolve(target as PromiseLike<unknown>);
+            return promise.then(onFulfilled, onRejected);
+          };
+        }
+        const nested = Reflect.get(target, property, receiver);
+        return typeof nested === "function"
+          ? (...args: unknown[]) => wrap(Reflect.apply(nested, target, args))
+          : wrap(nested);
+      },
+    });
+    wrapped.set(objectValue, proxy);
+    return proxy;
+  };
+  return {
+    db: wrap(db) as ReturnType<typeof createDb>,
+    wasTriggered: () => triggered,
+    matchCount: () => matches,
+  };
 }
 
 function isPidAlive(pid: number | null | undefined) {
@@ -326,6 +703,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    mockEnvironmentOrchestratorReleaseFault.current = null;
+    mockEnvironmentOrchestratorTargets.acquireLocalInstead = false;
+    mockEnvironmentOrchestratorTargets.realizeRemoteInstead = false;
+    mockRunLogFinalizeFault.current = null;
+    mockRuntimeServiceReleaseFault.current = null;
+    mockRuntimeServicesForRun.current = null;
+    mockScratchFaults.prepare = null;
+    mockScratchFaults.cleanup = null;
+    mockScratchFaults.cleanupEventReady = false;
+    mockAdapterProfileResolutionFault.current = null;
+    mockSupportsLocalAgentJwt.current = false;
+    // Some race-focused cases intentionally queue one-shot adapter outcomes.
+    // Clear any unconsumed outcomes so later liveness assertions cannot inherit
+    // a result from a different scenario.
+    mockAdapterExecute.mockReset();
     const localServiceSupervisor = await vi.importActual<typeof import("../services/local-service-supervisor.js")>(
       "../services/local-service-supervisor.js",
     );
@@ -381,8 +773,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
+    await db.delete(agentTaskSessions);
     await db.delete(companySkills);
     await db.delete(costEvents);
+    await db.delete(workspaceRuntimeServices);
     await db.delete(workspaceOperations);
     await db.delete(environmentLeases);
     await db.delete(environments);
@@ -454,7 +848,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await db.delete(documentRevisions);
       await db.delete(documents);
       await db.delete(companySecretBindings);
-      await db.delete(companySecrets);
+    await db.delete(companySecrets);
+      await db.delete(instanceSettings);
       try {
         await db.delete(companies);
         break;
@@ -573,6 +968,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it("falls back to the conservative run projection when server encoding inspection fails", async () => {
+    const failingInspectionDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "execute") {
+          return vi.fn().mockRejectedValue(new Error("injected encoding inspection failure"));
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    await expect(heartbeatService(failingInspectionDb).getRun(randomUUID())).resolves.toBeNull();
+  });
 
   async function seedEnvironmentLeaseFixture(input: {
     companyId: string;
@@ -1448,6 +1856,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   }
 
+  it("handles absent, malformed, drain-required, and foreign hot-restart intents", async () => {
+    const heartbeat = heartbeatService(db);
+
+    await withTempPaperclipHome(async (home) => {
+      await expect(heartbeat.prepareHotRestartShutdown("SIGTERM")).resolves.toMatchObject({
+        mode: "not_requested",
+        skipDrain: false,
+      });
+      await expect(heartbeat.reconcileHotRestartAdoption()).resolves.toMatchObject({
+        mode: "not_requested",
+        adoptedRunIds: [],
+      });
+
+      const intentPath = resolveHotRestartIntentPath(home);
+      await fs.mkdir(path.dirname(intentPath), { recursive: true });
+      await fs.writeFile(intentPath, "{", "utf8");
+      await expect(heartbeat.prepareHotRestartShutdown("SIGTERM")).resolves.toMatchObject({
+        mode: "read_error",
+        skipDrain: false,
+      });
+      await expect(heartbeat.reconcileHotRestartAdoption()).resolves.toMatchObject({
+        mode: "read_error",
+        adoptedRunIds: [],
+      });
+    });
+
+    await withTempPaperclipHome(async () => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerStartedAt: new Date().toISOString(),
+        drainRequired: true,
+      });
+      await expect(heartbeat.prepareHotRestartShutdown("SIGTERM")).resolves.toMatchObject({
+        mode: "drain_required",
+        skipDrain: false,
+      });
+    });
+
+    await withTempPaperclipHome(async () => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid + 1,
+        previousServerStartedAt: new Date().toISOString(),
+      });
+      await expect(heartbeat.prepareHotRestartShutdown("SIGTERM")).resolves.toMatchObject({
+        mode: "pid_mismatch",
+        skipDrain: false,
+      });
+    });
+  });
+
   it("captures a hot-restart shutdown snapshot without interrupting running runs", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -1899,6 +2357,163 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("classifies every non-adoptable hot-restart snapshot candidate", async () => {
+    const finished = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "running",
+      processPid: null,
+      processGroupId: null,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date("2026-08-01T02:00:30.000Z") })
+      .where(eq(heartbeatRuns.id, finished.runId));
+    const nonLocal = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "running",
+      processPid: process.pid,
+      processGroupId: null,
+    });
+    const missingMetadata = await seedRunFixture({
+      agentStatus: "running",
+      processPid: null,
+      processGroupId: null,
+    });
+    const deadProcess = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_999,
+      processGroupId: null,
+    });
+    const missingRunId = randomUUID();
+
+    await withTempPaperclipHome(async () => {
+      const intent = await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "classification-version",
+        requestedAt: new Date("2026-08-01T02:00:00.000Z"),
+      });
+      const candidates = [
+        { ...finished, adapterType: "codex_local", status: "running", processPid: null, processGroupId: null },
+        { ...nonLocal, adapterType: "openclaw_gateway", status: "running", processPid: process.pid, processGroupId: null },
+        { ...missingMetadata, adapterType: "codex_local", status: "running", processPid: null, processGroupId: null },
+        { ...deadProcess, adapterType: "codex_local", status: "running", processPid: 999_999_999, processGroupId: null },
+        {
+          runId: missingRunId,
+          companyId: randomUUID(),
+          agentId: randomUUID(),
+          issueId: null,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: null,
+          processGroupId: null,
+        },
+      ].map((candidate) => ({
+        runId: candidate.runId,
+        companyId: candidate.companyId,
+        agentId: candidate.agentId,
+        issueId: candidate.issueId,
+        adapterType: candidate.adapterType,
+        status: candidate.status,
+        processPid: candidate.processPid,
+        processGroupId: candidate.processGroupId,
+      }));
+      await writeHotRestartShutdownSnapshot({
+        intent,
+        signal: "SIGTERM",
+        activeRuns: candidates,
+        capturedAt: new Date("2026-08-01T02:01:00.000Z"),
+      });
+
+      const heartbeat = heartbeatService(db);
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-01T02:02:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: expect.arrayContaining([finished.runId, missingRunId]),
+        lostRunIds: expect.arrayContaining([missingMetadata.runId, deadProcess.runId]),
+        skippedRunIds: [nonLocal.runId],
+      });
+    });
+  });
+
+  it("reports a lost hot-restart candidate when the adoption compare-and-set loses", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      includeIssue: false,
+    });
+
+    await withTempPaperclipHome(async () => {
+      const intent = await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "adoption-race-version",
+        requestedAt: new Date("2026-08-01T02:10:00.000Z"),
+      });
+      await writeHotRestartShutdownSnapshot({
+        intent,
+        signal: "SIGTERM",
+        activeRuns: [{
+          runId: fixture.runId,
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          issueId: null,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: process.pid,
+          processGroupId: null,
+        }],
+        capturedAt: new Date("2026-08-01T02:11:00.000Z"),
+      });
+      const race = resolveMatchingQueryOnce(db, /update "heartbeat_runs"/, []);
+      const adoption = await heartbeatService(race.db).reconcileHotRestartAdoption(
+        new Date("2026-08-01T02:12:00.000Z"),
+      );
+
+      expect(race.wasTriggered()).toBe(true);
+      expect(adoption.lostRunIds).toContain(fixture.runId);
+    });
+  });
+
+  it("classifies drain-required candidates and missing preflight rows during restart adoption", async () => {
+    const draining = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async () => {
+      const intent = await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "drain-required-version",
+        requestedAt: new Date("2026-08-01T02:03:00.000Z"),
+        drainRequired: true,
+        preflightActiveRunIds: [draining.runId, randomUUID()],
+      });
+      await writeHotRestartShutdownSnapshot({
+        intent,
+        signal: "SIGTERM",
+        activeRuns: [{
+          runId: draining.runId,
+          companyId: draining.companyId,
+          agentId: draining.agentId,
+          issueId: draining.issueId,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: process.pid,
+          processGroupId: null,
+        }],
+        capturedAt: new Date("2026-08-01T02:04:00.000Z"),
+      });
+
+      const adoption = await heartbeatService(db).reconcileHotRestartAdoption(
+        new Date("2026-08-01T02:05:00.000Z"),
+      );
+      expect(adoption.skippedRunIds).toContain(draining.runId);
+      expect(adoption.finalizedWhileDownRunIds).toHaveLength(1);
+    });
+  });
+
   it("persists codex_local spawn identity before hot restart and never loses the live run for missing metadata", async () => {
     let releaseAdapter: (() => void) | null = null;
     let spawnedPid: number | null = null;
@@ -2207,6 +2822,92 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.checkoutRunId).toBeNull();
     expect(issue?.executionRunId).toBe(retryRun?.id);
+  });
+
+  it("terminates both tracked and database-only processes during graceful shutdown", async () => {
+    const tracked = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const databaseOnly = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+      processPid: 23456,
+      processGroupId: null,
+    });
+    const nonInvokable = await seedRunFixture({
+      agentStatus: "paused",
+      includeIssue: false,
+    });
+    runningProcesses.set(tracked.runId, {
+      child: { pid: 12345 } as ChildProcess,
+      graceSec: 0,
+      processGroupId: null,
+    });
+    mockTerminateLocalService.mockResolvedValue(undefined);
+
+    const result = await heartbeatService(db).drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    );
+
+    expect(result.interruptedRunIds).toEqual(expect.arrayContaining([
+      tracked.runId,
+      databaseOnly.runId,
+      nonInvokable.runId,
+    ]));
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 12345, processGroupId: null }),
+      { forceAfterMs: 1000 },
+    );
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 23456, processGroupId: null }),
+      undefined,
+    );
+    expect(runningProcesses.has(tracked.runId)).toBe(false);
+  });
+
+  it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        finishedAt: new Date("2026-03-19T00:05:30.000Z"),
+        updatedAt: new Date("2026-03-19T00:05:30.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    );
+
+    expect(result).toMatchObject({
+      interrupted: 0,
+      interruptedRunIds: [],
+      retryRunIds: [],
+    });
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+      signal: null,
+    });
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
   });
 
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
@@ -3957,6 +4658,98 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const activityDetailsText = JSON.stringify(handoffActivity?.details ?? {});
     expect(activityDetailsText).not.toContain(bearerSecret);
     expect(activityDetailsText).not.toContain(apiKeySecret);
+  });
+
+  it("preserves unmanaged-background-task stop metadata on a successful-run handoff", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Stopped an unmanaged background child and left the issue open.",
+      resultJson: {
+        unmanagedBackgroundTask: {
+          stopped: true,
+          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+        },
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const environmentRuntime = environmentRuntimeService(db);
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: {
+        ...environmentRuntime,
+        releaseRunLeases: vi.fn().mockRejectedValue(new Error("injected lease release failure")),
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForValue(async () => {
+      const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      return rows.find((row) => row.reason === "finish_successful_run_handoff") ?? null;
+    }, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const updated = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(updated?.resultJson).toMatchObject({
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      unmanagedBackgroundTask: { stopped: true },
+    });
+    expect(updated?.livenessReason).toBe(UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
+  });
+
+  it("contains an environment lease lookup failure during run finalization", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const failure = rejectMatchingQueryOnce(
+      db,
+      /from "environment_leases"/,
+      new Error("synthetic environment lease lookup failure"),
+    );
+    const heartbeat = heartbeatService(failure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(failure.wasTriggered()).toBe(true);
+  });
+
+  it("contains an environment orchestrator rejection during run finalization", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockEnvironmentOrchestratorReleaseFault.current = new Error("synthetic orchestrator release rejection");
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains a continuation-summary lookup failure during run finalization", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const failure = rejectMatchingQueryOnce(
+      db,
+      /from "issue_documents"/,
+      new Error("synthetic continuation summary lookup failure"),
+      2,
+    );
+    const heartbeat = heartbeatService(failure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(failure.wasTriggered()).toBe(true);
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
@@ -6804,6 +7597,193 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceRun?.livenessState).toBe("plan_only");
   });
 
+  it("records one exhaustion comment after the bounded liveness continuations are spent", async () => {
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db
+        .update(heartbeatRuns)
+        .set({ continuationAttempt: 2 })
+        .where(eq(heartbeatRuns.id, ctx.runId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const { agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const exhaustedComment = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.find((row) => row.body.startsWith("Bounded liveness continuation exhausted")) ?? null;
+    }, 5_000);
+    expect(exhaustedComment).toMatchObject({ issueId });
+    expect(exhaustedComment?.createdByRunId).toBeTruthy();
+
+    const livenessWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "run_liveness_continuation"),
+      ));
+    expect(livenessWakes).toHaveLength(0);
+  });
+
+  it("does not duplicate a preexisting bounded-continuation exhaustion comment", async () => {
+    let companyId = "";
+    let issueId = "";
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db
+        .update(heartbeatRuns)
+        .set({ continuationAttempt: 2 })
+        .where(eq(heartbeatRuns.id, ctx.runId));
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorType: "agent",
+        createdByRunId: ctx.runId,
+        body: "Bounded liveness continuation exhausted (preexisting fixture)",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const fixture = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    companyId = fixture.companyId;
+    issueId = fixture.issueId;
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const comments = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      const exhausted = rows.filter((row) => row.body.startsWith("Bounded liveness continuation exhausted"));
+      return exhausted.length > 0 ? exhausted : null;
+    });
+    expect(comments).toHaveLength(1);
+  });
+
+  it("holds a plan-only continuation while a productivity review is open", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    const managerId = randomUUID();
+    await db.insert(agents).values({
+      id: managerId,
+      companyId,
+      name: "Review manager",
+      role: "manager",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: managerId }).where(eq(agents.id, agentId));
+    const now = new Date();
+    await db.insert(heartbeatRuns).values(Array.from({ length: 10 }, (_, index) => {
+      const createdAt = new Date(now.getTime() - (index + 1) * 60_000);
+      return {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment" as const,
+        triggerDetail: "system" as const,
+        status: "succeeded" as const,
+        contextSnapshot: { issueId, taskId: issueId },
+        livenessState: "advanced" as const,
+        nextAction: "Continue implementation.",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 30_000),
+        createdAt,
+        updatedAt: createdAt,
+      };
+    }));
+    const heartbeat = heartbeatService(db);
+    const reviewResult = await heartbeat.reconcileProductivityReviews({ companyId, now });
+    expect(reviewResult.created).toBe(1);
+
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned", skipIssueComment: true },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "I will inspect the repo next and then implement the fix.",
+      provider: "test",
+      model: "test-model",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const sourceRun = await heartbeat.getRun(runId);
+    expect(sourceRun?.livenessState).toBe("plan_only");
+    expect(sourceRun?.livenessReason).toContain("continuation held by productivity review");
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "run_liveness_continuation")).toBe(false);
+    const activity = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
+    expect(activity).toHaveLength(1);
+  });
+
+  it("does not duplicate an existing plan-only continuation wake", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned", skipIssueComment: true },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "run_liveness_continuation",
+        status: "queued",
+        idempotencyKey: `run_liveness_continuation:${issueId}:${runId}:plan_only:1`,
+        payload: { issueId, sourceRunId: runId, continuationAttempt: 1 },
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the remaining code and implement it next.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.livenessState).toBe("plan_only");
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "run_liveness_continuation")).toHaveLength(1);
+  });
+
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {
     const { agentId, companyId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -7845,4 +8825,2004 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("delegates heartbeat sweep, watchdog, silence, and liveness-preview operations", async () => {
+    const now = new Date("2026-08-01T12:00:00.000Z");
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.sweepStaleIssueLocks()).resolves.toMatchObject({ cleared: 0 });
+    await expect(heartbeat.reconcileTaskWatchdogs()).resolves.toMatchObject({ triggered: 0 });
+    await expect(heartbeat.buildIssueGraphLivenessAutoRecoveryPreview({ now })).resolves.toBeDefined();
+    await expect(heartbeat.buildRunOutputSilence({
+      id: randomUUID(),
+      companyId: randomUUID(),
+      status: "succeeded",
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      processStartedAt: null,
+      startedAt: now,
+      createdAt: now,
+    }, now)).resolves.toMatchObject({ level: "not_applicable" });
+  });
+
+  it("records adapter runtime callbacks, staging failures, services, and timeout completion", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+      const input = rawInput as {
+        onMeta?: (meta: {
+          adapterType: string;
+          command: string;
+          env?: Record<string, string>;
+        }) => Promise<void>;
+        onEvent?: (event: { eventType: string; message?: string }) => Promise<void>;
+        onRuntimeProgress?: (progress: {
+          phase: "adapter_startup";
+          message: string;
+          currentToolName?: string;
+        }) => Promise<void>;
+      };
+      await input.onMeta?.({
+        adapterType: "codex_local",
+        command: "codex exec",
+        env: { SAFE_VALUE: "visible" },
+      });
+      await input.onEvent?.({ eventType: "   ", message: "ignored blank event" });
+      await input.onEvent?.({ eventType: "adapter.progress", message: "adapter callback recorded" });
+      await input.onRuntimeProgress?.({
+        phase: "adapter_startup",
+        message: "Starting adapter",
+        currentToolName: "codex",
+      });
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: true,
+        errorMessage: null,
+        summary: "Adapter timed out after reporting runtime state.",
+        provider: "test",
+        model: "test-model",
+        referencedProjectStagingFailures: [{ projectId: randomUUID() }],
+        runtimeServices: [{
+          id: randomUUID(),
+          serviceName: "preview",
+          status: "running" as const,
+          scopeType: "run" as const,
+          url: "http://127.0.0.1:4321",
+        }],
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("timed_out");
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.some((event) => event.eventType === "adapter.invoke")).toBe(true);
+    expect(events.some((event) => event.eventType === "adapter.progress")).toBe(true);
+    expect(events.some((event) => event.eventType.trim() === "")).toBe(false);
+  });
+
+  it("contains a run deleted between queue claim and execution lookup", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const race = resolveMatchingQueryOnce(
+      db,
+      /heartbeat_runs/,
+      [],
+      5,
+    );
+    const heartbeat = heartbeatService(race.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(race.wasTriggered(), `matching heartbeat run queries: ${race.matchCount()}`).toBe(true);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+  });
+
+  it("contains a stale queued snapshot that loses its second execution claim", async () => {
+    const fixture = await seedQueuedIssueRunFixture();
+    const queuedSnapshot = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId))
+      .then((rows) => rows[0]);
+    const race = resolveMatchingQueryOnce(
+      db,
+      /heartbeat_runs/,
+      [queuedSnapshot],
+      5,
+    );
+    const heartbeat = heartbeatService(race.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(race.wasTriggered(), `matching heartbeat run queries: ${race.matchCount()}`).toBe(true);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)))[0]?.status).toBe("running");
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+  });
+
+  it("fails a claimed run cleanly when its agent disappears before execution", async () => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const race = resolveMatchingQueryOnce(db, /from "agents"/, [], 7);
+    const heartbeat = heartbeatService(race.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect(race.wasTriggered(), `matching agent queries: ${race.matchCount()}`).toBe(true);
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", errorCode: "agent_not_found" });
+    const wake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0]);
+    expect(wake?.status).toBe("failed");
+  });
+
+  it("stops queued-run promotion when scheduling becomes suppressed after the resume scan", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const runtimeEnv: NodeJS.ProcessEnv = {};
+    const race = tapMatchingQueryOnce(db, /inner join "companies"/, () => {
+      runtimeEnv.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS = "1";
+    });
+    const heartbeat = heartbeatService(race.db, { runtimeEnv });
+
+    await heartbeat.resumeQueuedRuns();
+
+    expect(race.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("queued");
+  });
+
+  it("stops execution when scheduling becomes suppressed immediately after queue claim", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const runtimeEnv: NodeJS.ProcessEnv = {};
+    const race = tapMatchingQueryOnce(db, /update "heartbeat_runs" set "status"/, () => {
+      runtimeEnv.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS = "1";
+    });
+    const heartbeat = heartbeatService(race.db, { runtimeEnv });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(race.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("running");
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+  });
+
+  it("cancels a claimed run when the atomic execution-start invokability gate loses its race", async () => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const invokabilityRace = resolveMatchingQueryOnce(
+      db,
+      /update "agents" set "status" = /,
+      [],
+    );
+    const heartbeat = heartbeatService(invokabilityRace.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(invokabilityRace.wasTriggered()).toBe(true);
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "agent_not_invokable",
+      error: "Cancelled: agent not invokable at execution-start",
+    });
+    const wakeup = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({
+      status: "cancelled",
+      error: "Cancelled: agent not invokable at execution-start",
+    });
+  });
+
+  it("leaves a queued run untouched when its agent disappears from the locked start lookup", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const missingAgent = resolveMatchingQueryOnce(db, /from "agents"/, []);
+    const heartbeat = heartbeatService(missingAgent.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(missingAgent.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("queued");
+  });
+
+  it("uses creation time to order equal-rank equal-priority queued runs", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const secondRunId = randomUUID();
+    const secondWakeupRequestId = randomUUID();
+    const secondIssueId = randomUUID();
+    const secondCreatedAt = new Date("2026-03-19T00:00:01.000Z");
+    await db.update(agents).set({
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 2 } },
+    }).where(eq(agents.id, agentId));
+    await db.insert(agentWakeupRequests).values({
+      id: secondWakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: secondIssueId },
+      status: "queued",
+      runId: secondRunId,
+      requestedAt: secondCreatedAt,
+      updatedAt: secondCreatedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: secondWakeupRequestId,
+      contextSnapshot: { issueId: secondIssueId, taskId: secondIssueId, wakeReason: "issue_assigned" },
+      updatedAt: secondCreatedAt,
+      createdAt: secondCreatedAt,
+    });
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Second equal-priority execution",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: secondRunId,
+      executionRunId: secondRunId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+      startedAt: secondCreatedAt,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await waitForRunToSettle(heartbeat, secondRunId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect((await heartbeat.getRun(secondRunId))?.status).toBe("succeeded");
+    const executedRunIds = mockAdapterExecute.mock.calls.map(([input]) => (input as { runId?: string } | undefined)?.runId);
+    expect(executedRunIds).toContain(runId);
+    expect(executedRunIds).toContain(secondRunId);
+  });
+
+  it("does not execute a claimed run that became terminal before executeRun rereads it", async () => {
+    const { runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const terminalRace = tapMatchingQueryOnceAsync(
+      db,
+      /update "heartbeat_runs" set "status"/,
+      async () => {
+        await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      },
+    );
+    const heartbeat = heartbeatService(terminalRace.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(terminalRace.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("cancelled");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("backfills the responsible user onto a claimed run and its issue before execution", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+    const backfillRace = tapMatchingQueryOnceAsync(
+      db,
+      /update "heartbeat_runs" set "status"/,
+      async () => {
+        await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
+      },
+    );
+    const heartbeat = heartbeatService(backfillRace.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const updatedRun = await heartbeat.getRun(runId);
+    const updatedIssue = await db
+      .select({ responsibleUserId: issues.responsibleUserId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(backfillRace.wasTriggered()).toBe(true);
+    expect(updatedRun).toMatchObject({ status: "succeeded", responsibleUserId: "responsible-user" });
+    expect(updatedIssue?.responsibleUserId).toBe("responsible-user");
+  });
+
+  it("propagates a non-conflict auto-checkout failure into setup failure containment", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(issues).set({
+      status: "todo",
+      checkoutRunId: null,
+      startedAt: null,
+    }).where(eq(issues.id, issueId));
+    const checkoutFailure = rejectMatchingQueryOnce(
+      db,
+      /update "issues" set .*"checkout_run_id"/,
+      new Error("synthetic non-conflict checkout persistence failure"),
+    );
+    const heartbeat = heartbeatService(checkoutFailure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(checkoutFailure.wasTriggered()).toBe(true);
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "failed",
+      errorCode: "setup_failed",
+      error: "synthetic non-conflict checkout persistence failure",
+    });
+  });
+
+  it("rejects wakeup for an agent that does not exist", async () => {
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.wakeup(randomUUID())).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("records and skips a timer wake when heartbeat timers are disabled", async () => {
+    const { agentId } = await seedQueuedIssueRunFixture();
+    await db.update(agents).set({
+      runtimeConfig: {
+        heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+    }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.wakeup(agentId, { source: "timer" })).resolves.toBeNull();
+
+    const wake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "heartbeat.disabled"))
+      .then((rows) => rows[0]);
+    expect(wake).toMatchObject({ status: "skipped", reason: "heartbeat.disabled" });
+  });
+
+  it("canonicalizes identifier wake context before executing the issue run", async () => {
+    const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.runId, runId));
+    await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
+    const identifier = await db
+      .select({ identifier: issues.identifier })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.identifier);
+    expect(identifier).toBeTruthy();
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      reason: "identifier_context_test",
+      contextSnapshot: { issueId: identifier, taskId: identifier },
+    });
+    expect(run?.contextSnapshot).toMatchObject({ issueId, taskId: issueId });
+    await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("records a skipped wake when its issue vanishes before lock acquisition", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+    await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.runId, runId));
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      reason: "missing_issue_test",
+      contextSnapshot: { issueId: randomUUID() },
+    })).resolves.toBeNull();
+
+    const skipped = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "issue_execution_issue_not_found"));
+    expect(skipped).toHaveLength(1);
+  });
+
+  it("records a skipped request before rejecting a budget-blocked wake", async () => {
+    const { companyId, agentId } = await seedQueuedIssueRunFixture();
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      reason: "budget_block_test",
+    })).rejects.toMatchObject({ status: 409 });
+
+    const skipped = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "budget.blocked"));
+    expect(skipped).toHaveLength(1);
+  });
+
+  it("contains finalize-record and failed-run lookup faults after an adapter rejection", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    let adapterRejected = false;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      adapterRejected = true;
+      throw new Error("synthetic adapter rejection with nested faults");
+    });
+    const finalizeFault = rejectMatchingQueryWhen(
+      db,
+      /insert into "workspace_operations"/,
+      () => adapterRejected,
+      new Error("synthetic failed-finalize record fault"),
+    );
+    const lookupFault = rejectMatchingQueryWhen(
+      finalizeFault.db,
+      /from "heartbeat_runs"/,
+      () => adapterRejected && finalizeFault.wasTriggered(),
+      new Error("synthetic failed-run lookup fault"),
+    );
+    const heartbeat = heartbeatService(lookupFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(finalizeFault.wasTriggered()).toBe(true);
+    expect(lookupFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains run-log finalization and output-progress faults after adapter failure", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    let adapterRejected = false;
+    mockRunLogFinalizeFault.current = new Error("synthetic error-path log finalize fault");
+    mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+      const input = rawInput as {
+        onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      };
+      await input.onLog("stdout", "output before adapter failure\n");
+      adapterRejected = true;
+      throw new Error("synthetic adapter failure after output");
+    });
+    const flushFault = rejectMatchingQueryWhen(
+      db,
+      /update "heartbeat_runs"/,
+      () => adapterRejected,
+      new Error("synthetic error-path output flush fault"),
+    );
+    const heartbeat = heartbeatService(flushFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(flushFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains nested setup-failure lookup and terminal-write faults", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const secret = await secretService(db).create(companyId, {
+      name: `unbound-nested-fault-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "never-resolved",
+    });
+    await db.update(agents).set({
+      adapterConfig: {
+        env: {
+          UNBOUND_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    let configurationLookupCompleted = false;
+    const setupSignal = tapMatchingQueryOnce(db, /from "company_secret_bindings"/, () => {
+      configurationLookupCompleted = true;
+    });
+    const runLookupFault = rejectMatchingQueryWhen(
+      setupSignal.db,
+      /from "heartbeat_runs"/,
+      () => configurationLookupCompleted,
+      new Error("synthetic setup failed-run lookup fault"),
+    );
+    const agentLookupFault = rejectMatchingQueryWhen(
+      runLookupFault.db,
+      /from "agents"/,
+      () => configurationLookupCompleted,
+      new Error("synthetic setup failed-agent lookup fault"),
+    );
+    const terminalWriteFault = rejectMatchingQueryWhen(
+      agentLookupFault.db,
+      /update "heartbeat_runs"/,
+      () => configurationLookupCompleted,
+      new Error("synthetic setup terminal-write fault"),
+    );
+    const heartbeat = heartbeatService(terminalWriteFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupSignal.wasTriggered()).toBe(true);
+    expect(runLookupFault.wasTriggered()).toBe(true);
+    expect(agentLookupFault.wasTriggered()).toBe(true);
+    expect(terminalWriteFault.wasTriggered()).toBe(true);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+  });
+
+  it("contains nested setup-failure wakeup and reread faults", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const secret = await secretService(db).create(companyId, {
+      name: `unbound-reread-fault-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "never-resolved",
+    });
+    await db.update(agents).set({
+      adapterConfig: {
+        env: {
+          UNBOUND_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    let configurationLookupCompleted = false;
+    const setupSignal = tapMatchingQueryOnce(db, /from "company_secret_bindings"/, () => {
+      configurationLookupCompleted = true;
+    });
+    const wakeupFault = rejectMatchingQueryWhen(
+      setupSignal.db,
+      /update "agent_wakeup_requests"/,
+      () => configurationLookupCompleted,
+      new Error("synthetic setup wakeup-write fault"),
+    );
+    const rereadFault = rejectMatchingQueryWhen(
+      wakeupFault.db,
+      /from "heartbeat_runs"/,
+      () => wakeupFault.wasTriggered(),
+      new Error("synthetic setup failed-run reread fault"),
+    );
+    const heartbeat = heartbeatService(rereadFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupSignal.wasTriggered()).toBe(true);
+    expect(wakeupFault.wasTriggered()).toBe(true);
+    expect(rereadFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains setup-failure event, classification, and skill-completion faults", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const secret = await secretService(db).create(companyId, {
+      name: `unbound-skill-fault-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "never-resolved",
+    });
+    await db.update(agents).set({
+      adapterConfig: {
+        env: {
+          UNBOUND_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    await db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, issueId));
+    let configurationLookupCompleted = false;
+    const setupSignal = tapMatchingQueryOnce(db, /from "company_secret_bindings"/, () => {
+      configurationLookupCompleted = true;
+    });
+    const eventFault = rejectMatchingQueryWhen(
+      setupSignal.db,
+      /insert into "heartbeat_run_events"/,
+      () => configurationLookupCompleted,
+      new Error("synthetic setup error-event fault"),
+    );
+    const classificationFault = rejectMatchingQueryWhen(
+      eventFault.db,
+      /update "heartbeat_runs"/,
+      () => eventFault.wasTriggered(),
+      new Error("synthetic setup liveness-classification fault"),
+    );
+    const skillCompletionFault = rejectMatchingQueryWhen(
+      classificationFault.db,
+      /company_skill_test_runs/,
+      () => classificationFault.wasTriggered(),
+      new Error("synthetic setup skill-completion fault"),
+    );
+    const heartbeat = heartbeatService(skillCompletionFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupSignal.wasTriggered()).toBe(true);
+    expect(eventFault.wasTriggered()).toBe(true);
+    expect(classificationFault.wasTriggered()).toBe(true);
+    expect(skillCompletionFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains setup-failure summary, comment, release, and agent-finalization faults", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const setupFault = rejectMatchingQueryOnce(
+      db,
+      /insert into "agent_runtime_state"/,
+      new Error("synthetic generic heartbeat setup fault"),
+    );
+    const summaryFault = rejectMatchingQueryWhen(
+      setupFault.db,
+      /from "(?:issue_documents|documents)"/,
+      () => setupFault.wasTriggered(),
+      new Error("synthetic setup continuation-summary fault"),
+    );
+    const commentFault = rejectMatchingQueryWhen(
+      summaryFault.db,
+      /from "issue_comments"/,
+      () => summaryFault.wasTriggered(),
+      new Error("synthetic setup comment-policy fault"),
+    );
+    const releaseFault = rejectMatchingQueryWhen(
+      commentFault.db,
+      /update "issues"/,
+      () => commentFault.wasTriggered(),
+      new Error("synthetic setup issue-release fault"),
+    );
+    const finalizeAgentFault = rejectMatchingQueryWhen(
+      releaseFault.db,
+      /update "agents"/,
+      () => releaseFault.wasTriggered(),
+      new Error("synthetic setup agent-finalization fault"),
+    );
+    const heartbeat = heartbeatService(finalizeAgentFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupFault.wasTriggered()).toBe(true);
+    expect(summaryFault.wasTriggered()).toBe(true);
+    expect(commentFault.wasTriggered()).toBe(true);
+    expect(releaseFault.wasTriggered()).toBe(true);
+    expect(finalizeAgentFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains runtime-service release failure after terminal run persistence", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockRuntimeServiceReleaseFault.current = new Error("synthetic runtime-service release fault");
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("fails explicitly when persisted Kubernetes policy has no bootstrap environment", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+    const previousExecutionMode = process.env.PAPERCLIP_EXECUTION_MODE;
+    delete process.env.PAPERCLIP_EXECUTION_MODE;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      if (previousExecutionMode === undefined) delete process.env.PAPERCLIP_EXECUTION_MODE;
+      else process.env.PAPERCLIP_EXECUTION_MODE = previousExecutionMode;
+    }
+
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "failed",
+      errorCode: "setup_failed",
+      error: expect.stringContaining("requires the Kubernetes sandbox provider"),
+    });
+  });
+
+  it("contains an invalid Kubernetes bootstrap env and reports the explicit managed-environment failure", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+    const previousExecutionMode = process.env.PAPERCLIP_EXECUTION_MODE;
+    process.env.PAPERCLIP_EXECUTION_MODE = "invalid-mode";
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      if (previousExecutionMode === undefined) delete process.env.PAPERCLIP_EXECUTION_MODE;
+      else process.env.PAPERCLIP_EXECUTION_MODE = previousExecutionMode;
+    }
+
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "failed",
+      errorCode: "setup_failed",
+      error: expect.stringContaining("requires the Kubernetes sandbox provider"),
+    });
+  });
+
+  it("lazily provisions and selects the Kubernetes environment from bootstrap configuration", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+    const previousExecutionMode = process.env.PAPERCLIP_EXECUTION_MODE;
+    process.env.PAPERCLIP_EXECUTION_MODE = "kubernetes";
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      if (previousExecutionMode === undefined) delete process.env.PAPERCLIP_EXECUTION_MODE;
+      else process.env.PAPERCLIP_EXECUTION_MODE = previousExecutionMode;
+    }
+
+    const kubernetesEnvironment = await db
+      .select({ id: environments.id, driver: environments.driver, metadata: environments.metadata })
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"))
+      .then((rows) => rows[0] ?? null);
+    expect(kubernetesEnvironment).toMatchObject({
+      driver: "sandbox",
+      metadata: expect.objectContaining({ managedKubernetesSandbox: true }),
+    });
+    expect((await heartbeat.getRun(runId))?.status).not.toBe("queued");
+  });
+
+  it("rejects a locally acquired environment when the persisted policy requires Kubernetes", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    await instanceSettingsService(db).updateGeneral({ executionMode: "kubernetes" });
+    const previousExecutionMode = process.env.PAPERCLIP_EXECUTION_MODE;
+    process.env.PAPERCLIP_EXECUTION_MODE = "kubernetes";
+    mockEnvironmentOrchestratorTargets.acquireLocalInstead = true;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      if (previousExecutionMode === undefined) delete process.env.PAPERCLIP_EXECUTION_MODE;
+      else process.env.PAPERCLIP_EXECUTION_MODE = previousExecutionMode;
+    }
+
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "failed",
+      errorCode: "setup_failed",
+      error: expect.stringContaining("Kubernetes"),
+    });
+  });
+
+  it("omits local scratch metadata for a remote execution target", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockEnvironmentOrchestratorTargets.realizeRemoteInstead = true;
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.contextSnapshot).not.toHaveProperty("paperclipScratch");
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({
+      executionTarget: expect.objectContaining({ kind: "remote", transport: "sandbox" }),
+    }));
+  });
+
+  it("restores missing wake context fields from an explicit resume run", async () => {
+    const { agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const taskKey = `resume-task-${randomUUID()}`;
+    await db.update(heartbeatRuns).set({
+      status: "succeeded",
+      finishedAt: new Date(),
+      sessionIdAfter: "resume-session-123",
+      contextSnapshot: { issueId, taskId: issueId, taskKey },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(agentWakeupRequests).set({
+      status: "succeeded",
+      finishedAt: new Date(),
+    }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db.update(issues).set({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const resumed = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "system",
+      reason: "explicit_resume_context_test",
+      payload: { resumeFromRunId: runId },
+      requestedByActorType: "system",
+    });
+
+    expect(resumed?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      taskKey,
+      resumeFromRunId: runId,
+      resumeSessionDisplayId: "resume-session-123",
+    });
+    await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("falls back from adapter profile lookup failure and missing local-agent JWT secret", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockAdapterProfileResolutionFault.current = new Error("synthetic adapter profile lookup fault");
+    mockSupportsLocalAgentJwt.current = true;
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalled();
+  });
+
+  it("runs without an injected local-agent JWT when both signing secrets are absent", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const previousBetterAuthSecret = process.env.BETTER_AUTH_SECRET;
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.BETTER_AUTH_SECRET;
+    mockSupportsLocalAgentJwt.current = true;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      if (previousAgentJwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousAgentJwtSecret;
+      if (previousBetterAuthSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = previousBetterAuthSecret;
+    }
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({ authToken: undefined }));
+  });
+
+  it("redacts resolved secret values from adapter invocation metadata", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      key: "API_TOKEN",
+      name: `adapter-meta-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "super-secret-adapter-token",
+    });
+    await secrets.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "env.API_TOKEN",
+    });
+    await db.update(agents).set({
+      adapterConfig: {
+        env: {
+          API_TOKEN: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+      const input = rawInput as {
+        onMeta?: (meta: {
+          adapterType: string;
+          command: string;
+          env?: Record<string, string>;
+        }) => Promise<void>;
+      };
+      const meta = {
+        adapterType: "codex_local",
+        command: "codex exec",
+        env: { API_TOKEN: "super-secret-adapter-token" },
+      };
+      await input.onMeta?.(meta);
+      expect(meta.env.API_TOKEN).toBe("***REDACTED***");
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Secret metadata redaction verified.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains managed MCP token revocation failure after adapter completion", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    let adapterCompleted = false;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      adapterCompleted = true;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Adapter completed before token revocation.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const revokeFault = rejectMatchingQueryWhen(
+      db,
+      /update "tool_mcp_gateway_tokens"/,
+      () => adapterCompleted,
+      new Error("synthetic gateway-token revocation fault"),
+    );
+    const heartbeat = heartbeatService(revokeFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(revokeFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains dependency-wake lookup failure after a blocker completes mid-run", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    let adapterCompleted = false;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+      adapterCompleted = true;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Blocker completed during the run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const dependencyWakeFault = rejectMatchingQueryWhen(
+      db,
+      /select "status" from "issues"/,
+      () => adapterCompleted,
+      new Error("synthetic dependency-wake lookup fault"),
+    );
+    const heartbeat = heartbeatService(dependencyWakeFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(dependencyWakeFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("runs the selected-environment callback during low-trust workspace preflight", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(agents).set({
+      permissions: {
+        trustPreset: "low_trust_review",
+        authorizationPolicy: {
+          managedBy: "core-trust-preset",
+          trustBoundary: {
+            mode: "low_trust_review",
+            companyId,
+            rootIssueId: issueId,
+            issueIds: [issueId],
+          },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("persists runtime-service URLs and contains a workspace-ready comment failure", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(agents).set({
+      adapterConfig: {
+        workspaceRuntime: {
+          services: [null, "ignored", { name: "preview", command: "pnpm dev" }],
+        },
+      },
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+    }).where(eq(agents.id, agentId));
+    mockRuntimeServicesForRun.current = [{
+      id: randomUUID(),
+      serviceName: "preview",
+      status: "running",
+      scopeType: "run",
+      url: "http://127.0.0.1:4310",
+      reused: false,
+    }];
+    const commentFault = rejectIssueCommentInsertOnce(
+      db,
+      new Error("synthetic workspace-ready comment fault"),
+    );
+    const heartbeat = heartbeatService(commentFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(commentFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    const persistedRun = await heartbeat.getRun(runId, { unsafeFullResultJson: true });
+    expect(persistedRun?.contextSnapshot).toMatchObject({
+      paperclipRuntimePrimaryUrl: "http://127.0.0.1:4310",
+    });
+  });
+
+  it("continues a local run when scratch preparation fails", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockScratchFaults.prepare = new Error("synthetic scratch preparation fault");
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains scratch cleanup and cleanup-event persistence failures", async () => {
+    const first = await seedQueuedIssueRunFixture();
+    let firstScratchDir: string | null = null;
+    mockScratchFaults.cleanup = new Error("synthetic scratch cleanup fault");
+    mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+      const input = rawInput as { config?: { env?: Record<string, string> } };
+      firstScratchDir = input.config?.env?.PAPERCLIP_RUN_SCRATCH_DIR ?? null;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Scratch cleanup failure was contained.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const cleanupEventFault = rejectMatchingQueryWhen(
+      db,
+      /insert into "heartbeat_run_events"/,
+      () => mockScratchFaults.cleanupEventReady,
+      new Error("synthetic scratch cleanup error-event fault"),
+    );
+    const firstHeartbeat = heartbeatService(cleanupEventFault.db);
+
+    await firstHeartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(firstHeartbeat, first.runId);
+    await firstHeartbeat.drainActiveRunExecutions();
+
+    expect(cleanupEventFault.wasTriggered()).toBe(true);
+    expect((await firstHeartbeat.getRun(first.runId))?.status).toBe("succeeded");
+    if (firstScratchDir) await fs.rm(firstScratchDir, { recursive: true, force: true });
+
+    mockScratchFaults.cleanup = null;
+    mockScratchFaults.cleanupEventReady = false;
+    const second = await seedQueuedIssueRunFixture();
+    const lifecycleEventFault = rejectMatchingQueryWhen(
+      db,
+      /insert into "heartbeat_run_events"/,
+      () => mockScratchFaults.cleanupEventReady,
+      new Error("synthetic scratch cleanup lifecycle-event fault"),
+    );
+    const secondHeartbeat = heartbeatService(lifecycleEventFault.db);
+
+    await secondHeartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(secondHeartbeat, second.runId);
+    await secondHeartbeat.drainActiveRunExecutions();
+
+    expect(lifecycleEventFault.wasTriggered()).toBe(true);
+    expect((await secondHeartbeat.getRun(second.runId))?.status).toBe("succeeded");
+  });
+
+  it("recovers a setup-failure agent lookup on the second attempt", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const secret = await secretService(db).create(companyId, {
+      name: `unbound-agent-reread-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "never-resolved",
+    });
+    await db.update(agents).set({
+      adapterConfig: {
+        env: {
+          UNBOUND_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    let configurationLookupCompleted = false;
+    const setupSignal = tapMatchingQueryOnce(db, /from "company_secret_bindings"/, () => {
+      configurationLookupCompleted = true;
+    });
+    const firstAgentLookupFault = rejectMatchingQueryWhen(
+      setupSignal.db,
+      /from "agents"/,
+      () => configurationLookupCompleted,
+      new Error("synthetic first setup-failure agent lookup fault"),
+    );
+    const secondAgentLookupFault = rejectMatchingQueryWhen(
+      firstAgentLookupFault.db,
+      /from "agents"/,
+      () => configurationLookupCompleted && firstAgentLookupFault.wasTriggered(),
+      new Error("synthetic second setup-failure agent lookup fault"),
+    );
+    const heartbeat = heartbeatService(secondAgentLookupFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupSignal.wasTriggered()).toBe(true);
+    expect(firstAgentLookupFault.wasTriggered()).toBe(true);
+    expect(secondAgentLookupFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("reclaims a run that returns to queued between the initial claim and execution", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const requeueRace = tapMatchingQueryOnceAsync(
+      db,
+      /update "heartbeat_runs" set "status"/,
+      async () => {
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "queued", startedAt: null })
+          .where(eq(heartbeatRuns.id, runId));
+      },
+    );
+    const heartbeat = heartbeatService(requeueRace.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(requeueRace.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains an adapter-managed runtime comment failure", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Runtime service was persisted despite the comment fault.",
+      provider: "test",
+      model: "test-model",
+      runtimeServices: [{
+        id: randomUUID(),
+        serviceName: "adapter-preview",
+        scopeType: "run",
+        status: "running",
+        url: "http://127.0.0.1:4322",
+      }],
+    });
+    const commentFault = rejectIssueCommentInsertOnce(
+      db,
+      new Error("synthetic adapter-managed runtime comment fault"),
+    );
+    const heartbeat = heartbeatService(commentFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(commentFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains a successful-run summary comment failure", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const commentFault = rejectIssueCommentInsertOnce(
+      db,
+      new Error("synthetic successful-run summary comment fault"),
+    );
+    const heartbeat = heartbeatService(commentFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(commentFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("records disabled-policy suppression after a max-turn adapter failure", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+            maxTurnContinuation: { enabled: false, maxAttempts: 3, delayMs: 0 },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Maximum turns exhausted",
+      errorCode: "max_turns_exhausted",
+      resultJson: { stopReason: "max_turns_exhausted" },
+      summary: "Stopped at the configured turn limit.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+    const events = await db
+      .select({ message: heartbeatRunEvents.message })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.some((event) => event.message.includes("policy is disabled"))).toBe(true);
+  });
+
+  it("refreshes an existing task session after an adapter rejection", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const taskKey = `adapter-rejection-${randomUUID()}`;
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId, taskId: issueId, taskKey } })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey,
+      sessionParamsJson: { sessionId: "previous-session" },
+      sessionDisplayId: "previous-session",
+    });
+    mockAdapterExecute.mockRejectedValueOnce(new Error("synthetic rejection with prior session"));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+    const session = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.agentId, agentId), eq(agentTaskSessions.taskKey, taskKey)))
+      .then((rows) => rows[0] ?? null);
+    expect(session).toMatchObject({ agentId, taskKey, adapterType: "codex_local" });
+  });
+
+  it("fails a deferred wake whose agent is no longer invokable", async () => {
+    const { companyId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredAgentId = randomUUID();
+    const deferredWakeId = randomUUID();
+    await db.insert(agents).values({
+      id: deferredAgentId,
+      companyId,
+      name: "PausedDeferredAgent",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: deferredAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake).toMatchObject({
+      status: "failed",
+      error: "Deferred wake could not be promoted: agent is not invokable",
+    });
+  });
+
+  it("cancels a deferred wake when a subtree pause hold activates mid-run", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: { issueId, taskId: issueId, wakeReason: "issue_blockers_resolved" },
+      },
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.insert(issueTreeHolds).values({
+        companyId,
+        rootIssueId: issueId,
+        mode: "pause",
+        status: "active",
+        reason: "hold activated during execution",
+        releasePolicy: { strategy: "manual" },
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Hold activated before deferred promotion.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake).toMatchObject({
+      status: "cancelled",
+      error: "Deferred wake suppressed by active subtree pause hold",
+    });
+  });
+
+  it("promotes a verified deferred comment wake through an active subtree pause hold", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredWakeId = randomUUID();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "Please respond while this hold is active.",
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      payload: {
+        issueId,
+        commentId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          commentId,
+          wakeCommentId: commentId,
+          wakeReason: "issue_commented",
+          source: "issue.comment",
+        },
+      },
+    });
+    let holdId: string | null = null;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      const [hold] = await db
+        .insert(issueTreeHolds)
+        .values({
+          companyId,
+          rootIssueId: issueId,
+          mode: "pause",
+          status: "active",
+          reason: "hold activated during execution",
+          releasePolicy: { strategy: "manual" },
+        })
+        .returning({ id: issueTreeHolds.id });
+      holdId = hold.id;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Hold activated before verified deferred promotion.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const deferredWake = await db
+      .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.runId).toBeTruthy();
+    expect(deferredWake?.status).toBe("completed");
+    const promotedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, deferredWake!.runId!))
+      .then((rows) => rows[0] ?? null);
+    expect(promotedRun?.contextSnapshot).toMatchObject({
+      treeHoldInteraction: true,
+      activeTreeHold: {
+        holdId,
+        rootIssueId: issueId,
+        mode: "pause",
+        interaction: true,
+      },
+    });
+  });
+
+  it("contains skill-test completion failure after result-based run finalization", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, issueId));
+    let adapterCompleted = false;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      adapterCompleted = true;
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Synthetic result-based skill-test failure",
+        summary: "Skill-test completion fault is contained.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const skillCompletionFault = rejectMatchingQueryWhen(
+      db,
+      /company_skill_test_runs/,
+      () => adapterCompleted,
+      new Error("synthetic successful skill-test completion fault"),
+    );
+    const heartbeat = heartbeatService(skillCompletionFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(skillCompletionFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains skill-test completion failure after an adapter rejection", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, issueId));
+    let adapterRejected = false;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      adapterRejected = true;
+      throw new Error("synthetic skill-test adapter rejection");
+    });
+    const skillCompletionFault = rejectMatchingQueryWhen(
+      db,
+      /company_skill_test_runs/,
+      () => adapterRejected,
+      new Error("synthetic rejected skill-test completion fault"),
+    );
+    const heartbeat = heartbeatService(skillCompletionFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(skillCompletionFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains setup-failure interaction retry scheduling failure", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        invocationSource: "automation",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId: randomUUID(),
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const setupFault = rejectMatchingQueryOnce(
+      db,
+      /insert into "agent_runtime_state"/,
+      new Error('Failed to start command "codex" before interaction retry scheduling'),
+    );
+    let retryFaultTriggered = false;
+    const retryFaultDb = new Proxy(setupFault.db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "transaction" || typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const callStack = new Error().stack ?? "";
+          if (
+            setupFault.wasTriggered() &&
+            !retryFaultTriggered &&
+            callStack.includes("scheduleBoundedRetryForRun")
+          ) {
+            retryFaultTriggered = true;
+            return Promise.reject(new Error("synthetic setup interaction retry transaction fault"));
+          }
+          return Reflect.apply(value, target, args);
+        };
+      },
+    }) as ReturnType<typeof createDb>;
+    const heartbeat = heartbeatService(retryFaultDb);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupFault.wasTriggered()).toBe(true);
+    expect(retryFaultTriggered).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains unresolved responsible-user failure during deferred promotion", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+      },
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(companies).set({ defaultResponsibleUserId: null }).where(eq(companies.id, companyId));
+      await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Responsible-user context was removed before promotion.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    const deferredWake = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.status).toBe("deferred_issue_execution");
+  });
+
+  it("rejects stranded recovery when no responsible user can own the retry", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+    });
+    await db.update(companies).set({ defaultResponsibleUserId: null }).where(eq(companies.id, companyId));
+    await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.reconcileStrandedAssignedIssues()).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("filters staged referenced-project failures from resolved additional workspaces", async () => {
+    const { companyId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const referencedProjectId = randomUUID();
+    const referencedWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: referencedProjectId,
+      companyId,
+      name: "Referenced execution project",
+      status: "active",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: referencedWorkspaceId,
+      companyId,
+      projectId: referencedProjectId,
+      name: "Primary",
+      cwd: process.cwd(),
+      isPrimary: true,
+    });
+    await db
+      .update(issues)
+      .set({ description: `Use [@Referenced](project://${referencedProjectId}) for context.` })
+      .where(eq(issues.id, issueId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Referenced workspace staging failure was recorded.",
+      provider: "test",
+      model: "test-model",
+      referencedProjectStagingFailures: [{ projectId: referencedProjectId }],
+    });
+    const previousSyncFlag = process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC;
+    process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC = "true";
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      if (previousSyncFlag === undefined) delete process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC;
+      else process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC = previousSyncFlag;
+    }
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(mockAdapterExecute.mock.calls.some(([input]) => {
+      const workspaces = (input as { context?: { paperclipWorkspaces?: Array<{ projectId?: string }> } })
+        .context?.paperclipWorkspaces ?? [];
+      return workspaces.some((workspace) => workspace.projectId === referencedProjectId);
+    })).toBe(true);
+  });
+
+  it("suppresses immediate review-participant recovery during agent cancellation", async () => {
+    const { agentId, runId, wakeupRequestId, issueId } = await seedInReviewParticipantRunFixture();
+    const startedAt = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", startedAt, updatedAt: startedAt })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "running", claimedAt: startedAt, updatedAt: startedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelActiveForAgent(agentId, "operator cancelled reviewer run");
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("cancelled");
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({ status: "in_review", executionRunId: null });
+    const recoveryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(recoveryRuns).toHaveLength(1);
+  });
+
+  it("keeps a failed review-participant recovery issue in place", async () => {
+    const { companyId, agentId, runId, issueId } = await seedInReviewParticipantRunFixture({
+      wakeReason: "execution_review_participant_recovery",
+      retryReason: "execution_review_participant_recovery",
+    });
+    const sourceIssueId = randomUUID();
+    const sourceRunId = randomUUID();
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original review source",
+      status: "blocked",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+    });
+    await db
+      .update(issues)
+      .set({
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+        originRunId: sourceRunId,
+        originFingerprint: `stranded_issue_recovery:${companyId}:${sourceIssueId}:${sourceRunId}`,
+      })
+      .where(eq(issues.id, issueId));
+    mockAdapterExecute.mockRejectedValueOnce(new Error("synthetic in-place review recovery failure"));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "blocked",
+      originKind: "stranded_issue_recovery",
+      assigneeAgentId: agentId,
+    });
+    const nestedRecoveries = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originId, issueId)));
+    expect(nestedRecoveries).toHaveLength(0);
+  });
+
++  it("contains a persistence failure while escalating a non-retryable plan continuation", async () => {
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    const interactionContext = {
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_commented",
+      mutation: "interaction",
+      interactionId,
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+    };
+    await db.update(agentWakeupRequests).set({
+      source: "automation",
+      reason: "issue_commented",
+      payload: interactionContext,
+    }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db.update(heartbeatRuns).set({
+      invocationSource: "automation",
+      contextSnapshot: interactionContext,
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    mockAdapterExecute.mockRejectedValueOnce(new Error("non-retryable configuration failure"));
+    const failure = rejectIssueCommentInsertOnce(db, new Error("synthetic escalation persistence failure"));
+    const heartbeat = heartbeatService(failure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+    expect(failure.wasTriggered()).toBe(true);
+  });
+
+  it("does not persist a whitespace-only agent failure reason", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { skipIssueComment: true } }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "   ",
+      summary: null,
+      provider: "test",
+      model: "test-model",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await waitForHeartbeatIdle(db);
+
+    const agent = await db
+      .select({ status: agents.status, errorReason: agents.errorReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]);
+    expect(agent?.errorReason).toBeNull();
+  });
+
+  it("reports a lost hot-restart candidate when the adoption compare-and-set loses", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      includeIssue: false,
+    });
+
+    await withTempPaperclipHome(async () => {
+      const intent = await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "adoption-race-version",
+        requestedAt: new Date("2026-08-01T02:10:00.000Z"),
+      });
+      await writeHotRestartShutdownSnapshot({
+        intent,
+        signal: "SIGTERM",
+        activeRuns: [{
+          runId: fixture.runId,
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          issueId: null,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: process.pid,
+          processGroupId: null,
+        }],
+        capturedAt: new Date("2026-08-01T02:11:00.000Z"),
+      });
+      const race = resolveMatchingQueryOnce(db, /update "heartbeat_runs"/, []);
+      const adoption = await heartbeatService(race.db).reconcileHotRestartAdoption(
+        new Date("2026-08-01T02:12:00.000Z"),
+      );
+
+      expect(race.wasTriggered()).toBe(true);
+      expect(adoption.lostRunIds).toContain(fixture.runId);
+    });
+  });
+
+  it("suppresses a missing-comment retry when the agent org chain becomes non-invokable", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const supervisorId = randomUUID();
+    await db.insert(agents).values({
+      id: supervisorId,
+      companyId,
+      name: "Temporary supervisor",
+      role: "manager",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: supervisorId }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, supervisorId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: null,
+        resultJson: {},
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await waitForValue(async () => {
+      const run = await heartbeat.getRun(runId);
+      return run?.issueCommentStatus === "retry_exhausted" ? run : null;
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.find((run) => run.id === runId)).toMatchObject({
+      status: "succeeded",
+      issueCommentStatus: "retry_exhausted",
+    });
+    expect(runs.some(
+      (run) => (run.contextSnapshot as Record<string, unknown> | null)?.retryReason === "missing_issue_comment",
+    )).toBe(false);
+  });
+
+  it("does not add a handoff notice when the corrective wake is suppressed", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(agents).set({
+      runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Implemented the change but left the issue in progress.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the change but left the issue in progress.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(false);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toBe(false);
+  });
+
 });

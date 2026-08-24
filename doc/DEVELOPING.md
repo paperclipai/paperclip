@@ -254,6 +254,13 @@ pnpm test:e2e
 pnpm test:release-smoke
 ```
 
+To run the focused `heartbeat.ts` regression gate (all heartbeat-named server
+suites plus 100% line and branch thresholds), use:
+
+```sh
+pnpm --filter @paperclipai/server test:heartbeat:coverage
+```
+
 These browser suites are intended for targeted local verification and CI, not the default agent/human test command.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
