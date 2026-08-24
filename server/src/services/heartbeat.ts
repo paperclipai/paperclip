@@ -829,6 +829,10 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
+// Adapter executions need an in-process cancellation primitive in addition to
+// local PID termination. Remote adapters use this signal to call their own
+// stop endpoint before returning from execute().
+const activeRunCancellationControllers = new Map<string, AbortController>();
 // Background heartbeat executions are dispatched fire-and-forget (see
 // startNextQueuedRunForAgent), so the promise that resolves once a run's DB
 // writes are fully flushed is otherwise unobservable. Track those promises here
@@ -14141,6 +14145,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     activeRunExecutions.add(run.id);
+    const cancellationController = new AbortController();
+    activeRunCancellationControllers.set(run.id, cancellationController);
     let runScratch: HeartbeatRunScratch | null = null;
 
     try {
@@ -16200,6 +16206,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runtime: runtimeForAdapter,
           config: runtimeConfig,
           context: adapterContext,
+          signal: cancellationController.signal,
           runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
           executionTransport: remoteExecution
@@ -17000,6 +17007,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               });
             }
           }
+          activeRunCancellationControllers.delete(run.id);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
@@ -19154,6 +19162,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       : options.resultJson;
 
+    activeRunCancellationControllers.get(run.id)?.abort();
     const running = runningProcesses.get(run.id);
     try {
       if (running) {
@@ -19211,6 +19220,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      activeRunCancellationControllers.get(run.id)?.abort();
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
