@@ -3390,10 +3390,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           .onLog("stderr", `[paperclip] ACPX teardown step "${step}" failed: ${reason}\n`)
           .catch(() => {});
       };
-      // Emit one per-phase timing telemetry event. It is observability-only: it
-      // carries the phase name (from the closed allowlist), the wall time, and the
-      // outcome, and never a command, a path, an environment value, or an
-      // identifier. Telemetry failure never fails the run.
+      // Emit one per-phase timing run-log event. It is not an OpenTelemetry
+      // export and it is not a Telemetry event: it carries the phase name
+      // (from the closed allowlist), the wall time, and the outcome, and
+      // never a command, a path, an environment value, or an identifier. A
+      // failure to emit this event never fails the run.
       const emitPhase = (phase: string, startMs: number, outcome: "ok" | "failed"): Promise<void> =>
         emitRunPhaseTiming(ctx, phase, now() - startMs, outcome);
       // Time a settlement step and emit its phase timing on every path. A step
