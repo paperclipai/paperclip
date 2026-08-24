@@ -1,6 +1,7 @@
 import { readConfigFile } from "./config-file.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
@@ -109,8 +110,55 @@ function detectTailnetBindHost(): string | undefined {
   }
 }
 
+// KEWL-3955: Guard against a poisoned canonical config (e.g. written by a test
+// run that inherited PAPERCLIP_IN_WORKTREE=true without a scoped PAPERCLIP_CONFIG).
+// In a non-worktree context, /tmp paths in key config fields indicate the production
+// config was overwritten by a test fixture — fail loud rather than boot the wrong instance.
+function checkConfigIntegrity(fileConfig: ReturnType<typeof readConfigFile>): void {
+  if (!fileConfig) return;
+  if (process.env.PAPERCLIP_IN_WORKTREE === "true") return;
+
+  const osTmpdir = tmpdir();
+  // /tmp on macOS is a symlink to /private/tmp; check both.
+  const tmpPrefixes = ["/tmp/", `${osTmpdir}/`].filter((v, i, a) => a.indexOf(v) === i);
+
+  function isTmpPath(value: string | undefined | null): boolean {
+    if (!value) return false;
+    return tmpPrefixes.some((prefix) => value.startsWith(prefix));
+  }
+
+  const poisoned: string[] = [];
+  if (isTmpPath(fileConfig.database.embeddedPostgresDataDir))
+    poisoned.push(`database.embeddedPostgresDataDir: ${fileConfig.database.embeddedPostgresDataDir}`);
+  if (isTmpPath(fileConfig.database.backup?.dir))
+    poisoned.push(`database.backup.dir: ${fileConfig.database.backup?.dir}`);
+  if (isTmpPath(fileConfig.logging?.logDir))
+    poisoned.push(`logging.logDir: ${fileConfig.logging?.logDir}`);
+  if (isTmpPath(fileConfig.storage?.localDisk?.baseDir))
+    poisoned.push(`storage.localDisk.baseDir: ${fileConfig.storage?.localDisk?.baseDir}`);
+  if (isTmpPath(fileConfig.secrets?.localEncrypted?.keyFilePath))
+    poisoned.push(`secrets.localEncrypted.keyFilePath: ${fileConfig.secrets?.localEncrypted?.keyFilePath}`);
+
+  if (poisoned.length > 0) {
+    const configPath = process.env.PAPERCLIP_CONFIG ?? "(default path)";
+    const lines = [
+      "[KEWL-3955] FATAL: canonical Paperclip config contains /tmp paths.",
+      "This means a test run likely overwrote the production config.",
+      `Config: ${configPath}`,
+      "Poisoned fields:",
+      ...poisoned.map((f) => `  ${f}`),
+      "Restore config.json from backup before restarting. See KEWL-3955 for the incident runbook.",
+    ];
+    console.error(lines.join("\n"));
+    throw new Error(
+      `Config integrity check failed: ${poisoned.length} /tmp path(s) in canonical config (KEWL-3955). See stderr for details.`,
+    );
+  }
+}
+
 export function loadConfig(): Config {
   const fileConfig = readConfigFile();
+  checkConfigIntegrity(fileConfig);
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 

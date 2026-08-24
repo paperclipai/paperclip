@@ -275,12 +275,19 @@ function runVitest(args, label) {
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
   const testRoot = mkdtempSync(path.join(tempRootParent, `pcvt-${process.pid}-${invocationIndex}-`));
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
+  // Explicitly clear worktree vars so tests never inherit an outer agent's context
+  // and accidentally clobber the canonical Paperclip config (KEWL-3955).
   const env = {
     ...process.env,
     NODE_ENV: "test",
     PAPERCLIP_HOME: path.join(testRoot, "h"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
+    PAPERCLIP_IN_WORKTREE: undefined,
+    PAPERCLIP_CONFIG: undefined,
+    PAPERCLIP_CONTEXT: undefined,
+    PAPERCLIP_WORKTREE_NAME: undefined,
+    PAPERCLIP_WORKTREES_DIR: undefined,
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });

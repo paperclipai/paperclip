@@ -460,6 +460,18 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   process.env.PAPERCLIP_CONTEXT = context.contextPath;
   process.env.PAPERCLIP_WORKTREE_NAME = context.worktreeName;
 
+  // Guard: a worktree config must live at {worktreeRoot}/.paperclip/config.json.
+  // If the resolved configPath is NOT under a directory named ".paperclip", it is
+  // the canonical instance config (e.g. ~/.paperclip/instances/default/config.json)
+  // and must never be mutated by the repair path (KEWL-3955).
+  const configParentBasename = path.basename(path.dirname(context.configPath));
+  if (configParentBasename !== ".paperclip") {
+    console.warn(
+      `[worktree-config] KEWL-3955 guard: refusing to repair config at non-worktree path: ${context.configPath}`,
+    );
+    return { repairedConfig: false, repairedEnv: false };
+  }
+
   let repairedConfig = false;
   if (fs.existsSync(context.configPath)) {
     try {

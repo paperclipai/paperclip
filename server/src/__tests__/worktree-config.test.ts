@@ -1106,4 +1106,40 @@ describe("worktree config repair", () => {
     expect(config.database.embeddedPostgresPort).toBe(54340);
     expect(config.auth.publicBaseUrl).toBe("https://paperclip.example");
   });
+
+  // Regression test for KEWL-3955: the repair path must never write to a canonical
+  // instance config (e.g. ~/.paperclip/instances/default/config.json) whose parent
+  // directory is not named ".paperclip". Without this guard, a test run inheriting
+  // PAPERCLIP_IN_WORKTREE=true from an outer agent context could resolve the canonical
+  // config path (because PAPERCLIP_HOME is not set → defaults to ~/.paperclip and
+  // PAPERCLIP_INSTANCE_ID → "default") and overwrite it with test fixture paths.
+  it("refuses to repair a config whose parent directory is not named .paperclip (KEWL-3955 guard)", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-kewl3955-guard-"));
+    // Canonical-style layout: instances/default/config.json — parent is "default", not ".paperclip"
+    const instanceDir = path.join(tempRoot, "instances", "default");
+    const configPath = path.join(instanceDir, "config.json");
+    const sharedRoot = instanceDir;
+
+    await fs.mkdir(instanceDir, { recursive: true });
+    const originalConfig = buildLegacyConfig(sharedRoot);
+    await fs.writeFile(configPath, JSON.stringify(originalConfig, null, 2) + "\n", "utf8");
+
+    // Simulate an agent environment where PAPERCLIP_IN_WORKTREE leaked in but
+    // PAPERCLIP_CONFIG explicitly points at a canonical-style path.
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.PAPERCLIP_WORKTREES_DIR = path.join(tempRoot, ".paperclip-worktrees");
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+
+    // Guard must refuse silently — no repair, config untouched.
+    expect(result).toEqual({ repairedConfig: false, repairedEnv: false });
+
+    const configAfter = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(configAfter).toEqual(originalConfig);
+
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
 });
