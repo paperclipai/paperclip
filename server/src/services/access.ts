@@ -341,30 +341,23 @@ export function accessService(db: Db) {
         for update
       `);
 
-      const found = await tx
-        .select()
-        .from(companyMemberships)
-        .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
-        .then((rows) => rows[0] ?? null);
-      if (!found) return null;
-
-      // Taken here, between the owner-row locks and the membership state this
-      // decides on, which is the order every writer of these two tables uses.
-      // The read above is only enough to name the principal: under READ
-      // COMMITTED each statement takes a fresh snapshot, so a removal that
-      // commits while this transaction waits for the lock is invisible to a
-      // decision made before it and present in the table the write lands in
-      // after. Re-read once the lock is held and the answer is binding
-      // (FAI-10152 round 4).
-      await lockPrincipalGrantWrites(tx, {
-        companyId,
-        principalType: found.principalType as PrincipalType,
-        principalId: found.principalId,
-      });
+      // `FOR UPDATE`, and deliberately *not* the advisory lock. This is the one
+      // grant writer that also updates the membership row, so it has to keep
+      // the membership-row-then-advisory-key order the removal paths take —
+      // `archiveMember` and `setUserCompanyAccess` both write the row and then
+      // reach for the advisory key inside their grant cleanup. Taking the
+      // advisory key first here would close a deadlock cycle against them.
+      //
+      // The row lock is what makes the `archived` check below binding: an
+      // uncommitted removal blocks this read until it commits, and this then
+      // reads `archived` and refuses rather than replacing the grants it just
+      // dropped. A plain `SELECT` would have read the pre-removal value and
+      // written behind it (FAI-10152 round 4).
       const existing = await tx
         .select()
         .from(companyMemberships)
-        .where(eq(companyMemberships.id, found.id))
+        .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
       if (existing.status === "archived") {
@@ -791,7 +784,7 @@ export function accessService(db: Db) {
    * membership and drops the grants after this commits (FAI-10152 round 4).
    */
   async function ensureMembershipForGrantWrite(
-    tx: Db,
+    tx: Pick<Db, "select" | "insert">,
     companyId: string,
     principalType: PrincipalType,
     principalId: string,

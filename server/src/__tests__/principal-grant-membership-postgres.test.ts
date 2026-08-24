@@ -58,29 +58,37 @@ describeEmbeddedPostgres("principal grant writes against a vanishing membership"
   });
 
   /**
-   * Blocks until PostgreSQL reports the expected number of sessions actually
-   * queued on an advisory lock.
+   * Blocks until PostgreSQL reports the expected number of sessions genuinely
+   * blocked, and fails if they never appear.
    *
-   * A `setTimeout` would prove nothing here: it elapses identically whether the
-   * other sessions are blocked on our lock or merely unscheduled, so the
-   * interleaving test would stay green with the lock removed. An ungranted row
-   * in `pg_locks` is the server stating that someone is waiting on us.
+   * A `setTimeout` would prove nothing: it elapses identically whether the
+   * other sessions are blocked behind the lock this test holds or simply have
+   * not been scheduled, so the interleaving test would stay green with the lock
+   * removed. An ungranted row in `pg_locks` is the server stating that someone
+   * is queued.
+   *
+   * Locktype is not filtered, because the two contenders do not always queue on
+   * the same object. `updateMemberAndPermissions` takes the membership row
+   * before the advisory key — it is the one grant writer that also writes that
+   * row, so it has to keep the removal paths' ordering — which leaves the
+   * removal waiting on the row while the writer waits on the key. Both are
+   * still blocked; insisting they be blocked on the *same* lock would assert
+   * the mechanism instead of the fact.
    */
   async function waitForLockWaiters(expected: number, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const rows = await db.execute(sql`
-        SELECT count(*)::int AS waiting
+        SELECT count(DISTINCT pid)::int AS waiting
         FROM pg_locks
         WHERE NOT granted
-          AND locktype = 'advisory'
           AND pid <> pg_backend_pid()
       `);
       const waiting = Number((Array.isArray(rows) ? rows[0] : null)?.waiting ?? 0);
       if (waiting >= expected) return;
       if (Date.now() >= deadline) {
         throw new Error(
-          `expected ${expected} session(s) queued on an advisory lock within ${timeoutMs}ms, saw ${waiting}`,
+          `expected ${expected} blocked session(s) within ${timeoutMs}ms, saw ${waiting}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 20));
