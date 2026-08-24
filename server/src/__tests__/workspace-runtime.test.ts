@@ -63,7 +63,11 @@ import {
   buildWorkspaceRealizationRequest,
   readWorkspaceRealizationRequest,
 } from "../services/workspace-realization.ts";
-import { deriveViteHmrPort, type Environment, type EnvironmentLease } from "@paperclipai/shared";
+import {
+  deriveViteHmrPort,
+  type Environment,
+  type EnvironmentLease,
+} from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -9077,6 +9081,156 @@ describe("workspace realization request additionalSources", () => {
     ]);
     // The anchor stays scalar and unchanged alongside the new plural field.
     expect(record.local.path).toBe("/anchor");
+  });
+
+  // Characterization test: this test must pass on the code before and after a
+  // pure refactor of the driver-trait lookup. It pins today's behavior so the
+  // refactor changes no field the record writes.
+  it("selects the provider and summary from the driver's traits", () => {
+    const now = new Date(0);
+    const workspace = buildRealizedWorkspace();
+    const request = buildWorkspaceRealizationRequest({
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      requestedMode: "shared_workspace",
+      workspace,
+      workspaceConfig: null,
+    });
+    const lease: EnvironmentLease = {
+      id: "lease-1",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: null,
+      providerLeaseId: null,
+      acquiredAt: now,
+      lastUsedAt: now,
+      expiresAt: null,
+      releasedAt: null,
+      failureReason: null,
+      cleanupStatus: null,
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    function buildEnvironment(driver: string): Environment {
+      return {
+        id: "environment-1",
+        name: "env",
+        description: null,
+        driver: driver as Environment["driver"],
+        status: "active",
+        config: {},
+        envVars: {},
+        metadata: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+
+    const cases: Array<{
+      driver: string;
+      provider: string | null;
+      summary: string;
+    }> = [
+      {
+        driver: "local",
+        provider: "local",
+        summary: "Local workspace realized at /anchor.",
+      },
+      {
+        driver: "ssh",
+        provider: "ssh",
+        summary: "SSH workspace realized at user@host:22:/anchor.",
+      },
+      {
+        driver: "sandbox",
+        provider: null,
+        summary: "Sandbox workspace realized at /.",
+      },
+      {
+        driver: "plugin",
+        provider: null,
+        summary: "Plugin workspace realized at /anchor.",
+      },
+      // An unknown driver string falls back to the "local" trait row: provider "local".
+      {
+        driver: "unknown-driver",
+        provider: "local",
+        summary: "Local workspace realized at /anchor.",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const record = buildWorkspaceRealizationRecord({
+        environment: buildEnvironment(testCase.driver),
+        lease,
+        request,
+      });
+      expect(record.provider).toBe(testCase.provider);
+      expect(record.summary).toBe(testCase.summary);
+    }
+  });
+
+  it("reads the in_place mode from the lease metadata", () => {
+    const now = new Date(0);
+    const workspace = buildRealizedWorkspace();
+    const request = buildWorkspaceRealizationRequest({
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      requestedMode: "shared_workspace",
+      workspace,
+      workspaceConfig: null,
+    });
+    const lease: EnvironmentLease = {
+      id: "lease-1",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: null,
+      providerLeaseId: null,
+      acquiredAt: now,
+      lastUsedAt: now,
+      expiresAt: null,
+      releasedAt: null,
+      failureReason: null,
+      cleanupStatus: null,
+      metadata: { workspaceRealization: { mode: "in_place" } },
+      createdAt: now,
+      updatedAt: now,
+    };
+    const environment: Environment = {
+      id: "environment-1",
+      name: "env",
+      description: null,
+      driver: "sandbox",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const record = buildWorkspaceRealizationRecord({ environment, lease, request });
+
+    expect(record.mode).toBe("in_place");
   });
 
   it("reads a legacy request without additionalSources as an empty array", () => {

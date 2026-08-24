@@ -218,33 +218,58 @@ export function builtinSandboxProviderVerifiedMethods(
   return methods;
 }
 
+// `EnvironmentDriverCapabilitySupport` and `ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT`
+// now live in the dependency-leaf module `environment-driver-traits.ts`, next to
+// the other static per-driver traits. Re-export both names here so an existing
+// import of this module keeps resolving.
+export {
+  ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT,
+  type EnvironmentDriverCapabilitySupport,
+} from "./environment-driver-traits.js";
+import { ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT } from "./environment-driver-traits.js";
+
 /**
- * The one normalizer for the sandbox capability contract. It resolves the
- * effective capability as verified ∩ declared ∩ narrowing.
+ * The one general capability classifier. It resolves each of the eight effective
+ * capabilities as static support ∩ verified ∩ declared ∩ narrowing, and returns
+ * the read-only eight-field snapshot. Every driver reads the same classifier, so
+ * the runtime no longer branches on the driver name.
  *
+ * - `supportedCapabilities` is the driver's static support definition (see
+ *   {@link ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT}). A capability not in the set
+ *   resolves `false` regardless of the other inputs. An absent set applies no
+ *   static gate, so the classifier behaves as the pure declaration ∩ verified ∩
+ *   narrowing normalizer.
  * - `verifiedMethods` is the runtime's verified worker verb list (the plug-in
  *   worker's `supportedMethods`, or a built-in provider mapped through
  *   {@link builtinSandboxProviderVerifiedMethods}). A missing or empty list
  *   verifies nothing, so every capability resolves `false` (fail closed).
  * - `declared` is the provider's declaration. An absent flag defers to the
- *   verified discovery baseline; it never grants a capability. A present flag
- *   can only remove a verified capability, never add one.
- * - `narrowing` is the per-target restriction from the config or lease. An
- *   absent key applies no restriction; a `false` value removes the capability.
+ *   verified discovery baseline for a worker-property capability; it never grants
+ *   an opt-in capability. A present flag can only remove a capability.
+ * - `narrowing` is the per-target restriction from the config or lease. An absent
+ *   key applies no restriction; a `false` value removes the capability.
  *
- * A declaration never grants a capability the runtime did not verify, so a
- * declared capability whose worker lacks a prerequisite verb resolves `false`.
+ * The two default rules stay intact. An absent declaration defers to the
+ * verified baseline for a worker-property capability. The three opt-in
+ * capabilities deny by default (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}). A
+ * declaration never grants a capability the runtime did not verify.
  */
-export function resolveEffectiveSandboxCapabilities(input: {
+export function classifyEnvironmentCapabilities(input: {
   verifiedMethods?: readonly string[] | null;
   declared?: Partial<SandboxProviderCapabilities> | null;
   narrowing?: Partial<Record<SandboxCapabilityKey, boolean>> | null;
+  supportedCapabilities?: ReadonlySet<SandboxCapabilityKey> | null;
 }): EffectiveSandboxCapabilities {
   const verifiedMethods = new Set(input.verifiedMethods ?? []);
   const declared = input.declared ?? {};
   const narrowing = input.narrowing ?? {};
+  const supportedCapabilities = input.supportedCapabilities ?? null;
 
   const resolve = (key: SandboxCapabilityKey): boolean => {
+    // The static support definition is the first gate. A capability the driver
+    // family cannot support resolves false, whatever the other inputs say. An
+    // absent set applies no static gate.
+    if (supportedCapabilities && !supportedCapabilities.has(key)) return false;
     const verified = capabilityIsVerified(key, verifiedMethods);
     // An absent declaration defers to the verified baseline for a worker-property
     // capability (true = no extra restriction), but denies an opt-in capability
@@ -559,10 +584,29 @@ export interface EnvironmentRuntimeDriver {
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
   /**
-   * Resolve the read-only effective sandbox capability snapshot for a lease.
-   * Only the sandbox driver implements it; other drivers omit it.
+   * Resolve the effective eight-field capability snapshot for this driver and
+   * lease. Every driver implements this general method, so a caller never
+   * needs to branch on the driver name to read a capability.
+   *
+   * - `local` and `ssh` resolve every capability `false`: their static support
+   *   definition names none of the eight capabilities (see
+   *   {@link ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT}).
+   * - `sandbox` resolves through the general classifier with its static
+   *   support definition, the per-lease declaration and verified worker
+   *   methods, and the per-lease narrowing.
+   * - `plugin` resolves through the general classifier with its static
+   *   support definition, the live plugin worker method list, exact-plugin
+   *   pinning for the plugin that acquired the lease, and per-lease
+   *   narrowing.
+   *
+   * The method always returns a full snapshot, never `null`. A driver that
+   * cannot verify a prerequisite (a missing worker, a stale plugin pin, an
+   * unresolvable config) fails closed and resolves the affected fields
+   * `false`; it does not throw for that case. A caller that needs to tell
+   * "this driver has no capability model" apart from "this driver is not
+   * registered" reads {@link ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT} directly.
    */
-  effectiveSandboxCapabilities?(input: EnvironmentDriverLeaseInput): Promise<EffectiveSandboxCapabilities>;
+  resolveCapabilities(input: EnvironmentDriverLeaseInput): Promise<EffectiveSandboxCapabilities>;
   /**
    * Retry the provider teardown for an orphan sandbox that an earlier acquire
    * provisioned but could not tear down. The pending-cleanup lease row carries
@@ -997,6 +1041,16 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
         },
       };
     },
+
+    async resolveCapabilities() {
+      // The local driver runs commands on the host file system with no
+      // provider capability model, so its static support definition names
+      // none of the eight capabilities. The classifier resolves every field
+      // `false` regardless of the other inputs, so this method needs none.
+      return classifyEnvironmentCapabilities({
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.local.supportedCapabilities,
+      });
+    },
   };
 }
 
@@ -1059,6 +1113,15 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           workspaceRealization: record,
         },
       };
+    },
+
+    async resolveCapabilities() {
+      // The SSH driver runs commands on a remote host through the SSH
+      // transport with no provider capability model, so it supports none of
+      // the eight capabilities either.
+      return classifyEnvironmentCapabilities({
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.ssh.supportedCapabilities,
+      });
     },
   };
 }
@@ -2504,83 +2567,8 @@ function createSandboxEnvironmentDriver(
       return adaptDuplexChannelHostSession(session);
     },
 
-    async effectiveSandboxCapabilities(input) {
-      const metadata = input.lease.metadata ?? {};
-      const providerKey =
-        readString(metadata.provider) ??
-        (input.environment.driver === "sandbox"
-          ? readString((parseEnvironmentDriverConfig(input.environment).config as SandboxEnvironmentConfig).provider)
-          : null);
-      if (!providerKey) {
-        return resolveEffectiveSandboxCapabilities({ verifiedMethods: [], declared: null, narrowing: null });
-      }
-
-      let declared: SandboxProviderCapabilities | null = null;
-      let verifiedMethods: readonly string[] = [];
-      let configResolutionFailed = false;
-
-      if (metadata.sandboxProviderPlugin) {
-        const pluginId = readString(metadata.pluginId);
-        // Read the declaration from the exact plugin that acquired the lease,
-        // not the first installed plugin with this driver key. A driver key is
-        // only unique inside one manifest, so two plugins can share it. The
-        // by-key resolver could intersect this lease's verified methods with a
-        // different plugin's declaration. This resolver fails closed: it returns
-        // null when the pinned plugin id is absent, or when that exact plugin no
-        // longer declares this provider key with the `sandbox_provider` kind.
-        const resolvedDriver = pluginId
-          ? await resolvePluginSandboxProviderDriverById({
-              db,
-              pluginId,
-              driverKey: providerKey,
-            })
-          : null;
-        if (!pluginId || !resolvedDriver) {
-          // Exact-plugin identity failure. The lease pins a plugin id, but the
-          // id is missing, that plugin is absent, or it no longer declares this
-          // provider key. Fail closed: resolve every effective capability to
-          // false, no matter what methods a stale or running worker still
-          // advertises. Do not read the worker methods here; passing them would
-          // let an identity-less lease keep a verified baseline. This differs
-          // from a valid plugin whose manifest merely omits
-          // `sandboxCapabilities`: that case keeps `declared` null below and
-          // defers to verified worker discovery.
-          return resolveEffectiveSandboxCapabilities({
-            verifiedMethods: [],
-            declared: null,
-            narrowing: null,
-          });
-        }
-        verifiedMethods = pluginWorkerManager?.getWorker(pluginId)?.supportedMethods ?? [];
-        declared = resolveDeclaredSandboxCapabilities(resolvedDriver.driver);
-        try {
-          // Resolve the provider config to confirm it is readable. A provider
-          // whose config cannot be resolved is untrusted, so a resolution error
-          // fails closed on persistent process sessions below. The resolved
-          // value itself is no longer read for the narrowing decision.
-          await resolvePluginSandboxRuntimeConfig({
-            environment: input.environment,
-            lease: input.lease,
-            provider: providerKey,
-          });
-        } catch {
-          configResolutionFailed = true;
-        }
-      } else {
-        const builtin = getBuiltinSandboxProvider(providerKey);
-        verifiedMethods = builtinSandboxProviderVerifiedMethods(builtin);
-        declared = resolveDeclaredSandboxCapabilities({
-          supportsReusableLeases: builtin?.supportsReusableLeases,
-        });
-      }
-
-      const narrowing = buildSandboxCapabilityNarrowing({
-        leasePolicy: input.lease.leasePolicy,
-        leaseMetadata: metadata,
-        configResolutionFailed,
-      });
-
-      return resolveEffectiveSandboxCapabilities({ verifiedMethods, declared, narrowing });
+    async resolveCapabilities(input) {
+      return await resolveSandboxCapabilitiesForLease(input);
     },
 
     async destroyRunLease(input) {
@@ -2591,6 +2579,108 @@ function createSandboxEnvironmentDriver(
       });
     },
   };
+
+  /**
+   * Resolve the effective capability snapshot for one sandbox lease. This is
+   * the sandbox driver's implementation of the general capability-resolution
+   * method: it gates through {@link ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT}'s
+   * `sandbox` support (the whole set, so this gate adds no restriction beyond
+   * declaration, verification, and narrowing), then reads the per-lease
+   * declaration, the live verified worker methods, and the per-lease
+   * narrowing, exactly as the runtime resolved them before this method
+   * existed.
+   */
+  async function resolveSandboxCapabilitiesForLease(
+    input: EnvironmentDriverLeaseInput,
+  ): Promise<EffectiveSandboxCapabilities> {
+    const metadata = input.lease.metadata ?? {};
+    const providerKey =
+      readString(metadata.provider) ??
+      (input.environment.driver === "sandbox"
+        ? readString((parseEnvironmentDriverConfig(input.environment).config as SandboxEnvironmentConfig).provider)
+        : null);
+    if (!providerKey) {
+      return classifyEnvironmentCapabilities({
+        verifiedMethods: [],
+        declared: null,
+        narrowing: null,
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.sandbox.supportedCapabilities,
+      });
+    }
+
+    let declared: SandboxProviderCapabilities | null = null;
+    let verifiedMethods: readonly string[] = [];
+    let configResolutionFailed = false;
+
+    if (metadata.sandboxProviderPlugin) {
+      const pluginId = readString(metadata.pluginId);
+      // Read the declaration from the exact plugin that acquired the lease,
+      // not the first installed plugin with this driver key. A driver key is
+      // only unique inside one manifest, so two plugins can share it. The
+      // by-key resolver could intersect this lease's verified methods with a
+      // different plugin's declaration. This resolver fails closed: it returns
+      // null when the pinned plugin id is absent, or when that exact plugin no
+      // longer declares this provider key with the `sandbox_provider` kind.
+      const resolvedDriver = pluginId
+        ? await resolvePluginSandboxProviderDriverById({
+            db,
+            pluginId,
+            driverKey: providerKey,
+          })
+        : null;
+      if (!pluginId || !resolvedDriver) {
+        // Exact-plugin identity failure. The lease pins a plugin id, but the
+        // id is missing, that plugin is absent, or it no longer declares this
+        // provider key. Fail closed: resolve every effective capability to
+        // false, no matter what methods a stale or running worker still
+        // advertises. Do not read the worker methods here; passing them would
+        // let an identity-less lease keep a verified baseline. This differs
+        // from a valid plugin whose manifest merely omits
+        // `sandboxCapabilities`: that case keeps `declared` null below and
+        // defers to verified worker discovery.
+        return classifyEnvironmentCapabilities({
+          verifiedMethods: [],
+          declared: null,
+          narrowing: null,
+          supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.sandbox.supportedCapabilities,
+        });
+      }
+      verifiedMethods = pluginWorkerManager?.getWorker(pluginId)?.supportedMethods ?? [];
+      declared = resolveDeclaredSandboxCapabilities(resolvedDriver.driver);
+      try {
+        // Resolve the provider config to confirm it is readable. A provider
+        // whose config cannot be resolved is untrusted, so a resolution error
+        // fails closed on persistent process sessions below. The resolved
+        // value itself is no longer read for the narrowing decision.
+        await resolvePluginSandboxRuntimeConfig({
+          environment: input.environment,
+          lease: input.lease,
+          provider: providerKey,
+        });
+      } catch {
+        configResolutionFailed = true;
+      }
+    } else {
+      const builtin = getBuiltinSandboxProvider(providerKey);
+      verifiedMethods = builtinSandboxProviderVerifiedMethods(builtin);
+      declared = resolveDeclaredSandboxCapabilities({
+        supportsReusableLeases: builtin?.supportsReusableLeases,
+      });
+    }
+
+    const narrowing = buildSandboxCapabilityNarrowing({
+      leasePolicy: input.lease.leasePolicy,
+      leaseMetadata: metadata,
+      configResolutionFailed,
+    });
+
+    return classifyEnvironmentCapabilities({
+      verifiedMethods,
+      declared,
+      narrowing,
+      supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.sandbox.supportedCapabilities,
+    });
+  }
 
   /**
    * Verify that the live plugin worker still advertises a reusable-lease
@@ -3099,6 +3189,57 @@ function createPluginEnvironmentDriver(
         },
       });
     },
+
+    async resolveCapabilities(input) {
+      const metadata = input.lease.metadata ?? {};
+      const pluginId = readString(metadata.pluginId);
+      const driverKey = readString(metadata.driverKey);
+      const noCapabilities = () =>
+        classifyEnvironmentCapabilities({
+          verifiedMethods: [],
+          declared: null,
+          narrowing: null,
+          supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.plugin.supportedCapabilities,
+        });
+
+      if (!pluginId || !driverKey) {
+        // The lease carries no plugin pin, so there is no exact plugin to read
+        // the declaration or the live worker methods from. Fail closed: resolve
+        // every capability false.
+        return noCapabilities();
+      }
+
+      // Read the declaration from the exact plugin that acquired the lease, not
+      // the plugin the environment's current config names. A plugin uninstall,
+      // a manifest change, or a config edit between the acquire and this call
+      // must not let a stale declaration or a different plugin's worker grant a
+      // capability this lease never verified.
+      const plugin = await pluginRegistry.getById(pluginId);
+      const declaredDriver =
+        plugin && plugin.status === "ready"
+          ? plugin.manifestJson.environmentDrivers?.find((candidate) => candidate.driverKey === driverKey)
+          : undefined;
+      if (!plugin || plugin.status !== "ready" || !declaredDriver) {
+        return noCapabilities();
+      }
+
+      // Read the live worker method list fresh on every call. A worker restart
+      // can drop or add a method between the acquire and this call, so the
+      // runtime never trusts a cached method list for a capability grant.
+      const verifiedMethods = workerManager.getWorker(plugin.id)?.supportedMethods ?? [];
+      const declared = resolveDeclaredSandboxCapabilities(declaredDriver);
+      const narrowing = buildSandboxCapabilityNarrowing({
+        leasePolicy: input.lease.leasePolicy,
+        leaseMetadata: metadata,
+      });
+
+      return classifyEnvironmentCapabilities({
+        verifiedMethods,
+        declared,
+        narrowing,
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.plugin.supportedCapabilities,
+      });
+    },
   };
 }
 
@@ -3569,11 +3710,19 @@ export function environmentRuntimeService(
       return driver?.supportsSync?.(input) ?? false;
     },
 
-    async effectiveSandboxCapabilities(
+    /**
+     * Resolve the general per-lease capability snapshot through the driver's
+     * {@link EnvironmentRuntimeDriver.resolveCapabilities}. Every registered
+     * driver implements this method, so it returns a full snapshot for any
+     * registered driver. It returns `null` only when the lease's driver is
+     * not registered — never as a stand-in for "every capability denied".
+     */
+    async resolveCapabilities(
       input: EnvironmentDriverLeaseInput,
     ): Promise<EffectiveSandboxCapabilities | null> {
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
-      return (await driver?.effectiveSandboxCapabilities?.(input)) ?? null;
+      if (!driver) return null;
+      return await driver.resolveCapabilities(input);
     },
 
     async syncIn(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
@@ -3600,14 +3749,14 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support duplex channels.`);
       }
       // Centralize the duplex channel authorization here. Resolve the exact lease
-      // capability snapshot and refuse unless the effective snapshot grants the
-      // opt-in `duplexCommandStream` capability. This gate runs before the driver
-      // call, so an unauthorized lease never reaches the worker. The
-      // execution-target member gate stays as defense in depth. A driver that
-      // cannot resolve the snapshot fails closed with the fixed refusal.
-      const effective =
-        (await driver.effectiveSandboxCapabilities?.(input)) ?? null;
-      if (effective?.duplexCommandStream !== true) {
+      // capability snapshot through the general resolver and refuse unless the
+      // effective snapshot grants the opt-in `duplexCommandStream` capability.
+      // This gate runs before the driver call, so an unauthorized lease never
+      // reaches the worker. The execution-target member gate stays as defense
+      // in depth. A driver that cannot resolve the snapshot fails closed with
+      // the fixed refusal.
+      const effective = await driver.resolveCapabilities(input);
+      if (effective.duplexCommandStream !== true) {
         throw new Error(DUPLEX_CHANNEL_CAPABILITY_DENIED);
       }
       return await driver.openDuplexChannel(input);

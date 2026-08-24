@@ -32,6 +32,7 @@ import {
   type EnvironmentRuntimeLeaseRecord,
   type EnvironmentRuntimeService,
 } from "./environment-runtime.js";
+import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
 import {
   resolveEnvironmentExecutionTarget,
   resolveEnvironmentExecutionTransport,
@@ -391,11 +392,7 @@ export function environmentRunOrchestrator(
     // Step 2: Realize workspace in the environment via the runtime driver
     let workspaceRealization: Record<string, unknown> = {};
     let realizedWorkspaceCwd: string | null = null;
-    if (
-      environment.driver === "local" ||
-      environment.driver === "ssh" ||
-      environment.driver === "sandbox"
-    ) {
+    if (ENVIRONMENT_DRIVER_TRAITS[environment.driver].realizesWorkspace) {
       try {
         const remoteCwd =
           typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
