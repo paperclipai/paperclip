@@ -357,15 +357,41 @@ cmd_prepare_candidate() {
     fi
   fi
 
-  # Dirty tree on source must not be promoted as if committed.
-  if [ "$SKIP_HEAVY" != "1" ]; then
-    if ! git -C "$SOURCE_ROOT" diff --quiet "$full" -- 2>/dev/null; then
-      log "note: source working tree differs from candidate SHA (expected); promoting committed SHA only"
-    fi
-  fi
-
   init_receipt "$full"
   receipt_set_gate "committed_sha" "pass" "object $full"
+
+  # Dirty tree on source must not be promoted as if committed.
+  #
+  # TSMC-21524: this used to log "differs from candidate SHA (expected)" and move
+  # on. It detected the exact condition that had already stranded three
+  # deliverables in one day and then dismissed it as expected, so an agent could
+  # mark a card done with its only change sitting uncommitted in the live source
+  # tree and the deploy would ship without it, silently and unattributably.
+  #
+  # Enumerate the dirty TRACKED paths, name them in the log, and record them in
+  # the receipt as their own gate so a stranded deliverable is visible after the
+  # fact. Deliberately NON-BLOCKING by default: agents edit this tree all day and
+  # wedging an emergency deploy behind unrelated WIP would be worse than the
+  # problem. Set PAPERCLIP_PINNED_DEPLOY_REQUIRE_CLEAN_SOURCE=1 to make it fail.
+  # Runs AFTER init_receipt on purpose -- receipt_set_gate needs the receipt.
+  if [ "$SKIP_HEAVY" != "1" ]; then
+    local dirty_tracked dirty_count
+    dirty_tracked="$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
+    if [ -n "$dirty_tracked" ]; then
+      dirty_count="$(printf '%s\n' "$dirty_tracked" | grep -c . || true)"
+      log "WARNING: live SOURCE tree $SOURCE_ROOT has $dirty_count uncommitted tracked change(s) NOT in candidate $full:"
+      while IFS= read -r line; do
+        [ -n "$line" ] && log "  uncommitted: $line"
+      done <<< "$dirty_tracked"
+      log "  -> if any of these back a card marked done, that card is a false close (deliverable never committed)."
+      receipt_set_gate "source_tree_clean" "warn" "$dirty_count uncommitted tracked path(s): $(printf '%s' "$dirty_tracked" | tr '\n' ';')"
+      if [ "${PAPERCLIP_PINNED_DEPLOY_REQUIRE_CLEAN_SOURCE:-0}" = "1" ]; then
+        fail "source tree not clean and PAPERCLIP_PINNED_DEPLOY_REQUIRE_CLEAN_SOURCE=1"
+      fi
+    else
+      receipt_set_gate "source_tree_clean" "pass" "no uncommitted tracked changes in $SOURCE_ROOT"
+    fi
+  fi
 
   if [ -e "$CANDIDATE_ROOT" ]; then
     log "removing prior candidate root $CANDIDATE_ROOT"
