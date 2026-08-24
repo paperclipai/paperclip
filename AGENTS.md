@@ -260,12 +260,30 @@ Binding across all companies (operator directive 2026-08-06, TSMC-20266; forensi
 - **CEO lanes:** orchestrate and delegate to C-level and down-chain. Focus on shipping, revenue, unblocking.
 - **Routine work runs on cheap lanes or shell handlers ONLY** — never CEO/C-level lanes (TSMC-20230 script demotions, TSMC-20025 rail diet).
 
+**DELEGATION RECEIPT LAW (2026-08-21 — five hollow delegations in 24h: TSM CMO loop ×4, TSK provisioning).** "I'll route this to X" is NOT a delegation. A delegation is complete ONLY when, in the SAME run, you have ALL of:
+1. the child card CREATED via the API and its returned issue id READ BACK (quote the id in your comment);
+2. the executor lane INVOKED on that id (or the assignment event confirmed);
+3. verification that the child card exists — re-read it before you claim the handoff.
+A routing memo without a landed, verified child card is a FAILED run: say so plainly and leave the parent card todo — never close/complete on intent. Corollary for the board and routers: if a card in your hands requires EXECUTION (build, provision, render, write the deliverable), you either delegate it per the above IN THIS RUN or state you cannot — a C-level/CEO lane holding an execution card for more than one run without a landed child is the routing defect, and the card must be reassigned to an executor lane.
+
 **Escalations flow to the NEXT IN LINE and resolve THERE.** specialist → their C-level → CEO(-Codex) → board (governance/spend) or TSMC (platform/runtime only). An escalation that skips a level is itself a defect. Rarely reach C-level; almost never the board.
 
 **QEC gates — link every closure to them:**
 - **Q**uality: two-tier QA (TSMC-20243) — cheap first-pass, strong on failure; G-class gates untouched; defect-escape reported weekly.
 - **E**fficiency: batch pickup (TSMC-20250) + thread checkpoints (TSMC-20242) + delegation-in-small-batches; fresh-session ratio and runs/day on the daily rollup.
 - **C**ost: price-weighted model selection (TSMC-20229 ledger weights) — every lane's model choice justified by weighted score for its role class; bench audit locks choices per role.
+
+**Sprint-report / daily-summary closure counts (TSMC-20945 / TSMC-20879):**
+Closed-task counts in every CEO daily summary or sprint report MUST be sourced from GET /companies/:id/issues/status-events/digest with since set to the reporting-window start; do not use updated_at heuristics or raw SQL for summary counts.
+Prefer the governed rollup digest work-product when it already cites that endpoint; never invent closures.
+
+**RUN DISPOSITION LAW (2026-08-22 — 470 runs/day measured ending with no disposition, each triggering a status-only corrective handoff run):** EVERY run ends with an explicit disposition in its final message: `continuing` (state exactly what the next step is), `done` (with artifacts that ls), or `blocked` (with the named blocker recorded as a blockedBy relation or unblockDescriptor). A run that ends in narration with none of these is a FAILED run and costs the fleet a corrective wake. If you are mid-task and out of turns, say `continuing:` plus the next concrete action in one line — that single line is the difference between seamless continuation and a recovery cycle.
+
+**DELEGATION DOOR for confined ACP lanes (2026-08-22 — root cause of the recurring hollow-delegation disease):** confined ACP lanes (all codex C-levels) have NO control-plane write access — they cannot create child cards by API, which made the Receipt Law impossible for them and produced ~1,500 routing-narration runs/day with zero landed children. Their door is the marker: end your final message with one line per child (max 3 per run):
+`PAPERCLIP_DELEGATION: {"title":"<child card title>","description":"<scope + close bar>","assignee":"<exact lane name>","priority":"high|medium|low"}`
+The platform creates the child, assigns it, wakes the assignee, and posts the receipt on your card ("Delegation landed: XXX-123 → lane"). An open card with the identical title is REUSED, never re-minted. A delegation stated this way satisfies the Receipt Law; routing narration without either an API-created child or this marker remains a FAILED run. Lanes WITH API access keep using the API path.
+
+**CAPABILITY ROUTING — engine economics (2026-08-22, data-backed):** codex ACP lanes cannot drive mutating local services (Site Studio :4683, Forge Studio :4680) or call the board API directly. **Network and host-side work routes to HERMES — see Gate NET1 for the lane capability table and the automatic handoff; do not restate it here.** Do NOT flip a high-volume codex lane to `engine: "cli"` to gain access: measured 2026-08-22, CLI-engine runs cost ~450K fresh tokens per issue versus ~50K warm ACP runs. `engine: "cli"` is reserved for LOW-volume access-bound lanes by explicit operator decision. Routers, C-levels and the board: never assign studio/CLI-mutating cards to codex ACP lanes.
 <!-- END THINKSTACK OPS RULE: operating-model-qec-block -->
 
 <!-- BEGIN THINKSTACK OPS RULE: fleet-class-fix-escalation-block -->
@@ -273,3 +291,112 @@ Binding across all companies (operator directive 2026-08-06, TSMC-20266; forensi
 
 When any OpCo fixes a defect whose CLASS plausibly exists in other OpCos (shared adapters, static-assignee dispatch, guard behaviours, poller patterns, platform-surface quirks), filing an **assigned** TSMC card is part of the fix in the same session — not optional follow-up. Local product/config stays yours; do not modify Paperclip the platform (see `escalate-platform-work-to-tsmc`). Card must describe the class (not only your instance), attach the local fix as template, and carry an assignee. Reference the TSMC id in the close comment. Canonical process: **TSKB0385**. TSMC owns dedupe/standardise/rollout — do not invent parallel fleet alert paths.
 <!-- END THINKSTACK OPS RULE: fleet-class-fix-escalation-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: board-ask-verification-block -->
+## Gate ASK-V — no board ask enters the queue unverified (standing rule, 2026-08-17)
+
+Born from an operator session where 8 of 8 presented board asks were stale or false: packs "awaiting send" that the tracker already showed APPLIED; a "submit the packet" escalation for a packet the operator submitted weeks earlier (the external-wait card said so); "capture LinkedIn verification" after the resubmission had already gone in; five watch/listen gates with no validly-passed artifact behind any of them. Every false ask burns operator trust and buries the real ones.
+
+Standing rules for ANY item aimed at the operator (boardAction, [BOARD ACTION], escalations, watch/listen requests, decision asks):
+
+1. **Verify the premise at RAISE time, against artifacts** — the tracker/DB state, the external-wait card, the named file on disk, the register — never against card text or memory of card text. If the artifact already shows the action done, the ask is void: fix the stale card instead of raising the ask.
+2. **Name the artifact in the ask.** Every ask must state WHAT was checked, WHERE it lives (path/id/URL), and WHEN it was checked. An ask without a named, checked artifact is malformed and must not be created.
+3. **Duplicate-check first**: if an existing card already tracks the same action (especially an external-wait card), comment there — never mint a fresh escalation.
+4. **Watch/listen asks** additionally require a named on-disk artifact behind a VALID gate pass (see Gate QA-AUTH). No artifact, no ask.
+5. C-level premise audits (Gate META1) treat any ask lacking these fields as a defect: close it with the evidence of what the artifact actually shows, and register the minting lane on TSKB0055.
+<!-- END THINKSTACK OPS RULE: board-ask-verification-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: meta-card-audit-block -->
+## Gate META1 — C-level premise audit of system-minted cards (standing rule, 2026-08-17)
+
+System-minted meta cards — titles starting `Unblock:`, `Recover missing next step`, `Recover stalled issue`, `Starved lane:`, `Dead lane:`, `Agent config drift:`, `Review productivity`, or `[GUARD COURIER]` — are claims about the system, and claims go stale. On 2026-08-17 the board closed 95+ of them in one sweep because their premises were already false (the "paused" lane had 15 succeeded runs; the "dead" lane succeeded that morning; the blocker card was already cancelled). No lane had checked. That never happens again:
+
+**Every CEO/CTO sprint-report or cadence pass MUST premise-audit the open meta cards in its own company (≤1 run of budget, artifacts only):**
+
+1. **Lane-health mints** (`Starved/Dead/drift/productivity`): query the named lane's recent runs. A succeeded run inside the claimed window kills the premise → close the card quoting the run id (agent-lane-health law). A standby sister with zero assigned cards is POSTURE, not drift → close, and say so.
+2. **Recovery/Unblock children**: read the root card they point at. Root terminal, superseded, or sanctioned-external-blocked (named external owner/action) → close the child citing that; the ROOT is the only card that stays.
+3. **Guard couriers**: if the guard is green now, or the finding names a resolved state, close with the guard's current output.
+4. **Never** mint a child on a meta card, never mint a second card for a premise that already has one — comment on the existing card instead. Duplicate meta cards are the defect (TSMC-20961), not diligence.
+5. Anything you close, close with the artifact (run id, guard output, root card status) in the comment. A close without evidence is a malformed close (TSKB0055).
+
+A meta card older than 48h that no C-level has premise-audited is itself a defect: register it on TSKB0055 with the company CEO as cause.
+<!-- END THINKSTACK OPS RULE: meta-card-audit-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: net-fetch-door-block -->
+## Gate NET1 — external-network work is HERMES work; hand off, never block (standing rule, 2026-08-23)
+
+⛔ There is **no net-fetch door**. An earlier version of this rule pointed at `$PAPERCLIP_NET_FETCH_URL`, which is not wired for any adapter this fleet runs. Do not look for it and do not cite it.
+
+| lane | external network |
+|---|---|
+| `hermes_local` | **YES** — runs on the host |
+| `codex_local` | **NO** — ACP sandbox, DNS fails. `trust_level = "trusted"` is FILESYSTEM trust only |
+| `claude_local` | **NO** — treat as sandboxed |
+| `antigravity_local` | unproven — do not rely on it |
+
+Holding a credential is not the same as reaching the network.
+
+**If your work needs to reach anything outside this machine and you are not a Hermes lane, it is not your work.** Etsy, Bluesky, x_search, image and video generation, the Studio suite, any vendor API, any credentialed POST, any web fetch.
+
+**Do not open an Unblock child card and do not invent an escalation chain.** Leave ONE comment naming the surface you need and stating it requires host egress, then dispose `blocked`. That comment is the handoff.
+
+The handoff is **mechanical**: `idle-lane-work-sweep` reassigns egress-class cards to a healthy Hermes sister, flips the card to `todo`, and wakes it. Do not reassign by hand.
+
+**If you ARE a Hermes lane**, a card arriving with a handoff comment is yours — do not send it back. If it truly cannot be done (credential missing, account locked, vendor down), that is a credential gate: say exactly what the operator must provide. Never describe a credential gate as a sandbox problem.
+
+### Three classes, three destinations
+
+- **Egress** ("cannot reach", "DNS", "sandbox", "host-side") → routed to Hermes automatically. Not a board matter.
+- **Credential gate** ("re-authenticate", "token ceiling", "secret custodian") → operator only. Routing it elsewhere just moves the block.
+- **Dependency** ("waiting on card Y") → leave it; it clears when Y clears.
+
+> Evidence: TSMC-21357, TSB-5476.
+<!-- END THINKSTACK OPS RULE: net-fetch-door-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: qa-signoff-authority-block -->
+## Gate QA-AUTH — QA signoff authority is non-transferable and capability-bound (standing rule, 2026-08-17)
+
+Born from TSM-6519: while the visual-QA lane (Cerberus) was paused, a lane-authored "requeue packet" transferred its sole signoff authority to an engineer lane whose only tools are terminal/read/search — a lane that cannot render or see a single frame — and it signed a visual QA PASS. The invalid pass then queued the operator to watch a master that had never actually been QA'd.
+
+Standing rules, all lanes, all companies:
+
+1. **No lane may transfer, delegate, or accept gate-signoff authority via packets, comments, or briefs.** Gate signers are set by the BOARD only. A lane-authored authority transfer is void the moment it is written, and acting on one is a TSKB0055 defect for both the author and the acceptor.
+2. **A signer must possess the modality the gate checks.** Visual gates require a lane that renders/views frames; audio gates require audio tooling; copy gates require the deterministic lints. Signing a gate you cannot exercise is a false close — the PASS is void on its face, whatever the checklist says.
+3. **A paused gate-signer means the gate WAITS** (sanctioned block naming the signer), or the board appoints a capable replacement. It never means the next available lane inherits the pen.
+4. Any lane that discovers a pass signed outside these rules must void it in place (comment naming the signer and the missing capability) and re-queue the gate — never build on it.
+<!-- END THINKSTACK OPS RULE: qa-signoff-authority-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: search-scope-block -->
+## Gate SRCH1 — scope every search (standing rule, 2026-08-24)
+
+Tool output is **never cached** and is re-sent in full on every later turn, so a broad search costs its own size again each turn.
+
+1. **Never search `~`, `/Users/<you>`, or a whole knowledge base.** Start in your project workspace; widen only after a scoped search has failed, and say why.
+2. **Never grep a bare common word.** Use a distinctive phrase, filename pattern, or path prefix.
+3. **Narrowest tool first**: known path → read it; known directory → list it; only then search.
+4. **Two searches, then stop.** If two scoped searches have not found it, write `[OPERATOR: …]` or state the gap and continue. A third will not find it either.
+5. Save output to disk **before** speculative searching — a run stopped on a ceiling keeps what is already written.
+
+## Gate SRCH2 — one shell turn, not four
+
+**Every tool call is a turn, and every turn re-sends your whole instruction bundle plus the conversation so far.** Turns are the dominant cost of a run, more than the size of any single result.
+
+- **Chain with `&&`** everything you already know you need: `cd /path && ls -la && cat notes.md`. Do not run one command to decide the next when you could have run both.
+- **`cd` alone is wasted** — the working directory does not persist between calls.
+- **Read a file once.** If you need it again it is already above you in the conversation.
+- Prefer `view_file` over `cat` for anything you will quote; one good `grep -n` over three narrowing ones.
+- Verify your own write once, not twice.
+
+## Writing a card for another lane? Name its inputs
+
+The cheapest lever there is, and it outperforms both rules above.
+
+- **Name the files.** `Read exactly: <path>` beats "consult the workspace".
+- **Say what to do when it is not there** — a lane with no exit condition searches until something stops it.
+- **Never write "find the existing X"** unless you have confirmed X exists.
+- Bound the deliverable: word counts, item counts, one file out.
+
+A card that names its inputs makes Gate SRCH1 unnecessary. A card that does not makes it unenforceable.
+
+> Measurements behind these rules: TSMC-21369, TSMC-21370. Mechanical ceiling: `maxToolCallsPerRun` (TSMC-21368).
+<!-- END THINKSTACK OPS RULE: search-scope-block -->
