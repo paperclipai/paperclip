@@ -215,7 +215,7 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   if (!record) return null;
 
   let candidate = record;
-  if (!isPidAlive(candidate.pid)) {
+  if (!isProcessPidAlive(candidate.pid)) {
     const ownerPid = candidate.port ? await readLocalServicePortOwner(candidate.port) : null;
     if (!ownerPid) {
       await removeLocalServiceRegistryRecord(candidate.serviceKey);
@@ -242,11 +242,15 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   return candidate;
 }
 
-// Signal-delivery liveness only: this returns true for an unreaped zombie.
-// Prefer isProcessPidAlive() below, which also fails a pid that has terminated
-// but has not been reaped. This variant is kept for the service-registry and
-// recovery callers, whose behaviour under a zombie pid has not been covered by
-// a test yet; they should move over as that coverage lands.
+// Existence, not liveness: this returns true for an unreaped zombie. Never use
+// it to decide whether work is still making progress — that is isProcessPidAlive()
+// below, and every caller that asked the liveness question has moved to it.
+//
+// The two remaining callers ask the other question: "is this recorded
+// process-group id still held by a real process, so it is safe to keep using as
+// a group id?". A zombie leader answers yes there. It still holds the pgid, the
+// group can still contain live members, and kill(-pgid, …) still reaches them,
+// so treating it as gone would discard a group id that is still correct.
 export function isPidAlive(pid: number) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -459,7 +463,7 @@ export async function findAdoptableLocalService(input: {
     ?? await adoptLocalServiceFromPortOwner(input);
   if (!record) return null;
 
-  if (!isPidAlive(record.pid)) {
+  if (!isProcessPidAlive(record.pid)) {
     await removeLocalServiceRegistryRecord(input.serviceKey);
     return null;
   }
@@ -599,7 +603,7 @@ export async function terminateLocalService(
   const targetIsGone = async () => {
     const targetAlive = targetProcessGroup
       ? isProcessGroupAlive(record.processGroupId)
-      : isPidAlive(record.pid);
+      : isProcessPidAlive(record.pid);
     if (targetAlive) return false;
     if (!record.port) return true;
     const portOwnerPid = await readLocalServicePortOwner(record.port);

@@ -16,6 +16,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  disposeZombieLeadProcessGroup,
+  readLinuxProcessState,
+  spawnZombieLeadProcessGroup,
+} from "./helpers/zombie-process.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
@@ -276,6 +281,57 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("process and sandbox gone");
+  });
+
+  // The zombie shape is built from /proc, so this case only runs on Linux.
+  it.skipIf(process.platform !== "linux")("terminalizes an orphaned running run whose recorded pid is an unreaped zombie, then clears the lock", async () => {
+    const zombie = await spawnZombieLeadProcessGroup();
+    try {
+      expect(readLinuxProcessState(zombie.zombiePid)).toBe("Z");
+      const { companyId, agentId, runningRunId } = await seed();
+      // A server restart leaves the recorded pid terminated but unreaped, so
+      // `kill(pid, 0)` still succeeds while the process can no longer run. The
+      // issue is not terminal, so only the process-death authority applies.
+      await db
+        .update(heartbeatRuns)
+        .set({ processPid: zombie.zombiePid })
+        .where(eq(heartbeatRuns.id, runningRunId));
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Orphaned running run — zombie pid",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+        checkoutRunId: runningRunId,
+        executionRunId: runningRunId,
+        executionLockedAt: new Date(),
+      });
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.sweepStaleIssueLocks();
+
+      expect(result.terminalizedRunIds).toEqual([runningRunId]);
+      expect(result.cleared).toBe(1);
+
+      const run = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runningRunId))
+        .then((rows) => rows[0]);
+      expect(run?.status).toBe("interrupted");
+      expect(run?.errorCode).toBe("orphaned_running_run");
+
+      const lock = await db
+        .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]);
+      expect(lock).toEqual({ checkoutRunId: null, executionRunId: null });
+    } finally {
+      disposeZombieLeadProcessGroup(zombie);
+    }
   });
 
   it("terminalizes a running run whose issue is terminal, even while the process stays alive (reuse-lease path)", async () => {

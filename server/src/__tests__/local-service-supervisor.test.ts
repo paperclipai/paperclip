@@ -11,12 +11,21 @@ import {
 } from "../services/workspace-runtime.js";
 import {
   doesLocalServiceCommandLineMatch,
+  findAdoptableLocalService,
+  findLocalServiceRegistryRecordByRuntimeServiceId,
   isLocalServiceCommandLineComparable,
   listLocalServiceRegistryRecords,
   readLocalServicePortOwner,
+  readLocalServiceRegistryRecord,
   resolveLocalServiceLogPath,
   terminateLocalService,
+  writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.js";
+import {
+  disposeZombieLeadProcessGroup,
+  readLinuxProcessState,
+  spawnZombieLeadProcessGroup,
+} from "./helpers/zombie-process.js";
 
 describe("local service supervision", () => {
   afterEach(async () => {
@@ -161,5 +170,111 @@ describe("local service supervision", () => {
       recordedCommand: "node ./server.js",
       serviceName: "web",
     })).toBe(false);
+  });
+});
+
+// The zombie shape is built from /proc, so these cases only run on Linux.
+const describeLinux = process.platform === "linux" ? describe : describe.skip;
+
+describeLinux("local service registry liveness against an unreaped pid", () => {
+  async function withTempInstanceHome<T>(fn: () => Promise<T>) {
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-zombie-registry-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `zombie-registry-${randomUUID()}`;
+    try {
+      return await fn();
+    } finally {
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousInstanceId;
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  }
+
+  function zombieRecord(pid: number, serviceKey: string, runtimeServiceId: string | null) {
+    const now = new Date().toISOString();
+    return {
+      version: 1,
+      serviceKey,
+      profileKind: "workspace-runtime",
+      serviceName: "web",
+      // A redirect makes the recorded command uncomparable to OS argv, so
+      // isLikelyMatchingCommand short-circuits to true on every host. Without
+      // that, the outcome would depend on what `ps` reports for a zombie.
+      command: "node server.js > server.log 2>&1",
+      cwd: process.cwd(),
+      envFingerprint: "zombie",
+      // No port, so there is no live listener to fall through to. The record is
+      // backed by nothing but the recorded pid.
+      port: null,
+      url: null,
+      pid,
+      processGroupId: null,
+      provider: "local_process" as const,
+      runtimeServiceId,
+      reuseKey: null,
+      startedAt: now,
+      lastSeenAt: now,
+      metadata: null,
+    };
+  }
+
+  it("drops a runtime-service record whose recorded pid is an unreaped zombie", async () => {
+    const zombie = await spawnZombieLeadProcessGroup();
+    try {
+      expect(readLinuxProcessState(zombie.zombiePid)).toBe("Z");
+      await withTempInstanceHome(async () => {
+        const serviceKey = "workspace-runtime-web-zombie";
+        const runtimeServiceId = randomUUID();
+        await writeLocalServiceRegistryRecord(zombieRecord(zombie.zombiePid, serviceKey, runtimeServiceId));
+
+        await expect(findLocalServiceRegistryRecordByRuntimeServiceId({
+          runtimeServiceId,
+          profileKind: "workspace-runtime",
+        })).resolves.toBeNull();
+        await expect(readLocalServiceRegistryRecord(serviceKey)).resolves.toBeNull();
+      });
+    } finally {
+      disposeZombieLeadProcessGroup(zombie);
+    }
+  });
+
+  it("does not report a service adoptable when its recorded pid is an unreaped zombie", async () => {
+    const zombie = await spawnZombieLeadProcessGroup();
+    try {
+      expect(readLinuxProcessState(zombie.zombiePid)).toBe("Z");
+      await withTempInstanceHome(async () => {
+        const serviceKey = "workspace-runtime-web-zombie-adopt";
+        await writeLocalServiceRegistryRecord(zombieRecord(zombie.zombiePid, serviceKey, null));
+
+        await expect(findAdoptableLocalService({
+          serviceKey,
+          profileKind: "workspace-runtime",
+        })).resolves.toBeNull();
+        await expect(readLocalServiceRegistryRecord(serviceKey)).resolves.toBeNull();
+      });
+    } finally {
+      disposeZombieLeadProcessGroup(zombie);
+    }
+  });
+
+  it("treats termination of an unreaped zombie pid as already done", async () => {
+    const zombie = await spawnZombieLeadProcessGroup();
+    try {
+      expect(readLinuxProcessState(zombie.zombiePid)).toBe("Z");
+      // Signals sent to a zombie are discarded, so the escalate-then-verify
+      // cycle can never observe it leave. Without a zombie-aware check this
+      // burns both grace windows and then reports a failure to terminate a
+      // process that is already dead.
+      await expect(terminateLocalService(
+        { pid: zombie.zombiePid, processGroupId: null },
+        { forceAfterMs: 300, verifyAfterMs: 300 },
+      )).resolves.toBeUndefined();
+    } finally {
+      disposeZombieLeadProcessGroup(zombie);
+    }
   });
 });

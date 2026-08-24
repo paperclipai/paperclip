@@ -6,6 +6,7 @@ import {
   resolvePaperclipInstanceId,
   resolvePaperclipInstanceRoot,
 } from "../home-paths.js";
+import { isProcessPidAlive } from "./local-service-supervisor.js";
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
@@ -140,15 +141,6 @@ function asDateString(value: unknown): string | null {
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map(asString).filter((entry): entry is string => entry !== null))];
-}
-
-function isProcessAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
-  }
 }
 
 function runProcessCommand(command: string, args: string[]) {
@@ -303,7 +295,10 @@ async function isOriginalServerProcessAlive(
   intent: HotRestartIntent,
   replacement: HotRestartIntent,
 ) {
-  const alive = isProcessAlive(intent.previousServerPid);
+  // An unreaped zombie still answers kill(pid, 0), and its /proc entry
+  // still carries the start time the marker recorded, so readProcessStartedAt()
+  // cannot rule it out either. Only the process state can.
+  const alive = isProcessPidAlive(intent.previousServerPid);
   const startedAt = alive
     ? await readProcessStartedAt(intent.previousServerPid)
     : null;
@@ -327,7 +322,7 @@ async function removeStaleHotRestartLock(lockDir: string) {
     const ageMs = Number.isFinite(createdAt)
       ? Date.now() - createdAt
       : HOT_RESTART_LOCK_STALE_MS + 1;
-    shouldRemove = !isProcessAlive(pid) || ageMs > HOT_RESTART_LOCK_STALE_MS;
+    shouldRemove = !isProcessPidAlive(pid) || ageMs > HOT_RESTART_LOCK_STALE_MS;
   } catch {
     const stat = await fs.stat(lockDir).catch(() => null);
     shouldRemove = !stat
