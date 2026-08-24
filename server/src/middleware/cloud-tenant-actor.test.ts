@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Request } from "express";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
+import {
+  authUsers,
+  companies,
+  companyMemberships,
+  instanceSettings,
+  instanceUserRoles,
+  principalPermissionGrants,
+} from "@paperclipai/db";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
@@ -18,6 +25,7 @@ function createFakeDb(options: {
   membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
+  seederThrows?: boolean;
 } = {}) {
   const membershipRow =
     options.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
@@ -36,6 +44,29 @@ function createFakeDb(options: {
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
   const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
+  const seederSelectWheres: Array<{ table: unknown; condition: unknown }> = [];
+  const makeSelect = (
+    wheres: Array<{ table: unknown; condition: unknown }>,
+    throws: boolean | undefined,
+  ) => () => {
+    if (throws) throw new Error("select unavailable");
+    return {
+      from: (table: unknown) => ({
+        where: (condition: unknown) => {
+          wheres.push({ table, condition });
+          const rows =
+            table === instanceSettings && settingsRow
+              ? [settingsRow]
+              : table === companyMemberships
+                ? (options.membershipQueryRows ?? [])
+                : [];
+          return {
+            then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+          };
+        },
+      }),
+    };
+  };
   const chain: Record<string, unknown> = {};
   chain.values = () => chain;
   chain.onConflictDoUpdate = () => chain;
@@ -52,34 +83,28 @@ function createFakeDb(options: {
       deletedTables.push(table);
       return chain;
     },
-    select: () => {
-      if (options.selectThrows) throw new Error("select unavailable");
-      return {
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            selectWheres.push({ table, condition });
-            const rows =
-              table === instanceSettings && settingsRow
-                ? [settingsRow]
-                : table === companyMemberships
-                  ? (options.membershipQueryRows ?? [])
-                  : [];
-            return {
-              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
-            };
-          },
-        }),
-      };
-    },
+    select: makeSelect(selectWheres, options.selectThrows),
   } as unknown as Db;
-  // The role-default grant seeder wraps its insert in a transaction so it can
-  // hold the per-principal grant lock while it runs (FAI-10144). The fake runs
-  // the callback against itself: this double has no isolation to model, and the
-  // insert it is here to observe still lands in `insertedTables`.
+  // The role-default grant seeder opens a transaction so it can hold the
+  // per-principal grant advisory lock across its membership read and its
+  // insert (FAI-10144). Give the callback its own handle rather than this one:
+  // the reads asserted below are the ones `resolveCloudTenantActor` issues
+  // itself, and the seeder now reads `company_memberships` too, on a handle
+  // these tests do not model. Its own database behaviour — the archived-
+  // membership skip, the lock, the revoker/seeder ordering — is covered
+  // against real PostgreSQL in `principal-grant-membership-postgres.test.ts`.
+  // The insert this double exists to observe still lands in `insertedTables`,
+  // its reads are captured separately, and `seederThrows` models the seeder
+  // failing independently of the request handle's reads.
   (db as unknown as { transaction: unknown }).transaction = async (
     fn: (tx: unknown) => unknown,
-  ) => fn({ ...db, execute: async () => [] });
-  return { db, insertedTables, deletedTables, selectWheres };
+  ) =>
+    fn({
+      ...db,
+      select: makeSelect(seederSelectWheres, options.seederThrows),
+      execute: async () => [],
+    });
+  return { db, insertedTables, deletedTables, selectWheres, seederSelectWheres };
 }
 
 function settingsRowWith(experimental: Record<string, unknown>) {
@@ -164,6 +189,26 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(authUsers);
     expect(insertedTables).toContain(companies);
     expect(insertedTables).toContain(companyMemberships);
+  });
+
+  it("seeds the role's default grants, and fails authentication if that seeding errors", async () => {
+    const { db, insertedTables, seederSelectWheres } = createFakeDb();
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    // Without instance-admin elevation the cloud tenant user is authorized
+    // purely through grants, so the sync seeds the role defaults, and since
+    // FAI-10144 it reads the membership under the grant lock before inserting.
+    expect(insertedTables).toContain(principalPermissionGrants);
+    expect(seederSelectWheres.map((entry) => entry.table)).toContain(companyMemberships);
+
+    // Seeding is a write on the authentication path and has never been
+    // guarded: a database error there rejects the request rather than
+    // resolving an actor holding fewer grants than its role carries. That is
+    // the fail-closed direction, and it is the behaviour this diff inherits
+    // rather than introduces.
+    const { db: failing } = createFakeDb({ seederThrows: true });
+    await expect(resolveCloudTenantActor(failing, fakeReq(VALID_HEADERS))).rejects.toThrow(
+      "select unavailable",
+    );
   });
 
   it("resyncs an A to B to A context transition inside the debounce window", async () => {
