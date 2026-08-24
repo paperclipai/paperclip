@@ -12,11 +12,14 @@ sessions, persists an ACK-driven outbox and command journal, and reconnects with
 a short-lived lease. The Rust runner now includes a Codex-only app-server
 provider bridge with durable thread resume, cancellation, structured questions,
 and provider-neutral event normalization. No server code starts or invokes it.
-The package does not add a server adapter, semantic-tool authorization, or
-production Paperclip behavior.
+The package also publishes the canonical semantic action declarations and
+their input and output schemas. It does not add a server adapter,
+semantic-action authorization, dispatch, or production Paperclip behavior.
 
 The first and only installed provider is Codex. Dynamic semantic tools remain
-undiscoverable because the catalog and authorization layers have not landed.
+undiscoverable because catalog membership does not grant authority and the
+run-scoped authorization layer has not landed. See
+[`SEMANTIC_ACTIONS.md`](SEMANTIC_ACTIONS.md) for the catalog boundary.
 
 The root export is intentionally narrow. The `./testing` entry point and package
 release boundary will arrive with the later package-boundary change.
@@ -48,6 +51,9 @@ Use `generate:protocol-manifest` after a schema or fixture change,
 `generate:protocol-types` after a schema change, and
 `generate:replay-goldens` after an intentional reducer change. Commit generated
 outputs with their sources; do not edit them by hand.
+
+Use `generate:semantic-action-catalog` after changing a semantic action
+declaration. Its checked-in JSON inventory must land with the source change.
 
 The gate compiles every schema with AJV 2020-12, validates accepted fixtures,
 rejects unsupported required versions, checks generated TypeScript schema

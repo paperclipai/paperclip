@@ -1,3 +1,4 @@
+export * from "./catalog/index.js";
 export * from "./contracts/completion-result.js";
 export * from "./contracts/question-set.js";
 export * from "./protocol/replay-contract.js";
