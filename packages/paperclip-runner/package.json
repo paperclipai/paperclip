@@ -1,0 +1,18 @@
+{
+  "name": "@paperclipai/paperclip-runner",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run check:protocol-manifest",
+    "typecheck": "node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs",
+    "test": "node --test test/protocol-contract.test.mjs",
+    "generate:protocol-manifest": "node scripts/generate-protocol-manifest.mjs",
+    "check:protocol-manifest": "node scripts/generate-protocol-manifest.mjs --check",
+    "check:protocol": "pnpm run typecheck && pnpm run check:protocol-manifest && pnpm test"
+  }
+}
