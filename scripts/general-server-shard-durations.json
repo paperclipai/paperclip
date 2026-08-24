@@ -99,7 +99,7 @@
     "server/src/__tests__/documents-service.test.ts": 4497,
     "server/src/__tests__/documents.test.ts": 1104,
     "server/src/__tests__/duplex-aggregate-ceiling-env.test.ts": 210,
-    "server/src/__tests__/duplex-telemetry-recorder.test.ts": 207,
+    "server/src/__tests__/duplex-observability-recorder.test.ts": 207,
     "server/src/__tests__/effective-run-config-fingerprints.test.ts": 219,
     "server/src/__tests__/embedded-postgres-supervisor.test.ts": 206,
     "server/src/__tests__/environment-capability-contract.test.ts": 1735,

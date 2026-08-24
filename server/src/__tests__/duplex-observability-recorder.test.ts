@@ -7,25 +7,25 @@ import {
   DUPLEX_SPAN_CHANNEL_OPEN,
   DUPLEX_SPAN_REQUEST,
   DUPLEX_TRANSPORT_EVENT,
-} from "@paperclipai/adapter-utils/duplex-telemetry";
+} from "@paperclipai/adapter-utils/duplex-observability";
 import {
-  createHostDuplexTelemetryRecorder,
+  createHostDuplexObservabilityRecorder,
   foldDuplexCounterMetric,
-  type DuplexTelemetrySpan,
-  type DuplexTelemetryTracer,
-} from "../services/duplex-telemetry-recorder.js";
+  type DuplexObservabilitySpan,
+  type DuplexObservabilityTracer,
+} from "../services/duplex-observability-recorder.js";
 
 // A recording tracer that captures each span's name, attributes, and end time.
 function createRecordingTracer(): {
-  tracer: DuplexTelemetryTracer;
+  tracer: DuplexObservabilityTracer;
   spans: Array<{ name: string; startTime?: number; attributes: Record<string, string | number | boolean>; endTime?: number }>;
 } {
   const spans: Array<{ name: string; startTime?: number; attributes: Record<string, string | number | boolean>; endTime?: number }> = [];
-  const tracer: DuplexTelemetryTracer = {
+  const tracer: DuplexObservabilityTracer = {
     startSpan(name, options) {
       const record = { name, startTime: options?.startTime, attributes: {} as Record<string, string | number | boolean>, endTime: undefined as number | undefined };
       spans.push(record);
-      const span: DuplexTelemetrySpan = {
+      const span: DuplexObservabilitySpan = {
         setAttribute(key, value) {
           record.attributes[key] = value;
         },
@@ -39,10 +39,10 @@ function createRecordingTracer(): {
   return { tracer, spans };
 }
 
-describe("createHostDuplexTelemetryRecorder", () => {
+describe("createHostDuplexObservabilityRecorder", () => {
   it("records the channel-open span with only the closed dimension keys", () => {
     const { tracer, spans } = createRecordingTracer();
-    const recorder = createHostDuplexTelemetryRecorder({
+    const recorder = createHostDuplexObservabilityRecorder({
       tracer,
       incrementCounter: () => {},
       emitTransportEvent: () => {},
@@ -64,7 +64,7 @@ describe("createHostDuplexTelemetryRecorder", () => {
 
   it("makes the request span duration equal the measured latency", () => {
     const { tracer, spans } = createRecordingTracer();
-    const recorder = createHostDuplexTelemetryRecorder({
+    const recorder = createHostDuplexObservabilityRecorder({
       tracer,
       incrementCounter: () => {},
       emitTransportEvent: () => {},
@@ -104,7 +104,7 @@ describe("createHostDuplexTelemetryRecorder", () => {
 
   it("forwards the counter through the guarded sink with the folded metric", () => {
     const metrics: string[] = [];
-    const recorder = createHostDuplexTelemetryRecorder({
+    const recorder = createHostDuplexObservabilityRecorder({
       tracer: createRecordingTracer().tracer,
       incrementCounter: (metric) => metrics.push(metric),
       emitTransportEvent: () => {},
@@ -120,7 +120,7 @@ describe("createHostDuplexTelemetryRecorder", () => {
 
   it("forwards the transport event with its name and dimensions", () => {
     const events: Array<{ name: string; dimensions: Record<string, unknown> }> = [];
-    const recorder = createHostDuplexTelemetryRecorder({
+    const recorder = createHostDuplexObservabilityRecorder({
       tracer: createRecordingTracer().tracer,
       incrementCounter: () => {},
       emitTransportEvent: (event) => events.push(event),

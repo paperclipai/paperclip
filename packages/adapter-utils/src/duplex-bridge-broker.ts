@@ -71,8 +71,8 @@ import {
 import type {
   DuplexLossReason,
   DuplexOutcomeValue,
-  DuplexTelemetry,
-} from "./duplex-telemetry.js";
+  DuplexObservability,
+} from "./duplex-observability.js";
 
 /** The lifecycle states of the broker. The broker moves through them in order. */
 export type DuplexBrokerState = "opening" | "open" | "lost" | "closing" | "closed";
@@ -285,7 +285,7 @@ export interface DuplexBrokerOptions {
    * record to the fixed names and dimensions, so no route, query, body, token, or
    * raw error rides a span or a counter. The default records nothing.
    */
-  telemetry?: DuplexTelemetry;
+  telemetry?: DuplexObservability;
   /**
    * The process-owned aggregate byte ledger. The broker reserves the exact retained
    * bytes of each dispatched request against it before it retains the frame: the

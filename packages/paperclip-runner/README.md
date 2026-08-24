@@ -13,12 +13,13 @@ a short-lived lease. The Rust runner now includes a Codex-only app-server
 provider bridge with durable thread resume, cancellation, structured questions,
 and provider-neutral event normalization. No server code starts or invokes it.
 The package also publishes the canonical semantic action declarations and
-their input and output schemas. It does not add a server adapter,
-semantic-action authorization, dispatch, or production Paperclip behavior.
+their input and output schemas. Its package-local dispatcher projects only
+bound, run-authorized actions and emits redacted semantic receipts. It does not
+add application bindings, a server adapter, or production Paperclip behavior.
 
 The first and only installed provider is Codex. Dynamic semantic tools remain
-undiscoverable because catalog membership does not grant authority and the
-run-scoped authorization layer has not landed. See
+undiscoverable because no production application binding or server authority
+has landed. Catalog membership alone does not grant authority. See
 [`SEMANTIC_ACTIONS.md`](SEMANTIC_ACTIONS.md) for the catalog boundary.
 
 The root export is intentionally narrow. The `./testing` entry point and package
