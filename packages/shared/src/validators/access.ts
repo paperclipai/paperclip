@@ -74,7 +74,7 @@ export const createCliAuthChallengeSchema = z.object({
   command: z.string().min(1).max(240),
   clientName: z.string().max(120).optional().nullable(),
   requestedAccess: boardCliAuthAccessLevelSchema.default("board"),
-  requestedCompanyId: z.string().uuid().optional().nullable(),
+  requestedCompanyId: z.string().guid().optional().nullable(),
 });
 
 export type CreateCliAuthChallenge = z.infer<typeof createCliAuthChallengeSchema>;
@@ -88,7 +88,7 @@ export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSche
 export const createBoardApiKeySchema = z.object({
   name: z.string().trim().min(1).max(120).default("paperclipai cli"),
   expiresAt: z.coerce.date().optional().nullable(),
-  requestedCompanyId: z.string().uuid().optional().nullable(),
+  requestedCompanyId: z.string().guid().optional().nullable(),
 });
 
 export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
@@ -128,8 +128,8 @@ export type UpdateCompanyMemberWithPermissions = z.infer<typeof updateCompanyMem
 export const archiveCompanyMemberSchema = z.object({
   reassignment: z
     .object({
-      assigneeAgentId: z.string().uuid().optional().nullable(),
-      assigneeUserId: z.string().uuid().optional().nullable(),
+      assigneeAgentId: z.string().guid().optional().nullable(),
+      assigneeUserId: z.string().guid().optional().nullable(),
     })
     .optional()
     .nullable(),
@@ -146,7 +146,7 @@ export const archiveCompanyMemberSchema = z.object({
 export type ArchiveCompanyMember = z.infer<typeof archiveCompanyMemberSchema>;
 
 export const updateUserCompanyAccessSchema = z.object({
-  companyIds: z.array(z.string().uuid()).default([]),
+  companyIds: z.array(z.string().guid()).default([]),
 });
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;

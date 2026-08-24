@@ -57,6 +57,16 @@ const mockAgentsApi = vi.hoisted(() => ({
   instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
   saveInstructionsFile: vi.fn(async () => ({})),
 }));
+// The Connect path loads environment settings before probing; without these
+// the probe dies on "Could not load environment settings" and the hire never
+// runs — which reads as a mysterious 0-call assertion, not an error.
+const mockEnvironmentsApi = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
+}));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
+  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
+}));
 const mockApprovalsApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
@@ -93,6 +103,8 @@ vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
+vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
+vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
   getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
@@ -195,6 +207,236 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     vi.clearAllMocks();
   });
 
+  describe("step 2, which is two screens wearing one number", () => {
+    // The create path's step 2 was the mission question and is skipped now. The
+    // grow path's step 2 is "tell us about your team", whose answers seed the
+    // lead agent — a different screen that happens to share the number, and one
+    // nothing covered until skipping the first nearly took it along.
+
+    async function openStepOne(path: "create" | "grow") {
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({ step: 1, onboardingPath: path, companyName: "Initech" }),
+      );
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+
+      const { root, queryClient } = render();
+      const renderTree = () =>
+        act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+      await renderTree();
+      await flushReact();
+      return { root, renderTree };
+    }
+
+    async function clickByText(match: (text: string) => boolean) {
+      const el = [...document.body.querySelectorAll("button")].find((b) =>
+        match(b.textContent?.trim() ?? ""),
+      )!;
+      await act(async () => {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+    }
+
+    it("keeps the grow path's questionnaire", async () => {
+      const { root } = await openStepOne("grow");
+      await clickByText((t) => t.startsWith("Next"));
+
+      expect(document.body.textContent).toContain("Tell us about your team");
+      expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("skips it on the create path, creating the company on the way", async () => {
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Next"));
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+      expect(document.body.textContent).toContain("Create your first agent");
+      expect(document.body.textContent).not.toContain("Define your mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("shows no environment-check card on the model step, and no Mission row on review", async () => {
+      // Round-3 walk feedback: the adapter environment check still runs —
+      // Connect probes before hiring and blocks on a fail — but its idle card
+      // (explainer plus "Test now") is gone. And the review checklist lost its
+      // "Mission" row: onboarding stopped asking, so the row could only ever
+      // render unchecked. Both asserted against positive anchors so an
+      // unrendered step cannot pass as an absence.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      // Step 3 → 4 needs an agent name; choosing a role fills it.
+      const roleTrigger = document.body.querySelector("#onboarding-agent-role") as HTMLElement;
+      await act(async () => {
+        roleTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      const ceo = [...document.body.querySelectorAll('[role="option"]')].find(
+        (o) => o.textContent?.trim() === "CEO",
+      ) as HTMLElement;
+      await act(async () => {
+        ceo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+
+      expect(document.body.textContent).toContain("Connect a model");
+      expect(document.body.textContent).not.toContain("Adapter environment check");
+      expect(document.body.textContent).not.toContain("Test now");
+
+      // Through Connect to Review, so the Mission-row assertion runs against
+      // the checklist that actually renders it — stopping at the model step
+      // would let a Mission regression pass unseen.
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(document.body.textContent).toContain("Review");
+      expect(document.body.textContent).toContain("Organization name");
+      expect(document.body.textContent).toContain("Agent created");
+      expect(document.body.textContent).toContain("Model connected");
+      expect(document.body.textContent).not.toContain("Mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("hires one agent when Connect fires twice in one breath", async () => {
+      // The Connect handler re-runs a cached failed probe now that "Test now"
+      // is gone — so two overlapping submissions could both pass the fresh
+      // probe and both hire. `loading` cannot stop the second caller: it is
+      // state, unwritten while the first call is still awaiting. The ref
+      // guard must make the second submission a no-op.
+      let resolveHire: (v: { agent: { id: string }; approval: null }) => void = () => {};
+      mockAgentsApi.hire.mockReturnValue(
+        new Promise((resolve) => {
+          resolveHire = resolve;
+        }),
+      );
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Next"));
+      const roleTrigger = document.body.querySelector("#onboarding-agent-role") as HTMLElement;
+      await act(async () => {
+        roleTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      const ceo = [...document.body.querySelectorAll('[role="option"]')].find(
+        (o) => o.textContent?.trim() === "CEO",
+      ) as HTMLElement;
+      await act(async () => {
+        ceo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Connect a model");
+
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Connect"),
+      )!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await act(async () => resolveHire({ agent: { id: "agent-1" }, approval: null }));
+      await flushReact();
+
+      expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.unmount());
+    });
+
+    it("creates one company for one keystroke, modifier or not", async () => {
+      // The name field handles Enter itself and does not check for a modifier,
+      // so Cmd+Enter in that field reaches the field's handler *and* the
+      // wizard's step-level one. Both would start creating. The step-level
+      // `loading` guard cannot stop it — `setLoading(true)` has not landed
+      // while the same event is still bubbling — so the second caller reads a
+      // value the first has not written. Two companies, one keystroke.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+
+      const nameInput = document.body.querySelector(
+        'input[placeholder="Acme Corp"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        nameInput.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+        );
+      });
+      await flushReact();
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await act(async () => root.unmount());
+    });
+
+    it("creates one company however many times Enter repeats", async () => {
+      // Holding Enter down fires keydown repeatedly. Each one is a separate
+      // event, so `defaultPrevented` says nothing about the others, and neither
+      // `loading` nor `createdCompanyId` has been written by the time the next
+      // arrives — the first is state, the second is not set until the request
+      // it guards resolves. Only a ref written before the request goes out is
+      // visible to the caller behind it.
+      let resolveCreate: (c: { id: string; issuePrefix: string }) => void = () => {};
+      mockCompaniesApi.create.mockReturnValue(
+        new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      const { root } = await openStepOne("create");
+
+      const nameInput = document.body.querySelector(
+        'input[placeholder="Acme Corp"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        for (let i = 0; i < 4; i++) {
+          nameInput.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+          );
+        }
+      });
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+
+      await act(async () => resolveCreate({ id: "company-new", issuePrefix: "INI" }));
+      await flushReact();
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends Back to the screen the run actually came from", async () => {
+      // A create run reached the agent step from step 1, so Back owes it step 1 —
+      // not the mission screen it never saw.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      await clickByText((t) => t.includes("Back"));
+
+      expect(document.body.textContent).toContain("Name your organization");
+      expect(document.body.textContent).not.toContain("Define your mission");
+
+      await act(async () => root.unmount());
+    });
+  });
+
   it("re-syncs a restored draft once companies resolve asynchronously (companies start empty/loading)", async () => {
     // Regression for the initializer-only restore bug: the inner wizard's
     // ~20 useState(saved?.x ?? default) initializers only read `saved` on
@@ -259,11 +501,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // (step 0, "Chief of staff").
     expect(document.body.textContent).toContain("Create your first agent");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value).toBe("Ops Lead");
+    // The run entered on the agent arc, so the arc strip is the progress
+    // indicator and counts 1-3 over the wizard's steps 3-5. Segments are
+    // labelled by destination: the wizard has its own numbering, and two
+    // controls both announcing "Step 1" would mean different things.
     const currentStep = document.body.querySelector('[aria-current="step"]');
-    expect(currentStep?.getAttribute("aria-label")).toBe("Step 3");
+    expect(currentStep?.getAttribute("aria-label")).toBe("Create your first agent");
+    expect(document.body.textContent).toContain("Step 1 of 3");
 
     await act(async () => {
       root.unmount();
@@ -344,7 +591,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     // The draft is not restored, because ownership cannot be verified...
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("Ops Lead");
     // ...and not deleted either. The wizard is open in this harness, so the
@@ -433,7 +680,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     // ...but the draft was not restored, because the list cannot be trusted.
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("Ops Lead");
 
@@ -558,7 +805,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // Account A's agent name must not appear in account B's wizard.
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
 
@@ -613,7 +860,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
 
@@ -687,7 +934,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
-      'input[placeholder="Chief of staff"]',
+      "#onboarding-agent-name",
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
 

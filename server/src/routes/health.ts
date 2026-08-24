@@ -12,6 +12,7 @@ import {
   isCloudManagedInstance,
   type CloudInstanceEnv,
 } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import {
   inspectDatabaseBackupHealth,
   type DatabaseBackupHealthStatus,
@@ -157,6 +158,11 @@ export function healthRoutes(
     );
     const runtimeEnv = opts.runtimeEnv ?? process.env;
     const cloud = getCloudHealthStatus(runtimeEnv);
+    // Operator-hidden settings ride every response (like `cloud`): the list
+    // holds UI surface names only, and the settings nav needs it before any
+    // fuller-detail fetch. Omitted entirely when nothing is hidden, so
+    // deployments without the env var keep today's byte-identical responses.
+    const hiddenSettings = [...getHiddenSettings(runtimeEnv)];
     // serverInfo (git SHA + process start) rides on the full-details responses
     // only, so it reaches board/agent actors in authenticated mode or any caller
     // in local_trusted dev — never anonymous authenticated callers. The
@@ -192,12 +198,14 @@ export function healthRoutes(
               commit,
               serverInfo,
               ...(cloud ? { cloud } : {}),
+              ...(hiddenSettings.length ? { hiddenSettings } : {}),
             }
           : {
               status: "ok",
               deploymentMode: opts.deploymentMode,
               commit,
               ...(cloud ? { cloud } : {}),
+              ...(hiddenSettings.length ? { hiddenSettings } : {}),
             },
       );
       return;
@@ -307,6 +315,7 @@ export function healthRoutes(
         // this instance becomes visible.
         ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
         ...(cloud ? { cloud } : {}),
+        ...(hiddenSettings.length ? { hiddenSettings } : {}),
       });
       return;
     }
@@ -330,6 +339,7 @@ export function healthRoutes(
       ...(devServer ? { devServer } : {}),
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
+      ...(hiddenSettings.length ? { hiddenSettings } : {}),
     });
   });
 

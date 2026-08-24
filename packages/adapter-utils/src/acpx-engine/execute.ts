@@ -15,6 +15,8 @@ import type {
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
+  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
   prepareAdapterExecutionTargetRuntime,
@@ -31,6 +33,8 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexLossReason } from "../duplex-telemetry.js";
+import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../duplex-bridge-broker.js";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -373,6 +377,7 @@ export interface AcpxEngineExecutorOptions {
 
 interface AcpxPreparedRuntime {
   acpxAgent: string;
+  coalescePlaceholderToolUpdates: boolean;
   mode: "persistent" | "oneshot";
   cwd: string;
   // Host-only spawn cwd for the acpx runtime's host `spawn()` of the relay
@@ -637,6 +642,11 @@ async function resolveBuiltInAgentCommand(input: {
   const { agent, packageRootDir, executionTargetIsRemote } = input;
   if (agent === "gemini") {
     return { command: "gemini --acp", shellCommand: "gemini --acp" };
+  }
+  if (agent === "kimi") {
+    // Kimi Code exposes its ACP server via the `kimi acp` subcommand (stdio),
+    // rather than a flag (gemini) or a dedicated bin (claude/codex).
+    return { command: "kimi acp", shellCommand: "kimi acp" };
   }
   const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
   if (!binName) return null;
@@ -1604,6 +1614,9 @@ async function buildRuntime(input: {
   );
 
   const acpxAgent = normalizeAgent(config);
+  // Run summaries always fail closed to the final output segment so internal
+  // thought text and intermediate narration cannot become issue comments.
+  const coalescePlaceholderToolUpdates = config.coalescePlaceholderToolUpdates === true;
   const mode = normalizeMode(config);
   const permissionMode = normalizePermissionMode(config);
   const nonInteractivePermissions = normalizeNonInteractivePermissions(config);
@@ -2038,6 +2051,8 @@ async function buildRuntime(input: {
           adapterKey: input.engine.adapterType,
           timeoutSec,
           hostApiToken: env.PAPERCLIP_API_KEY,
+          enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
+          duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(remoteTarget),
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
           runtimeSpan: input.runtimeSpan,
@@ -2158,6 +2173,7 @@ async function buildRuntime(input: {
 
   return {
     acpxAgent,
+    coalescePlaceholderToolUpdates,
     mode,
     // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
@@ -2443,16 +2459,40 @@ async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string,
   await ctx.onLog("stdout", `${JSON.stringify(payload)}\n`);
 }
 
+/**
+ * Build the short run summary that Paperclip may auto-post as an issue comment
+ * when the agent leaves no comment of its own.
+ *
+ * Prefer the last non-empty *output* segment after a tool call. Intermediate
+ * "let me check…" narration between tools must not become a 50k-char dump.
+ * Thought-stream text is never included (callers must not push it into segments).
+ */
+export function buildAcpxRunSummary(input: {
+  outputSegments: string[];
+  fallback?: string | null;
+}): string {
+  for (let i = input.outputSegments.length - 1; i >= 0; i -= 1) {
+    const text = (input.outputSegments[i] ?? "").trim();
+    if (text) return text;
+  }
+  const fallback = (input.fallback ?? "").trim();
+  return fallback;
+}
+
 // acpx substitutes a literal "tool call" title when an ACP tool_call_update
 // omits one, which would persist a generic name over the real one ("Terminal",
 // "Read", …) in the stored run log. Remember each call's real title so update
-// lines keep the name durably.
+// lines keep the name durably. Some ACP backends also stream partial tool
+// arguments as one in-progress update per token under this placeholder;
+// adapters that opt into coalescePlaceholderToolUpdates in their acpx config
+// have those updates coalesced until a real title is available.
 const GENERIC_ACP_TOOL_TITLE = "tool call";
 
 async function emitRuntimeEvent(
   ctx: AdapterExecutionContext,
   event: AcpRuntimeEvent,
   toolTitles?: Map<string, string>,
+  coalescePlaceholderToolUpdates?: boolean,
 ) {
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
@@ -2464,6 +2504,22 @@ async function emitRuntimeEvent(
     return;
   }
   if (event.type === "tool_call") {
+    // Coalesce token-by-token argument streaming for adapters that opt in via
+    // their acpx config: skip in-progress updates that still carry only the
+    // unresolved placeholder title. Backends that stream tool arguments
+    // otherwise emit tens of thousands of these per run, flooding the
+    // transcript and pinning the live activity indicator to a generic
+    // "tool call" instead of the real tool. The initial pending event, the
+    // resolved-title in-progress update, and the terminal
+    // completed/failed/cancelled update all still flow through. Adapters that
+    // do not opt in never have an event dropped.
+    if (
+      coalescePlaceholderToolUpdates &&
+      event.status === "in_progress" &&
+      (event.title ?? "").trim() === GENERIC_ACP_TOOL_TITLE
+    ) {
+      return;
+    }
     const eventRecord = event as Record<string, unknown>;
     const toolInput = eventRecord.input;
     let name = event.title ?? "acp_tool";
@@ -3817,7 +3873,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // controller and never rejects; it returns a `TurnCompletion`. The step
       // bodies below record the external result for the coordinator to reproduce.
       const runTurn = async (_ready: StartupReady): Promise<TurnCompletion> => {
-      const textParts: string[] = [];
+      // Summary accumulation collects output text only (never thought stream),
+      // segmented on tool starts so multi-step narration is not glued into one
+      // automatic comment dump.
+      const outputSegments: string[] = [];
+      let currentOutputChunk: string[] = [];
+      const flushOutputSegment = () => {
+        if (currentOutputChunk.length === 0) return;
+        outputSegments.push(currentOutputChunk.join(""));
+        currentOutputChunk = [];
+      };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
       // The turn-local state the sequence steps share. `promptBuild` sets the
@@ -3920,13 +3985,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
         for await (const event of turn.events) {
-          if (event.type === "text_delta") textParts.push(event.text);
+          if (event.type === "text_delta" && event.stream !== "thought") {
+            currentOutputChunk.push(event.text);
+          } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
+            // ACP makes tool-call status optional. The normalized event tag is
+            // the reliable boundary between an initial call and its updates,
+            // so a statusless initial call must still end the preceding output
+            // segment while updates must not create extra boundaries.
+            flushOutputSegment();
+          }
           if (event.type === "status" && event.tag === "usage_update") {
             eventBreakdown = event.breakdown ?? eventBreakdown;
             eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
           }
-          await emitRuntimeEvent(ctx, event, toolTitles);
+          await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
         }
+        flushOutputSegment();
         return await turn.result;
       };
       const stepTurnFinalize = async (
@@ -3935,6 +4009,47 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (input.kind === "terminal") {
         const terminal = input.terminal;
         const timedOut = input.timedOut;
+        // Read the sandbox duplex control-channel disposition at the ACP
+        // terminal-finalization boundary, before the bridge teardown. A control
+        // channel that died mid-turn latches a failure with a typed loss reason;
+        // a healthy channel or a normal-teardown loss reports a success. Only a
+        // nominally completed, non-timed-out terminal is success-eligible, so the
+        // seam reads the disposition only there. For that success-eligible
+        // terminal the seam marks the host-observed orderly completion, so a later
+        // teardown loss cannot flip the run to a failure. The file bridge path
+        // never sets these methods, so the optional calls no-op there.
+        let duplexLossReason: DuplexLossReason | null = null;
+        if (terminal.status === "completed" && !timedOut) {
+          // Success-eligible terminal. Atomically read the disposition and mark
+          // the orderly completion in one broker step. No `await` separates the
+          // read from the mark, so a teardown loss cannot slip in between them. A
+          // latched loss fails the run closed; a healthy channel marks its
+          // orderly completion, so a later teardown loss stays a normal teardown.
+          const disposition = prepared.paperclipBridge?.settleRunDisposition?.() ?? null;
+          if (disposition?.failed) {
+            duplexLossReason = disposition.lossReason ?? "other";
+          }
+        } else {
+          // Non-success-eligible terminal (failed, cancelled, or timed out). A
+          // deliberate host teardown follows, so mark the orderly completion now.
+          // This stops the teardown `channel_exit` from latching `lossSeq`, from
+          // emitting a false loss event, and from incrementing the loss counters.
+          // The mark no-ops once a loss latched, so a real mid-run loss still
+          // fails the run.
+          prepared.paperclipBridge?.markOrderlyCompletion?.();
+        }
+        // A terminal that reports "completed" but whose duplex control channel
+        // died before the completion is not a success. The seam fails it closed.
+        const channelLost = duplexLossReason !== null;
+        // Build the boundary failure message only from the closed loss-reason
+        // enum, so no raw provider text rides the message.
+        const channelLostMessage = duplexLossReason
+          ? `The sandbox duplex control channel was lost (${duplexLossReason}) before the run completed.`
+          : null;
+        // A completed, non-timed-out turn whose channel stayed live is the one
+        // success path. Every other outcome — a failed, cancelled, or timed-out
+        // terminal, or a completed terminal with a lost channel — is a failure.
+        const turnSucceeded = terminal.status === "completed" && !timedOut && !channelLost;
         // Read usage before the settlement can discard runtime state.
         const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
         const turnUsage = summarizeAcpxTurnUsage({
@@ -3958,10 +4073,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           handle: sessionHandle,
           reason: timedOut
             ? "paperclip timeout cleanup"
-            : failedTurn
-              ? `paperclip turn ${terminal.status}`
-              : "paperclip completed turn cleanup",
-          discardPersistentState: terminal.status === "cancelled" || timedOut,
+            : channelLost
+              ? "paperclip duplex channel lost cleanup"
+              : failedTurn
+                ? `paperclip turn ${terminal.status}`
+                : "paperclip completed turn cleanup",
+          discardPersistentState: terminal.status === "cancelled" || timedOut || channelLost,
           dropWarmEntry: false,
           recordCloseError: false,
           cancelTurnReason: null,
@@ -3969,23 +4086,32 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-          : resultErrorMessage(terminal);
+          : channelLost
+            ? channelLostMessage
+            : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         await emitAcpxLog(ctx, {
-          type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
-          summary: terminal.status,
+          type: turnSucceeded ? "acpx.result" : "acpx.error",
+          summary: channelLost ? "duplex_channel_lost" : terminal.status,
           stopReason: terminalStopReason,
           message: errorMessage,
         });
         // The one clean-completion path clears the run failure flag; every other
-        // path keeps it set, so the run root span closes with error status.
-        runFailed = terminal.status === "completed" && !timedOut ? false : true;
+        // path keeps it set, so the run root span closes with error status. A
+        // completed terminal with a lost duplex channel keeps the flag set.
+        runFailed = turnSucceeded ? false : true;
         capturedResult = {
-          exitCode: terminal.status === "completed" ? 0 : 1,
+          exitCode: turnSucceeded ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+          errorCode: terminal.status === "failed"
+            ? "acpx_turn_failed"
+            : timedOut
+              ? "acpx_timeout"
+              : channelLost
+                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+                : null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -3995,7 +4121,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
           resultJson: {
-            status: terminal.status,
+            status: channelLost ? "failed" : terminal.status,
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,
@@ -4007,15 +4133,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
               : {}),
           },
-          summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+          summary: buildAcpxRunSummary({
+            outputSegments,
+            fallback: terminalStopReason || terminal.status,
+          }),
           clearSession,
         };
-        // The turn phase finished. A completed, non-timed-out turn is `ok`; every
-        // other terminal outcome is `failed`.
+        // The turn phase finished. A completed, non-timed-out turn with a live
+        // duplex channel is `ok`; every other terminal outcome is `failed`.
         await emitPhase(
           "turn",
           turnPhaseStart,
-          terminal.status === "completed" && !timedOut ? "ok" : "failed",
+          turnSucceeded ? "ok" : "failed",
         );
         // Return the typed turn completion so the coordinator settles for the right
         // cause. The completion carries no live resources; the settlement claims the
@@ -4043,6 +4172,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           return {
             kind: "cancelled",
             cause: { kind: "turn_cancelled", reason: terminal.stopReason ?? "cancelled" },
+            resources: emptyConsumed,
+          };
+        }
+        // A completed terminal whose duplex control channel died mid-turn returns
+        // a failed completion, so the coordinator settles for a failure and the
+        // reuse decision forbids a save. The message carries only the typed loss
+        // reason, so no raw provider text rides the cause.
+        if (channelLost) {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: new Error(channelLostMessage ?? "The sandbox duplex control channel was lost."),
+            },
             resources: emptyConsumed,
           };
         }

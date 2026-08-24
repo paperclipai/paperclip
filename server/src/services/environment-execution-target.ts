@@ -5,6 +5,8 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
+import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import {
   clampSpanLabel,
   getActiveStepContext,
@@ -16,6 +18,7 @@ import { parseObject } from "../adapters/utils.js";
 import { getStartupTracer } from "../instrumentation.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 
 export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
 
@@ -200,6 +203,15 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
   tracer?: ExecTracer;
+  // The host duplex telemetry recorder. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the safe no-op default in the
+  // bridge, so the surface stays inert until the host injects a real recorder.
+  duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
+  // The process-owned aggregate byte ledger. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the bridge inert for this seam.
+  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -243,18 +255,29 @@ export async function resolveEnvironmentExecutionTarget(input: {
     // a recording tracer.
     const tracer = input.tracer ?? getStartupTracer();
 
-    // Resolve the read-only effective capability snapshot for this lease. The
-    // runtime resolves it as the provider declaration ∩ the verified worker
-    // methods ∩ narrowing. Freeze it so a consumer reads it but never changes
-    // it. Track a resolution error apart from a genuinely absent snapshot: a
-    // rejected resolution must not read as an open grant.
+    // Resolve the read-only effective capability snapshot for this lease
+    // through the general resolver. Freeze it so a consumer reads it but
+    // never changes it. Track a resolution error apart from a genuinely
+    // absent snapshot: a rejected resolution must not read as an open grant.
+    //
+    // Gate the call on the `hasLeaseCapabilityModel` trait, not on whether the
+    // service exposes the method: the general resolver's `resolveCapabilities`
+    // never returns `null` for a registered driver, and it resolves every
+    // capability `false` for a driver with no lease capability model (see
+    // `ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT`). Calling it unconditionally
+    // would turn "no snapshot" into "every capability denied" for a driver
+    // this branch does not otherwise gate on. Reading the trait keeps that
+    // behavior change out of this phase: only the `sandbox` driver has a
+    // lease capability model today, and this branch only runs for `sandbox`.
     let effectiveCapabilities: Awaited<
-      ReturnType<NonNullable<EnvironmentRuntimeService["effectiveSandboxCapabilities"]>>
+      ReturnType<NonNullable<EnvironmentRuntimeService["resolveCapabilities"]>>
     > | null = null;
     let capabilityResolutionFailed = false;
-    if (input.environmentRuntime?.effectiveSandboxCapabilities && input.lease) {
+    const driverHasLeaseCapabilityModel =
+      getEnvironmentDriverTraits(input.environment.driver)?.hasLeaseCapabilityModel ?? false;
+    if (driverHasLeaseCapabilityModel && input.environmentRuntime?.resolveCapabilities && input.lease) {
       try {
-        effectiveCapabilities = await input.environmentRuntime.effectiveSandboxCapabilities({
+        effectiveCapabilities = await input.environmentRuntime.resolveCapabilities({
           environment: input.environment as Environment,
           lease: input.lease,
         });
@@ -291,12 +314,36 @@ export async function resolveEnvironmentExecutionTarget(input: {
       !capabilityResolutionFailed &&
       (!effectiveCapabilities || effectiveCapabilities.persistentProcessSessions);
 
+    // Resolve the per-run duplex bridge kill switch. It rides the host-side
+    // sandbox target on the same seam as `effectiveCapabilities`, so the value
+    // stays on the host and never enters the sandbox environment. Fail closed:
+    // an absent runtime, an absent method, or a read error keeps the file
+    // bridge. The stamp never turns a read error into a grant.
+    let enableSandboxDuplexBridge = false;
+    if (input.environmentRuntime?.readSandboxDuplexBridgeInput) {
+      try {
+        const duplexBridgeInput = await input.environmentRuntime.readSandboxDuplexBridgeInput();
+        enableSandboxDuplexBridge = duplexBridgeInput.enableDuplexBridge === true;
+      } catch {
+        enableSandboxDuplexBridge = false;
+      }
+    }
+
     return {
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
       shellCommand,
       remoteCwd,
+      enableSandboxDuplexBridge,
+      // Attach the host duplex telemetry recorder next to the runner. The bridge
+      // binds it to the fixed observability surface. Absent keeps the no-op
+      // default, so the surface stays inert on a run with no injected recorder.
+      duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
+      // Attach the process-owned aggregate byte ledger next to the runner. The
+      // bridge passes it to the broker, the decoder, and the response-body reader.
+      // Absent keeps the bridge inert for this seam.
+      duplexAggregateByteLedger: input.duplexAggregateByteLedger ?? null,
       ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,

@@ -57,6 +57,7 @@ export { DECISION_TRAINING_RETENTION_POLICY } from "./decision-training.js";
 export type {
   Environment,
   EnvironmentDeleteBlastRadius,
+  EnvironmentDeleteReusableLeaseHolder,
   EnvironmentDeleteBlockedReason,
   EnvironmentLease,
   EnvironmentProbeResult,
@@ -390,8 +391,6 @@ export type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
-  WorkspaceRealizationSyncStrategy,
-  WorkspaceRealizationTransport,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   SharedWorkspaceConcurrency,

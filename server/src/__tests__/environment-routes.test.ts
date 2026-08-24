@@ -26,6 +26,9 @@ const mockProjectService = vi.hoisted(() => ({
   clearExecutionWorkspaceEnvironmentSelection: vi.fn(),
 }));
 
+const mockEnvironmentRuntimeService = vi.hoisted(() => ({
+  destroyReusableSandboxLeasesForEnvironment: vi.fn(async () => ({ destroyed: 0, failed: 0, skippedLiveRun: 0 })),
+}));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
   getGeneral: vi.fn(),
@@ -105,6 +108,10 @@ vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
 }));
 
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => mockEnvironmentRuntimeService,
+}));
+
 vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
 }));
@@ -153,6 +160,14 @@ function createDeleteBlastRadius(overrides: Partial<{
   activeCustomImageSetupSessionCount: number;
   pendingCleanupLeaseCount: number;
   reusableSandboxLeaseCount: number;
+  reusableSandboxLeaseHolders: Array<{
+    leaseId: string;
+    executionWorkspaceId: string | null;
+    executionWorkspaceName: string | null;
+    issueId: string | null;
+    issueIdentifier: string | null;
+    issueTitle: string | null;
+  }>;
 }> = {}) {
   const staticReferences = {
     isManagedLocal: overrides.isManagedLocal ?? false,
@@ -172,6 +187,16 @@ function createDeleteBlastRadius(overrides: Partial<{
   };
   const pendingCleanupLeaseCount = overrides.pendingCleanupLeaseCount ?? 0;
   const reusableSandboxLeaseCount = overrides.reusableSandboxLeaseCount ?? 0;
+  const reusableSandboxLeaseHolders =
+    overrides.reusableSandboxLeaseHolders
+    ?? Array.from({ length: reusableSandboxLeaseCount }, (_, index) => ({
+      leaseId: `lease-${index + 1}`,
+      executionWorkspaceId: null,
+      executionWorkspaceName: null,
+      issueId: null,
+      issueIdentifier: null,
+      issueTitle: null,
+    }));
   const deleteBlockedReasons = [
     ...(staticReferences.isManagedLocal ? ["managed_local" as const] : []),
     ...(staticReferences.isInstanceDefault ? ["instance_default" as const] : []),
@@ -184,6 +209,7 @@ function createDeleteBlastRadius(overrides: Partial<{
     deleteBlockedReasons,
     pendingCleanupLeaseCount,
     reusableSandboxLeaseCount,
+    reusableSandboxLeaseHolders,
     staticReferences,
     activeRuntimeUse,
   };
@@ -252,6 +278,8 @@ describe("environment routes", () => {
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockProjectService.getById.mockReset();
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
+    mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment.mockReset();
+    mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment.mockResolvedValue({ destroyed: 0, failed: 0, skippedLiveRun: 0 });
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({ executionMode: "any" });
@@ -1091,6 +1119,7 @@ describe("environment routes", () => {
       deleteBlockedReasons: [],
       pendingCleanupLeaseCount: 0,
       reusableSandboxLeaseCount: 0,
+      reusableSandboxLeaseHolders: [],
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: false,
@@ -1600,6 +1629,89 @@ describe("environment routes", () => {
       "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.",
     );
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["reusable_sandbox_lease"] });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("destroys reusable sandbox leases and deletes with explicit consent", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius
+      .mockResolvedValueOnce(createDeleteBlastRadius({ reusableSandboxLeaseCount: 2 }))
+      .mockResolvedValueOnce(createDeleteBlastRadius());
+    mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment.mockResolvedValue({
+      destroyed: 2,
+      failed: 0,
+      skippedLiveRun: 0,
+    });
+    mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment)
+      .toHaveBeenCalledExactlyOnceWith({
+        environmentId: "env-1",
+        failureReason: "environment_deleted",
+      });
+    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
+    expect(res.body.destroyedReusableSandboxLeaseCount).toBe(2);
+  });
+
+  it("keeps rejecting a consented delete when a non-lease blocker remains", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      isInstanceDefault: true,
+      reusableSandboxLeaseCount: 1,
+    }));
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    // Destroying provider sandboxes and then rejecting on the other gate would
+    // be an irreversible action with nothing gained, so the destroy must not run.
+    expect(res.status).toBe(409);
+    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("keeps rejecting when leases survive the consented destroy", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius
+      .mockResolvedValueOnce(createDeleteBlastRadius({ reusableSandboxLeaseCount: 1 }))
+      .mockResolvedValueOnce(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }));
+    mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment.mockResolvedValue({
+      destroyed: 1,
+      failed: 1,
+      skippedLiveRun: 0,
+    });
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(409);
+    // The rejection names what the consented destroy already did: provider
+    // destruction is not transactional with the delete guard.
+    expect(res.body.details).toEqual({
+      deleteBlockedReasons: ["pending_sandbox_cleanup"],
+      destroyedReusableSandboxLeaseCount: 1,
+    });
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
   });
 

@@ -57,6 +57,7 @@ import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -329,6 +330,9 @@ export function environmentRoutes(
 ) {
   const router = Router();
   const svc = environmentService(db);
+  const environmentRuntime = environmentRuntimeService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const customImages = environmentCustomImageService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -597,6 +601,10 @@ export function environmentRoutes(
     actor: ReturnType<typeof getActorInfo>;
     environment: { id: string; driver: string };
     impact: EnvironmentDeleteBlastRadius;
+    // Sandboxes a consented delete destroyed before this rejection. Provider
+    // destruction is not transactional with the delete guard, so a rejection
+    // after a partial destroy must say what already happened.
+    destroyedReusableSandboxLeaseCount?: number;
   }): never {
     const message =
       environmentDeleteBlockMessage(input.impact)
@@ -606,6 +614,7 @@ export function environmentRoutes(
         environmentId: input.environment.id,
         environmentDriver: input.environment.driver,
         deleteBlockedReasons: input.impact.deleteBlockedReasons,
+        destroyedReusableSandboxLeaseCount: input.destroyedReusableSandboxLeaseCount ?? 0,
         actorType: input.actor.actorType,
         actorId: input.actor.actorId,
         agentId: input.actor.agentId,
@@ -613,7 +622,12 @@ export function environmentRoutes(
       },
       "environment delete rejected by guard",
     );
-    throw conflict(message, { deleteBlockedReasons: input.impact.deleteBlockedReasons });
+    throw conflict(message, {
+      deleteBlockedReasons: input.impact.deleteBlockedReasons,
+      ...(input.destroyedReusableSandboxLeaseCount
+        ? { destroyedReusableSandboxLeaseCount: input.destroyedReusableSandboxLeaseCount }
+        : {}),
+    });
   }
 
   function setupSessionActivityDetails(session: {
@@ -1252,13 +1266,52 @@ export function environmentRoutes(
     }
     await assertPlatformProvisionedEnvironmentWritable(existing);
     const actor = getActorInfo(req);
-    const impact = await svc.getDeleteBlastRadius(existing.id);
+    let impact = await svc.getDeleteBlastRadius(existing.id);
     if (!impact) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
+    // With explicit consent, destroy the environment's reusable sandbox leases
+    // so the delete can proceed — but only while those leases are the sole
+    // blocker. Destroying provider resources and then rejecting on another
+    // gate would be an irreversible action with nothing gained. The destroy
+    // must run before the delete: the driver needs the environment config to
+    // reach the provider. A lease whose teardown fails lands in
+    // `pending_cleanup`, and the re-fetched blast radius rejects below until
+    // the cleanup sweep resolves it — no sandbox is ever orphaned silently.
+    // A lease held by an in-flight run is skipped, keeps blocking, and the
+    // re-check rejects the delete without touching that run's sandbox.
+    //
+    // The gate above and the destroy are not one atomic step: provider calls
+    // cannot join a database transaction, so a blocker that lands in the
+    // window between them (a new instance default, a fresh pending cleanup)
+    // rejects the delete only after some sandboxes are already gone. Those
+    // sandboxes belonged to the environment the operator consented to
+    // destroy; the rejection reports the count so nothing is silent.
+    let destroyedReusableSandboxLeaseCount = 0;
+    if (
+      req.query.destroyReusableSandboxLeases === "true"
+      && impact.reusableSandboxLeaseCount > 0
+      && impact.deleteBlockedReasons.every((reason) => reason === "reusable_sandbox_lease")
+    ) {
+      const destroyResult = await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
+        environmentId: existing.id,
+        failureReason: "environment_deleted",
+      });
+      destroyedReusableSandboxLeaseCount = destroyResult.destroyed;
+      impact = await svc.getDeleteBlastRadius(existing.id);
+      if (!impact) {
+        res.status(404).json({ error: "Environment not found" });
+        return;
+      }
+    }
     if (!impact.canDelete) {
-      rejectEnvironmentDelete({ actor, environment: existing, impact });
+      rejectEnvironmentDelete({
+        actor,
+        environment: existing,
+        impact,
+        destroyedReusableSandboxLeaseCount,
+      });
     }
 
     const removed = await svc.removeIfDeletable(existing.id);
@@ -1301,9 +1354,15 @@ export function environmentRoutes(
         name: removed.name,
         driver: removed.driver,
         status: removed.status,
+        ...(destroyedReusableSandboxLeaseCount > 0
+          ? { destroyedReusableSandboxLeaseCount }
+          : {}),
       },
     });
-    res.json(presentEnvironmentForRead(req, removed));
+    res.json({
+      ...presentEnvironmentForRead(req, removed),
+      destroyedReusableSandboxLeaseCount,
+    });
   });
 
   router.post("/environments/:id/probe", async (req, res) => {

@@ -36,13 +36,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@clack/prompts": "^0.11.0",
+    "@clack/prompts": "^1.7.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
     "@paperclipai/adapter-gemini-local": "workspace:*",
     "@paperclipai/adapter-grok-local": "workspace:*",
+    "@paperclipai/adapter-kimi-local": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
@@ -58,8 +59,11 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.0.0",
     "tsx": "^4.23.12",
     "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

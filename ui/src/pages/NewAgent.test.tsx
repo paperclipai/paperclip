@@ -82,9 +82,9 @@ vi.mock("../adapters/use-disabled-adapters", () => ({
 // provider pty capability. Provide the projection so the login panel renders.
 const mockLoginProjections = vi.hoisted(
   () =>
-    new Map<string, { panelMode: string; sandboxTransport: string; timeoutPolicy: string }>([
-      ["claude_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
-      ["codex_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
+    new Map<string, { panelMode: string; timeoutPolicy: string }>([
+      ["claude_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
+      ["codex_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
     ]),
 );
 

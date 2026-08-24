@@ -20,9 +20,20 @@ import {
   type DeviceLoginPrompt,
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
+import {
+  createLoginPtyTransport,
+  type LoginPtySessionOpener,
+} from "@paperclipai/adapter-utils/login-pty-transport";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
+import { runDescriptorBoundAuthRead } from "./codex-device-login-credential-read.js";
+import {
+  resolveLoginCommandKey,
+  validateLoginSessionHome,
+  type LoginCommandKey,
+} from "./login-command.js";
+import type { LoginPtyWorkerManagerLike } from "./setup-token-transport-binding.js";
 
 // The login-session service. It creates a login session, acquires a fresh
 // sandbox lease, runs `codex login --device-auth` through the runner, and owns
@@ -37,6 +48,17 @@ import { environmentService } from "./environments.js";
 
 /** The host timeout for the sandbox login command. It is exactly five minutes. */
 export const CODEX_DEVICE_LOGIN_TIMEOUT_MS = 300_000;
+
+// The fixed error for a sandbox provider that does not advertise the login
+// pseudo-terminal capability. The Codex device login runs the login command on a
+// real pseudo-terminal, so only a provider that advertises the capability can
+// host the login. The route returns this specific, typed error and starts no
+// session, so an unsupported provider never reaches a session row, a lease, or a
+// pseudo-terminal.
+export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED =
+  "The sandbox provider does not support the Codex device login.";
+export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE =
+  "codex_device_login_provider_unsupported";
 
 /**
  * The lease-metadata key that tags a login sandbox lease with its session
@@ -1151,80 +1173,197 @@ export function sessionCredentialPath(sessionId: string): string {
 
 /**
  * Build the sandbox login driver. This is the one helper the production runtime
- * and the tests share. It binds streamed execution and a credential read to the
- * environment runtime.
+ * and the tests share. It runs the login command over the shared login
+ * pseudo-terminal (PTY) transport and reads the credential with one
+ * descriptor-bound read.
  *
- * - `execStreaming` sets an empty session-specific Codex home before the fixed
- *   login command runs, exports `CODEX_HOME`, and streams standard output to the
- *   runner. It passes the command through `sh -c`, so the runtime runs the whole
- *   compound command in one shell. It sets `forceSession`, so the command opens
- *   the persistent session and streams each standard-output chunk while the
- *   login command waits for the user. A one-shot exec returns the output only at
- *   the end, so the login prompt would never reach the user in time.
- * - `readFile` reads the credential from the fixed session-specific path with a
- *   one-shot `cat` command. No caller controls the path.
- * - `dispose` is a no-op. The service owns the sandbox delete through a separate
- *   seam, so the runner's swallowed dispose must not delete the sandbox.
+ * - `start` runs the fixed login command on a real pseudo-terminal through the
+ *   shared {@link createLoginPtyTransport} and streams each terminal output chunk
+ *   to the runner while the login command waits for the user. The login command
+ *   needs a pseudo-terminal: pipe stdio emits no login prompt. The pseudo-terminal
+ *   opener sets the session-specific `CODEX_HOME` to the same verified session
+ *   home this driver reads.
+ * - `readFile` runs one descriptor-bound read. It opens the verified session home
+ *   and the fixed credential file with no symlink follow, checks the opened
+ *   descriptor, and reads only from that same descriptor. It ignores the path the
+ *   runner passes, so no caller controls the read target. It reads the fixed
+ *   `auth.json` under the server-controlled session home.
+ * - `dispose` releases the pseudo-terminal transport, so the host frees the login
+ *   pseudo-terminal slot. The service owns the sandbox delete through a separate
+ *   seam, so this dispose never deletes the sandbox.
  *
- * The runtime passes `command` and `args` to the provider as a program and its
- * argument vector. The provider quotes each element as one shell token. So a
- * compound command must run through a shell (`sh -c "<script>"`); a bare
- * compound string in `command` becomes one token and never runs.
+ * The session home is server-controlled and shared: the pseudo-terminal opener
+ * sets `CODEX_HOME` to it, and the descriptor-bound read opens it. So the login
+ * command writes `auth.json` into the exact directory the read opens.
  */
 export function buildSandboxLoginDriver(deps: {
+  openPtySession: LoginPtySessionOpener;
   environmentRuntime: Pick<EnvironmentRuntimeService, "execute">;
   environment: Environment;
   lease: EnvironmentLease;
   sessionHome: string;
   timeoutMs: number;
 }): SandboxLoginDriver {
-  const { environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
+  const { openPtySession, environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
+  const transport = createLoginPtyTransport(openPtySession);
   return {
-    async execStreaming(command, onStdout) {
-      const script = `rm -rf ${sessionHome} && mkdir -p ${sessionHome} && CODEX_HOME=${sessionHome} ${command}`;
-      const result = await environmentRuntime.execute({
-        environment,
-        lease,
-        command: "sh",
-        args: ["-c", script],
-        timeoutMs,
-        // Open the persistent session, so the runtime streams each output chunk
-        // to the runner while the login command waits. A one-shot exec returns
-        // the output only at the end, so the prompt would arrive too late.
-        forceSession: true,
-        onLog: (stream, chunk) => {
-          if (stream === "stdout") onStdout(chunk);
-        },
-      });
-      return { exitCode: result.exitCode };
+    async start(command, onData) {
+      return transport.start(command, onData);
     },
-    async readFile(path) {
-      const result = await environmentRuntime.execute({
+    async readFile(_path) {
+      // The read ignores the runner path. It runs one fixed, server-controlled,
+      // descriptor-bound operation against the verified session home. So a swap of
+      // the credential file between a check and the read cannot steer the read.
+      return runDescriptorBoundAuthRead({
+        environmentRuntime,
         environment,
         lease,
-        command: "cat",
-        args: [path],
+        sessionHome,
         timeoutMs,
-        bypassSession: true,
       });
-      return Buffer.from(result.stdout ?? "", "utf8");
     },
     async dispose() {
-      // The service owns the sandbox delete. This dispose is a no-op.
+      // Free the host pseudo-terminal slot before the service deletes the sandbox.
+      // The service owns the sandbox delete through a separate seam.
+      await transport.dispose();
     },
+  };
+}
+
+/**
+ * The verified binding one login session hands to the live pseudo-terminal
+ * opener. The opener sets the sandbox `CODEX_HOME` to `sessionHome`, so the login
+ * command writes `auth.json` into the exact directory the descriptor-bound read
+ * opens.
+ */
+export interface LoginPtySessionBinding {
+  companyId: string;
+  environmentId: string;
+  adapterType: AgentAdapterType;
+  /** The provider lease that binds the sandbox worker. */
+  providerLeaseId: string;
+  /** The server-controlled session home. The opener sets `CODEX_HOME` to it. */
+  sessionHome: string;
+  /** The resolved environment for the acquired lease. */
+  environment: Environment;
+  /** The acquired environment lease. */
+  lease: EnvironmentLease;
+}
+
+/**
+ * Opens the live pseudo-terminal for one login session and returns the shared
+ * transport opener. The Daytona provider runs as a plugin worker, so the real
+ * opener binds inside the worker through the plugin worker manager route. A test
+ * injects a fake opener to drive the full session path.
+ */
+export type OpenLoginPtySession = (
+  binding: LoginPtySessionBinding,
+) => Promise<LoginPtySessionOpener>;
+
+/** The fixed, non-secret error the Codex live opener throws when it cannot bind
+ *  the sandbox worker route. It carries no lease detail and no secret. */
+const CODEX_LOGIN_PTY_BIND_FAILED =
+  "device login failed: the sandbox pseudo-terminal transport is not bound.";
+
+/** The dependencies the worker-bound Codex live pseudo-terminal opener needs. */
+export interface CodexWorkerBoundLoginPtyOpenerDeps {
+  /** The plugin worker manager that owns the host route gate. */
+  workerManager: LoginPtyWorkerManagerLike;
+  /** A non-leaking status sink. It receives only fixed status lines. */
+  log?: (line: string) => void;
+}
+
+function readLeaseMetaString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Builds the production Codex `openLivePtySession`. It drives the sandbox worker
+ * through the manager route gate. The manager mints the host route identifier and
+ * owns the route lifecycle.
+ *
+ * The opener passes the binding's server-controlled `sessionHome` to the worker
+ * route. That home is the exact directory the descriptor-bound credential read
+ * opens, so the sandbox `CODEX_HOME` and the read target match. The opener never
+ * derives a fresh home: a fresh home would set `CODEX_HOME` to a directory the
+ * read never opens, and every Codex login would fail closed.
+ *
+ * The opener resolves the closed login command key from the trusted adapter type,
+ * never from the caller. It validates the session home shape before the worker
+ * RPC. It fails closed when the lease carries no sandbox worker binding.
+ */
+export function createCodexWorkerBoundLoginPtyOpener(
+  deps: CodexWorkerBoundLoginPtyOpenerDeps,
+): OpenLoginPtySession {
+  const log = deps.log ?? (() => {});
+  return async (binding) => {
+    const metadata =
+      binding.lease.metadata && typeof binding.lease.metadata === "object"
+        ? (binding.lease.metadata as Record<string, unknown>)
+        : {};
+    const pluginId = readLeaseMetaString(metadata.pluginId);
+    const driverKey =
+      readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
+    if (!binding.providerLeaseId || !pluginId || !driverKey) {
+      log("[paperclip] Device login: the lease carries no sandbox worker binding.");
+      throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
+    }
+    // Resolve the closed command key from the trusted adapter type. An unmapped
+    // adapter fails closed before the worker RPC.
+    let loginCommandKey: LoginCommandKey;
+    try {
+      loginCommandKey = resolveLoginCommandKey(binding.adapterType);
+    } catch {
+      log("[paperclip] Device login: the adapter type has no login command key.");
+      throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
+    }
+    // Validate the server-controlled session home shape before the worker RPC.
+    // The runtime derived it from the session id; the manager revalidates it too.
+    validateLoginSessionHome(binding.sessionHome);
+    // The opener argument is the runner's fixed command string. It confers no
+    // command authority, so the opener ignores it and returns a host-bound opener.
+    return (_command: string) =>
+      deps.workerManager.openLoginPtySession(pluginId, {
+        driverKey,
+        companyId: binding.companyId,
+        environmentId: binding.environmentId,
+        providerLeaseId: binding.providerLeaseId,
+        loginCommandKey,
+        sessionHome: binding.sessionHome,
+      });
   };
 }
 
 export interface ProductionLoginSessionRuntimeDeps {
   db: Db;
   environmentRuntime: EnvironmentRuntimeService;
+  /**
+   * Re-checks the provider login pseudo-terminal capability from current runtime
+   * state, immediately before the provider lease. The route gate already ran, so
+   * a managed reconciliation can rebind the environment to an unsupported
+   * provider between the route gate and this acquire. The check reads the current
+   * provider capability, not the stale route decision. It throws the fixed
+   * unsupported-provider error, so the runtime creates no lease and opens no
+   * pseudo-terminal for an unsupported provider.
+   */
+  assertProviderSupportsLoginPty: (environmentId: string) => Promise<void>;
+  /**
+   * Opens the live pseudo-terminal for the acquired lease. When a caller omits
+   * it, the runtime binds a fail-closed opener: the login run then fails and the
+   * service deletes the sandbox. The live opener binds the sandbox worker route.
+   */
+  openLivePtySession?: OpenLoginPtySession;
 }
+
+/** The fixed, non-secret error the fail-closed opener throws when no live
+ *  pseudo-terminal opener is bound. */
+const LOGIN_PTY_OPENER_UNBOUND = "device login failed: the sandbox pseudo-terminal transport is not bound.";
 
 /**
  * Build the production login-session runtime. It acquires a fresh lease with
  * reuse disabled (no heartbeat run, no execution workspace) and the active
- * custom-image template applied, binds the sandbox login driver, and owns the
- * delete and release seams.
+ * custom-image template applied, binds the sandbox login driver over the shared
+ * pseudo-terminal transport, and owns the delete and release seams.
  */
 export function createProductionLoginSessionRuntime(
   deps: ProductionLoginSessionRuntimeDeps,
@@ -1236,6 +1375,14 @@ export function createProductionLoginSessionRuntime(
       if (!environment) {
         throw new Error(`Environment "${input.environmentId}" is not found.`);
       }
+      // Re-check the provider login pseudo-terminal capability from current
+      // runtime state, immediately before the provider lease. A managed
+      // reconciliation can rebind the environment to an unsupported provider
+      // between the route gate and this acquire, so the check reads the current
+      // capability, not the stale route decision. It throws the fixed
+      // unsupported-provider error, so the runtime acquires no lease and opens no
+      // pseudo-terminal for an unsupported provider.
+      await deps.assertProviderSupportsLoginPty(input.environmentId);
       const record = await deps.environmentRuntime.acquireRunLease(
         buildLoginLeaseAcquireArgs({
           metadata: {
@@ -1254,7 +1401,23 @@ export function createProductionLoginSessionRuntime(
       const sessionHome = sessionCodexHomePath(input.sessionId);
       const authPath = sessionCredentialPath(input.sessionId);
       const providerLeaseId = record.lease.providerLeaseId ?? record.lease.id;
+      // Resolve the live pseudo-terminal opener for this lease. When no live
+      // opener is bound, use a fail-closed opener: the login run then fails and
+      // the service deletes the sandbox. The opener sets `CODEX_HOME` to the same
+      // `sessionHome` the descriptor-bound read opens.
+      const openPtySession: LoginPtySessionOpener = deps.openLivePtySession
+        ? await deps.openLivePtySession({
+            companyId: input.companyId,
+            environmentId: input.environmentId,
+            adapterType: input.adapterType,
+            providerLeaseId,
+            sessionHome,
+            environment: record.environment,
+            lease: record.lease,
+          })
+        : () => Promise.reject(new Error(LOGIN_PTY_OPENER_UNBOUND));
       const driver = buildSandboxLoginDriver({
+        openPtySession,
         environmentRuntime: deps.environmentRuntime,
         environment: record.environment,
         lease: record.lease,

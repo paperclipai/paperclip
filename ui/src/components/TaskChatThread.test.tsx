@@ -553,6 +553,50 @@ describe("TaskChatThread mobile composer dock (PAP-495)", () => {
 });
 
 describe("TaskChatThread live transcript", () => {
+  it("surfaces the live runtime status while no transcript has streamed yet", () => {
+    // Sandbox runs spend their first minutes in preparation phases (config
+    // seed, workspace sync) with zero transcript entries. The tail must show
+    // the run's runtime-progress status instead of an opaque wait message.
+    const baseRun = {
+      id: "run-prep",
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-08-07T00:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-07T00:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Coder",
+      adapterType: "claude_local",
+    };
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{ ...baseRun, currentStatusMessage: "Syncing workspace to environment" }}
+      />,
+    );
+
+    const tail = container.querySelector('[data-testid="task-chat-live-transcript"]');
+    expect(tail).not.toBeNull();
+    expect(tail!.textContent).toContain("Syncing workspace to environment");
+    expect(tail!.textContent).not.toContain("Waiting for transcript...");
+
+    // Without a runtime status, the generic wait message still shows.
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{ ...baseRun, id: "run-prep-2" }}
+      />,
+    );
+    const tail2 = container.querySelector('[data-testid="task-chat-live-transcript"]');
+    expect(tail2!.textContent).toContain("Waiting for transcript...");
+  });
+
   it("renders in-flight output through TaskChatLiveTail, dropping the debug plumbing (PAP-463 C1)", () => {
     // Interleave the exact noise the old RunTranscriptView tail surfaced (init
     // row, stdout/stderr/system dumps) with real content. Only the streamed

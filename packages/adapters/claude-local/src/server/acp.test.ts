@@ -259,9 +259,9 @@ describe("claude_local ACP lane", () => {
   });
 
   it("checks the Node version required by the Claude ACP runtime", () => {
-    setNodeVersion("v22.11.0");
+    setNodeVersion("v24.10.0");
     expect(nodeVersionMeetsClaudeAcpMinimum()).toBe(false);
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.11.0");
     expect(nodeVersionMeetsClaudeAcpMinimum()).toBe(true);
   });
 
@@ -270,7 +270,7 @@ describe("claude_local ACP lane", () => {
     const commandPath = path.join(root, "bin", "claude-agent-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.11.0");
 
     expect(resolveClaudeExecutionEngine({})).toEqual({ engine: "acp", explicit: false });
     await expect(
@@ -286,7 +286,7 @@ describe("claude_local ACP lane", () => {
       }),
     ).resolves.toEqual({ engine: "cli", explicit: true });
 
-    setNodeVersion("v22.11.0");
+    setNodeVersion("v24.10.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { agentCommand: commandPath },
@@ -341,7 +341,7 @@ describe("claude_local ACP lane", () => {
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { agentCommand: "claude-agent-acp" },
@@ -367,7 +367,7 @@ describe("claude_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: {},
@@ -386,7 +386,7 @@ describe("claude_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: {},
@@ -418,8 +418,13 @@ describe("claude_local ACP lane", () => {
     const commandPath = path.join(root, "bin", "claude-agent-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.11.0");
 
+    // The ACP lane now verifies auth: without a credential the lane runs a real
+    // host login probe, so its status depends on the host login state. Give the
+    // config a Bedrock credential to make the auth path deterministic. Bedrock
+    // gates off the host login probe, so the result reflects only the ACP
+    // prerequisites, and a valid credential lets the lane report a pass.
     const result = await testClaudeAcpEnvironment({
       adapterType: "claude_local",
       companyId: "company-1",
@@ -427,6 +432,7 @@ describe("claude_local ACP lane", () => {
         engine: "acp",
         cwd: root,
         agentCommand: commandPath,
+        env: { CLAUDE_CODE_USE_BEDROCK: "1" },
       },
     });
 
@@ -440,6 +446,12 @@ describe("claude_local ACP lane", () => {
     expect(result.checks).toContainEqual(
       expect.objectContaining({
         code: "claude_acp_command_resolvable",
+        level: "info",
+      }),
+    );
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "claude_acp_bedrock_auth",
         level: "info",
       }),
     );
@@ -833,7 +845,7 @@ describe("claude_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { agentCommand: "claude-agent-acp" },

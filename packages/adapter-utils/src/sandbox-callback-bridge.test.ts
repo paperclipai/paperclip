@@ -475,6 +475,68 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  it("recovers from transient queue polling failures and keeps relaying requests", async () => {
+    // A single reset or slow sandbox exec used to unwind the poll loop into its
+    // terminal catch, killing the relay for the rest of the run. The loop must
+    // instead back off, retry, and still deliver requests queued after the
+    // failure window.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-transient-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const baseClient = createFileSystemSandboxCallbackBridgeQueueClient();
+    let listCalls = 0;
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...baseClient,
+      listJsonFiles: async (dirPath: string) => {
+        listCalls += 1;
+        if (listCalls <= 3) {
+          throw new Error("list requests failed: kex_exchange_identification: read: Connection reset by peer");
+        }
+        return baseClient.listJsonFiles(dirPath);
+      },
+    };
+
+    const seenPaths: string[] = [];
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async (request) => {
+        seenPaths.push(request.path);
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ok: true }),
+        };
+      },
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+
+    const requestId = "transient-recovery-1";
+    await writeFile(
+      path.join(directories.requestsDir, `${requestId}.json`),
+      JSON.stringify({
+        id: requestId,
+        method: "GET",
+        path: "/api/agents/me",
+        query: "",
+        headers: {},
+        body: "",
+      }),
+      "utf8",
+    );
+
+    const responseFile = await waitForJsonFile(directories.responsesDir, 10_000);
+    const raw = await readFile(path.join(directories.responsesDir, responseFile), "utf8");
+    expect(JSON.parse(raw)).toMatchObject({ id: requestId, status: 200 });
+    expect(seenPaths).toEqual(["/api/agents/me"]);
+    expect(listCalls).toBeGreaterThan(3);
+  });
+
   it("keeps the queue-directory setup on the startup step but resets the poll loop store", async () => {
     // The worker starts inside the measured `bridge.paperclip` step. Its awaited
     // queue-directory setup is startup work, so a `makeDir` `sandbox.exec` span
@@ -1510,7 +1572,7 @@ describe("sandbox callback bridge", () => {
     })}\n`;
   }
 
-  it("times out a stalled poll, writes a 503, and surfaces a run-level error", async () => {
+  it("times out a stalled poll, surfaces a run-level error, and recovers to deliver the request", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-hang-"));
     cleanupDirs.push(rootDir);
 
@@ -1526,9 +1588,11 @@ describe("sandbox callback bridge", () => {
     const client: SandboxCallbackBridgeQueueClient = {
       ...base,
       // The first poll never resolves — a silently unresponsive sandbox channel.
-      // The per-iteration timeout must convert the hang into a caught error. The
-      // request never reaches the handler, so the recovery path can safely 503
-      // it. Later calls (the recovery's failPendingRequests) resolve.
+      // The per-iteration timeout must convert the hang into a caught error, and
+      // the loop must then back off and retry rather than die: the request never
+      // reached the handler, so the retry delivers the real response. A
+      // sustained outage is the watchdog's job (proven separately below), not a
+      // reason to fail a request one transient hang could still serve.
       listJsonFiles: async (dir) => {
         listCalls += 1;
         if (listCalls === 1) {
@@ -1550,7 +1614,7 @@ describe("sandbox callback bridge", () => {
 
     const responseFile = await waitForJsonFile(directories.responsesDir, 3_000);
     const responseBody = await readFile(path.posix.join(directories.responsesDir, responseFile), "utf8");
-    expect(JSON.parse(responseBody).status).toBe(503);
+    expect(JSON.parse(responseBody).status).toBe(200);
     expect(workerErrors.length).toBeGreaterThan(0);
     expect(workerErrors[0]).toContain("timed out");
 
@@ -2261,10 +2325,13 @@ describe("sandbox callback bridge", () => {
   });
 
   it("retries a recovery 503 write that fails transiently, delivers the 503, and removes the request", async () => {
-    // The poll times out, so the recovery path aborts the queued request with a
-    // 503. The first 503 write fails, so the recovery must retry it inside the
-    // same pass. It then delivers the 503 and removes the request. The request is
-    // unclaimed, so its host mutation never ran; the 503 stays retry-safe.
+    // A request attempt times out (its first read hangs), so the loop's request
+    // catch runs the recovery pass, which aborts the queued request with a 503.
+    // The first 503 write fails, so the recovery must retry it inside the same
+    // pass. It then delivers the 503 and removes the request. The request is
+    // unclaimed, so its host mutation never ran; the 503 stays retry-safe. (A
+    // hung poll no longer triggers this pass — the loop backs off and retries
+    // the poll instead, and a sustained hang is the watchdog's job.)
     const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -2286,27 +2353,26 @@ describe("sandbox callback bridge", () => {
     requestBodies.set(requestPath, bridgeRequestJson("req-503-retry"));
     const responseWrites: Array<{ path: string; status: number; body: string }> = [];
     const requestRemovals: string[] = [];
-    let listCalls = 0;
+    let readCalls = 0;
     let writeAttempts = 0;
 
     const client: SandboxCallbackBridgeQueueClient = {
       makeDir: async () => {},
       makeDirs: async () => {},
-      // The first poll never resolves — a silently unresponsive sandbox channel.
-      // The per-iteration timeout converts the hang into a caught error, so the
-      // loop `catch` runs the recovery path. Later listings resolve, so the
-      // recovery enumerates and aborts the request.
-      listJsonFiles: async (dir) => {
-        if (dir !== directories.requestsDir) {
-          return [];
-        }
-        listCalls += 1;
-        if (listCalls === 1) {
-          return await new Promise<string[]>(() => {});
-        }
-        return [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort();
-      },
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      // The first read never resolves — a silently unresponsive sandbox channel
+      // hit mid-request, before the handler claim. The per-iteration timeout
+      // converts the hang into a caught error, so the loop's request catch runs
+      // the recovery pass. The recovery's own read resolves, so it can build and
+      // deliver the 503.
       readTextFile: async (remotePath) => {
+        readCalls += 1;
+        if (readCalls === 1) {
+          return await new Promise<string>(() => {});
+        }
         const body = requestBodies.get(remotePath);
         if (body === undefined) {
           throw new Error(`missing request ${remotePath}`);

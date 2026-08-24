@@ -81,6 +81,19 @@ function failedRepairNotice(repair: WorkspaceOperation): WorkspaceAccessNotice {
   };
 }
 
+function failedProvisionNotice(provision: WorkspaceOperation): WorkspaceAccessNotice {
+  const phase = typeof provision.metadata?.seedFailurePhase === "string"
+    ? provision.metadata.seedFailurePhase
+    : null;
+  return {
+    title: "Database provisioning failed",
+    description: phase
+      ? `The earlier clone attempt failed during ${phase}. The workspace later became usable.`
+      : "An earlier clone attempt failed, but the workspace later became usable.",
+    action: { kind: "view_logs", label: "View provisioning log" },
+  };
+}
+
 const HANDOFF_REASON_COPY: Record<string, string> = {
   handoff_not_configured:
     "This instance has no workspace login handoff configured, so opening the board falls back to snapshot-local credentials.",
@@ -136,6 +149,7 @@ export function resolveWorkspaceAccessState(input: {
   );
   const repairFinishedAt = timestampMs(repair?.finishedAt);
   const servingServiceStartedAt = timestampMs(servingService?.startedAt);
+  const provisionFinishedAt = timestampMs(provision?.finishedAt);
   const readinessConfirmsServing = Boolean(servingService && failure?.readiness?.state === "ready");
   const runtimeStartedAfterRepair = repairFinishedAt !== null
     && servingServiceStartedAt !== null
@@ -144,9 +158,24 @@ export function resolveWorkspaceAccessState(input: {
     servingService
     && (readinessConfirmsServing || runtimeStartedAfterRepair),
   );
+  const successfulRepairFinishedAt = repair?.status === "succeeded"
+    ? timestampMs(repair.finishedAt)
+    : null;
+  // A failed seed is historical once the workspace is demonstrably serving,
+  // or once a later repair has replaced and revalidated that database.
+  const provisionFailureWasSuperseded = provision?.status === "failed" && Boolean(
+    servingService
+    || (
+      provisionFinishedAt !== null
+      && successfulRepairFinishedAt !== null
+      && provisionFinishedAt < successfulRepairFinishedAt
+    ),
+  );
   const secondaryNotice = repair?.status === "failed" && repairFailureWasSuperseded
     ? failedRepairNotice(repair)
-    : undefined;
+    : provision?.status === "failed" && provisionFailureWasSuperseded
+      ? failedProvisionNotice(provision)
+      : undefined;
 
   // A live repair outranks everything: it is already changing the answer.
   if (repair?.status === "running") {
@@ -179,7 +208,7 @@ export function resolveWorkspaceAccessState(input: {
       handoffAvailable,
     };
   }
-  if (provision?.status === "failed") {
+  if (provision?.status === "failed" && !provisionFailureWasSuperseded) {
     const seedPhase = typeof provision.metadata?.seedFailurePhase === "string"
       ? provision.metadata.seedFailurePhase
       : null;
