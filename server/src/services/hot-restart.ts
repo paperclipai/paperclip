@@ -10,7 +10,8 @@ import { isProcessPidAlive } from "./local-service-supervisor.js";
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
-const HOT_RESTART_LOCK_SUFFIX = ".lock";
+// The lock directory is named after the file it guards.
+export const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
 

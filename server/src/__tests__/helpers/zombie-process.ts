@@ -12,7 +12,7 @@ export function readLinuxProcessState(pid: number) {
   }
 }
 
-export async function waitForZombiePid(pid: number, timeoutMs = 2_000) {
+async function waitForZombiePid(pid: number, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (readLinuxProcessState(pid) === "Z") return true;
@@ -103,13 +103,18 @@ export async function spawnZombieLeadProcessGroup() {
 
 // Killing the leader would reap the zombie by orphaning it, so the whole group
 // goes at once and every test that borrowed a zombie pid cleans up the same way.
+//
+// The group is signalled only while the leader is still running. Its pid is also
+// the group id, so once it exits that number can be recycled and `kill(-pgid)`
+// would reach an unrelated group.
 export function disposeZombieLeadProcessGroup(group: Pick<ZombieLeadProcessGroup, "leader" | "processGroupId">) {
-  try {
-    if (Number.isInteger(group.processGroupId) && group.processGroupId > 0) {
+  const leaderRunning = group.leader.exitCode === null && group.leader.signalCode === null;
+  if (leaderRunning && Number.isInteger(group.processGroupId) && group.processGroupId > 0) {
+    try {
       process.kill(-group.processGroupId, "SIGKILL");
+    } catch {
+      // Already gone.
     }
-  } catch {
-    // Already gone.
   }
   try {
     group.leader.kill("SIGKILL");
