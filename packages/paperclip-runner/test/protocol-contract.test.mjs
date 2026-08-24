@@ -9,6 +9,8 @@ import {
   assertCodexQuestionFixture,
   assertConformanceFixturePair,
   assertReplayFixtureCompatibility,
+  assertSchemaInstance,
+  compileProtocolValidators,
   loadSchemaCatalog,
   readJson,
 } from "../scripts/protocol-contract.mjs";
@@ -23,6 +25,7 @@ async function fixture(relativePath) {
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
   assert.equal(schemas.length, 18);
+  assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 
 test("the generated manifest matches all checked-in schemas and fixtures", async () => {
@@ -63,6 +66,23 @@ test("unknown required versions and schemas fail closed", async () => {
   const commandSchema = structuredClone(await fixture("replay/happy-path.json"));
   commandSchema.commands[0].schema = "paperclip.prp.command.v2";
   assert.throws(() => assertReplayFixtureCompatibility(commandSchema), /unsupported_required_schema/);
+});
+
+test("accepted fixtures satisfy the complete JSON Schemas", async () => {
+  const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
+  const validators = compileProtocolValidators(schemas);
+  const happyPath = await fixture("replay/happy-path.json");
+  assert.doesNotThrow(() => assertSchemaInstance(validators.fixture, happyPath, "happy-path"));
+
+  const missingRequiredField = structuredClone(happyPath);
+  delete missingRequiredField.commands[0].commandId;
+  assert.throws(
+    () => assertSchemaInstance(validators.fixture, missingRequiredField, "missing-command-id"),
+    /schema_validation_failed: missing-command-id must be accepted: \/commands\/0 must have required property 'commandId'/,
+  );
+
+  const unsupported = await fixture("replay/unsupported-required-version.json");
+  assert.doesNotThrow(() => assertSchemaInstance(validators.fixture, unsupported, "required-v2", false));
 });
 
 test("the Codex question fixture uses stable provider-neutral IDs", async () => {

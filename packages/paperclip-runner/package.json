@@ -14,5 +14,8 @@
     "generate:protocol-manifest": "node scripts/generate-protocol-manifest.mjs",
     "check:protocol-manifest": "node scripts/generate-protocol-manifest.mjs --check",
     "check:protocol": "pnpm run typecheck && pnpm run check:protocol-manifest && pnpm test"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0"
   }
 }

@@ -8,6 +8,8 @@ import {
   assertCodexQuestionFixture,
   assertConformanceFixturePair,
   assertReplayFixtureCompatibility,
+  assertSchemaInstance,
+  compileProtocolValidators,
   listJsonFiles,
   loadSchemaCatalog,
   portableRelative,
@@ -24,6 +26,7 @@ const expectedRejectedFixture = "fixtures/replay/unsupported-required-version.js
 
 export async function buildProtocolManifest() {
   const schemas = await loadSchemaCatalog(schemaDirectory);
+  const validators = compileProtocolValidators(schemas);
   const fixtureFiles = await listJsonFiles(fixtureDirectory);
   const fixtures = [];
   const fixtureValues = new Map();
@@ -45,14 +48,17 @@ export async function buildProtocolManifest() {
         } catch (error) {
           if (!String(error.message).startsWith("unsupported_required_version:")) throw error;
         }
+        assertSchemaInstance(validators.fixture, value, relativePath, false);
       } else {
         assertReplayFixtureCompatibility(value);
+        assertSchemaInstance(validators.fixture, value, relativePath);
         if (relativePath.endsWith("unknown-optional-fields.json")) {
           compatibilityCase = "additive-optional-fields";
         }
       }
     } else if (relativePath === "fixtures/questions/codex.json") {
       assertCodexQuestionFixture(value);
+      assertSchemaInstance(validators.questionAdapterFixture, value, relativePath);
       compatibilityCase = "codex-structured-input";
     }
 

@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
+import Ajv2020 from "ajv/dist/2020.js";
+
 export const JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 export const PRP_SCHEMA_ID_PREFIX = "https://paperclip.dev/schemas/prp/v1/";
 export const SUPPORTED_FIXTURE_VERSION = 1;
@@ -97,6 +99,42 @@ export async function loadSchemaCatalog(schemaDirectory) {
   }
 
   return records;
+}
+
+export function compileProtocolValidators(schemaRecords) {
+  const ajv = new Ajv2020({
+    allErrors: true,
+    strict: true,
+    strictRequired: false,
+    formats: {
+      "date-time": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/,
+    },
+  });
+  for (const record of schemaRecords) ajv.addSchema(record.value);
+
+  const get = (name) => {
+    const id = `${PRP_SCHEMA_ID_PREFIX}${name}.schema.json`;
+    const validator = ajv.getSchema(id);
+    if (validator === undefined) throw contractError("missing_schema_validator", id);
+    return validator;
+  };
+  return {
+    fixture: get("fixture"),
+    questionAdapterFixture: get("question-adapter-fixture"),
+  };
+}
+
+export function assertSchemaInstance(validator, value, location, expectedValid = true) {
+  const valid = validator(value);
+  if (valid !== expectedValid) {
+    const detail = (validator.errors ?? [])
+      .slice(0, 8)
+      .map((error) => `${error.instancePath || "/"} ${error.message}`)
+      .join("; ");
+    const expectation = expectedValid ? "accepted" : "rejected";
+    throw contractError("schema_validation_failed", `${location} must be ${expectation}: ${detail || "no AJV error"}`);
+  }
+  return value;
 }
 
 function requireSchema(value, expected, location) {
