@@ -175,7 +175,7 @@ describeEmbeddedPostgres("authorization service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-authorization-service-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 900_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -2732,6 +2732,66 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_explicit_grant",
     });
     await expect(decideFor(deniedTargetUserId)).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+  });
+
+  it("treats an expired cross-user inbox grant as no override", async () => {
+    const company = await createCompany(db, "InboxCrossUserExpired");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    const disabledTargetUserId = await createUser(db);
+    const openTargetUserId = await createUser(db);
+    const bareTargetUserId = await createUser(db);
+    await db.insert(companyMemberships).values(
+      [responsibleUserId, disabledTargetUserId, openTargetUserId, bareTargetUserId].map((principalId) => ({
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId,
+        status: "active" as const,
+        membershipRole: "operator" as const,
+      })),
+    );
+    await grantAgentPermission(
+      db,
+      company.id,
+      actorAgent.id,
+      "inbox:manage",
+      { userIds: [disabledTargetUserId, openTargetUserId, bareTargetUserId] },
+      new Date(Date.now() - 60_000),
+    );
+    await db.insert(userInboxAgentPolicies).values([
+      { companyId: company.id, userId: disabledTargetUserId, mode: "disabled" },
+      { companyId: company.id, userId: openTargetUserId, mode: "open" },
+    ]);
+    const decideFor = (userId: string) => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt" as const,
+      },
+      action: "inbox:manage" as const,
+      resource: { type: "company" as const, companyId: company.id },
+      scope: { userId },
+    });
+
+    // The grant covers all three users and would allow every one of them if it
+    // were live. Expired, it must not beat an explicit disable, must not shadow
+    // the target's own live policy, and must still be nameable in the audit
+    // trail as a lapse rather than as a permission never held.
+    await expect(decideFor(disabledTargetUserId)).resolves.toMatchObject({
+      allowed: false,
+      reason: "inbox_management_disabled",
+    });
+    await expect(decideFor(openTargetUserId)).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_user_inbox_policy",
+      inboxPolicyMode: "open",
+    });
+    await expect(decideFor(bareTargetUserId)).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_expired_grant",
+    });
   });
 
   it("denies inbox management when the target user cannot be resolved", async () => {

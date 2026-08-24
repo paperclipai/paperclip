@@ -563,6 +563,16 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
       await db.update(issues).set({ projectId }).where(eq(issues.id, targetIssueId));
       const runId = await seedRun(companyId, agentId, sourceIssueId);
       const interactionId = await seedInteraction(companyId, targetIssueId, "reject", agentId);
+      // The grant only confers while the agent is an active member, the same
+      // rule `decidePrincipalGrant` applies to every other permission key
+      // (FAI-10144 round 3). Without this row the grant names no authority.
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        status: "active",
+        membershipRole: "member",
+      });
       await db.insert(principalPermissionGrants).values({
         companyId,
         principalType: "agent",

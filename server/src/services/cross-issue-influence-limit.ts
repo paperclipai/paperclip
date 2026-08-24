@@ -241,6 +241,7 @@ export async function observeCrossIssueInfluence(
             targetIssueIdentifier: input.targetIssueIdentifier ?? null,
             basis: null,
             commentOnlyBasis: grant.commentOnlyBasis,
+            grantExpiredAt: grant.grantExpiredAt,
             targetAssigneeUserId: grant.targetAssigneeUserId,
             grantMode: grant.mode,
             grantEnforceAt: grant.enforceAt,
@@ -399,6 +400,7 @@ async function auditCrossIssueWriteGrantDenied(
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
         basis: null,
         commentOnlyBasis: grant.commentOnlyBasis,
+        grantExpiredAt: grant.grantExpiredAt,
         grantMode: grant.mode,
         grantEnforceAt: grant.enforceAt,
       },
@@ -488,6 +490,12 @@ export async function assertCrossIssueWriteFence(
         basisAtCheck: fence.basisAtCheck,
         basisAtWrite: null,
         commentOnlyBasis: authority.commentOnlyBasis ?? null,
+        // Non-null when the write was refused because the grant behind it had
+        // lapsed. That is what separates "denied because it expired" from
+        // "denied because it was never granted" after the fact — acceptance
+        // criterion 2 of FAI-10144, which the fence's audit row had collapsed
+        // to a bare `basisAtWrite: null`.
+        grantExpiredAt: authority.grantExpiredAt ?? null,
         targetAssigneeUserId: authority.targetAssigneeUserId ?? null,
         grantMode: "enforce",
         grantEnforceAt: fence.enforceAt,

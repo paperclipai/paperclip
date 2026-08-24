@@ -92,6 +92,12 @@ function counterDb(
     grantScope?: Record<string, unknown> | null;
     /** Null (the default) is a grant with no expiry (FAI-10144). */
     grantExpiresAt?: Date | null;
+    /**
+     * Whether the actor still has an active `company_memberships` row. True by
+     * default; false models the agent suspended or removed out of the company
+     * while its grant row stayed behind, which the schema permits.
+     */
+    activeMembership?: boolean;
   } = {},
 ) {
   let observedCount = initialCount;
@@ -114,6 +120,12 @@ function counterDb(
           if (keys.includes("count")) return resolved([{ count: observedCount }]);
           // Issue facts for the basis resolver.
           if (keys.includes("originFingerprint")) return resolved(issueRows);
+          // The actor's active membership, which the grant lookup requires
+          // before a grant confers anything. The run lookup also selects `id`
+          // but with four more columns, so a lone `id` is unambiguous.
+          if (keys.length === 1 && keys.includes("id")) {
+            return resolved(basisOverrides.activeMembership === false ? [] : [{ id: "membership-1" }]);
+          }
           // The `issues:cross-write` grant lookup; undefined means "no row".
           if (keys.length === 2 && keys.includes("scope") && keys.includes("expiresAt")) {
             return resolved(
@@ -672,6 +684,27 @@ describe("cross-issue write grant (FAI-10132)", () => {
         enforceGrantAt: ENFORCE_AT,
       })).resolves.toMatchObject({ allowed: true });
       expect((live.inserted[0]!.details as { basis: string }).basis).toBe("explicit_permission_grant");
+    });
+
+    /**
+     * A grant is not authority on its own. `decidePrincipalGrant` refuses every
+     * other permission key with `deny_missing_membership` before it reads a
+     * grant row, and this lookup did not — so an agent suspended or removed from
+     * the company kept its cross-issue write authority for as long as the row
+     * sat there. Nothing in the schema deletes the grant with the membership.
+     */
+    it("confers nothing once the actor is no longer an active member", async () => {
+      const suspended = counterDb(0, {}, { ...grantedTo, activeMembership: false });
+
+      await expect(observeCrossIssueInfluence(suspended.db as never, {
+        ...base,
+        now: AFTER,
+        enforceGrantAt: ENFORCE_AT,
+      })).rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_write_grant_required" },
+      });
+      expect(suspended.observedCount).toBe(0);
     });
 
     /**

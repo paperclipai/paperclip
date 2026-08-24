@@ -16,6 +16,7 @@ export { companyUserSidebarPreferences } from "./company_user_sidebar_preference
 export {
   principalPermissionGrants,
   principalGrantIsActive,
+  principalGrantLock,
   principalGrantNotExpired,
 } from "./principal_permission_grants.js";
 export { companySkillPolicies } from "./company_skill_policies.js";

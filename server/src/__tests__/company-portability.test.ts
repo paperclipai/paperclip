@@ -587,6 +587,11 @@ describe("company portability", () => {
                 principalId: "agent-1",
                 permissionKey: "skills:create",
                 scope: { targetAgentIds: ["agent-1"] },
+                // A deliberately time-boxed grant, so the export is exercised on
+                // the case that can actually be widened by a clone. With every
+                // fixture row unbounded the assertion below passed on the
+                // `expiresAt ? ... : null` fallback and proved nothing.
+                expiresAt: new Date("2026-09-06T12:34:56.789Z"),
               },
             ];
           }),
@@ -608,17 +613,23 @@ describe("company portability", () => {
     expect(extension).toContain("permissionGrants:");
     expect(extension).toContain('permissionKey: "agents:suggest-changes"');
     expect(extension).toContain('permissionKey: "skills:create"');
+    // The exact instant, to the millisecond and in UTC. Anything less than an
+    // exact match is a clone that hands the copied agent more time than the
+    // original had — and the import side parses this same string back
+    // (`portableGrantExpirySchema`), so the two together are the round trip.
+    expect(extension).toContain('expiresAt: "2026-09-06T12:34:56.789Z"');
     expect(exported.manifest.agents.find((agent) => agent.slug === "claudecoder")?.permissionGrants).toEqual([
       {
         permissionKey: "agents:suggest-changes",
         scope: null,
-        // Carried so a clone cannot widen a time-boxed grant (FAI-10144).
+        // Null is the pre-FAI-10144 shape: no bound, unchanged behaviour.
         expiresAt: null,
       },
       {
         permissionKey: "skills:create",
         scope: { targetAgentIds: ["agent-1"] },
-        expiresAt: null,
+        // Carried so a clone cannot widen a time-boxed grant (FAI-10144).
+        expiresAt: "2026-09-06T12:34:56.789Z",
       },
     ]);
   });

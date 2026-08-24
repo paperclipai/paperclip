@@ -2024,20 +2024,22 @@ export function authorizationService(db: Db) {
         // explicit consent for agents selected in the profile control. The
         // implicit default-open policy remains responsible-user-only so an
         // absent row never becomes a company-wide cross-user grant.
-        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
-        if (grant && (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
-          return allow({
-            action: input.action,
-            reason: "allow_explicit_grant",
-            explanation: "Allowed by explicit grant inbox:manage.",
-            inboxPolicyMode: "grant_override",
-            grant: {
-              principalType: "agent",
-              principalId: actorAgentId,
-              permissionKey: "inbox:manage",
-              scope: grant.scope ?? null,
-            },
-          });
+        // Routed through decidePrincipalGrant rather than reading the grant row
+        // directly, because this branch is evaluated *before* the disabled-policy
+        // check below: a direct read would let a lapsed grant keep overriding the
+        // target user's explicit consent forever (FAI-10151). Only an allowed
+        // decision overrides the policy; an expired grant falls through to the
+        // policy exactly as an absent one does.
+        const grantDecision = await decidePrincipalGrant({
+          companyId,
+          principalType: "agent",
+          principalId: actorAgentId,
+          action: input.action,
+          permissionKey: "inbox:manage",
+          scope: { userId: targetUserId },
+        });
+        if (grantDecision.allowed) {
+          return { ...grantDecision, inboxPolicyMode: "grant_override" };
         }
 
         if (policy?.mode === "disabled") {
@@ -2065,18 +2067,12 @@ export function authorizationService(db: Db) {
           });
         }
 
-        if (grant) {
-          return deny({
-            action: input.action,
-            reason: "deny_scope",
-            explanation: "Permission inbox:manage does not cover the requested user.",
-            grant: {
-              principalType: "agent",
-              principalId: actorAgentId,
-              permissionKey: "inbox:manage",
-              scope: grant.scope ?? null,
-            },
-          });
+        // No policy allowed, so the grant decision becomes the audit denial. A row
+        // that exists but is out of scope or lapsed says so — and keeps carrying the
+        // grant — while "no row" and "no membership" stay the single missing-grant
+        // answer this branch has always given.
+        if (grantDecision.reason === "deny_scope" || grantDecision.reason === "deny_expired_grant") {
+          return grantDecision;
         }
         return deny({
           action: input.action,

@@ -45,15 +45,24 @@
  *
  * A grant may also lapse on its own (`expires_at`, FAI-10144). That is not a
  * concurrent write, so no lock can order it — instead the re-resolution reads
- * the clock at fence time, which puts an expiry crossing between the cap gate
- * and the write on the same footing as a revocation crossing there: the write
- * rolls back with zero rows. Null `expires_at` means no expiry, so every grant
- * written before that column existed behaves exactly as it always did.
+ * the clock *after* it has taken every blocking lock, which puts an expiry
+ * crossing between the cap gate and the write on the same footing as a
+ * revocation crossing there: the write rolls back with zero rows. Reading it on
+ * entry instead would measure a fence that waited in a lock queue against the
+ * time it arrived rather than the time it got through. Null `expires_at` means
+ * no expiry, so every grant written before that column existed behaves exactly
+ * as it always did.
  */
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, principalGrantIsActive, principalPermissionGrants } from "@paperclipai/db";
+import {
+  companyMemberships,
+  issues,
+  principalGrantIsActive,
+  principalGrantLock,
+  principalPermissionGrants,
+} from "@paperclipai/db";
 import { crossIssueWriteScopeUsesSubtree } from "@paperclipai/shared";
 import { scopeAllows } from "./authorization.js";
 import {
@@ -133,6 +142,14 @@ export type CrossIssueWriteAuthority = {
    * only far enough to comment".
    */
   commentOnlyBasis?: CrossIssueWriteBasis | null;
+  /**
+   * ISO instant an `issues:cross-write` grant lapsed, when the lookup found one
+   * that had. Null when there was no grant at all. Acceptance criterion 2 of
+   * FAI-10144 — "denied because it expired" has to be separable in the audit
+   * trail from "never granted" — and this is the field that carries it out of
+   * the basis walk to `assertCrossIssueWriteFence`.
+   */
+  grantExpiredAt?: string | null;
   /** Whether the target is held by a human. Audit context, never a basis. */
   targetAssigneeUserId?: string | null;
 };
@@ -165,9 +182,10 @@ type ResolveOptions = {
    */
   lockAuthorityInputs?: boolean;
   /**
-   * The instant grant expiry is measured against. Defaults to the wall clock at
-   * the moment of the call, which is what makes the fence's re-resolution catch
-   * an expiry that crossed since the cap gate. Tests pin it.
+   * The instant grant expiry is measured against. Left unset the clock is read
+   * where the expiry is evaluated — after every blocking lock, so a fence that
+   * waited in a lock queue measures against the time it got through rather than
+   * the time it arrived. Tests pin it.
    */
   now?: Date;
 };
@@ -292,14 +310,51 @@ function sameAncestry(a: Map<string, Set<string>>, b: Map<string, Set<string>>):
   return true;
 }
 
-async function explicitGrantScope(
+/**
+ * What the grant lookup found. `expired` is kept apart from `none` all the way
+ * out to the audit row: acceptance criterion 2 of FAI-10144 is that a denial
+ * for a lapsed grant is distinguishable from a denial for a grant that never
+ * existed, and collapsing both to "no scope" here is what erased it.
+ */
+type GrantLookup =
+  | { kind: "none" }
+  | { kind: "expired"; expiresAt: Date }
+  | { kind: "active"; scope: Record<string, unknown> | null };
+
+async function explicitGrantLookup(
   db: BasisReader,
   companyId: string,
   actorAgentId: string,
   lock: boolean,
-  now: Date,
-): Promise<Record<string, unknown> | null | undefined> {
+  pinnedNow: Date | null,
+): Promise<GrantLookup> {
   if (lock) {
+    // Lock order here is membership row, then advisory key, then grant row, and
+    // it is not arbitrary. `setMemberPermissions` and the member-update route
+    // take the membership row first (they `UPDATE` it) and reach the advisory
+    // lock second, inside `grantRowsPreservingExpiry`. A reader that took the
+    // advisory key first and the membership row second would be the mirror of
+    // that and the two would deadlock. Same order on both sides, no cycle.
+    //
+    // The membership row: a suspension or removal racing the mutation either
+    // lands before this and is seen, or waits for the mutation's transaction.
+    await db.execute(sql`
+      SELECT id FROM company_memberships
+      WHERE company_id = ${companyId}
+        AND principal_type = 'agent'
+        AND principal_id = ${actorAgentId}
+      FOR SHARE
+    `);
+    // The same advisory lock every grant writer takes, in shared mode. A grant
+    // replacement deletes and reinserts rows, so `FOR SHARE` on the row below
+    // pins only the row that happens to exist right now; the advisory key is
+    // what a reader and a wholesale replacement can both name (FAI-10144
+    // round 3, and the FAI-10151 membership-row lock this replaces — that row
+    // is not guaranteed to exist, and an absent one locked nothing).
+    await db.execute(principalGrantLock(
+      { companyId, principalType: "agent", principalId: actorAgentId },
+      "shared",
+    ));
     // `FOR SHARE` on the grant row: a revocation racing the mutation either
     // lands before this and is seen, or waits for the mutation's transaction.
     // The same lock covers `expires_at` — an operator shortening the expiry
@@ -313,6 +368,25 @@ async function explicitGrantScope(
       FOR SHARE
     `);
   }
+  // A grant confers nothing without an active membership behind it. That is
+  // already how `decidePrincipalGrant` reads every other permission key
+  // (`deny_missing_membership` precedes the grant lookup), and this path skipped
+  // it: nothing in the schema ties a grant to a membership, so a suspended or
+  // removed agent kept its cross-issue write authority for as long as the row
+  // sat there (FAI-10144 round 3). Checked before the grant read so a
+  // membership-less principal costs one query, not two.
+  const membership = await db
+    .select({ id: companyMemberships.id })
+    .from(companyMemberships)
+    .where(and(
+      eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalType, "agent"),
+      eq(companyMemberships.principalId, actorAgentId),
+      eq(companyMemberships.status, "active"),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (!membership) return { kind: "none" };
+
   const grant = await db
     .select({
       scope: principalPermissionGrants.scope,
@@ -326,16 +400,24 @@ async function explicitGrantScope(
       eq(principalPermissionGrants.permissionKey, CROSS_ISSUE_WRITE_PERMISSION_KEY),
     ))
     .then((rows) => rows[0] ?? null);
-  if (!grant) return undefined;
+  if (!grant) return { kind: "none" };
   // Expiry is filtered in JS, not in the `where`, so the locked read and the
   // decision share one snapshot of the row: the lock above is what makes an
-  // expiry crossing mid-write as binding as a revocation crossing mid-write,
-  // and `now` is read at fence time rather than at cap-gate time (FAI-10144).
-  // An expired grant is indistinguishable from no grant *to the basis walk* —
-  // both fall through to deny — but the two are separable in the audit trail by
-  // the row that is still there.
-  if (!principalGrantIsActive(grant, now)) return undefined;
-  return grant.scope;
+  // expiry crossing mid-write as binding as a revocation crossing mid-write.
+  // An expired grant denies the same way no grant does, but it says so as
+  // `expired` and carries the instant it lapsed, which is what keeps the two
+  // apart in the audit trail.
+  //
+  // The clock is read *here*, after the locks, not when the fence was entered.
+  // Every lock above can block for as long as the transaction holding it runs,
+  // and a fence time captured before that measures expiry against an instant
+  // that may be arbitrarily far in the past — long enough for the grant to have
+  // lapsed while this transaction sat in the lock queue, and the write would
+  // still land. Tests pin the instant instead.
+  if (!principalGrantIsActive(grant, pinnedNow ?? new Date())) {
+    return { kind: "expired", expiresAt: grant.expiresAt! };
+  }
+  return { kind: "active", scope: grant.scope };
 }
 
 /**
@@ -359,7 +441,6 @@ export async function resolveCrossIssueWriteBasis(
   options: ResolveOptions = {},
 ): Promise<CrossIssueWriteAuthority> {
   const lock = options.lockAuthorityInputs === true;
-  const now = options.now ?? new Date();
   if (lock) await lockIssueRows(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
 
   const facts = await loadIssueFacts(db, input.companyId, [input.sourceIssueId, input.targetIssueId]);
@@ -375,6 +456,9 @@ export async function resolveCrossIssueWriteBasis(
   // for being comment-grade is distinguishable in the audit trail from a write
   // with no relationship at all.
   let commentOnlyBasis: CrossIssueWriteBasis | null = null;
+  // Set only when the grant lookup found a row that had lapsed, so a denial can
+  // say "this authority expired at T" rather than "there was never a grant".
+  let grantExpiredAt: string | null = null;
   const accept = (basis: CrossIssueWriteBasis): CrossIssueWriteAuthority | null => {
     if (crossIssueWriteBasisAuthorizes(basis, input.operation)) {
       return { basis, commentOnlyBasis: null, targetAssigneeUserId };
@@ -382,7 +466,12 @@ export async function resolveCrossIssueWriteBasis(
     commentOnlyBasis ??= basis;
     return null;
   };
-  const deny = (): CrossIssueWriteAuthority => ({ basis: null, commentOnlyBasis, targetAssigneeUserId });
+  const deny = (): CrossIssueWriteAuthority => ({
+    basis: null,
+    commentOnlyBasis,
+    targetAssigneeUserId,
+    grantExpiredAt,
+  });
 
   if (target.assigneeAgentId === input.actorAgentId) {
     const held = accept("actor_is_target_assignee");
@@ -423,8 +512,16 @@ export async function resolveCrossIssueWriteBasis(
     }
   }
 
-  const grantScope = await explicitGrantScope(db, input.companyId, input.actorAgentId, lock, now);
-  if (grantScope !== undefined) {
+  const lookup = await explicitGrantLookup(
+    db,
+    input.companyId,
+    input.actorAgentId,
+    lock,
+    options.now ?? null,
+  );
+  if (lookup.kind === "expired") grantExpiredAt = lookup.expiresAt.toISOString();
+  if (lookup.kind === "active") {
+    const grantScope = lookup.scope;
     // `requireStructuredScope` rejects an empty scope; `requireRecognizedConstraint`
     // rejects a *non-empty* scope that constrains nothing this evaluator
     // understands (`{"note":"scoped"}`). Without the second one an unrecognized
@@ -479,6 +576,8 @@ export type CrossIssueWriteGrantDecision = {
   mode: CrossIssueWriteGrantMode;
   basis: CrossIssueWriteBasis | null;
   commentOnlyBasis: CrossIssueWriteBasis | null;
+  /** See `CrossIssueWriteAuthority.grantExpiredAt`. */
+  grantExpiredAt: string | null;
   targetAssigneeUserId: string | null;
   enforceAt: string | null;
 };
@@ -510,6 +609,7 @@ export function evaluateCrossIssueWriteGrant(input: {
     mode,
     basis: input.authority.basis,
     commentOnlyBasis: input.authority.commentOnlyBasis ?? null,
+    grantExpiredAt: input.authority.grantExpiredAt ?? null,
     targetAssigneeUserId: input.authority.targetAssigneeUserId ?? null,
     enforceAt: enforceAt ? enforceAt.toISOString() : null,
   };

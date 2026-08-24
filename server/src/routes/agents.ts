@@ -2,7 +2,14 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import {
+  agents as agentsTable,
+  companies,
+  heartbeatRuns,
+  issues as issuesTable,
+  principalGrantIsActive,
+  projects as projectsTable,
+} from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -1007,7 +1014,16 @@ export function agentRoutes(
     const grants = membership
       ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
       : [];
-    const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
+    // A lapsed grant confers nothing, so it must not be reported as authority
+    // either. `decidePrincipalGrant` denies an expired `tasks:assign` with
+    // `deny_expired_grant`, and reading the row's presence alone had this
+    // surface answering `taskAssignSource: "explicit_grant"` for an agent the
+    // evaluator refuses — a detail page contradicting the decision it describes
+    // (FAI-10144). The rows themselves are still returned with their
+    // `expiresAt`, so a client can show the bound rather than infer it.
+    const hasExplicitTaskAssignGrant = grants.some(
+      (grant) => grant.permissionKey === "tasks:assign" && principalGrantIsActive(grant),
+    );
 
     if (agent.role === "ceo") {
       return {

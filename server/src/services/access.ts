@@ -4,6 +4,7 @@ import {
   companyMemberships,
   instanceUserRoles,
   issues,
+  principalGrantLock,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
@@ -38,14 +39,6 @@ function normalizeExpiresAt(value: Date | string | null): Date | null {
  * The one lock every writer of `principal_permission_grants` takes, so that no
  * two of them can interleave.
  *
- * It is the principal's `company_memberships` row rather than the grant rows
- * themselves because a replacement *deletes and reinserts* grants instead of
- * updating them in place, and a lock on a row that is about to stop existing
- * orders nothing — see `grantRowsPreservingExpiry` for the full reasoning. The
- * membership row is never deleted by a grant write, so blocking on it and
- * reading afterwards makes the read a new statement with a new snapshot, and
- * the waiter observes the winner's committed rows.
- *
  * Both writers have to take it, not just the replacement path.
  * `setPrincipalPermission` is a read-then-write too: it finds a grant row and
  * then updates it by id, so a replacement that lands in between deletes the row
@@ -55,27 +48,24 @@ function normalizeExpiresAt(value: Date | string | null): Date | null {
  * lands inside a replacement's read-then-write window is undone by the
  * reinsert, resurrecting a grant an operator just removed.
  *
- * `tx` must be a real transaction. In autocommit the lock is released at the
- * end of the statement that took it and serializes nothing.
+ * The lock is advisory, keyed on the principal's identity, because no *row*
+ * serves. Locking the grant rows orders nothing against a replacement that
+ * deletes and reinserts them (see `grantRowsPreservingExpiry`), and locking the
+ * principal's `company_memberships` row — what this took until FAI-10144 round
+ * 3 — silently degraded to no lock whenever that row was absent. It is absent
+ * more often than "a principal with no membership has no grants" suggested:
+ * nothing in the schema ties a grant to a membership, the revoke path never
+ * requires one, and a membership removed after grants were written leaves them
+ * behind. Two writers racing there serialized nothing. See `principalGrantLock`.
  *
- * A principal with no membership row has no grants, so there is nothing to
- * serialize and the empty lock read is correct.
+ * `tx` must be a real transaction. In autocommit an `_xact_` advisory lock is
+ * released before the statement it was meant to guard.
  */
 async function lockPrincipalGrantWrites(
-  tx: Pick<Db, "select">,
+  tx: Pick<Db, "execute">,
   input: { companyId: string; principalType: PrincipalType; principalId: string },
 ) {
-  await tx
-    .select({ id: companyMemberships.id })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.companyId, input.companyId),
-        eq(companyMemberships.principalType, input.principalType),
-        eq(companyMemberships.principalId, input.principalId),
-      ),
-    )
-    .for("update");
+  await tx.execute(principalGrantLock(input));
 }
 
 /**
@@ -106,18 +96,18 @@ async function lockPrincipalGrantWrites(
  * omission widening authority, which is the one thing this function exists to
  * prevent.
  *
- * So the serializing lock is taken on the principal's `company_memberships`
- * row, which a grant replacement never deletes — see
- * `lockPrincipalGrantWrites`. This lock has to be taken here rather than in the
- * callers: two of the four call sites invoke this as the first statement in
- * their transaction and hold no other lock.
+ * So the serializing lock is an advisory lock on the principal's identity,
+ * which exists whether or not any row does — see `lockPrincipalGrantWrites`. It
+ * has to be taken here rather than in the callers: two of the four call sites
+ * invoke this as the first statement in their transaction and hold no other
+ * lock.
  *
  * `FOR UPDATE` stays on the grant read too. It is redundant once both writers
- * hold the membership lock, but it keeps the rows this function reads pinned
- * for the duration of the replacement that follows.
+ * hold the advisory lock, but it keeps the rows this function reads pinned for
+ * the duration of the replacement that follows.
  */
 export async function grantRowsPreservingExpiry(
-  tx: Pick<Db, "select">,
+  tx: Pick<Db, "select" | "execute">,
   input: {
     companyId: string;
     principalType: PrincipalType;

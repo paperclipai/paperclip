@@ -1,4 +1,4 @@
-import { gt, isNull, or, type SQL } from "drizzle-orm";
+import { gt, isNull, or, sql, type SQL } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
@@ -69,4 +69,33 @@ export function principalGrantNotExpired(now: Date = new Date()): SQL {
     isNull(principalPermissionGrants.expiresAt),
     gt(principalPermissionGrants.expiresAt, now),
   )!;
+}
+
+/**
+ * The lock that serializes everything touching one principal's grants: taken
+ * exclusively by every writer, and in shared mode by the cross-issue write
+ * fence, which has to stay binding through commit.
+ *
+ * It is an advisory lock rather than a row lock because no row reliably exists
+ * for the identity being serialized. The grant rows are *deleted and
+ * reinserted* by a wholesale replacement, so a lock on one orders nothing
+ * against the replacement that recycles it. The principal's
+ * `company_memberships` row — the previous choice — is not guaranteed to exist
+ * either: nothing in this schema ties a grant to a membership, and the revoke
+ * path writes without one, so two writers racing on a principal whose
+ * membership row was already gone locked nothing at all and serialized nothing
+ * (FAI-10144). An advisory key is derived from the identity, so it exists
+ * exactly when the identity does.
+ *
+ * Must run inside a real transaction: `_xact_` releases at commit or rollback,
+ * and in autocommit it is released before the statement it was meant to guard.
+ */
+export function principalGrantLock(
+  input: { companyId: string; principalType: string; principalId: string },
+  mode: "exclusive" | "shared" = "exclusive",
+): SQL {
+  const key = `principal_permission_grants:${input.companyId}:${input.principalType}:${input.principalId}`;
+  return mode === "shared"
+    ? sql`select pg_advisory_xact_lock_shared(hashtextextended(${key}, 0))`
+    : sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
 }

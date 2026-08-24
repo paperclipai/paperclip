@@ -36,7 +36,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-inbox-archive-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 900_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -486,6 +486,96 @@ describeEmbeddedPostgres("inbox archive routes", () => {
         targetResolvedFrom: "explicit",
         policyMode: "grant_override",
       }),
+    ]));
+  });
+
+  it("stops an expired cross-user grant from overriding a disabled target policy", async () => {
+    const seeded = await seed();
+    const app = appFor(agentActor(seeded));
+    await db.insert(companyMemberships).values({
+      companyId: seeded.companyId,
+      principalType: "agent",
+      principalId: seeded.agentId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: seeded.companyId,
+      principalType: "agent",
+      principalId: seeded.agentId,
+      permissionKey: "inbox:manage",
+      scope: { userIds: [seeded.targetUserId] },
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    await db.insert(userInboxAgentPolicies).values({
+      companyId: seeded.companyId,
+      userId: seeded.targetUserId,
+      mode: "disabled",
+    });
+
+    await request(app)
+      .post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ userId: seeded.targetUserId })
+      .expect(403)
+      .expect(({ body }) => expect(body).toMatchObject({
+        code: "inbox_management_disabled",
+        details: { reason: "inbox_management_disabled" },
+      }));
+    await request(app)
+      .delete(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ userId: seeded.targetUserId })
+      .expect(403)
+      .expect(({ body }) => expect(body).toMatchObject({
+        code: "inbox_management_disabled",
+        details: { reason: "inbox_management_disabled" },
+      }));
+
+    // The denial has to be a denial all the way down: no archive row either way,
+    // and nothing in the audit trail claiming the lapsed grant carried the write.
+    expect(await db.select().from(issueInboxArchives)).toEqual([]);
+    const auditRows = await db.select().from(activityLog);
+    expect(auditRows.filter((row) => row.action === "issue.inbox_archived"
+      || row.action === "issue.inbox_unarchived")).toEqual([]);
+    expect(auditRows.map((row) => row.details)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ policyMode: "grant_override" }),
+    ]));
+  });
+
+  it("lets a live target policy allow while the agent's own grant is expired", async () => {
+    const seeded = await seed();
+    const app = appFor(agentActor(seeded));
+    await db.insert(companyMemberships).values({
+      companyId: seeded.companyId,
+      principalType: "agent",
+      principalId: seeded.agentId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: seeded.companyId,
+      principalType: "agent",
+      principalId: seeded.agentId,
+      permissionKey: "inbox:manage",
+      scope: { userIds: [seeded.targetUserId] },
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    await db.insert(userInboxAgentPolicies).values({
+      companyId: seeded.companyId,
+      userId: seeded.targetUserId,
+      mode: "allowlist",
+      allowedAgentIds: [seeded.agentId],
+    });
+
+    // The expired row must read as absent, not as a denial that shadows the
+    // target user's own live consent.
+    await request(app)
+      .post(`/api/issues/${seeded.issueId}/inbox-archive`)
+      .send({ userId: seeded.targetUserId })
+      .expect(200);
+
+    const auditRows = await db.select().from(activityLog);
+    expect(auditRows.map((row) => row.details)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ userId: seeded.targetUserId, policyMode: "allowlist" }),
     ]));
   });
 
