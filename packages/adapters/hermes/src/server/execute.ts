@@ -744,11 +744,34 @@ export async function execute(
     "stdout",
     `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${effectiveMaxTurns ? `, max_turns=${effectiveMaxTurns}` : ""})\n`,
   );
+  // TSMC-21482: baseline a RESUMED session's prior usage.
+  //
+  // `readHermesSessionUsage` sums `session_model_usage` for the whole SESSION,
+  // and with persistSession a session now spans many runs. Comparing that
+  // lifetime total against `maxTokensPerRun` — a PER-RUN cap — makes every
+  // long-lived session eventually trip `token_budget_exhausted` on a run that
+  // did almost no work of its own. (The heartbeat service already deltas the
+  // reported usage — see `usageSource: "session_delta"` — but that happens
+  // AFTER the adapter has decided to kill the run, so it cannot help here.)
+  //
+  // Record what the session had already consumed before this run started, and
+  // charge the budget only for the delta. Cold runs baseline at 0, so their
+  // behaviour is unchanged.
+  let sessionUsageBaseline = 0;
   if (prevSessionId) {
     await ctx.onLog(
       "stdout",
       `[hermes] Resuming session: ${prevSessionId}\n`,
     );
+    if (maxTokensPerRun > 0) {
+      sessionUsageBaseline = totalUsageTokens(await readHermesSessionUsage(prevSessionId));
+      if (sessionUsageBaseline > 0) {
+        await ctx.onLog(
+          "stdout",
+          `[hermes] Session already consumed ${sessionUsageBaseline} weighted tokens before this run; budgeting the delta against maxTokensPerRun=${maxTokensPerRun}.\n`,
+        );
+      }
+    }
   }
 
   // ── Execute ────────────────────────────────────────────────────────────
@@ -786,10 +809,26 @@ export async function execute(
     monitorBusy = true;
     try {
       const live = await readHermesRunUsageBySource(runSource);
-      if (!live) return;
-      monitoredSessionId = live.sessionId;
-      monitoredUsage = live.usage;
-      tokenBudgetObserved = Math.max(tokenBudgetObserved, totalUsageTokens(live.usage));
+      if (live) {
+        monitoredSessionId = live.sessionId;
+        monitoredUsage = live.usage;
+        tokenBudgetObserved = Math.max(tokenBudgetObserved, totalUsageTokens(live.usage));
+      } else if (prevSessionId) {
+        // TSMC-21482: a RESUMED run writes no new `sessions` row — Hermes keeps
+        // appending to the original row, which still carries the FIRST run's
+        // --source. So the source lookup misses on every warm run and this
+        // kill switch was silently inert exactly when a session is longest.
+        // Fall back to the session ledger, minus the pre-run baseline.
+        const liveSession = await readHermesSessionUsage(prevSessionId);
+        if (!liveSession) return;
+        monitoredSessionId = prevSessionId;
+        tokenBudgetObserved = Math.max(
+          tokenBudgetObserved,
+          Math.max(0, totalUsageTokens(liveSession) - sessionUsageBaseline),
+        );
+      } else {
+        return;
+      }
       if (tokenBudgetObserved < maxTokensPerRun) return;
 
       tokenBudgetExceeded = true;
@@ -867,10 +906,18 @@ export async function execute(
     }
   }
   const resolvedSessionId = parsed.sessionId ?? monitoredSessionId;
+  const sessionUsageIsCumulative = Boolean(resolvedSessionId);
   const sessionUsage = resolvedSessionId
     ? await readHermesSessionUsage(resolvedSessionId) ?? monitoredUsage
     : monitoredUsage;
-  tokenBudgetObserved = Math.max(tokenBudgetObserved, totalUsageTokens(sessionUsage));
+  // TSMC-21482: subtract the pre-run baseline so a resumed session is charged
+  // for THIS run only. `monitoredUsage` is already run-scoped (keyed on the
+  // per-run --source), so it is never re-baselined.
+  const sessionUsageTotal = totalUsageTokens(sessionUsage);
+  const runScopedUsageTotal = sessionUsageIsCumulative && sessionUsage !== monitoredUsage
+    ? Math.max(0, sessionUsageTotal - sessionUsageBaseline)
+    : sessionUsageTotal;
+  tokenBudgetObserved = Math.max(tokenBudgetObserved, runScopedUsageTotal);
   if (maxTokensPerRun > 0 && tokenBudgetObserved >= maxTokensPerRun) {
     tokenBudgetExceeded = true;
   }

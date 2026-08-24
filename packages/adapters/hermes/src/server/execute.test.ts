@@ -548,7 +548,7 @@ describe("hermes execute", () => {
       config: {
         cwd: root,
         model: "grok-4.5",
-        maxTokensPerRun: 40_000,
+        maxTokensPerRun: 30_000,
         liveUsagePollIntervalMs: 5,
       },
       context: {},
@@ -560,12 +560,126 @@ describe("hermes execute", () => {
     expect(result.errorCode).toBe("token_budget_exhausted");
     expect(result.clearSession).toBe(true);
     expect(result.usage).toEqual({ inputTokens: 30_000, outputTokens: 5_000, cachedInputTokens: 65_000 });
-    // Budget-weighted (TSMC-20840): 30_000 + 5_000 + 0.1 * 65_000 = 41_500.
+    // Budget-weighted: 30_000 + 5_000 + CACHED_INPUT_BUDGET_WEIGHT (0.02) * 65_000
+    // = 36_300. This expectation was stale at 41_500 from the old 0.1 weight,
+    // which put it under the cap so the kill never fired and the test hung.
     expect(result.resultJson).toMatchObject({
       stopReason: "token_budget_exhausted",
-      maxTokensPerRun: 40_000,
-      observedTokens: 41_500,
+      maxTokensPerRun: 30_000,
+      observedTokens: 36_300,
       session_id: "sess-live-cap",
+    });
+  });
+
+  it("charges a RESUMED session only for THIS run's delta, not the session lifetime", async () => {
+    // TSMC-21482 regression. `readHermesSessionUsage` sums the whole session,
+    // and with persistSession a session spans many runs. Comparing that
+    // lifetime total against the PER-RUN cap made a resumed run that did almost
+    // no work of its own fail with token_budget_exhausted.
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    const stateDbPath = path.join(root, ".hermes", "state.db");
+    process.env.HERMES_STATE_DB = stateDbPath;
+    execFileSync("sqlite3", [
+      stateDbPath,
+      [
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL,",
+        "input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0);",
+        "CREATE TABLE session_model_usage (session_id TEXT NOT NULL, model TEXT NOT NULL, billing_provider TEXT NOT NULL DEFAULT '',",
+        "billing_base_url TEXT NOT NULL DEFAULT '', billing_mode TEXT NOT NULL DEFAULT '', task TEXT NOT NULL DEFAULT '',",
+        "input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0);",
+        // The session has ALREADY consumed 115_000 weighted tokens across prior
+        // runs (100_000 + 5_000 + 0.02 * 500_000), far above the 50_000 cap.
+        "INSERT INTO session_model_usage VALUES ('sess-resume', 'grok-4.5', '', '', '', '', 100000, 5000, 500000);",
+      ].join(" "),
+    ]);
+    // A resumed run writes NO new `sessions` row, so the run-scoped source
+    // lookup finds nothing — exactly the production shape.
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "session_id: sess-resume\nContinued the work.",
+      stderr: "",
+    });
+
+    const result = await execute({
+      runId: "run-resume-delta",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "sess-resume",
+        sessionParams: { sessionId: "sess-resume" },
+        sessionDisplayId: null,
+        taskKey: "task-1",
+      },
+      config: { cwd: root, model: "grok-4.5", maxTokensPerRun: 50_000, liveUsagePollIntervalMs: 5 },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    // The run added nothing of its own -> delta 0 -> must NOT trip the cap.
+    expect(result.errorCode).not.toBe("token_budget_exhausted");
+    expect(processMocks.signalRunningProcess).not.toHaveBeenCalled();
+    expect(result.resultJson).not.toMatchObject({ stopReason: "token_budget_exhausted" });
+  });
+
+  it("still trips the cap when a RESUMED run's own delta exceeds it", async () => {
+    // Guardrail for the fix above: baselining must not disable the cap.
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    const stateDbPath = path.join(root, ".hermes", "state.db");
+    process.env.HERMES_STATE_DB = stateDbPath;
+    execFileSync("sqlite3", [
+      stateDbPath,
+      [
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL,",
+        "input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0);",
+        "CREATE TABLE session_model_usage (session_id TEXT NOT NULL, model TEXT NOT NULL, billing_provider TEXT NOT NULL DEFAULT '',",
+        "billing_base_url TEXT NOT NULL DEFAULT '', billing_mode TEXT NOT NULL DEFAULT '', task TEXT NOT NULL DEFAULT '',",
+        "input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0);",
+        "INSERT INTO session_model_usage VALUES ('sess-resume-big', 'grok-4.5', '', '', '', '', 100000, 5000, 500000);",
+      ].join(" "),
+    ]);
+    // The run itself burns 60_000 more input tokens -> delta 60_000 > 50_000 cap.
+    runChildProcessMock.mockImplementation(async () => {
+      execFileSync("sqlite3", [
+        stateDbPath,
+        "UPDATE session_model_usage SET input_tokens = 160000 WHERE session_id = 'sess-resume-big';",
+      ]);
+      return { exitCode: 0, signal: null, timedOut: false, stdout: "session_id: sess-resume-big\nBurned a lot.", stderr: "" };
+    });
+
+    const result = await execute({
+      runId: "run-resume-delta-big",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "sess-resume-big",
+        sessionParams: { sessionId: "sess-resume-big" },
+        sessionDisplayId: null,
+        taskKey: "task-1",
+      },
+      config: { cwd: root, model: "grok-4.5", maxTokensPerRun: 50_000, liveUsagePollIntervalMs: 5 },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.errorCode).toBe("token_budget_exhausted");
+    expect(result.resultJson).toMatchObject({
+      stopReason: "token_budget_exhausted",
+      maxTokensPerRun: 50_000,
+      observedTokens: 60_000,
     });
   });
 
