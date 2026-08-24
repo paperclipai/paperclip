@@ -869,6 +869,15 @@ const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+
+/**
+ * TSMC-21406: how long a run may sit terminal before the orphaned-wakeup reaper
+ * reconciles its wake row. A run reaches a terminal status a moment before its
+ * own finalizer writes the wake status; reconciling inside that gap would race
+ * the healthy path and mislabel it. Ten minutes is far beyond that gap and far
+ * below the hours-to-months ages of the rows this drains.
+ */
+const TERMINAL_RUN_WAKE_RECONCILE_GRACE_MS = 10 * 60 * 1000;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
@@ -10485,6 +10494,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return write.run ?? run;
     }
 
+    // TSMC-21406: terminalize the WAKE too, not just the run.
+    //
+    // This function was written to stop a finished task showing "Live" forever,
+    // and it fixed the run row. The wake row was left behind, so every run that
+    // ended here kept its wake in "claimed"/"queued" permanently: measured
+    // 2026-08-24, interrupted -> claimed accounted for 93 of the 7-day leaks and
+    // 76 of the 179 wakes stuck beyond two hours, the oldest from 2026-06-05.
+    //
+    // That is not cosmetic. TSMC-21321's still-blocked suppression treats a
+    // queued wake as in-flight, so one leaked row silently suppresses every later
+    // issue_blockers_resolved wake for that issue — five TSMC cards were frozen
+    // this way on 2026-08-24 and had to be moved by hand.
+    //
+    // "interrupted" maps to a cancelled wake, matching the shutdown path and the
+    // dominant healthy mapping already in the data (interrupted -> cancelled).
+    await setWakeupStatus(
+      run.wakeupRequestId,
+      terminalStatus === "succeeded" ? "completed" : "cancelled",
+      {
+        finishedAt: write.run?.finishedAt ?? run.finishedAt ?? new Date(),
+        error: terminalStatus === "interrupted" ? message : null,
+      },
+    );
+
     const terminalRun = write.run;
     if (terminalRun) {
       await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
@@ -17945,7 +17978,74 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length }, "orphaned-wakeup reaper cancelled wakeups for done/cancelled issues");
     }
-    return { reaped: reaped.length, ids: reaped.map((r) => r.id) };
+
+    // TSMC-21406: reconcile wakes whose RUN already reached a terminal status.
+    //
+    // Measured 2026-08-24: all 179 wakes stuck in queued/claimed for >2h had a
+    // linked run, and EVERY one of those runs was already terminal — interrupted
+    // 76, cancelled 73, succeeded 19, failed 11. None was waiting for capacity or
+    // for a dispatcher; the run finished and nothing advanced the wake row, so
+    // finishedAt stayed null forever. The oldest dated to 2026-06-05.
+    //
+    // Two leak paths produce this, both confirmed against 7 days of live rows:
+    //   interrupted -> claimed (93)  the run was terminalized by
+    //     terminalizeRunOnLeaseRelease / orphan recovery, which write the RUN row
+    //     but never touch the wake;
+    //   cancelled  -> queued  (122)  the run was cancelled before it ever started,
+    //     so no completion path ran at all.
+    // The healthy mapping dominates everywhere else (succeeded -> completed 80795),
+    // which is why this leaked quietly for months.
+    //
+    // This is a backstop, not the primary fix: the source leak is closed in
+    // terminalizeRunOnLeaseRelease. A backstop is still required because it also
+    // drains the historical backlog and covers any terminal path not yet found.
+    // A stuck wake is not inert — TSMC-21321's still-blocked suppression treats a
+    // queued wake as in-flight, so one leaked row silently suppresses every later
+    // issue_blockers_resolved wake for that issue.
+    //
+    // The grace window matters: a run is terminal for a short moment before its
+    // own finalizer sets the wake status. Reconciling immediately would race that
+    // write and mislabel healthy runs. Only rows whose run finished longer ago
+    // than the window are touched.
+    const reconcileGraceMs = TERMINAL_RUN_WAKE_RECONCILE_GRACE_MS;
+    const reconcileCutoff = new Date(now.getTime() - reconcileGraceMs);
+    const reconciled = await db
+      .update(agentWakeupRequests)
+      .set({
+        status: sql`CASE ${heartbeatRuns.status}
+          WHEN 'succeeded' THEN 'completed'
+          WHEN 'failed' THEN 'failed'
+          WHEN 'timed_out' THEN 'timed_out'
+          ELSE 'cancelled'
+        END`,
+        finishedAt: sql`COALESCE(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz)`,
+        error: sql`COALESCE(${agentWakeupRequests.error}, 'wake reconciled from terminal run status ' || ${heartbeatRuns.status})`,
+        updatedAt: now,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, agentWakeupRequests.runId),
+          inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          isNotNull(heartbeatRuns.finishedAt),
+          lt(heartbeatRuns.finishedAt, reconcileCutoff),
+        ),
+      )
+      .returning({ id: agentWakeupRequests.id });
+    if (reconciled.length > 0) {
+      logger.warn(
+        { reconciledCount: reconciled.length, graceMs: reconcileGraceMs },
+        "orphaned-wakeup reaper reconciled wakeups whose run had already reached a terminal status",
+      );
+    }
+
+    return {
+      reaped: reaped.length,
+      ids: reaped.map((r) => r.id),
+      reconciled: reconciled.length,
+      reconciledIds: reconciled.map((r) => r.id),
+    };
   }
 
   async function resumeQueuedRuns(opts?: { maxRounds?: number }) {

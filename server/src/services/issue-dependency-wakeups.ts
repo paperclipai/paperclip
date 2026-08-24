@@ -9,6 +9,18 @@ export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 // for these statuses. The level-triggered state key uses this full set so that
 // one wake for a ready state suppresses further wakes for the SAME state. This
 // bounds reconciliation: after one wake, later passes find the completed row.
+/**
+ * TSMC-21406: how long a wake may sit in queued/claimed before
+ * findStillBlockedDependencyWakeSuppression stops treating it as in flight.
+ *
+ * Generous on purpose. A real wake is claimed within seconds and its run rarely
+ * outlives an hour; the rows this guards against were stuck for hours to months.
+ * The cost of being wrong in the permissive direction is one duplicate wake; the
+ * cost of being wrong in the strict direction is an issue silently wedged shut,
+ * which is what happened.
+ */
+const STALE_IN_FLIGHT_DEPENDENCY_WAKE_MS = 2 * 60 * 60 * 1000;
+
 const IDEMPOTENT_DEPENDENCY_WAKE_STATUSES = [
   "queued",
   "deferred_issue_execution",
@@ -440,7 +452,24 @@ export async function findStillBlockedDependencyWakeSuppression(
     newest.status === "deferred_issue_execution" ||
     newest.status === "claimed"
   ) {
-    return newest;
+    // TSMC-21406: only a GENUINELY live wake suppresses. A wake row that has sat
+    // in queued/claimed past this window is not in flight — it is leaked.
+    //
+    // Measured 2026-08-24: all 179 wakes stuck beyond two hours had a linked run,
+    // and every one of those runs was already terminal. Because this check keys
+    // purely off status, one leaked row suppressed every later
+    // issue_blockers_resolved wake for its issue FOREVER — five TSMC cards sat
+    // blocked with all their blockers already `done`, invisible to the fleet,
+    // until they were moved by hand.
+    //
+    // The primary fix is upstream: the reaper now reconciles these rows and the
+    // lease-release path no longer leaks them. This is the second line of defence,
+    // and it is the one that matters if a leak path is ever found that the reaper
+    // does not cover — a stalled wake must not be able to wedge an issue shut.
+    const wakeAge = now.getTime() - (newest.createdAt?.getTime() ?? now.getTime());
+    if (wakeAge <= STALE_IN_FLIGHT_DEPENDENCY_WAKE_MS) return newest;
+    // Fall through: treat a stale row as history, so the escalating cooldown
+    // below still applies and this cannot become a re-wake loop either.
   }
 
   // Permanent-hold cancels suppress forever at issue level too (any key).

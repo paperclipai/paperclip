@@ -3333,6 +3333,116 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(byId.get(wNoIssue)?.status).toBe("queued");
   });
 
+  it("reapOrphanedWakeups reconciles wakes whose run already reached a terminal status, respecting the grace window (TSMC-21406)", async () => {
+    // Measured 2026-08-24: all 179 wakes stuck in queued/claimed beyond two hours
+    // had a linked run, and EVERY one of those runs was already terminal —
+    // interrupted 76, cancelled 73, succeeded 19, failed 11; oldest 2026-06-05.
+    // Nothing was waiting for capacity. The run ended and the wake row was never
+    // advanced, so finishedAt stayed null forever.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const longAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+    const justNow = new Date(now.getTime() - 60 * 1000); // inside the 10m grace
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    type RunStatus = (typeof heartbeatRuns.$inferInsert)["status"];
+    type WakeStatus = (typeof agentWakeupRequests.$inferInsert)["status"];
+
+    const seed = async (
+      runStatus: string,
+      wakeStatus: string,
+      finishedAt: Date | null,
+    ) => {
+      const runId = randomUUID();
+      const wakeId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: runStatus as RunStatus,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        startedAt: longAgo,
+        finishedAt,
+        contextSnapshot: {},
+      });
+      await db.insert(agentWakeupRequests).values({
+        id: wakeId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_blockers_resolved",
+        status: wakeStatus as WakeStatus,
+        payload: {},
+        runId,
+        createdAt: longAgo,
+      });
+      return wakeId;
+    };
+
+    // the two confirmed leak paths
+    const wInterrupted = await seed("interrupted", "claimed", longAgo);
+    const wCancelled = await seed("cancelled", "queued", longAgo);
+    // the other terminal statuses, to pin the status mapping
+    const wSucceeded = await seed("succeeded", "claimed", longAgo);
+    const wFailed = await seed("failed", "claimed", longAgo);
+    const wTimedOut = await seed("timed_out", "queued", longAgo);
+    // must NOT be touched: still running, and terminal-but-inside-the-grace-window
+    const wRunning = await seed("running", "claimed", null);
+    const wFresh = await seed("succeeded", "claimed", justNow);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedWakeups({ now });
+
+    expect(result.reconciled).toBe(5);
+
+    const rows = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    // interrupted is not a wake status; it reconciles to cancelled, matching the
+    // shutdown path and the dominant healthy mapping already in the live data.
+    expect(byId.get(wInterrupted)?.status).toBe("cancelled");
+    expect(byId.get(wInterrupted)?.finishedAt).not.toBeNull();
+    expect(byId.get(wCancelled)?.status).toBe("cancelled");
+    expect(byId.get(wSucceeded)?.status).toBe("completed");
+    expect(byId.get(wFailed)?.status).toBe("failed");
+    expect(byId.get(wTimedOut)?.status).toBe("timed_out");
+
+    // A live run must keep its wake in flight, and a just-finished run must be
+    // left to its own finalizer — reconciling inside that gap would race the
+    // healthy path and mislabel it.
+    expect(byId.get(wRunning)?.status).toBe("claimed");
+    expect(byId.get(wRunning)?.finishedAt).toBeNull();
+    expect(byId.get(wFresh)?.status).toBe("claimed");
+  });
+
   it("reapAgedTaskSessions caps exempt-agent task sessions by age, leaving recent + non-exempt + running ones alone", async () => {
     const companyId = randomUUID();
     const exemptIdle = randomUUID();

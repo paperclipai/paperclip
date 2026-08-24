@@ -173,6 +173,18 @@ const RESTART_LANE_RECOVERY_SIGNATURE_RE = /(?:\bconnection_close(?:d)?\b|\bproc
 // every heartbeat and would otherwise trigger a recovery issue after just two
 // productive heartbeats. Floor the override at 60s to keep the exemption from
 // being effectively disabled by misconfiguration.
+/**
+ * TSMC-21406: minimum age of an assignment before the stranded healer may call it
+ * stranded. TSMC-21384 was escalated to the board 108 seconds after creation.
+ */
+export const STRANDED_ASSIGNMENT_GRACE_MS = 15 * 60 * 1000;
+
+/**
+ * TSMC-21406: if the owning agent has succeeded at anything inside this window it
+ * is alive, and a lost wake on one issue is not a lost execution path.
+ */
+export const STRANDED_LANE_LIVENESS_WINDOW_MS = 60 * 60 * 1000;
+
 export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   60_000,
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
@@ -1522,6 +1534,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         source: "issue.assigned_todo_liveness_dispatch",
       }, "normal_model"),
     });
+  }
+
+  /**
+   * TSMC-21406: is the owning lane demonstrably alive?
+   *
+   * The stranded healer escalates "no live execution path" to a BOARD decision.
+   * On 2026-08-24 it did that to TSMC-21384 **108 seconds** after the card was
+   * created, and the owning lane (Engineer-Codex) was `running` an hour later —
+   * the wake had been lost, not the lane. Every such escalation costs an operator
+   * decision; TSMC-21268 sat P-critical and unanswered for 18h as an earlier
+   * output of the same path.
+   *
+   * A lane with a succeeded run inside the window is not stranded, whatever the
+   * latest run for this one issue looks like. This is deliberately a check on the
+   * AGENT, not on the issue: the issue's own evidence is exactly what a lost wake
+   * makes misleading.
+   */
+  async function hasRecentSuccessfulAgentRun(agentId: string, windowMs: number) {
+    const since = new Date(Date.now() - windowMs);
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "succeeded"),
+          gt(heartbeatRuns.finishedAt, since),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
   }
 
   async function isInvocationBudgetBlocked(issue: typeof issues.$inferSelect, agentId: string) {
@@ -6338,6 +6381,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
 
           if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+            // TSMC-21406: do not turn a lost wake on a HEALTHY lane into a board
+            // escalation. Verified live on TSMC-21384 — blocked 108 seconds after
+            // the card was created, chained to a board decision, while the owning
+            // lane was running normally an hour later.
+            //
+            // Two independent conditions, either of which means "not stranded":
+            //   * the assignment is younger than the grace window — one missed
+            //     wake is not a dead lane, and the dispatcher gets another pass;
+            //   * the owning agent has succeeded at something recently — the lane
+            //     is provably alive, so the execution path is not lost.
+            //
+            // Skipping only defers: the healer runs again, and a genuinely dead
+            // lane still escalates on a later pass with the same evidence. The
+            // asymmetry is deliberate — a late escalation costs one more sweep,
+            // an early one costs an operator decision that should never have
+            // existed, and those decisions were sitting unanswered for 18 hours.
+            const assignmentAgeMs = Date.now() - new Date(issue.updatedAt ?? issue.createdAt).getTime();
+            if (assignmentAgeMs < STRANDED_ASSIGNMENT_GRACE_MS) {
+              result.skipped += 1;
+              continue;
+            }
+            if (await hasRecentSuccessfulAgentRun(agentId, STRANDED_LANE_LIVENESS_WINDOW_MS)) {
+              result.skipped += 1;
+              continue;
+            }
             const updated = await escalateStrandedAssignedIssue({
               issue,
               previousStatus: "todo",
