@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://paperclip.nousresearch.com/schemas/report-data.json",
+  "title": "Report Data Contract",
+  "description": "Schema for the report-kit reusable report template. Pass a valid object to renderReport() to produce a Fable-5-quality report.",
+  "type": "object",
+  "required": ["title", "generatedAt", "metrics", "sections"],
+  "definitions": {
+    "reportCell": {
+      "description": "Table cell value, either a plain string/number or a status-colored object",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" },
+        {
+          "type": "object",
+          "required": ["value"],
+          "properties": {
+            "value": { "type": ["string", "number"], "description": "Cell display value" },
+            "status": { "type": "string", "enum": ["healthy", "warning", "critical", "unknown"], "description": "Status color for the cell" }
+          }
+        }
+      ]
+    },
+    "reportItem": {
+      "description": "List or metrics-grid item with a labeled value and status",
+      "type": "object",
+      "required": ["label", "value", "status"],
+      "properties": {
+        "label": { "type": "string" },
+        "value": { "type": ["string", "number"] },
+        "status": { "type": "string", "enum": ["healthy", "warning", "critical", "unknown"] }
+      }
+    }
+  },
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Report title, displayed as the main heading",
+      "examples": ["Fleet Health Report — 2026-07-30"]
+    },
+    "subtitle": {
+      "type": "string",
+      "description": "Optional subtitle shown below the title",
+      "examples": ["Aegis Cluster · 22 agents"]
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of report generation"
+    },
+    "version": {
+      "type": "string",
+      "description": "Optional report version string",
+      "default": "1.0.0"
+    },
+    "metrics": {
+      "type": "array",
+      "description": "Key-value metric cards displayed at the top of the report",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["label", "value", "status"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Metric label (e.g. 'Agents', 'Uptime')"
+          },
+          "value": {
+            "type": ["string", "number"],
+            "description": "Metric value (e.g. '22', '99.7%')"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["healthy", "warning", "critical", "unknown"],
+            "description": "Status determines the botanical SVG indicator color"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Optional sub-text shown below the value"
+          }
+        }
+      }
+    },
+    "sections": {
+      "type": "array",
+      "description": "Report body sections — each is a titled block of content",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Table section",
+            "additionalProperties": false,
+            "required": ["title", "type", "headers", "rows"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1, "description": "Section heading" },
+              "type": { "const": "table", "description": "Table section" },
+              "description": { "type": "string", "description": "Optional explanatory text above the content" },
+              "headers": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "string" }, "description": "Column headers" },
+              "rows": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/reportCell" } }, "description": "Table rows" }
+            },
+            "allOf": [
+              { "if": { "properties": { "headers": { "minItems": 1, "maxItems": 1 } } }, "then": { "properties": { "rows": { "items": { "minItems": 1, "maxItems": 1 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 2, "maxItems": 2 } } }, "then": { "properties": { "rows": { "items": { "minItems": 2, "maxItems": 2 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 3, "maxItems": 3 } } }, "then": { "properties": { "rows": { "items": { "minItems": 3, "maxItems": 3 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 4, "maxItems": 4 } } }, "then": { "properties": { "rows": { "items": { "minItems": 4, "maxItems": 4 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 5, "maxItems": 5 } } }, "then": { "properties": { "rows": { "items": { "minItems": 5, "maxItems": 5 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 6, "maxItems": 6 } } }, "then": { "properties": { "rows": { "items": { "minItems": 6, "maxItems": 6 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 7, "maxItems": 7 } } }, "then": { "properties": { "rows": { "items": { "minItems": 7, "maxItems": 7 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 8, "maxItems": 8 } } }, "then": { "properties": { "rows": { "items": { "minItems": 8, "maxItems": 8 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 9, "maxItems": 9 } } }, "then": { "properties": { "rows": { "items": { "minItems": 9, "maxItems": 9 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 10, "maxItems": 10 } } }, "then": { "properties": { "rows": { "items": { "minItems": 10, "maxItems": 10 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 11, "maxItems": 11 } } }, "then": { "properties": { "rows": { "items": { "minItems": 11, "maxItems": 11 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 12, "maxItems": 12 } } }, "then": { "properties": { "rows": { "items": { "minItems": 12, "maxItems": 12 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 13, "maxItems": 13 } } }, "then": { "properties": { "rows": { "items": { "minItems": 13, "maxItems": 13 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 14, "maxItems": 14 } } }, "then": { "properties": { "rows": { "items": { "minItems": 14, "maxItems": 14 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 15, "maxItems": 15 } } }, "then": { "properties": { "rows": { "items": { "minItems": 15, "maxItems": 15 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 16, "maxItems": 16 } } }, "then": { "properties": { "rows": { "items": { "minItems": 16, "maxItems": 16 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 17, "maxItems": 17 } } }, "then": { "properties": { "rows": { "items": { "minItems": 17, "maxItems": 17 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 18, "maxItems": 18 } } }, "then": { "properties": { "rows": { "items": { "minItems": 18, "maxItems": 18 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 19, "maxItems": 19 } } }, "then": { "properties": { "rows": { "items": { "minItems": 19, "maxItems": 19 } } } } },
+              { "if": { "properties": { "headers": { "minItems": 20, "maxItems": 20 } } }, "then": { "properties": { "rows": { "items": { "minItems": 20, "maxItems": 20 } } } } }
+            ]
+          },
+          {
+            "type": "object",
+            "description": "List section",
+            "additionalProperties": false,
+            "required": ["title", "type", "items"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1, "description": "Section heading" },
+              "type": { "const": "list", "description": "List section" },
+              "description": { "type": "string", "description": "Optional explanatory text above the content" },
+              "items": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/reportItem" }, "description": "List items" }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Metrics-grid section",
+            "additionalProperties": false,
+            "required": ["title", "type", "items"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1, "description": "Section heading" },
+              "type": { "const": "metrics-grid", "description": "Metrics grid section" },
+              "description": { "type": "string", "description": "Optional explanatory text above the content" },
+              "items": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/reportItem" }, "description": "Metric grid items" }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Text section",
+            "additionalProperties": false,
+            "required": ["title", "type", "body"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1, "description": "Section heading" },
+              "type": { "const": "text", "description": "Text section" },
+              "description": { "type": "string", "description": "Optional explanatory text above the content" },
+              "body": { "type": "string", "minLength": 1, "description": "Markdown body text" }
+            }
+          }
+        ]
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "description": "Optional manifest ledger displayed at the bottom of the report",
+      "properties": {
+        "generatedBy": { "type": "string" },
+        "source": { "type": "string" },
+        "checksum": { "type": "string" },
+        "counts": {
+          "type": "object",
+          "description": "Key-value pairs shown as a compact ledger strip"
+        }
+      }
+    },
+    "guardrail": {
+      "type": "object",
+      "description": "Optional guardrail footer with version and metadata",
+      "properties": {
+        "version": { "type": "string" },
+        "environment": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

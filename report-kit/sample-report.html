@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fleet Health Report — 2026-07-30</title>
+<style>
+/* ── Warm parchment design system ─────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg-page: #f5f0e8;
+  --bg-card: #faf7f0;
+  --bg-surface: #ffffff;
+  --text-primary: #2c2416;
+  --text-secondary: #6b5d4a;
+  --text-muted: #9a8b78;
+  --border: #e0d6c4;
+  --border-light: #ede5d6;
+  --accent: #7a6b4e;
+  --accent-light: #e8dfce;
+  --shadow: 0 1px 3px rgba(44, 36, 22, 0.08), 0 1px 2px rgba(44, 36, 22, 0.06);
+  --shadow-lg: 0 4px 12px rgba(44, 36, 22, 0.1);
+  --radius: 8px;
+  --radius-sm: 4px;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  line-height: 1.6;
+  padding: 40px 24px;
+}
+
+.report-container { max-width: 960px; margin: 0 auto; }
+
+/* ── Header ── */
+.report-header {
+  margin-bottom: 32px;
+  padding-bottom: 20px;
+  border-bottom: 2px solid var(--border);
+}
+.report-header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.report-header .subtitle {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.report-header .timestamp {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 8px;
+}
+
+/* ── Metric cards ── */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+  transition: box-shadow 0.15s ease;
+}
+.metric-card:hover { box-shadow: var(--shadow-lg); }
+.metric-card .metric-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.metric-card .metric-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.metric-card .metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+.metric-card .metric-detail {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.status-icon { flex-shrink: 0; }
+
+/* ── Sections ── */
+.report-section {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow);
+}
+.report-section h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.report-section .section-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+/* ── Tables ── */
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.report-table thead th {
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border);
+  background: var(--bg-page);
+}
+.report-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+}
+.report-table tbody tr:last-child td { border-bottom: none; }
+.report-table tbody tr:hover { background: #faf7f0; }
+.report-table .cell-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.report-table .cell-status .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ── List ── */
+.report-list { list-style: none; padding: 0; }
+.report-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 14px;
+}
+.report-list li:last-child { border-bottom: none; }
+.report-list .list-label {
+  color: var(--text-secondary);
+  min-width: 120px;
+}
+.report-list .list-value { font-weight: 500; }
+
+/* ── Text ── */
+.report-text { font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+.report-text p { margin-bottom: 12px; }
+.report-text p:last-child { margin-bottom: 0; }
+
+/* ── Manifest ledger ── */
+.manifest-ledger {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  font-size: 13px;
+}
+.manifest-ledger .ledger-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.manifest-ledger .ledger-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.manifest-ledger .ledger-value {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ── Guardrail footer ── */
+.guardrail-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.guardrail-footer .guardrail-version { font-family: var(--font-mono); font-weight: 500; }
+.guardrail-footer .guardrail-notes { font-style: italic; }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  body { padding: 20px 12px; }
+  .metrics-grid { grid-template-columns: 1fr 1fr; }
+  .report-section { padding: 16px; }
+  .manifest-ledger { flex-direction: column; gap: 12px; }
+  .guardrail-footer { flex-direction: column; align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+<div class="report-container" id="report-root">
+  <!-- Rendered by report-renderer.js -->
+</div>
+
+<script type="module">
+import { renderReport } from './report-renderer.js';
+
+const fleetHealthData = {
+  title: "Fleet Health Report",
+  subtitle: "Aegis Cluster · 22 agents · 2026-07-30",
+  generatedAt: "2026-07-30T22:00:00Z",
+  version: "1.0.0",
+  metrics: [
+    { label: "Agents", value: "22", status: "healthy", detail: "21 active · 1 idle" },
+    { label: "Uptime (7d)", value: "99.7%", status: "healthy", detail: "3 min downtime" },
+    { label: "Provider Health", value: "4/7", status: "warning", detail: "3 auth failures" },
+    { label: "Open Issues", value: "12", status: "warning", detail: "3 overdue" },
+    { label: "Memory Planes", value: "4/4", status: "healthy", detail: "All operational" },
+    { label: "Queue Depth", value: "8", status: "critical", detail: "5 unassigned" }
+  ],
+  sections: [
+    {
+      title: "Agent Status",
+      type: "table",
+      description: "Current status of all fleet agents by role",
+      headers: ["Agent", "Role", "Status", "Uptime", "Last Active"],
+      rows: [
+        ["Coordinator", "PM", { value: "Active", status: "healthy" }, "14d", "2 min ago"],
+        ["Forge", "Backend", { value: "Active", status: "healthy" }, "14d", "5 min ago"],
+        ["Sentry", "QA", { value: "Active", status: "healthy" }, "7d", "12 min ago"],
+        ["Cortex", "ML", { value: "Active", status: "healthy" }, "7d", "8 min ago"],
+        ["Quill", "Writer", { value: "Active", status: "healthy" }, "3d", "1 min ago"],
+        ["Press", "WordPress", { value: "Idle", status: "warning" }, "2d", "45 min ago"],
+        ["Compass", "Mobile", { value: "Active", status: "healthy" }, "5d", "3 min ago"],
+        ["Fable", "Design", { value: "Active", status: "healthy" }, "14d", "10 min ago"]
+      ]
+    },
+    {
+      title: "Provider Connectivity",
+      type: "table",
+      description: "LLM provider health check results",
+      headers: ["Provider", "Status", "Latency", "Quota Remaining"],
+      rows: [
+        ["ollama-cloud", { value: "Online", status: "healthy" }, "120ms", "85%"],
+        ["ollama-launch", { value: "Online", status: "healthy" }, "95ms", "92%"],
+        ["openrouter", { value: "Online", status: "healthy" }, "180ms", "78%"],
+        ["openai-codex", { value: "Auth Error", status: "critical" }, "—", "0%"],
+        ["gemini", { value: "Auth Error", status: "critical" }, "—", "0%"],
+        ["kimi", { value: "Auth Error", status: "critical" }, "—", "0%"],
+        ["mistral", { value: "Auth Error", status: "critical" }, "—", "0%"]
+      ]
+    },
+    {
+      title: "Memory Plane Health",
+      type: "list",
+      description: "Status of all active memory planes",
+      items: [
+        { label: "OB1", value: "Online · 1,024 dim", status: "healthy" },
+        { label: "Hindsight", value: "Online · bank: hermes", status: "healthy" },
+        { label: "Honcho", value: "Online · API v3", status: "healthy" },
+        { label: "Holographic", value: "Online · 20 facts", status: "healthy" }
+      ]
+    },
+    {
+      title: "Recent Activity",
+      type: "text",
+      description: "Summary of the last hour of fleet operations",
+      body: "The fleet processed 14 task heartbeats in the last hour. Coordinator dispatched 3 new issues: JAC-3941 (fallback health monitor) was completed by Sentry, JAC-3679 (report-kit template) is in progress by Press, and JAC-3956 (alert channel) is pending assignment.\n\nProvider auth failures on openai-codex, gemini, kimi, and mistral are expected — these keys are not configured in the cron environment. The fallback health monitor script tracks consecutive failures and will alert if any provider transitions from expected-auth-failure to unexpected-down.\n\nMemory plane synchronization is nominal. Hindsight daemon was restarted 6 days ago and has been stable since. Honcho reports 652 stale JWT errors from the family profile — this is a known issue (JAC-3422) and does not affect fleet operations."
+    },
+    {
+      title: "Issue Distribution by Priority",
+      type: "metrics-grid",
+      description: "Open issues broken down by priority level",
+      items: [
+        { label: "Critical", value: "2", status: "critical" },
+        { label: "High", value: "4", status: "warning" },
+        { label: "Medium", value: "4", status: "healthy" },
+        { label: "Low", value: "2", status: "healthy" }
+      ]
+    }
+  ],
+  manifest: {
+    generatedBy: "Press (hermes_local) · Paperclip Agent 717f29e6",
+    source: "Paperclip API · Fleet Health Check",
+    checksum: "sha256:a1b2c3d4e5f6...",
+    counts: {
+      "Total Agents": "22",
+      "Active Agents": "21",
+      "Open Issues": "12",
+      "Memory Planes": "4"
+    }
+  },
+  guardrail: {
+    version: "1.0.0",
+    environment: "Aegis · macOS 26.4",
+    notes: "Auto-generated sample report for report-kit template verification"
+  }
+};
+
+document.getElementById('report-root').innerHTML = renderReport(fleetHealthData);
+</script>
+</body>
+</html>

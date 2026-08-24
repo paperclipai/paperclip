@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Report — {{TITLE}}</title>
+<!--
+  template.html — Fable-5-quality report template
+  =================================================
+  1. Replace the REPORT_DATA object below with your data
+  2. Open in browser or save as HTML
+  3. Or import report-renderer.js and call renderReport(data)
+
+  Schema: report-data.schema.json
+-->
+<style>
+/* ── Warm parchment design system ─────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg-page: #f5f0e8;
+  --bg-card: #faf7f0;
+  --bg-surface: #ffffff;
+  --text-primary: #2c2416;
+  --text-secondary: #6b5d4a;
+  --text-muted: #9a8b78;
+  --border: #e0d6c4;
+  --border-light: #ede5d6;
+  --accent: #7a6b4e;
+  --accent-light: #e8dfce;
+  --shadow: 0 1px 3px rgba(44, 36, 22, 0.08), 0 1px 2px rgba(44, 36, 22, 0.06);
+  --shadow-lg: 0 4px 12px rgba(44, 36, 22, 0.1);
+  --radius: 8px;
+  --radius-sm: 4px;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  line-height: 1.6;
+  padding: 40px 24px;
+}
+
+.report-container { max-width: 960px; margin: 0 auto; }
+
+/* ── Header ── */
+.report-header {
+  margin-bottom: 32px;
+  padding-bottom: 20px;
+  border-bottom: 2px solid var(--border);
+}
+.report-header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.report-header .subtitle {
+  font-size: 15px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.report-header .timestamp {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 8px;
+}
+
+/* ── Metric cards ── */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+  transition: box-shadow 0.15s ease;
+}
+.metric-card:hover { box-shadow: var(--shadow-lg); }
+.metric-card .metric-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.metric-card .metric-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.metric-card .metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+.metric-card .metric-detail {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.status-icon { flex-shrink: 0; }
+
+/* ── Sections ── */
+.report-section {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow);
+}
+.report-section h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.report-section .section-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+/* ── Tables ── */
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.report-table thead th {
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border);
+  background: var(--bg-page);
+}
+.report-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+}
+.report-table tbody tr:last-child td { border-bottom: none; }
+.report-table tbody tr:hover { background: #faf7f0; }
+.report-table .cell-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.report-table .cell-status .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ── List ── */
+.report-list { list-style: none; padding: 0; }
+.report-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 14px;
+}
+.report-list li:last-child { border-bottom: none; }
+.report-list .list-label {
+  color: var(--text-secondary);
+  min-width: 120px;
+}
+.report-list .list-value { font-weight: 500; }
+
+/* ── Text ── */
+.report-text { font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+.report-text p { margin-bottom: 12px; }
+.report-text p:last-child { margin-bottom: 0; }
+
+/* ── Manifest ledger ── */
+.manifest-ledger {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  font-size: 13px;
+}
+.manifest-ledger .ledger-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.manifest-ledger .ledger-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.manifest-ledger .ledger-value {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ── Guardrail footer ── */
+.guardrail-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.guardrail-footer .guardrail-version { font-family: var(--font-mono); font-weight: 500; }
+.guardrail-footer .guardrail-notes { font-style: italic; }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  body { padding: 20px 12px; }
+  .metrics-grid { grid-template-columns: 1fr 1fr; }
+  .report-section { padding: 16px; }
+  .manifest-ledger { flex-direction: column; gap: 12px; }
+  .guardrail-footer { flex-direction: column; align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+<div class="report-container" id="report-root">
+  <!-- Report content rendered here -->
+</div>
+
+<script type="module">
+// ── Replace this REPORT_DATA with your own data ────────────────
+// Schema: report-data.schema.json
+const REPORT_DATA = {
+  title: "{{TITLE}}",
+  subtitle: "{{SUBTITLE}}",
+  generatedAt: new Date().toISOString(),
+  version: "1.0.0",
+  metrics: [
+    { label: "{{METRIC_1_LABEL}}", value: "{{METRIC_1_VALUE}}", status: "healthy", detail: "{{METRIC_1_DETAIL}}" },
+    { label: "{{METRIC_2_LABEL}}", value: "{{METRIC_2_VALUE}}", status: "warning", detail: "{{METRIC_2_DETAIL}}" },
+    { label: "{{METRIC_3_LABEL}}", value: "{{METRIC_3_VALUE}}", status: "critical", detail: "{{METRIC_3_DETAIL}}" }
+  ],
+  sections: [
+    {
+      title: "{{SECTION_1_TITLE}}",
+      type: "table",
+      description: "{{SECTION_1_DESC}}",
+      headers: ["{{COL_1}}", "{{COL_2}}", "{{COL_3}}"],
+      rows: [
+        ["{{ROW_1_VAL_1}}", { value: "{{ROW_1_VAL_2}}", status: "healthy" }, "{{ROW_1_VAL_3}}"],
+        ["{{ROW_2_VAL_1}}", { value: "{{ROW_2_VAL_2}}", status: "warning" }, "{{ROW_2_VAL_3}}"],
+        ["{{ROW_3_VAL_1}}", { value: "{{ROW_3_VAL_2}}", status: "critical" }, "{{ROW_3_VAL_3}}"]
+      ]
+    },
+    {
+      title: "{{SECTION_2_TITLE}}",
+      type: "list",
+      items: [
+        { label: "{{ITEM_1_LABEL}}", value: "{{ITEM_1_VALUE}}", status: "healthy" },
+        { label: "{{ITEM_2_LABEL}}", value: "{{ITEM_2_VALUE}}", status: "warning" },
+        { label: "{{ITEM_3_LABEL}}", value: "{{ITEM_3_VALUE}}", status: "critical" }
+      ]
+    }
+  ],
+  manifest: {
+    generatedBy: "{{GENERATED_BY}}",
+    source: "{{SOURCE}}",
+    checksum: "{{CHECKSUM}}",
+    counts: {
+      "{{COUNT_1_KEY}}": "{{COUNT_1_VAL}}",
+      "{{COUNT_2_KEY}}": "{{COUNT_2_VAL}}"
+    }
+  },
+  guardrail: {
+    version: "{{GUARDRAIL_VERSION}}",
+    environment: "{{ENVIRONMENT}}",
+    notes: "{{NOTES}}"
+  }
+};
+
+// ── Render ──
+import { renderReport } from './report-renderer.js';
+document.getElementById('report-root').innerHTML = renderReport(REPORT_DATA);
+</script>
+</body>
+</html>
