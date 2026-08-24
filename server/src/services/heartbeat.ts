@@ -7907,9 +7907,29 @@ export function resolveNextSessionState(input: {
     return previousState();
   }
 
+  // TSMC-21482 part 3: keep everything the adapter supplied, not just the id.
+  //
+  // This rebuilt the stored params from scratch as `{ sessionId }`, discarding
+  // every other field the adapter returned — including `cwd`. It is guarded by
+  // requiresCanonicalSessionIds(), which is true for hermes ONLY, which is why
+  // hermes alone lost its cwd while codex/claude/antigravity kept theirs
+  // (145/145, 34/34, 26/26 rows with cwd, hermes 0/17).
+  //
+  // Losing cwd disabled TSMC-21089's convergence guard
+  // (`previousCwd && previousCwd === projectCwd`), so every saved hermes session
+  // was reset by the workspace-migration path on the next run: 0 warm resumes in
+  // 433 runs against codex's 674, each cold start re-paying a ~32.8K prefix.
+  //
+  // Parts 1 and 2 taught the codec to preserve cwd and the adapter to supply it,
+  // and BOTH were silently undone here. Spread the adapter's serialized params
+  // first, then let the canonical id win — the id stays authoritative, which is
+  // the whole point of this branch, and the workspace context survives.
   const serialized = normalizeResumeParamsForAdapter(
     adapterType,
-    codec.serialize({ sessionId: explicitCanonicalSessionId }),
+    codec.serialize({
+      ...(explicitSerializedParams ?? {}),
+      sessionId: explicitCanonicalSessionId,
+    }),
   );
   const displayId = truncateDisplayId(
     readNonEmptyString(serialized?.sessionId) ??
