@@ -279,6 +279,23 @@ export function accessService(db: Db) {
     if (!member) return null;
 
     await db.transaction(async (tx) => {
+      // `member` above is a pooled read taken before this transaction existed,
+      // so on its own it is only enough to name the principal. The state the
+      // write is authorized against has to be read here, under the lock: a
+      // removal committing in the gap would otherwise have this delete the
+      // grants it had already deleted and reinsert the caller's set behind it
+      // (FAI-10152 round 4).
+      await lockPrincipalGrantWrites(tx, {
+        companyId,
+        principalType: member.principalType as PrincipalType,
+        principalId: member.principalId,
+      });
+      await ensureMembershipForGrantWrite(
+        tx,
+        companyId,
+        member.principalType as PrincipalType,
+        member.principalId,
+      );
       const rows = await grantRowsPreservingExpiry(tx, {
         companyId,
         principalType: member.principalType as PrincipalType,
@@ -324,12 +341,37 @@ export function accessService(db: Db) {
         for update
       `);
 
-      const existing = await tx
+      const found = await tx
         .select()
         .from(companyMemberships)
         .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.id, memberId)))
         .then((rows) => rows[0] ?? null);
+      if (!found) return null;
+
+      // Taken here, between the owner-row locks and the membership state this
+      // decides on, which is the order every writer of these two tables uses.
+      // The read above is only enough to name the principal: under READ
+      // COMMITTED each statement takes a fresh snapshot, so a removal that
+      // commits while this transaction waits for the lock is invisible to a
+      // decision made before it and present in the table the write lands in
+      // after. Re-read once the lock is held and the answer is binding
+      // (FAI-10152 round 4).
+      await lockPrincipalGrantWrites(tx, {
+        companyId,
+        principalType: found.principalType as PrincipalType,
+        principalId: found.principalId,
+      });
+      const existing = await tx
+        .select()
+        .from(companyMemberships)
+        .where(eq(companyMemberships.id, found.id))
+        .then((rows) => rows[0] ?? null);
       if (!existing) return null;
+      if (existing.status === "archived") {
+        throw conflict(
+          `Principal ${existing.principalType}:${existing.principalId} has been removed from company ${companyId} and cannot be granted permissions`,
+        );
+      }
 
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;

@@ -147,6 +147,14 @@ const mockExternalObjectService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 const mockAssertCrossIssueWriteFence = vi.hoisted(() => vi.fn(async () => undefined));
+// The commit-boundary half of the fence. The opening assertion answers once and
+// then returns, so a grant can lapse between it and the last protected write —
+// locks serialize rows, not the clock. Leaving it out of this mock is not a
+// cosmetic omission: the routes import it, so the module double had to provide
+// it or every fenced route threw and answered 500 (FAI-10152 security round 4).
+const mockAssertCrossIssueWriteFenceUnexpiredAtCommit = vi.hoisted(() =>
+  vi.fn(async () => undefined),
+);
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -190,6 +198,7 @@ function registerRouteMocks() {
   vi.doMock("../services/cross-issue-influence-limit.js", () => ({
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
     assertCrossIssueWriteFence: mockAssertCrossIssueWriteFence,
+    assertCrossIssueWriteFenceUnexpiredAtCommit: mockAssertCrossIssueWriteFenceUnexpiredAtCommit,
     crossIssueInfluenceLimitError: vi.fn(),
     crossIssueInfluenceRunContextError: () => new HttpError(
       403,
@@ -556,6 +565,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockObserveCrossIssueInfluence.mockResolvedValue(null);
     mockAssertCrossIssueWriteFence.mockReset();
     mockAssertCrossIssueWriteFence.mockResolvedValue(undefined);
+    mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mockReset();
+    mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mockResolvedValue(undefined);
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockExternalObjectService.getIssueSummaries.mockClear();
@@ -1044,6 +1055,34 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
   });
 
+  /**
+   * The commit-boundary guard ran on the persisting transaction, carrying the
+   * basis the opening fence resolved, and it ran *after* every protected write.
+   *
+   * Position is the whole contract. The opening fence locks its inputs, which
+   * holds every one of them still except the clock, so a grant that was live
+   * when the transaction opened can lapse while the mutation statements run. A
+   * guard that fires before the writes proves nothing that the opening fence
+   * had not already proved; only the last statement before COMMIT can roll them
+   * back (FAI-10152 security round 4).
+   */
+  function expectCommitBoundaryGuardRanLast(tx: unknown) {
+    expect(mockAssertCrossIssueWriteFenceUnexpiredAtCommit).toHaveBeenCalled();
+    for (const call of mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mock.calls) {
+      const args = call as unknown[];
+      expect(args[1]).toBe(tx);
+      expect(args[3]).toBe("explicit_permission_grant");
+    }
+    const guardedAt = Math.min(
+      ...mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mock.invocationCallOrder,
+    );
+    for (const write of [mockIssueService.update, mockIssueService.addComment]) {
+      for (const order of write.mock.invocationCallOrder) {
+        expect(guardedAt).toBeGreaterThan(order);
+      }
+    }
+  }
+
   // FAI-10132: a fenced PATCH that also carries a comment persists two rows.
   // Splitting them across two transactions lets an authority revocation landing
   // between the commits refuse the comment after the field update has already
@@ -1065,6 +1104,11 @@ describe("agent issue mutation checkout ownership", () => {
         enforceAt: null,
       },
     } as never);
+    // A concrete basis, because the closing guard only has work to do when the
+    // authority was an explicit grant — the one basis that can lapse on a clock
+    // rather than on a row. `undefined` here would let the assertions below
+    // pass against a guard that was never reached.
+    mockAssertCrossIssueWriteFence.mockResolvedValue("explicit_permission_grant" as never);
     const runContextDb = createRunContextDb();
     const openedTransactions: unknown[] = [];
     // One fresh handle per transaction, so two writes sharing a handle is proof
@@ -1095,6 +1139,7 @@ describe("agent issue mutation checkout ownership", () => {
     for (const call of mockAssertCrossIssueWriteFence.mock.calls) {
       expect((call as unknown[])[1]).toBe(updateTx);
     }
+    expectCommitBoundaryGuardRanLast(updateTx);
   });
 
   // FAI-10134 blocking finding 1: `POST /comments` is not always a pure
@@ -1150,6 +1195,7 @@ describe("agent issue mutation checkout ownership", () => {
         enforceAt: null,
       },
     } as never);
+    mockAssertCrossIssueWriteFence.mockResolvedValue("explicit_permission_grant" as never);
     const runContextDb = createRunContextDb();
     const openedTransactions: unknown[] = [];
     const db = {
@@ -1176,6 +1222,7 @@ describe("agent issue mutation checkout ownership", () => {
     for (const call of mockAssertCrossIssueWriteFence.mock.calls) {
       expect((call as unknown[])[1]).toBe(updateTx);
     }
+    expectCommitBoundaryGuardRanLast(updateTx);
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {

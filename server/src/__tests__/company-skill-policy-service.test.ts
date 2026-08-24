@@ -181,6 +181,57 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule" });
   });
 
+  /**
+   * This reader goes to `principal_permission_grants` directly rather than
+   * through `decidePrincipalGrant`, so it is its own place for expiry to be
+   * forgotten — and forgetting it here would be invisible from the
+   * authorization service's tests. A lapsed grant has to confer nothing on
+   * every path that reads one, not only the one that owns the rule
+   * (FAI-10152 round 4).
+   *
+   * The pair matters: the unexpired case proves the bypass still works, so a
+   * reader that simply stopped finding grants could not pass both.
+   */
+  const legacyGrantExpiries: Array<[string, Date | null, boolean]> = [
+    ["no expiry", null, true],
+    ["an expiry in the future", new Date(Date.now() + 60 * 60 * 1000), true],
+    ["an expiry in the past", new Date(Date.now() - 60 * 1000), false],
+  ];
+
+  it.each(legacyGrantExpiries)("honours a legacy grant with %s", async (
+    _label,
+    expiresAt,
+    expected,
+  ) => {
+    const seeded = await seedAgent();
+    const service = companySkillPolicyService(db);
+    await db.insert(companySkillPolicies).values({
+      companyId: seeded.companyId,
+      schemaVersion: 1,
+      revision: 1,
+      defaultEffect: "deny",
+      rules: [],
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: seeded.companyId,
+      principalType: "agent",
+      principalId: seeded.agentId,
+      permissionKey: "skills:create",
+      scope: null,
+      expiresAt,
+    });
+
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.edit",
+    })).resolves.toMatchObject(
+      expected
+        ? { allowed: true, reason: "legacy_compatibility" }
+        : { allowed: false },
+    );
+  });
+
   it("matches sourceLocator deny rules regardless of GitHub URL casing or .git suffix", async () => {
     const seeded = await seedAgent();
     const service = companySkillPolicyService(db);

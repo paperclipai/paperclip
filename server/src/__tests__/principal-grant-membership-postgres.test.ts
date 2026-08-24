@@ -157,14 +157,18 @@ describeEmbeddedPostgres("principal grant writes against a vanishing membership"
   }
 
   /**
-   * The two writers of these rows, driven through the same shape. One upserts a
-   * single permission; the other replaces the whole set. They took different
-   * paths to the same table, and only one of them was ever fixed at a time.
+   * Every writer of these rows, driven through the same shape. They reach the
+   * same table by four different routes — a single-permission upsert, two
+   * wholesale replacements from the members UI, and the principal-level
+   * replacement the plugin host and the invite flows call — and each was
+   * repaired on its own, which is how the fix kept looking complete while a
+   * route was still open.
    */
-  const writers: Array<[string, (companyId: string, userId: string) => Promise<unknown>]> = [
-    ["single-permission upsert", (companyId, userId) =>
+  type Writer = (input: { companyId: string; userId: string; membershipId: string }) => Promise<unknown>;
+  const writers: Array<[string, Writer]> = [
+    ["single-permission upsert", ({ companyId, userId }) =>
       accessService(db).setPrincipalPermission(companyId, "user", userId, PERMISSION_KEY, true, null)],
-    ["wholesale replacement", (companyId, userId) =>
+    ["principal grant replacement", ({ companyId, userId }) =>
       accessService(db).setPrincipalGrants(
         companyId,
         "user",
@@ -172,19 +176,33 @@ describeEmbeddedPostgres("principal grant writes against a vanishing membership"
         [{ permissionKey: PERMISSION_KEY, scope: null }],
         null,
       )],
+    ["member permission replacement", ({ companyId, membershipId }) =>
+      accessService(db).setMemberPermissions(
+        companyId,
+        membershipId,
+        [{ permissionKey: PERMISSION_KEY, scope: null }],
+        null,
+      )],
+    ["member update carrying permissions", ({ companyId, membershipId }) =>
+      accessService(db).updateMemberAndPermissions(
+        companyId,
+        membershipId,
+        { grants: [{ permissionKey: PERMISSION_KEY, scope: null }] },
+        null,
+      )],
   ];
 
   it.each(writers)("refuses a %s for a principal removed first", async (_label, write) => {
-    const { companyId, userId, membershipId } = await seedMemberWithGrant();
+    const seeded = await seedMemberWithGrant();
     const access = accessService(db);
 
-    await access.archiveMember(companyId, membershipId);
-    expect(await grantsFor(companyId, userId)).toHaveLength(0);
+    await access.archiveMember(seeded.companyId, seeded.membershipId);
+    expect(await grantsFor(seeded.companyId, seeded.userId)).toHaveLength(0);
 
     // The stale writer, arriving after the removal committed. Before this it
     // reinserted the grants the removal had just deleted.
-    await expect(write(companyId, userId)).rejects.toThrow(/removed from company/);
-    expect(await grantsFor(companyId, userId)).toHaveLength(0);
+    await expect(write(seeded)).rejects.toThrow(/removed from company/);
+    expect(await grantsFor(seeded.companyId, seeded.userId)).toHaveLength(0);
   });
 
   /**
@@ -194,16 +212,16 @@ describeEmbeddedPostgres("principal grant writes against a vanishing membership"
    * permission they held when they left, without anyone granting them again.
    */
   it.each(writers)("does not hand authority back on re-add after a %s", async (_label, write) => {
-    const { companyId, userId, membershipId } = await seedMemberWithGrant();
+    const seeded = await seedMemberWithGrant();
     const access = accessService(db);
 
-    await access.archiveMember(companyId, membershipId);
-    await expect(write(companyId, userId)).rejects.toThrow();
+    await access.archiveMember(seeded.companyId, seeded.membershipId);
+    await expect(write(seeded)).rejects.toThrow();
 
-    await access.ensureMembership(companyId, "user", userId, "operator", "active");
+    await access.ensureMembership(seeded.companyId, "user", seeded.userId, "operator", "active");
 
-    expect(await membershipStatus(companyId, userId)).toBe("active");
-    expect(await grantsFor(companyId, userId)).toHaveLength(0);
+    expect(await membershipStatus(seeded.companyId, seeded.userId)).toBe("active");
+    expect(await grantsFor(seeded.companyId, seeded.userId)).toHaveLength(0);
   });
 
   /**
@@ -222,7 +240,8 @@ describeEmbeddedPostgres("principal grant writes against a vanishing membership"
     _label,
     write,
   ) => {
-    const { companyId, userId, membershipId } = await seedMemberWithGrant();
+    const seeded = await seedMemberWithGrant();
+    const { companyId, userId, membershipId } = seeded;
     const access = accessService(db);
 
     let releaseHold!: () => void;
@@ -239,7 +258,7 @@ describeEmbeddedPostgres("principal grant writes against a vanishing membership"
     });
 
     await holdTaken;
-    const writerSettled = write(companyId, userId).then(
+    const writerSettled = write(seeded).then(
       () => "committed" as const,
       () => "refused" as const,
     );
