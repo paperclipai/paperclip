@@ -5,6 +5,8 @@ description: 'ThinkStack Capital routine operation of the Polymarket live paper-
 
 # Polymarket Paper-Evaluation Ops
 
+> **Standing rule (operator, 2026-08-23): paper instances are never halted/killed/unloaded by agents — no kill checks, no `enabled:false`, no bootout. Propose changes as a `rocky-paper-change` board card for Wednesday/Sunday; you may START paper cells and CORRECT crashed cells/reporting errors. Registry TSKB0441. Analysis truth = official Gamma; `n` = era n.**
+
 ThinkStack Capital's revenue path is evidence: paper-trading evals that prove (or kill) strategies before any live USDC. The recurring work is highly scripted — the value an agent adds is running the contract exactly, reporting the right numbers, and recognizing the known failure modes fast. Domain principles (look-ahead bias, sample size, liquidity asymmetry) are in PolymarketEngineer's AGENTS.md; this skill is the operational layer.
 
 ## Hourly evaluation pass — "Polymarket live paper evaluation pass (THIA-31)"
