@@ -229,13 +229,21 @@ async function resolveAgent(api: { get<T>(path: string): Promise<T | null> }, co
 }
 
 function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): Date | null | undefined {
+  const hasExpiresAt = Boolean(opts.expiresAt?.trim());
+  const hasTtlDays = Boolean(opts.ttlDays?.trim());
+  if (opts.neverExpires && (hasExpiresAt || hasTtlDays)) {
+    throw new Error("Choose only one board token expiration mode: --never-expires, --expires-at, or --ttl-days.");
+  }
+  if (hasExpiresAt && hasTtlDays) {
+    throw new Error("Choose only one board token expiration mode: --expires-at or --ttl-days.");
+  }
   if (opts.neverExpires) return null;
-  if (opts.expiresAt?.trim()) {
+  if (hasExpiresAt) {
     const date = new Date(opts.expiresAt.trim());
     if (!Number.isFinite(date.getTime())) throw new Error(`Invalid --expires-at value: ${opts.expiresAt}`);
     return date;
   }
-  if (opts.ttlDays?.trim()) {
+  if (hasTtlDays) {
     const days = Number(opts.ttlDays);
     if (!Number.isFinite(days) || days <= 0) throw new Error(`Invalid --ttl-days value: ${opts.ttlDays}`);
     return new Date(Date.now() + Math.floor(days * 24 * 60 * 60 * 1000));
