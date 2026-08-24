@@ -1612,6 +1612,11 @@ describe.sequential("agent permission routes", () => {
         permissionKey: "tasks:assign",
         scope: null,
         grantedByUserId: "board-user",
+        // The column is `not null`-free but always *present* on a real row —
+        // `listPrincipalGrants` does an unprojected `.select()`. Spelling it
+        // here keeps the fixture the shape the route actually receives, which
+        // is what the expiry check below reads (FAI-10144).
+        expiresAt: null,
         createdAt: new Date("2026-03-19T00:00:00.000Z"),
         updatedAt: new Date("2026-03-19T00:00:00.000Z"),
       },
@@ -1630,6 +1635,42 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
+  }, 15_000);
+
+  it("stops reporting a lapsed tasks:assign grant as explicit authority", async () => {
+    // The grant row is still there, so a presence check still sees it — but
+    // `decidePrincipalGrant` denies it with `deny_expired_grant`, and a detail
+    // page that answers `explicit_grant` here contradicts the evaluator it is
+    // describing (FAI-10144). The fallback is whatever authority the agent has
+    // without the grant, not a denial.
+    mockAccessService.listPrincipalGrants.mockResolvedValue([
+      {
+        id: "grant-1",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "tasks:assign",
+        scope: null,
+        grantedByUserId: "board-user",
+        expiresAt: new Date("2026-03-20T00:00:00.000Z"),
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.taskAssignSource).not.toBe("explicit_grant");
+    expect(res.body.access.taskAssignSource).toBe("simple_default");
   }, 15_000);
 
   it("reports simple-mode task assignment as enabled for active company agent members", async () => {

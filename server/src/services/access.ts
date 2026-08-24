@@ -522,16 +522,12 @@ export function accessService(db: Db) {
         .where(and(assignedOpenIssueWhere, ne(issues.status, "in_progress")))
         .returning({ id: issues.id });
 
-      await tx
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, existing.principalType),
-            eq(principalPermissionGrants.principalId, existing.principalId),
-          ),
-        );
-
+      // The membership is archived *before* the grants are dropped so this path
+      // takes the same membership-row-then-advisory-key order every other grant
+      // writer takes. The reverse order deadlocks against `setMemberPermissions`,
+      // which updates the membership row first and reaches the advisory lock
+      // inside `grantRowsPreservingExpiry`. Both statements commit together, so
+      // nothing outside the transaction can tell the difference.
       const archived = await tx
         .update(companyMemberships)
         .set({
@@ -541,6 +537,26 @@ export function accessService(db: Db) {
         .where(eq(companyMemberships.id, existing.id))
         .returning()
         .then((rows) => rows[0] ?? existing);
+
+      // Dropping a member's grants is a revocation, so it has to serialize
+      // against the replacement and upsert paths exactly as every other grant
+      // write does. Unlocked, a replacement that read its rows before this
+      // delete reinserts them afterwards and hands an archived member their
+      // authority back (FAI-10144).
+      await lockPrincipalGrantWrites(tx, {
+        companyId,
+        principalType: existing.principalType,
+        principalId: existing.principalId,
+      });
+      await tx
+        .delete(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, existing.principalType),
+            eq(principalPermissionGrants.principalId, existing.principalId),
+          ),
+        );
 
       return {
         member: archived,
@@ -631,6 +647,18 @@ export function accessService(db: Db) {
           .update(companyMemberships)
           .set({ status: "archived", updatedAt: new Date() })
           .where(inArray(companyMemberships.id, toArchive.map((row) => row.id)));
+        // Same rule as `archiveMember`: this is a revocation and must serialize
+        // against the replacement and upsert paths, or a concurrent replacement
+        // reinserts the rows it just removed. One lock per company, since the
+        // key is per company/principal, taken in a fixed order so two
+        // multi-company updates for the same user cannot deadlock each other.
+        for (const archivedCompanyId of toArchive.map((row) => row.companyId).sort()) {
+          await lockPrincipalGrantWrites(tx, {
+            companyId: archivedCompanyId,
+            principalType: "user",
+            principalId: userId,
+          });
+        }
         await tx
           .delete(principalPermissionGrants)
           .where(

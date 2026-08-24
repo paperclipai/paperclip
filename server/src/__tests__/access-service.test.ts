@@ -8,6 +8,7 @@ import {
   createDb,
   instanceUserRoles,
   issues,
+  principalGrantLock,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import {
@@ -67,6 +68,146 @@ describeEmbeddedPostgres("access service", () => {
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  /**
+   * Blocks until some other session is queued on an advisory lock. Proving the
+   * waiter exists is the whole assertion in the two revocation tests below: an
+   * unlocked delete commits straight through and there is never a waiter to
+   * find.
+   */
+  async function waitForAdvisoryLockWaiter(timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const rows = await db.execute(sql`
+        SELECT count(*)::int AS waiting
+        FROM pg_locks
+        WHERE NOT granted AND locktype = 'advisory' AND pid <> pg_backend_pid()
+      `);
+      if (Number((Array.isArray(rows) ? rows[0] : null)?.waiting ?? 0) >= 1) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`no session blocked on an advisory lock within ${timeoutMs}ms`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  /**
+   * Holds the principal's grant-writer lock, exactly as an in-flight
+   * replacement does, and hands back the release. The lock has to live inside a
+   * transaction — `_xact_` releases at commit — so the transaction is what is
+   * parked.
+   */
+  function holdGrantWriterLock(input: {
+    companyId: string;
+    principalType: "user" | "agent";
+    principalId: string;
+  }) {
+    let release!: () => void;
+    let taken!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const isTaken = new Promise<void>((resolve) => { taken = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(principalGrantLock(input));
+      taken();
+      await released;
+    });
+    return { holder, isTaken, release };
+  }
+
+  async function seedArchivableMemberWithGrant(company: { id: string }, grantedBy: string) {
+    const member = await db
+      .insert(companyMemberships)
+      .values({
+        companyId: company.id,
+        principalType: "user",
+        principalId: `member-${randomUUID()}`,
+        status: "active",
+        membershipRole: "operator",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+      permissionKey: "tasks:assign",
+      grantedByUserId: grantedBy,
+    });
+    return member;
+  }
+
+  /**
+   * `archiveMember` and `setUserCompanyAccess` drop a principal's grants
+   * directly rather than through `grantRowsPreservingExpiry`, so they were the
+   * two grant writers left outside the serializing lock. Unlocked, a
+   * replacement that read its rows before the delete reinserts them afterwards
+   * and the revocation is silently undone — an archived member keeps the
+   * authority the archive was supposed to take away (Greptile P1 at
+   * `a01bdf67`, FAI-10144).
+   */
+  it("queues an archived member's grant revocation behind an in-flight grant write", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await seedArchivableMemberWithGrant(company, owner.principalId);
+    const access = accessService(db);
+
+    const lock = holdGrantWriterLock({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+    });
+    await lock.isTaken;
+
+    let archiveSettled = false;
+    const archiving = access
+      .archiveMember(company.id, member.id, {})
+      .then(() => { archiveSettled = true; });
+
+    // Without the lock in `archiveMember` this throws: the delete commits while
+    // the writer lock is held and no session ever waits.
+    await waitForAdvisoryLockWaiter();
+    expect(archiveSettled).toBe(false);
+
+    lock.release();
+    await lock.holder;
+    await archiving;
+
+    const remaining = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(remaining).toHaveLength(0);
+  }, 30_000);
+
+  it("queues an instance-level access removal behind an in-flight grant write", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await seedArchivableMemberWithGrant(company, owner.principalId);
+    const access = accessService(db);
+
+    const lock = holdGrantWriterLock({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+    });
+    await lock.isTaken;
+
+    let removalSettled = false;
+    const removing = access
+      .setUserCompanyAccess(member.principalId, [], { actorUserId: owner.principalId })
+      .then(() => { removalSettled = true; });
+
+    await waitForAdvisoryLockWaiter();
+    expect(removalSettled).toBe(false);
+
+    lock.release();
+    await lock.holder;
+    await removing;
+
+    const remaining = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(remaining).toHaveLength(0);
+  }, 30_000);
 
   it("rejects combined access updates that would demote the last active owner", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
