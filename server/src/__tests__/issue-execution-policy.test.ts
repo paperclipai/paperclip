@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, mergeIssueExecutionPolicyPatch, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -130,6 +130,49 @@ describe("normalizeIssueExecutionPolicy", () => {
         scheduledBy: "assignee",
         externalRef: "[redacted]",
       },
+    });
+  });
+
+  it("keeps an external wait as a complete standalone policy", () => {
+    const result = normalizeIssueExecutionPolicy({
+      externalWait: {
+        owner: "Vendor support",
+        action: "Confirm the account migration",
+        nextCheckAt: "2026-08-31T16:53:53.000Z",
+        monitorOwner: "assignee",
+      },
+    });
+
+    expect(result).toMatchObject({
+      stages: [],
+      externalWait: {
+        owner: "Vendor support",
+        action: "Confirm the account migration",
+        nextCheckAt: "2026-08-31T16:53:53.000Z",
+        monitorOwner: "assignee",
+      },
+    });
+  });
+
+  it("merges PATCH policy sub-objects without clearing the monitor", () => {
+    const previous = normalizeIssueExecutionPolicy({
+      monitor: {
+        nextCheckAt: "2026-09-01T12:00:00.000Z",
+        notes: "Check vendor status",
+      },
+    });
+    const result = normalizeIssueExecutionPolicy(mergeIssueExecutionPolicyPatch(previous, {
+      externalWait: {
+        owner: "Vendor support",
+        action: "Confirm the account migration",
+        nextCheckAt: "2026-08-31T16:53:53.000Z",
+        monitorOwner: "assignee",
+      },
+    }));
+
+    expect(result).toMatchObject({
+      monitor: { nextCheckAt: "2026-09-01T12:00:00.000Z" },
+      externalWait: { owner: "Vendor support" },
     });
   });
 });

@@ -88,6 +88,35 @@ function normalizeMonitorText(value: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * PATCH semantics for executionPolicy: omitted fields retain their current
+ * values, explicit null clears a nullable field, and arrays (stages) replace.
+ * This keeps a narrowly-updated external wait from dropping a live monitor.
+ */
+export function mergeIssueExecutionPolicyPatch(
+  previous: IssueExecutionPolicy | null,
+  patch: unknown,
+): unknown {
+  if (patch === null || !isRecord(patch)) return patch;
+
+  const merged: Record<string, unknown> = {
+    ...(previous ?? {}),
+    ...patch,
+  };
+  for (const key of ["monitor", "externalWait", "reviewPreset", "authorizationPolicy"] as const) {
+    const existingValue = previous?.[key];
+    const patchValue = patch[key];
+    if (isRecord(existingValue) && isRecord(patchValue)) {
+      merged[key] = { ...existingValue, ...patchValue };
+    }
+  }
+  return merged;
+}
+
 export function redactIssueMonitorExternalRef(value: string | null | undefined) {
   return normalizeMonitorText(value) ? REDACTED_ISSUE_MONITOR_EXTERNAL_REF : null;
 }
@@ -415,14 +444,16 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const externalWait = parsed.data.externalWait;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (stages.length === 0 && !monitor && !externalWait && !reviewPreset && !authorizationPolicy) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
+    ...(externalWait ? { externalWait } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
     ...(parsed.data.maxReviewRounds != null ? { maxReviewRounds: parsed.data.maxReviewRounds } : {}),
