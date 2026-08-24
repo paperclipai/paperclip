@@ -25,6 +25,7 @@
 #   scripts/reap-orphaned-wakeups.sh --check-monitors
 #       report stored issue monitors that cannot fire, are exhausted, or are overdue
 #
+
 set -euo pipefail
 
 PGHOST="${PGHOST:-127.0.0.1}"
@@ -122,6 +123,11 @@ if [[ "$CHECK_LIVE_STALE" -eq 1 ]]; then
       SELECT 1 FROM issues terminal_issue
       WHERE terminal_issue.id::text = COALESCE(aw.payload->>'issueId', aw.payload->>'taskId')
         AND terminal_issue.status IN ('done','cancelled')
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM issues blocked_issue
+      WHERE blocked_issue.id::text = COALESCE(aw.payload->>'issueId', aw.payload->>'taskId')
+        AND blocked_issue.status = 'blocked'
     )
     AND NOT EXISTS (
       SELECT 1 FROM heartbeat_runs deferred_run

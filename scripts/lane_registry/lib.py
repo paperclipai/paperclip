@@ -121,21 +121,36 @@ def lane_chains(member_ids: Iterable[str], agents: dict) -> dict[str, list[str]]
 # 0.914 ≈ opus-4.8 0.900 >> grok 0.66.  Content capability (single-pass):
 # gemini-flash leads, grok-4.1-fast runner-up, then codex, then claude(sonnet).
 AGENTIC_FAMILY_RANK = {
-    # Operator-locked 2026-06-26: codex -> opus -> gemini -> grok. This is a
-    # deliberate ECONOMICS override of pure capability (opus 0.900 < gemini-pro
-    # 0.914): opus is a controlled paid-sub call so it's the #1 fallback; the
-    # current Gemini sub burns fast, so gemini sits BELOW opus as the deeper net.
-    "codex_local": 0,                              # gpt-5.4 — top agentic, always-on operational lead
-    "claude_local": 1,                             # opus — #1 fallback (controlled paid sub)
-    "antigravity_local": 2, "gemini_local": 2,     # gemini — deeper safety net (sub burns fast)
-    "hermes_local": 3, "grok_local": 3,            # grok — last (cliff)
+    # Operator re-lock 2026-08-23: grok disposition FIXED (6%->67% via the hermes
+    # in-run re-ask 4e991dd2a) so grok is no longer a "cliff" — it is the 1st sister
+    # (thick sub, capable). Gemini is the THINNEST sub -> moved to LAST (saved for the
+    # cv-review niche only, see CV_FAMILY_RANK). Supersedes the 06-26 codex->opus->
+    # gemini->grok lock.
+    "codex_local": 0,                              # gpt-5.6-terra — top agentic operational lead
+    "hermes_local": 1, "grok_local": 1,            # grok-4.3 — 1st sister (disposition fixed, thick sub)
+    "claude_local": 2,                             # opus/sonnet — 2nd (heavier per-run, thinner sub)
+    "antigravity_local": 3, "gemini_local": 3,     # gemini — LAST (thinnest sub; cv-review excepted)
 }
 CONTENT_FAMILY_RANK = {
-    "antigravity_local": 0, "gemini_local": 0,     # gemini-flash leads content
-    "hermes_local": 1, "grok_local": 1,            # grok-4.1-fast runner-up
-    "codex_local": 2,                              # capable generalist
-    "claude_local": 3,                             # claude (sonnet) last for content
+    # 2026-08-23: gemini LAST for content too (thinnest sub — saved for cv-review only).
+    # grok-4.1/4.3 leads content failover (cheap, capable runner-up).
+    "hermes_local": 0, "grok_local": 0,            # grok — content lead (cheap sub)
+    "codex_local": 1,                              # capable generalist
+    "claude_local": 2,                             # claude (sonnet)
+    "antigravity_local": 3, "gemini_local": 3,     # gemini — LAST (thin sub)
 }
+# cv-review is gemini's ONE decisive niche (0.938 vs grok 0.85) — rank gemini FIRST there,
+# so its scarce tokens are spent where they win. Everywhere else gemini is last.
+CV_FAMILY_RANK = {
+    "antigravity_local": 0, "gemini_local": 0,     # gemini — cv-review lead (warranted)
+    "hermes_local": 1, "grok_local": 1,            # grok+skill runner-up
+    "codex_local": 2,
+    "claude_local": 3,
+}
+CV_LANE_MARKERS = ("cv-review", "cvreview", "cv-polish", "applicationwriter")
+def is_cv_lane(primary_agent: dict) -> bool:
+    name = str(primary_agent.get("name") or "").lower()
+    return any(m in name for m in CV_LANE_MARKERS)
 CONTENT_LANE_BASES = {
     "Author", "Editor", "Quill", "Designer", "Scribe", "ContentStrategist",
     "Storyboard", "Frame", "BrandDesigner",
@@ -167,7 +182,20 @@ def order_lane(primary_id: str, member_ids: Iterable[str], agents: dict) -> list
     So a limited agent always passes to the best available sister, up or down tier."""
     members = list(dict.fromkeys(member_ids))
     primary = agents.get(primary_id, {})
-    rank = content_rank if is_content_lane(primary) else agentic_rank
+    role = str(primary.get("role") or "").lower()
+    # 2026-08-23: CTO must NOT fail over to grok/hermes (grok 6% success on CTO —
+    # a damaging sister). Drop grok/hermes sisters from CTO chains (keep the primary).
+    if role == "cto":
+        members = [m for m in members
+                   if m == primary_id
+                   or (agents.get(m, {}).get("adapter", "").strip().lower()
+                       not in ("hermes_local", "grok_local"))]
+    if is_cv_lane(primary):
+        rank = lambda a: CV_FAMILY_RANK.get((agents.get(a, {}).get("adapter", "") or "").strip().lower(), UNKNOWN_RANK)
+    elif is_content_lane(primary):
+        rank = content_rank
+    else:
+        rank = agentic_rank
 
     def key(a):
         info = agents.get(a, {})
