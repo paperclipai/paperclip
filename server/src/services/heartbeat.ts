@@ -19312,7 +19312,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     if (issueGenerationAdmission?.decision === "deny") {
       const reasonLabel = issueGenerationAdmission.reason === "aggregate_input_ceiling"
-        ? `the issue already recorded ${issueGenerationAdmission.aggregateInputTokens.toLocaleString("en-US")} weighted aggregate input tokens (cache reads at 0.1)`
+        ? `the issue already recorded ${issueGenerationAdmission.aggregateInputTokens.toLocaleString("en-US")} weighted aggregate input tokens (cache reads weighted at ${CACHED_INPUT_BUDGET_WEIGHT})`
         : `the issue already used ${issueGenerationAdmission.priorGenerationRuns} generation runs since the last board/user comment (a fresh board comment resets this counter)`;
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
