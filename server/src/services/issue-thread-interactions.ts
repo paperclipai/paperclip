@@ -1120,7 +1120,7 @@ export function issueThreadInteractionService(db: Db) {
       return { interaction: expired, continuationIssue: null };
     }
 
-    const interaction = hydrateInteraction(args.current);
+    const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
     const selectedOptionIds =
       interaction.kind === "request_checkbox_confirmation"
         ? resolveSelectedCheckboxConfirmationOptions({

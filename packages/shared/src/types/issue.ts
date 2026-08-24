@@ -1170,6 +1170,10 @@ export interface RequestConfirmationToolActionResult {
   updatedAt: string;
 }
 
+export interface RequestConfirmationOnAccept {
+  transitionIssueStatus: "done" | "cancelled";
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1183,6 +1187,7 @@ export interface RequestConfirmationPayload {
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
+  onAccept?: RequestConfirmationOnAccept;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1207,6 +1212,7 @@ export interface RequestCheckboxConfirmationPayload {
   declineReasonPlaceholder?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  onAccept?: RequestConfirmationOnAccept;
 }
 
 export type RequestItemVerdictValue = "approve" | "reject" | "defer";
