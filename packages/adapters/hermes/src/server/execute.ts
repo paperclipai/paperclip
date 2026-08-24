@@ -972,7 +972,29 @@ export async function execute(
 
   // Store session ID for next run
   if (persistSession && resolvedSessionId && !tokenBudgetExceeded) {
-    executionResult.sessionParams = { sessionId: resolvedSessionId };
+    // TSMC-21482 part 2: record the cwd the run actually executed in.
+    //
+    // Part 1 taught the codec to PRESERVE cwd; this supplies it. Without both,
+    // the session row still lands as `{ sessionId }` only — which is exactly what
+    // the first post-fix session (20260824_184548_15453e) did, and why it was
+    // still going to be reset on the next run.
+    //
+    // TSMC-21089's convergence guard in resolveRuntimeSessionParamsForWorkspace
+    // reads `previousCwd && previousCwd === projectCwd` to decide that a saved
+    // session already ran in the project workspace and needs no migration. With
+    // no cwd it can never converge, so "rotate once" rotates forever: hermes
+    // resumed 0 of 433 runs in 24h while codex resumed 674.
+    //
+    // `cwd` here is the resolved execution workspace (workspaceDir ->
+    // paperclipWorkspace.cwd -> config.cwd), i.e. the same directory the run
+    // used — which is precisely what the guard needs to compare against.
+    // Omitted when it is the "." fallback, since that proves nothing about the
+    // workspace and would make the guard converge on a false match.
+    const sessionCwd = cwd && cwd !== "." ? cwd : null;
+    executionResult.sessionParams = {
+      sessionId: resolvedSessionId,
+      ...(sessionCwd ? { cwd: sessionCwd } : {}),
+    };
     executionResult.sessionDisplayId = resolvedSessionId.slice(0, 16);
   }
 
