@@ -19,7 +19,6 @@
   "publishConfig": {
     "access": "public",
     "exports": {
-      "./duplex-observability": null,
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
