@@ -83,6 +83,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { getAgentAdapterBreaker, logAdapterBreakerSuspension } from "../agent-adapter-breaker.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -3669,6 +3670,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
+      breakerSuspended: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -3735,6 +3737,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? participantLatestRunForRecovery
         : latestRun;
       if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
+        result.skipped += 1;
+        continue;
+      }
+      const breaker = await getAgentAdapterBreaker(db, issue.companyId, agentId, recoveryNow);
+      if (breaker.suspendedUntil) {
+        result.breakerSuspended += 1;
+        logAdapterBreakerSuspension(issue.companyId, agentId, breaker.suspendedUntil);
         result.skipped += 1;
         continue;
       }
