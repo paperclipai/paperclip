@@ -229,8 +229,8 @@ async function resolveAgent(api: { get<T>(path: string): Promise<T | null> }, co
 }
 
 function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): Date | null | undefined {
-  const hasExpiresAt = Boolean(opts.expiresAt?.trim());
-  const hasTtlDays = Boolean(opts.ttlDays?.trim());
+  const hasExpiresAt = opts.expiresAt !== undefined;
+  const hasTtlDays = opts.ttlDays !== undefined;
   if (opts.neverExpires && (hasExpiresAt || hasTtlDays)) {
     throw new Error("Choose only one board token expiration mode: --never-expires, --expires-at, or --ttl-days.");
   }
@@ -239,12 +239,16 @@ function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): Date | null | undefi
   }
   if (opts.neverExpires) return null;
   if (hasExpiresAt) {
-    const date = new Date(opts.expiresAt.trim());
+    const rawExpiresAt = opts.expiresAt?.trim();
+    if (!rawExpiresAt) throw new Error("Invalid --expires-at value: expected a non-empty ISO timestamp.");
+    const date = new Date(rawExpiresAt);
     if (!Number.isFinite(date.getTime())) throw new Error(`Invalid --expires-at value: ${opts.expiresAt}`);
     return date;
   }
   if (hasTtlDays) {
-    const days = Number(opts.ttlDays);
+    const rawTtlDays = opts.ttlDays?.trim();
+    if (!rawTtlDays) throw new Error("Invalid --ttl-days value: expected a positive number.");
+    const days = Number(rawTtlDays);
     if (!Number.isFinite(days) || days <= 0) throw new Error(`Invalid --ttl-days value: ${opts.ttlDays}`);
     return new Date(Date.now() + Math.floor(days * 24 * 60 * 60 * 1000));
   }

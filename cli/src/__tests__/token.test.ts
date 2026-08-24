@@ -234,6 +234,14 @@ describe("token commands", () => {
       "--ttl-days", "14",
     ], { from: "user" })).rejects.toThrow("exit:1");
 
+    await expect(createProgram().parseAsync([
+      "token", "board", "create",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--never-expires",
+      "--ttl-days", " ",
+    ], { from: "user" })).rejects.toThrow("exit:1");
+
     expect(fetchMock).not.toHaveBeenCalled();
     expect(error.mock.calls.map((call) => String(call[0])).join("\n")).toContain("Choose only one board token expiration mode");
   });
