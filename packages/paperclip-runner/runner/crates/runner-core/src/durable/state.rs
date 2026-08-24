@@ -9,6 +9,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::{DurableRunnerConfig, DurableRunnerError, PROTOCOL, PROTOCOL_VERSION};
 
@@ -176,6 +177,8 @@ pub struct DurableState {
     pub peak_outbox_bytes: usize,
     pub outbox: Vec<StoredOutboxEvent>,
     pub processed_commands: BTreeMap<String, StoredCommandResult>,
+    #[serde(default)]
+    pub processed_command_fingerprints: BTreeMap<String, String>,
     pub diagnostics: Vec<String>,
     pub backpressure: bool,
     pub recoverable_failure: Option<String>,
@@ -202,6 +205,7 @@ impl DurableState {
             peak_outbox_bytes: 0,
             outbox: Vec::new(),
             processed_commands: BTreeMap::new(),
+            processed_command_fingerprints: BTreeMap::new(),
             diagnostics: Vec::new(),
             backpressure: false,
             recoverable_failure: None,
@@ -341,12 +345,19 @@ impl DurableState {
         command: &Command,
     ) -> Result<CommandDisposition, DurableRunnerError> {
         command.validate()?;
+        let fingerprint = command_fingerprint(command)?;
         if let Some(previous) = self.processed_commands.get(&command.command_id) {
-            if previous.controller_seq != command.controller_seq
-                || previous.command_type != command.command_type
-            {
+            let previous_fingerprint = self
+                .processed_command_fingerprints
+                .get(&command.command_id)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid(
+                        "durable command journal is missing its identity fingerprint",
+                    )
+                })?;
+            if previous_fingerprint != &fingerprint {
                 return Err(DurableRunnerError::invalid(
-                    "commandId was reused with different immutable command fields",
+                    "commandId was reused with different command data",
                 ));
             }
             return Ok(CommandDisposition::Replay(previous.clone()));
@@ -384,6 +395,8 @@ impl DurableState {
                 }),
             ),
         );
+        self.processed_command_fingerprints
+            .insert(command.command_id.clone(), fingerprint);
         self.compact_command_history();
         Ok(CommandDisposition::Execute)
     }
@@ -451,6 +464,7 @@ impl DurableState {
                 break;
             };
             if let Some(oldest) = self.processed_commands.remove(&oldest_id) {
+                self.processed_command_fingerprints.remove(&oldest_id);
                 self.compacted_through_controller_seq = self
                     .compacted_through_controller_seq
                     .max(oldest.controller_seq);
@@ -466,6 +480,49 @@ fn command_result(command: &Command, status: &str, result: Value) -> StoredComma
         command_type: command.command_type.clone(),
         status: status.to_owned(),
         result,
+    }
+}
+
+fn command_fingerprint(command: &Command) -> Result<String, DurableRunnerError> {
+    let value = serde_json::to_value(command).map_err(|error| {
+        DurableRunnerError::invalid(format!("failed to fingerprint durable command: {error}"))
+    })?;
+    let digest = Sha256::digest(canonical_json(&value).as_bytes());
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        fingerprint.push(HEX[usize::from(byte >> 4)] as char);
+        fingerprint.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    Ok(fingerprint)
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!(
+                        "{}:{}",
+                        serde_json::to_string(key).expect("JSON object key should serialize"),
+                        canonical_json(&values[key])
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        _ => value.to_string(),
     }
 }
 
@@ -663,6 +720,16 @@ fn validate_binding(
             Ok(command.controller_seq)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let command_fingerprints_are_valid = state.processed_command_fingerprints.len()
+        == state.processed_commands.len()
+        && state
+            .processed_command_fingerprints
+            .iter()
+            .all(|(key, value)| {
+                state.processed_commands.contains_key(key)
+                    && value.len() == 64
+                    && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            });
     command_sequences.sort_unstable();
     let command_cursors_are_valid = match (command_sequences.first(), command_sequences.last()) {
         (None, None) => state.compacted_through_controller_seq == state.last_controller_command_seq,
@@ -687,6 +754,7 @@ fn validate_binding(
         || state.peak_outbox_bytes < outbox_bytes
         || state.compacted_through_controller_seq > state.last_controller_command_seq
         || !command_cursors_are_valid
+        || !command_fingerprints_are_valid
     {
         return Err(DurableRunnerError::invalid(
             "durable state cursors, bounds, or journals are inconsistent",
