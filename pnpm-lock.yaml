@@ -449,6 +449,12 @@ importers:
         specifier: ^4.1.10
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.3.0))(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12))
 
+  packages/paperclip-runner:
+    devDependencies:
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+
   packages/plugins/create-paperclip-plugin:
     dependencies:
       '@paperclipai/plugin-sdk':
