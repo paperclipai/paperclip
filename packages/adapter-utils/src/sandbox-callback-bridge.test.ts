@@ -1,5 +1,6 @@
-import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback, spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -2706,4 +2707,237 @@ describe("sandbox callback bridge", () => {
 
     await worker.stop({ drainTimeoutMs: 50 });
   });
+
+  async function prepareGatewayFixture(prefix: string) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge test\n", "utf8");
+
+    const runner = createExecRunner();
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: { remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000 },
+      adapterKey: "codex",
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
+    });
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    return {
+      runner,
+      remoteWorkspaceDir,
+      assetRemoteDir: prepared.assetDirs.bridge,
+      queueDir,
+      directories: sandboxCallbackBridgeDirectories(queueDir),
+      bridgeToken: createSandboxCallbackBridgeToken(),
+    };
+  }
+
+  it("cleans up a timed-out request file and keeps serving after the host recovers", async () => {
+    const fixture = await prepareGatewayFixture("paperclip-bridge-timeout-clean-");
+
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner: fixture.runner,
+      remoteCwd: fixture.remoteWorkspaceDir,
+      assetRemoteDir: fixture.assetRemoteDir,
+      queueDir: fixture.queueDir,
+      bridgeToken: fixture.bridgeToken,
+      timeoutMs: 30_000,
+      responseTimeoutMs: 600,
+      pollIntervalMs: 50,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    // No worker runs, so the request times out at the gateway.
+    const timedOut = await fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${fixture.bridgeToken}` },
+    });
+    expect(timedOut.status).toBe(502);
+    await expect(timedOut.json()).resolves.toMatchObject({
+      error: expect.stringContaining("Timed out"),
+    });
+
+    // The gateway cleaned its own request file, so nothing counts toward the
+    // queue-depth cap after the caller gave up.
+    const leftover = (await readdir(fixture.directories.requestsDir).catch(() => [])).filter((name) =>
+      name.endsWith(".json"),
+    );
+    expect(leftover).toEqual([]);
+
+    // A worker that comes up afterwards serves the next request normally —
+    // the timeout neither wedged nor killed the gateway.
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      queueDir: fixture.queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ok: true }),
+      }),
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+
+    const recovered = await fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${fixture.bridgeToken}` },
+    });
+    expect(recovered.status).toBe(200);
+    await expect(recovered.json()).resolves.toMatchObject({ ok: true });
+  }, 30_000);
+
+  it("sweeps stale request files before rejecting at the queue-depth cap", async () => {
+    const fixture = await prepareGatewayFixture("paperclip-bridge-stale-sweep-");
+
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner: fixture.runner,
+      remoteCwd: fixture.remoteWorkspaceDir,
+      assetRemoteDir: fixture.assetRemoteDir,
+      queueDir: fixture.queueDir,
+      bridgeToken: fixture.bridgeToken,
+      timeoutMs: 30_000,
+      responseTimeoutMs: 500,
+      pollIntervalMs: 50,
+      maxQueueDepth: 1,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    // Plant an orphaned request file (a killed caller, or a previous gateway
+    // process's leftover) and backdate it beyond the response deadline.
+    const orphanPath = path.join(fixture.directories.requestsDir, "orphan.json");
+    await writeFile(orphanPath, bridgeRequestJson("orphan"), "utf8");
+    const staleTime = new Date(Date.now() - 60_000);
+    await utimes(orphanPath, staleTime, staleTime);
+
+    // The queue sits at the cap, but the only entry is stale: the gateway must
+    // sweep it and admit the request instead of answering 503. With no worker
+    // the admitted request then times out (502) — proof it entered the queue.
+    const response = await fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${fixture.bridgeToken}` },
+    });
+    expect(response.status).toBe(502);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error ?? "").not.toContain("queue is full");
+
+    const leftover = (await readdir(fixture.directories.requestsDir).catch(() => [])).filter((name) =>
+      name.endsWith(".json"),
+    );
+    expect(leftover).toEqual([]);
+  }, 30_000);
+
+  it("skips a request file that vanished before the read instead of escalating", async () => {
+    // The gateway deletes a request file when its caller stops waiting. The
+    // worker's read then races the deletion; a vanished file must be a quiet
+    // skip, not a worker failure with a recovery pass.
+    const queueDir = "/virtual-bridge/vanished";
+    let listCalls = 0;
+    const handled: string[] = [];
+    const responseStatuses: number[] = [];
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async () => {
+        listCalls += 1;
+        return listCalls === 1 ? ["ghost.json"] : [];
+      },
+      readTextFile: async () => {
+        throw new Error("cat: ghost.json: No such file or directory");
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (_remotePath, body) => {
+        responseStatuses.push((JSON.parse(body.trim()) as { status: number }).status);
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async () => {},
+    };
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: async (request) => {
+        handled.push(request.id);
+        return { status: 200, body: "ok" };
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await worker.stop({ drainTimeoutMs: 50 });
+
+    expect(handled).toEqual([]);
+    expect(responseStatuses).toEqual([]);
+    expect(workerErrors).toEqual([]);
+  });
+
+  it("embeds crash handlers and queue hygiene in the generated gateway source", () => {
+    // A crashed gateway is a dead loopback port for the rest of the run, so
+    // the generated source must keep its crash handlers and its stale-queue
+    // sweep. The readiness gate matters too: survival applies only after the
+    // gateway is adoptable, so a startup fault still fails fast. This pins
+    // their presence; the behavior is proven above and below.
+    const source = getSandboxCallbackBridgeServerSource();
+    expect(source).toContain('process.on("uncaughtException"');
+    expect(source).toContain('process.on("unhandledRejection"');
+    expect(source).toContain("gatewayReady");
+    expect(source).toContain("sweepStaleRequests");
+  });
+
+  it("exits fast when the gateway cannot bind its port instead of lingering un-ready", async () => {
+    // Before readiness, the crash handlers must not keep the process alive: a
+    // failed bind means the gateway can never serve, and surviving would only
+    // leave an un-ready zombie while the host waits out its readiness poll.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-bind-fail-"));
+    cleanupDirs.push(rootDir);
+    const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
+    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+    const queueDir = path.join(rootDir, "queue");
+    await mkdir(queueDir, { recursive: true });
+
+    const blocker = createServer();
+    await new Promise<void>((resolve) => {
+      blocker.listen(0, "127.0.0.1", resolve);
+    });
+    cleanupFns.push(
+      () =>
+        new Promise<void>((resolve) => {
+          blocker.close(() => resolve());
+        }),
+    );
+    const blockedPort = (blocker.address() as { port: number }).port;
+
+    const child = spawn(process.execPath, [entrypoint], {
+      env: {
+        ...process.env,
+        PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+        PAPERCLIP_BRIDGE_TOKEN: "test-token",
+        PAPERCLIP_BRIDGE_PORT: String(blockedPort),
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exitCode = await new Promise<number | null>((resolve) => {
+      child.on("close", resolve);
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("[paperclip-bridge] server error");
+    expect(stderr).toContain("EADDRINUSE");
+  }, 15_000);
 });

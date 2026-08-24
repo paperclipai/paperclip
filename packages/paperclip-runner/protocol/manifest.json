@@ -1,0 +1,245 @@
+{
+  "schema": "paperclip.prp.contract_manifest.v1",
+  "protocolVersion": 1,
+  "fixtureVersion": 1,
+  "generatedFrom": [
+    "protocol/schemas",
+    "protocol/fixtures"
+  ],
+  "schemas": [
+    {
+      "path": "schemas/capabilities.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json",
+      "sha256": "e62a80328e5edde136b35463033280922ac2220575a83046b07fe034d233db88"
+    },
+    {
+      "path": "schemas/command.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/command.schema.json",
+      "sha256": "fc813e6b4d5b7e6890b496bd69848ada25dba58adbf7cf04163ca9e9bf2bcb79"
+    },
+    {
+      "path": "schemas/conformance-fixture.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/conformance-fixture.schema.json",
+      "sha256": "0febc66d128da1f251f9e932d78353a67f47ee60b7427e0a347c287bb6b7ea79"
+    },
+    {
+      "path": "schemas/conformance-output.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/conformance-output.schema.json",
+      "sha256": "96f78846dffc4a8300184751b9943214506f32ee1f393c6c0c453b666cf12d59"
+    },
+    {
+      "path": "schemas/event.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
+      "sha256": "d69ac4acfd9cd265f9dcb6a6580e949a67a50347093d0a7c12c2000a2da6d482"
+    },
+    {
+      "path": "schemas/fixture.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/fixture.schema.json",
+      "sha256": "8ac87c2d8c639981277b5f72b9757a95badf85ff482d11596e4c63e01c616cba"
+    },
+    {
+      "path": "schemas/identity.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/identity.schema.json",
+      "sha256": "8a8a1943f14c739284daa241c5189f3b8026c050472c4f9909897456da506f48"
+    },
+    {
+      "path": "schemas/provider-descriptor.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json",
+      "sha256": "26e8af9314f1ca49578bfbacdcc111332225b422ea4ff68918a25ddac59129a6"
+    },
+    {
+      "path": "schemas/provider-event.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json",
+      "sha256": "84521ea87ae782a7c07d1ef68b70f87fc4c436e79951a8076b7ba55e923fa88b"
+    },
+    {
+      "path": "schemas/question-adapter-fixture.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/question-adapter-fixture.schema.json",
+      "sha256": "002062abb4df9a98c92003eb4af43afbe8bdedd15d08b8697ad221fcc28ad9c7"
+    },
+    {
+      "path": "schemas/question-response.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/question-response.schema.json",
+      "sha256": "dec308b0daa4d882deb3878a1ad6ae5360f3342060f63ca636d65d1d9af1e055"
+    },
+    {
+      "path": "schemas/question-set.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json",
+      "sha256": "3bda40311ae3153bbf9d4a8c59f716680e17d711a4db3570193963918359751c"
+    },
+    {
+      "path": "schemas/request.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/request.schema.json",
+      "sha256": "bd41f01c00eddc1b635d3131a7183ddb616ff8fe68d5e348ddd9593a674c8d8e"
+    },
+    {
+      "path": "schemas/result.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/result.schema.json",
+      "sha256": "90f02c0a96e8ab9f75970fd788b61c18ccbd9abbd005bedfba280701729adce0"
+    },
+    {
+      "path": "schemas/semantic-tool.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json",
+      "sha256": "f53f6832c0d65caaccf540662fdb08cf62d9bab45a18def7b559c4068ef54efc"
+    },
+    {
+      "path": "schemas/stop-reason.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/stop-reason.schema.json",
+      "sha256": "ed0c0807904ff1198273458057e1a565e828dba499372c0c80e2c69a1d600a13"
+    },
+    {
+      "path": "schemas/terminal.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/terminal.schema.json",
+      "sha256": "e9093399ac6422e77b060269910ffaba9a3d574ed578832821e310a0582edffd"
+    },
+    {
+      "path": "schemas/usage.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/usage.schema.json",
+      "sha256": "28fdbb3202095144649dddc438e6270c66d599c6f7e86838687f58d644726456"
+    },
+    {
+      "path": "schemas/workspace-diff.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/workspace-diff.schema.json",
+      "sha256": "f71b21f41cfc4c40aeaa503d1981d29355b4dd8b15036fcf3d8df5c35f8b8f6f"
+    },
+    {
+      "path": "schemas/workspace-file-reference.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/workspace-file-reference.schema.json",
+      "sha256": "0ab57e76c9710f520ed9d15cc5d0f25c68176beff3aff556ad62dba9b922eb23"
+    }
+  ],
+  "fixtures": [
+    {
+      "path": "fixtures/conformance-expected-output.json",
+      "sha256": "5a643639c9df0a2925ba95c5c5dfa2217605018bfa0dd3954ab4aca5fcfdc2c6",
+      "expectation": "accept",
+      "compatibilityCase": "cross-language-output"
+    },
+    {
+      "path": "fixtures/conformance-minimal-run.json",
+      "sha256": "1e4304bcb51c3d7aa0575cf47b1ff3901700a254a60cf7432003ce9af0175e3a",
+      "expectation": "accept",
+      "compatibilityCase": "cross-language-input"
+    },
+    {
+      "path": "fixtures/questions/codex.json",
+      "sha256": "ad673b6f9d70b74b53656e622d15fad1a66430f39d62b9ef71479d194a198bd6",
+      "expectation": "accept",
+      "compatibilityCase": "codex-structured-input"
+    },
+    {
+      "path": "fixtures/replay/duplicate-event.json",
+      "sha256": "779c146966d2825ffcde88bfff8b1fb238c162d40c578980ad3bd1a7def405d7",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/replay/failed-run.json",
+      "sha256": "59281021b6ff11e4765213043580fc91eca8a02bedb3fe0c012bef9ad807da12",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/replay/golden/duplicate-event.snapshot.json",
+      "sha256": "24a6c221f9d46824128cde009b277dae2ea8672a608cf7fa2d7e4a714e38bc92",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/duplicate-event.summary.json",
+      "sha256": "dcbb2dae5810649cc59c6c0fe136e1033131d9510ebcbcc5f3435bfa998b95c9",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/failed-run.snapshot.json",
+      "sha256": "a2bb468e3ca94b092a86afb8a57d2d05e0ce3cd6e9f87927dea81aef5aa32dd1",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/failed-run.summary.json",
+      "sha256": "d7ac19d40b5d1d6106e2232cd2436ba1c4232bc6daa8a71957f12300ba851f65",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/happy-path.snapshot.json",
+      "sha256": "037c114df8f205a13fa9070b07e6f9707218b8249bd196925246b054a7690853",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/happy-path.summary.json",
+      "sha256": "00d2a033518c7b3f51ecb10aa64f7456922f6b3f930d853b3db35e72eaf55325",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/interrupted-run.snapshot.json",
+      "sha256": "dc216831c437cc8fd2c37cee6f40f342767b21e01a511f2235a443be0d0b7b0c",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/interrupted-run.summary.json",
+      "sha256": "753f226607b2d97301736d7f54b281ab7157397f3f32015c644787d370526332",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/source-gap.snapshot.json",
+      "sha256": "7db7f25e423a721e60adfcdfee02db6d5e6fcd4a644ee180f5e29810ebbc0d78",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/source-gap.summary.json",
+      "sha256": "861d0ee3fafe13bf8bf0fb71b7c1ef9a62cb26efba4dc8db889f36d27a14a813",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/unknown-optional-fields.snapshot.json",
+      "sha256": "cf5b13a4b8d7ae73d1632e0539ec50d2ebcee8fbb6a2f33b28db7ff786fa90ff",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/unknown-optional-fields.summary.json",
+      "sha256": "7d983bcad0439b7884e70d07f8070b53ed594fba2da3e8ac6998570e238e84dc",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/happy-path.json",
+      "sha256": "dfe0aeb4e7a217f8d375afe6e6d1ab0151bb8e81921b07ae0aaa6c4d0b8f8a1d",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/replay/interrupted-run.json",
+      "sha256": "2056789605ffde847b3272e751226ce4be61527f6aaa4fe3f5557a621af0ad5c",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/replay/source-gap.json",
+      "sha256": "d8a3eb2861e8198226360e666e5296ff5d7215f81d255a273b21d2bfe7dcc2ef",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/replay/unknown-optional-fields.json",
+      "sha256": "4dbc4b70c299fe21791ca66949f3cb189c8f76514b62c52f5f40a489a84515c4",
+      "expectation": "accept",
+      "compatibilityCase": "additive-optional-fields"
+    },
+    {
+      "path": "fixtures/replay/unsupported-required-version.json",
+      "sha256": "60ac964d2cf49dc80ada0cb9c946b25952f3e2be10719801d3f2f8bd98d27699",
+      "expectation": "reject",
+      "compatibilityCase": "unknown-required-version"
+    }
+  ]
+}
