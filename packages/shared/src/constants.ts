@@ -539,7 +539,13 @@ export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
 export type IssueExecutionMonitorRecoveryPolicy =
   (typeof ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)[number];
 
-export const ISSUE_EXECUTION_STATE_STATUSES = ["idle", "pending", "changes_requested", "completed"] as const;
+export const ISSUE_EXECUTION_STATE_STATUSES = [
+  "idle",
+  "pending",
+  "changes_requested",
+  "precondition_returned",
+  "completed",
+] as const;
 export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[number];
 
 export const ISSUE_EXECUTION_MONITOR_STATE_STATUSES = ["scheduled", "triggered", "cleared"] as const;

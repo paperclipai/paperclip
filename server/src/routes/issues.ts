@@ -2339,6 +2339,45 @@ function buildExecutionStageWakeup(input: {
     };
   }
 
+  if (nextState.status === "precondition_returned") {
+    const agentId = nextState.returnAssignee?.type === "agent" ? (nextState.returnAssignee.agentId ?? null) : null;
+    const becamePreconditionReturned =
+      previousState?.status !== "precondition_returned" ||
+      !executionPrincipalsEqual(previousState?.returnAssignee ?? null, nextState.returnAssignee ?? null);
+    if (!agentId || !becamePreconditionReturned) return null;
+
+    const executionStage = buildExecutionStageWakeContext({
+      state: nextState,
+      wakeRole: "executor",
+      allowedActions: ["restore_precondition", "resubmit"],
+    });
+
+    return {
+      agentId,
+      wakeup: {
+        source: "assignment" as const,
+        triggerDetail: "system" as const,
+        reason: "execution_precondition_returned",
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_precondition_returned",
+          source: "issue.execution_stage",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+      },
+    };
+  }
+
   return null;
 }
 

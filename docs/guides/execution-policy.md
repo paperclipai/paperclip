@@ -48,7 +48,7 @@ Tracks where the issue currently sits in its policy workflow:
 
 ```ts
 interface IssueExecutionState {
-  status: "idle" | "pending" | "changes_requested" | "completed";
+  status: "idle" | "pending" | "changes_requested" | "precondition_returned" | "completed";
   currentStageId: string | null;
   currentStageIndex: number | null;
   currentStageType: "review" | "approval" | null;
@@ -122,6 +122,24 @@ interface IssueExecutionDecision {
    - Sets `executionState.status` to `changes_requested`
 3. **Executor makes changes** and transitions to `done` again.
 4. Runtime routes back to the **same review stage** (not the beginning), with the same reviewer.
+
+### Precondition Return (not a verdict)
+
+A reviewer or watchdog can restore the executor without consuming the candidate verdict when required evidence or the review environment is not ready. The first line of the same `PATCH` comment must be `REVIEW_EVIDENCE_NOT_GREEN` or `REVIEW_ENVIRONMENT_BLOCKED` (optional markdown heading).
+
+```bash
+PATCH /api/issues/{issueId}
+{ "status": "todo", "comment": "## REVIEW_EVIDENCE_NOT_GREEN\n\nRequired checks are still running; no verdict was consumed." }
+```
+
+Runtime then:
+
+- Sets status to `in_progress` and reassigns to `returnAssignee`
+- Sets `executionState.status` to `precondition_returned`
+- Leaves `lastDecisionOutcome`, `lastDecisionId`, and `changesRequestedCount` unchanged
+- Does **not** insert an `issue_execution_decisions` row
+
+The executor later resubmits with `done`; the same exact-head stage becomes `pending` again. A later mention of those tokens in a changes-requested comment is still a real verdict.
 5. This loop continues until the reviewer approves.
 
 ### Policy Variants
