@@ -4,6 +4,8 @@ export interface ParsedAntigravityOutput {
   sessionId: string | null;
   summary: string;
   errorMessage: string | null;
+  /** Count of search-class tool calls; see SEARCH_TOOL_NAMES. */
+  searchToolCalls: number;
   usage: {
     inputTokens: number;
     cachedInputTokens: number;
@@ -45,6 +47,8 @@ const ANTIGRAVITY_QUOTA_EXHAUSTED_RE =
 const ANTIGRAVITY_RESET_IN_RE =
   /resets?\s+in\s+(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?/i;
 const PAPERCLIP_DISPOSITION_STATUSES = new Set(["done", "cancelled", "in_review", "blocked"]);
+/** Tools whose results are large, uncached, and re-sent on every later turn. */
+const SEARCH_TOOL_NAMES = new Set(["grep_search", "find_by_name", "list_dir", "codebase_search"]);
 
 type TokenUsage = ParsedAntigravityOutput["usage"];
 
@@ -184,6 +188,14 @@ export function inspectAntigravityStream(stdout: string) {
   // so a CANCELED turn with an empty response was stored as a successful run:
   // 68 of 91 "succeeded" antigravity runs in 24h were CANCELED and 9 were ERROR.
   let resultStatus: string | null = null;
+  // SEARCH FANOUT (TSMC-21368). Tool output is never cached and is re-sent in
+  // full on every later turn, so search results compound: a run that hunts for
+  // material that does not exist pays for every result again each turn. The
+  // three healthy content runs measured 2026-08-24 used 6-7 turns and 44K-99K
+  // weighted tokens; the one that hunted used 28 turns, 14 search-class calls
+  // and 368K -- past the 200K cap. Counting the calls makes the CAUSE visible
+  // instead of only the symptom the token guard reports.
+  const searchToolCalls = new Set<string>();
   // The agy CLI reports WHY a turn ended inside the result envelope
   // ({"event":"result","result":{"status":"ERROR","error":"Individual quota
   // reached ... Resets in 14m32s."}}). Paperclip discarded it and reported the
@@ -211,6 +223,13 @@ export function inspectAntigravityStream(stdout: string) {
     usage.cachedInputTokens = Math.max(usage.cachedInputTokens, eventUsage.cachedInputTokens);
     usage.outputTokens = Math.max(usage.outputTokens, eventUsage.outputTokens);
     summary = readEventText(event) ?? summary;
+    const stepUpdate = asRecord(event.step_update);
+    const toolName = typeof stepUpdate.tool_name === "string" ? stepUpdate.tool_name : "";
+    if (SEARCH_TOOL_NAMES.has(toolName)) {
+      // step_index makes the count per distinct call, not per state transition
+      // (a tool emits ACTIVE then DONE for the same step).
+      searchToolCalls.add(`${toolName}:${String(stepUpdate.step_index ?? searchToolCalls.size)}`);
+    }
     const statusCandidate = asRecord(event.result).status ?? event.status;
     if (typeof statusCandidate === "string" && statusCandidate.trim()) {
       resultStatus = statusCandidate.trim().toUpperCase();
@@ -222,7 +241,7 @@ export function inspectAntigravityStream(stdout: string) {
       }
     }
   }
-  return { sessionId, summary, usage, sawJsonEvent, resultStatus, errorText };
+  return { sessionId, summary, usage, sawJsonEvent, resultStatus, errorText, searchToolCalls: searchToolCalls.size };
 }
 
 export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntigravityOutput {
@@ -238,6 +257,7 @@ export function parseAntigravityOutput(stdout: string, stderr = ""): ParsedAntig
     sessionId,
     summary: cleanedText,
     errorMessage: stream.errorText,
+    searchToolCalls: stream.searchToolCalls,
     usage: stream.usage,
     disposition,
     resultStatus: stream.resultStatus,

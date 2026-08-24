@@ -107,10 +107,27 @@ describe("antigravity in-run disposition re-ask", () => {
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
   });
 
-  it("does not re-ask an ERROR turn either", async () => {
-    runAdapterExecutionTargetProcess.mockResolvedValue(agyTurn("boom", "ERROR"));
+  // CORRECTED 2026-08-24 (TSMC-21368). This previously asserted that NO errored
+  // turn is re-asked. Production disproved it: agy rejects any write_to_file
+  // outside its per-conversation brain dir as an invalid tool call and ends the
+  // turn ERROR even though the model produced its full answer and wrote the file
+  // another way -- 17 of 19 such rejections in 72h carried a complete response.
+  // The real failure signal is an EMPTY response, not the status word: quota
+  // 227/227, timeout 17/17, CANCELED 184/185 were all empty.
+  it("does not re-ask an ERROR turn that produced nothing", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValue(agyTurn("", "ERROR"));
     await execute(ctx());
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("DOES re-ask an ERROR turn that still produced a response", async () => {
+    runAdapterExecutionTargetProcess
+      .mockResolvedValueOnce(agyTurn("Wrote the file; the artifact-path tool call was rejected.", "ERROR"))
+      .mockResolvedValueOnce(agyTurn(`Reporting it now.\n\n${MARKER}`));
+    const result: never = await execute(ctx());
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+    expect((result as { resultJson?: { disposition?: { status?: string } } }).resultJson?.disposition)
+      .toMatchObject({ status: "done" });
   });
 
   it("leaves the run clean when the re-ask itself states nothing", async () => {

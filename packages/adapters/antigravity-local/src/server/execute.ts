@@ -616,6 +616,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : {
             ...(attempt.parsed.disposition ? { disposition: attempt.parsed.disposition } : {}),
             ...(attempt.parsed.resultStatus ? { agyResultStatus: attempt.parsed.resultStatus } : {}),
+            // Surfaced so search fanout is measurable per run rather than only
+            // showing up later as an unexplained token-budget kill.
+            searchToolCalls: attempt.parsed.searchToolCalls,
             ...(attempt.parsed.resultStatus && attempt.parsed.resultStatus !== "SUCCESS"
               ? { stopReason: `antigravity_${attempt.parsed.resultStatus.toLowerCase()}` }
               : {}),
@@ -637,7 +640,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (attempt.proc.timedOut) return attempt;
       if ((attempt.proc.exitCode ?? 0) !== 0) return attempt;
       if (attempt.parsed.disposition) return attempt;
-      if (attempt.parsed.resultStatus && attempt.parsed.resultStatus !== "SUCCESS") return attempt;
+      // A turn can end non-SUCCESS and still have DONE THE WORK. agy rejects any
+      // write_to_file outside its per-conversation brain dir
+      // (~/.gemini/antigravity-cli/brain/<id>/) as an invalid tool call, which
+      // ends the turn ERROR even though the model produced its full answer and
+      // wrote the file by another route. Measured over 72h: 17 of 19 such
+      // rejections carried a complete response, while every genuinely failed
+      // turn was EMPTY -- quota 227/227, timeout 17/17, permission 69/73,
+      // CANCELED 184/185. So "produced nothing" is the real failure signal, not
+      // the status word. Skipping the re-ask on a non-empty ERROR threw away a
+      // disposition that was still recoverable.
+      if (
+        attempt.parsed.resultStatus
+        && attempt.parsed.resultStatus !== "SUCCESS"
+        && !attempt.parsed.summary.trim()
+      ) return attempt;
       const reaskSessionId = attempt.parsed.sessionId;
       if (!reaskSessionId) return attempt;
 

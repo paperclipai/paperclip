@@ -198,3 +198,30 @@ describe("per-step usage must be visible to the budget guard (TSMC-21362)", () =
     expect(inspectAntigravityStream(partial).usage.inputTokens).toBe(22021);
   });
 });
+
+describe("search fanout is counted so the cause is visible (TSMC-21368)", () => {
+  const line = (i: number, tool: string, state = "DONE") =>
+    `{"event":"step_update","step_update":{"conversation_id":"c1","step_index":${i},"state":"${state}","step_type":"tool","tool_name":"${tool}"}}`;
+
+  it("counts each distinct search call once, not once per state transition", () => {
+    const stream = [
+      line(1, "grep_search", "ACTIVE"),
+      line(1, "grep_search", "DONE"),
+      line(2, "find_by_name"),
+      line(3, "list_dir"),
+    ].join("\n");
+    expect(inspectAntigravityStream(stream).searchToolCalls).toBe(3);
+  });
+
+  it("does not count reads or writes as searches", () => {
+    const stream = [line(1, "view_file"), line(2, "write_to_file"), line(3, "run_command")].join("\n");
+    expect(inspectAntigravityStream(stream).searchToolCalls).toBe(0);
+  });
+
+  it("separates a healthy run from a hunting one", () => {
+    const healthy = [line(1, "view_file"), line(2, "grep_search")].join("\n");
+    const hunting = Array.from({ length: 14 }, (_, i) => line(i, "find_by_name")).join("\n");
+    expect(inspectAntigravityStream(healthy).searchToolCalls).toBe(1);
+    expect(inspectAntigravityStream(hunting).searchToolCalls).toBe(14);
+  });
+});
