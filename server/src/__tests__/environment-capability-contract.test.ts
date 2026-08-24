@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT,
   SANDBOX_CAPABILITY_KEYS,
   buildSandboxCapabilityNarrowing,
   builtinSandboxProviderVerifiedMethods,
-  resolveEffectiveSandboxCapabilities,
+  classifyEnvironmentCapabilities,
 } from "../services/environment-runtime.js";
 
 // The worker verbs a fully-capable plug-in provider advertises.
@@ -17,12 +18,12 @@ const ALL_PLUGIN_METHODS = [
   "environmentSyncOut",
 ];
 
-describe("sandbox capability contract normalizer", () => {
+describe("environment capability contract normalizer", () => {
   it("test_absent_declaration_defers_to_worker_supported_methods_discovery", () => {
     // No declaration at all. The effective set must fall back to what the worker
     // verified, so a third-party provider that implements the sync hooks keeps
     // native sync without declaring it.
-    const effective = resolveEffectiveSandboxCapabilities({
+    const effective = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentSyncIn", "environmentSyncOut"],
       declared: null,
     });
@@ -41,7 +42,7 @@ describe("sandbox capability contract normalizer", () => {
       independentControlCommands: false,
       nativeSyncIn: true,
     };
-    const effective = resolveEffectiveSandboxCapabilities({ verifiedMethods, declared });
+    const effective = classifyEnvironmentCapabilities({ verifiedMethods, declared });
 
     // Verified + declared true.
     expect(effective.persistentProcessSessions).toBe(true);
@@ -53,7 +54,7 @@ describe("sandbox capability contract normalizer", () => {
     // Every effective capability must be a subset of the verified set and the
     // declaration: an effective `true` never appears where the worker did not
     // verify or the declaration set `false`.
-    const verifiedOnly = resolveEffectiveSandboxCapabilities({ verifiedMethods });
+    const verifiedOnly = classifyEnvironmentCapabilities({ verifiedMethods });
     for (const key of SANDBOX_CAPABILITY_KEYS) {
       if (effective[key]) {
         expect(verifiedOnly[key]).toBe(true);
@@ -67,7 +68,7 @@ describe("sandbox capability contract normalizer", () => {
       leasePolicy: "ephemeral",
       leaseMetadata: { backend: "job" },
     });
-    const effective = resolveEffectiveSandboxCapabilities({
+    const effective = classifyEnvironmentCapabilities({
       verifiedMethods: ALL_PLUGIN_METHODS,
       declared: { nativeSyncIn: true, nativeSyncOut: true },
       narrowing,
@@ -101,7 +102,7 @@ describe("sandbox capability contract normalizer", () => {
     // A normal lease adds no persistent-session narrowing.
     expect(narrowing.persistentProcessSessions).toBeUndefined();
 
-    const effective = resolveEffectiveSandboxCapabilities({
+    const effective = classifyEnvironmentCapabilities({
       verifiedMethods,
       declared,
       narrowing,
@@ -124,7 +125,7 @@ describe("sandbox capability contract normalizer", () => {
     });
     expect(narrowing.persistentProcessSessions).toBe(false);
 
-    const effective = resolveEffectiveSandboxCapabilities({
+    const effective = classifyEnvironmentCapabilities({
       verifiedMethods,
       declared,
       narrowing,
@@ -150,13 +151,13 @@ describe("sandbox capability contract normalizer", () => {
       supportsReusableLeases: true,
       execute: () => undefined,
     });
-    const builtinEffective = resolveEffectiveSandboxCapabilities({
+    const builtinEffective = classifyEnvironmentCapabilities({
       verifiedMethods: builtinMethods,
       declared,
     });
 
     // A plug-in provider that advertises the equivalent verbs.
-    const pluginEffective = resolveEffectiveSandboxCapabilities({
+    const pluginEffective = classifyEnvironmentCapabilities({
       verifiedMethods: [
         "environmentResumeLease",
         "environmentReleaseLease",
@@ -175,7 +176,7 @@ describe("sandbox capability contract normalizer", () => {
     expect(builtinEffective.nativeSyncIn).toBe(false);
 
     // A built-in provider without an execute method verifies no exec capability.
-    const noExec = resolveEffectiveSandboxCapabilities({
+    const noExec = classifyEnvironmentCapabilities({
       verifiedMethods: builtinSandboxProviderVerifiedMethods({ supportsReusableLeases: false }),
       declared: { persistentProcessSessions: true },
     });
@@ -186,7 +187,7 @@ describe("sandbox capability contract normalizer", () => {
     // One case per capability: the declaration sets the flag `true`, the worker
     // lacks a prerequisite verb, and the effective value stays `false`.
     for (const key of SANDBOX_CAPABILITY_KEYS) {
-      const effective = resolveEffectiveSandboxCapabilities({
+      const effective = classifyEnvironmentCapabilities({
         verifiedMethods: [],
         declared: { [key]: true },
       });
@@ -195,7 +196,7 @@ describe("sandbox capability contract normalizer", () => {
 
     // A single missing prerequisite verb is enough: reusable leases needs
     // resume, release, and destroy, so resume alone does not grant it.
-    const resumeOnly = resolveEffectiveSandboxCapabilities({
+    const resumeOnly = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentResumeLease"],
       declared: { reusableLeases: true },
     });
@@ -206,14 +207,14 @@ describe("sandbox capability contract normalizer", () => {
     // A provider that verifies resume and release but not destroy is not
     // eligible for reusable leases. The reuse path destroys a stale lease when a
     // resume fails, so a provider without destroy support would strand the lease.
-    const resumeAndReleaseOnly = resolveEffectiveSandboxCapabilities({
+    const resumeAndReleaseOnly = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentResumeLease", "environmentReleaseLease"],
       declared: { reusableLeases: true },
     });
     expect(resumeAndReleaseOnly.reusableLeases).toBe(false);
 
     // Adding the destroy verb makes the same provider eligible.
-    const allReuseVerbs = resolveEffectiveSandboxCapabilities({
+    const allReuseVerbs = classifyEnvironmentCapabilities({
       verifiedMethods: [
         "environmentResumeLease",
         "environmentReleaseLease",
@@ -231,7 +232,7 @@ describe("sandbox capability contract normalizer", () => {
     // true, but `incrementalSessionOutput` must stay false because the provider
     // did not declare the opt-in behavior. The session-output streaming gate
     // reads `incrementalSessionOutput`, so this provider keeps the poll path.
-    const effective = resolveEffectiveSandboxCapabilities({
+    const effective = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentExecute"],
       declared: {
         persistentProcessSessions: true,
@@ -249,7 +250,7 @@ describe("sandbox capability contract normalizer", () => {
     // An absent declaration denies the opt-in capability even when the worker
     // verifies the prerequisite verb. This differs from a worker-property
     // capability, which defers to the verified baseline.
-    const undeclared = resolveEffectiveSandboxCapabilities({
+    const undeclared = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentExecute"],
       declared: null,
     });
@@ -257,14 +258,14 @@ describe("sandbox capability contract normalizer", () => {
 
     // A provider that declares the capability and verifies the prerequisite gets
     // the streaming path.
-    const declared = resolveEffectiveSandboxCapabilities({
+    const declared = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentExecute"],
       declared: { incrementalSessionOutput: true },
     });
     expect(declared.incrementalSessionOutput).toBe(true);
 
     // A declaration never grants the capability without the verified verb.
-    const declaredButUnverified = resolveEffectiveSandboxCapabilities({
+    const declaredButUnverified = classifyEnvironmentCapabilities({
       verifiedMethods: [],
       declared: { incrementalSessionOutput: true },
     });
@@ -282,7 +283,7 @@ describe("sandbox capability contract normalizer", () => {
     });
     expect(narrowing.incrementalSessionOutput).toBe(false);
 
-    const effective = resolveEffectiveSandboxCapabilities({
+    const effective = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentExecute"],
       declared: { incrementalSessionOutput: true },
       narrowing,
@@ -294,14 +295,14 @@ describe("sandbox capability contract normalizer", () => {
     // Parallel bidirectional file sync is opt-in and direction-neutral. It needs
     // both sync verbs, so a provider that verifies only one direction cannot get
     // the capability. An absent declaration denies it even with both verbs.
-    const undeclared = resolveEffectiveSandboxCapabilities({
+    const undeclared = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentSyncIn", "environmentSyncOut"],
       declared: null,
     });
     expect(undeclared.concurrentSyncOperations).toBe(false);
 
     // A positive declaration with both verified verbs resolves true.
-    const bothVerbs = resolveEffectiveSandboxCapabilities({
+    const bothVerbs = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentSyncIn", "environmentSyncOut"],
       declared: { concurrentSyncOperations: true },
     });
@@ -309,7 +310,7 @@ describe("sandbox capability contract normalizer", () => {
 
     // Only the inbound verb: the outbound prerequisite is missing, so it resolves
     // false.
-    const inOnly = resolveEffectiveSandboxCapabilities({
+    const inOnly = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentSyncIn"],
       declared: { concurrentSyncOperations: true },
     });
@@ -317,7 +318,7 @@ describe("sandbox capability contract normalizer", () => {
 
     // Only the outbound verb: the inbound prerequisite is missing, so it resolves
     // false.
-    const outOnly = resolveEffectiveSandboxCapabilities({
+    const outOnly = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentSyncOut"],
       declared: { concurrentSyncOperations: true },
     });
@@ -329,7 +330,7 @@ describe("sandbox capability contract normalizer", () => {
     // the capability even when the worker verifies the duplex open verb. This
     // matches the incremental-session-output pattern: an opt-in behavioral
     // guarantee needs a positive declaration, not just a verified verb.
-    const undeclared = resolveEffectiveSandboxCapabilities({
+    const undeclared = classifyEnvironmentCapabilities({
       verifiedMethods: ["duplexChannelOpen"],
       declared: null,
     });
@@ -340,7 +341,7 @@ describe("sandbox capability contract normalizer", () => {
     // A declaration never grants the capability without the verified duplex open
     // verb. A provider that declares the capability but whose worker does not
     // report the duplex open method resolves false.
-    const declaredButUnverified = resolveEffectiveSandboxCapabilities({
+    const declaredButUnverified = classifyEnvironmentCapabilities({
       verifiedMethods: ["environmentExecute"],
       declared: { duplexCommandStream: true },
     });
@@ -350,7 +351,7 @@ describe("sandbox capability contract normalizer", () => {
   it("test_duplex_command_stream_declared_and_verified_resolves_true_but_narrowing_removes_it", () => {
     // A provider that declares the capability and whose worker verifies the
     // duplex open verb gets the capability.
-    const granted = resolveEffectiveSandboxCapabilities({
+    const granted = classifyEnvironmentCapabilities({
       verifiedMethods: ["duplexChannelOpen"],
       declared: { duplexCommandStream: true },
     });
@@ -358,7 +359,7 @@ describe("sandbox capability contract normalizer", () => {
 
     // Per-target narrowing still removes a verified and declared capability, so a
     // lease that cannot use the duplex channel keeps the file bridge.
-    const narrowed = resolveEffectiveSandboxCapabilities({
+    const narrowed = classifyEnvironmentCapabilities({
       verifiedMethods: ["duplexChannelOpen"],
       declared: { duplexCommandStream: true },
       narrowing: { duplexCommandStream: false },
@@ -378,10 +379,103 @@ describe("sandbox capability contract normalizer", () => {
     };
 
     for (const verifiedMethods of [null, undefined, [] as string[]]) {
-      const effective = resolveEffectiveSandboxCapabilities({ verifiedMethods, declared: declaredAll });
+      const effective = classifyEnvironmentCapabilities({ verifiedMethods, declared: declaredAll });
       for (const key of SANDBOX_CAPABILITY_KEYS) {
         expect(effective[key]).toBe(false);
       }
+    }
+  });
+});
+
+describe("general runtime capability resolver — four-driver matrix", () => {
+  // A declaration that would grant every capability, paired with a worker
+  // method list that verifies every prerequisite. Used to probe each driver's
+  // static support ceiling: whatever the driver family cannot support must
+  // stay `false` even under the most permissive declaration and worker.
+  const DECLARE_ALL = {
+    reusableLeases: true,
+    nativeSyncIn: true,
+    nativeSyncOut: true,
+    persistentProcessSessions: true,
+    independentControlCommands: true,
+    incrementalSessionOutput: true,
+    concurrentSyncOperations: true,
+    duplexCommandStream: true,
+  };
+  const VERIFY_ALL = [...ALL_PLUGIN_METHODS, "duplexChannelOpen"];
+
+  it("test_local_and_ssh_drivers_support_no_capability_regardless_of_declaration_or_worker", () => {
+    // The `local` and `ssh` static support definitions name none of the eight
+    // capabilities, so the classifier resolves every field `false` even with a
+    // full declaration and a fully verified worker.
+    for (const driver of ["local", "ssh"] as const) {
+      const effective = classifyEnvironmentCapabilities({
+        verifiedMethods: VERIFY_ALL,
+        declared: DECLARE_ALL,
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+      });
+      for (const key of SANDBOX_CAPABILITY_KEYS) {
+        expect(effective[key]).toBe(false);
+      }
+    }
+  });
+
+  it("test_sandbox_and_plugin_drivers_support_the_whole_capability_set", () => {
+    // The `sandbox` and `plugin` static support definitions name every
+    // capability, so the classifier defers fully to the declaration, the
+    // verified worker methods, and the narrowing — the static gate adds no
+    // extra restriction for either driver.
+    for (const driver of ["sandbox", "plugin"] as const) {
+      const effective = classifyEnvironmentCapabilities({
+        verifiedMethods: VERIFY_ALL,
+        declared: DECLARE_ALL,
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+      });
+      for (const key of SANDBOX_CAPABILITY_KEYS) {
+        expect(effective[key]).toBe(true);
+      }
+      // The static gate changes nothing versus the ungated normalizer for
+      // these two drivers, so the two results match field for field.
+      expect(effective).toEqual(
+        classifyEnvironmentCapabilities({ verifiedMethods: VERIFY_ALL, declared: DECLARE_ALL }),
+      );
+    }
+  });
+
+  it("test_sandbox_and_plugin_drivers_fail_closed_on_a_missing_worker_method_list", () => {
+    // A missing, undefined, or empty worker method list verifies no
+    // prerequisite, so every capability resolves `false` for a driver that
+    // supports the whole set, even under a full declaration. This is the
+    // fail-closed contract Phase 2 must keep for the live plugin worker path.
+    for (const driver of ["sandbox", "plugin"] as const) {
+      for (const verifiedMethods of [null, undefined, [] as string[]]) {
+        const effective = classifyEnvironmentCapabilities({
+          verifiedMethods,
+          declared: DECLARE_ALL,
+          supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+        });
+        for (const key of SANDBOX_CAPABILITY_KEYS) {
+          expect(effective[key]).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("test_narrowing_still_removes_a_capability_the_static_support_and_declaration_both_grant", () => {
+    // Per-target narrowing stays a separate, later gate: it removes a
+    // capability that the static support, the verified worker, and the
+    // declaration all grant. This holds for every driver whose static support
+    // names the capability.
+    for (const driver of ["sandbox", "plugin"] as const) {
+      const effective = classifyEnvironmentCapabilities({
+        verifiedMethods: VERIFY_ALL,
+        declared: DECLARE_ALL,
+        narrowing: { duplexCommandStream: false },
+        supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
+      });
+      expect(effective.duplexCommandStream).toBe(false);
+      // A capability the narrowing does not name is unaffected.
+      expect(effective.persistentProcessSessions).toBe(true);
     }
   });
 });

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/conformance-output.schema.json",
+  "title": "Paperclip Runner cross-language conformance output",
+  "type": "object",
+  "required": ["schemaVersion", "runIdentity", "result"],
+  "properties": {
+    "schemaVersion": { "const": "paperclip.runner.conformance.output.v1" },
+    "runIdentity": {
+      "type": "object",
+      "required": ["runId", "sessionId"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": true
+    },
+    "result": {
+      "type": "object",
+      "required": ["status", "summary"],
+      "properties": {
+        "status": { "enum": ["succeeded", "failed", "interrupted"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160 }
+  },
+  "additionalProperties": true
+}
