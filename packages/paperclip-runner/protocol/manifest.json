@@ -122,6 +122,48 @@
       "compatibilityCase": "cross-language-input"
     },
     {
+      "path": "fixtures/local-runner/scripts/duplicate-terminal.json",
+      "sha256": "56928a21318ea4b390c65fb34f0d3114760619d79301f4d535391a8566b693ab",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/local-runner/scripts/error.json",
+      "sha256": "a4c74f8a85f8ab25adb13e83ae753fcac1a9cb289bad44d49be05df8f3170edb",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/local-runner/scripts/happy-path.json",
+      "sha256": "ccdeef3df1e2020b692da3bd361958643f2f3d5ec6e1e0b16cca9e0d9890da2f",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/local-runner/scripts/interrupted.json",
+      "sha256": "36dc94dc1a67d320a48921f2ed10f0e7ab760c518eea84d5f224e1e6ab8fa57c",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/local-runner/scripts/linger.json",
+      "sha256": "ac6fed60bea22b22c16501c03388828ccaae6e9ec44ceb2ec0e8b145ab590bb8",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/local-runner/scripts/oversized-line.json",
+      "sha256": "485b03653a2e41351f155b787a406f903e018b3c29b19c4ddf2dfc7c031552b7",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/local-runner/scripts/permission-input.json",
+      "sha256": "9b64b78ed75006b9190c80fd88c5ab555ef458f7ad023e8ebfdac8de373e1f9c",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/questions/codex.json",
       "sha256": "ad673b6f9d70b74b53656e622d15fad1a66430f39d62b9ef71479d194a198bd6",
       "expectation": "accept",
