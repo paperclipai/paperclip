@@ -771,6 +771,14 @@ cmd_promote_pointer() {
 
   # Final belt-and-braces on the live pointer path.
   ensure_worktree_env "$DEPLOY_ROOT"
+  # TSMC-21384: re-install commit refuse hooks after every tree swap
+  if [ -x "$SCRIPT_DIR/install-paperclip-deploy-commit-guard.sh" ]; then
+    bash "$SCRIPT_DIR/install-paperclip-deploy-commit-guard.sh" "$DEPLOY_ROOT" \
+      || log "WARN: deploy commit-guard install failed (non-fatal)"
+  elif [ -x "$DEPLOY_ROOT/scripts/install-paperclip-deploy-commit-guard.sh" ]; then
+    bash "$DEPLOY_ROOT/scripts/install-paperclip-deploy-commit-guard.sh" "$DEPLOY_ROOT" \
+      || log "WARN: deploy commit-guard install failed (non-fatal)"
+  fi
   [ -f "$DEPLOY_ROOT/.paperclip/.env" ] || fail "DEPLOY_ROOT missing .paperclip/.env after promote"
   if [ "$staged_as_checkout" = "1" ]; then
     git -C "$DEPLOY_ROOT" diff --quiet \

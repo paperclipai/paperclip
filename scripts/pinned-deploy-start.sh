@@ -3,6 +3,7 @@
 # Never source launchd-start.sh. Logs live outside the replaceable worktree.
 # Refuses to start when HEAD does not match the promotion receipt SHA.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LOGIN_PATH="$(/bin/zsh -lic 'printf %s "$PATH"' 2>/dev/null || true)"
 if [ -n "${LOGIN_PATH:-}" ]; then
@@ -47,6 +48,12 @@ die() {
 }
 
 [ -d "$DEPLOY_ROOT" ] || die "deploy root missing: $DEPLOY_ROOT"
+# TSMC-21384: ensure serving tree cannot accept agent commits
+if [ -x "$SCRIPT_DIR/install-paperclip-deploy-commit-guard.sh" ]; then
+  bash "$SCRIPT_DIR/install-paperclip-deploy-commit-guard.sh" "$DEPLOY_ROOT" || true
+elif [ -x "$DEPLOY_ROOT/scripts/install-paperclip-deploy-commit-guard.sh" ]; then
+  bash "$DEPLOY_ROOT/scripts/install-paperclip-deploy-commit-guard.sh" "$DEPLOY_ROOT" || true
+fi
 cd "$DEPLOY_ROOT"
 
 if [ ! -f "$RECEIPT_PATH" ]; then

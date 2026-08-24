@@ -56,10 +56,32 @@ for tree in $PROTECTED_TREES; do
   fi
 done
 
-if [ "$dirty_found" = "1" ]; then
-  log "A protected tree has uncommitted agent work. Do NOT stash/reset blindly:"
-  log "  1. identify the owning lane and its issue before touching anything;"
-  log "  2. a merge into live will refuse while these paths are dirty — that refusal is the system working."
+# TSMC-21384: serving HEAD must be an object the source repo knows.
+# Commits made only inside ~/paperclip-deploy (cbae6c983 class) pass a clean
+# porcelain check but are silently discarded by prepare-candidate.
+orphan_found=0
+SOURCE_ROOT="${PAPERCLIP_SOURCE_ROOT:-$HOME/paperclip}"
+DEPLOY_ROOT_CHECK="${PAPERCLIP_DEPLOY_ROOT:-$HOME/paperclip-deploy}"
+if [ -d "$DEPLOY_ROOT_CHECK/.git" ] || [ -f "$DEPLOY_ROOT_CHECK/.git" ]; then
+  deploy_head="$(git -C "$DEPLOY_ROOT_CHECK" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$deploy_head" ]; then
+    if git -C "$SOURCE_ROOT" cat-file -t "$deploy_head" >/dev/null 2>&1; then
+      log "deploy HEAD source-reachable: ${deploy_head:0:9}"
+    else
+      orphan_found=1
+      log "ORPHAN DEPLOY HEAD: $deploy_head is NOT in $SOURCE_ROOT (cbae6c983 class)"
+      log "  restore: git -C $DEPLOY_ROOT_CHECK checkout -f <source-known-sha>"
+      log "  recover commit first if it has unique work (format-patch -> source worktree)"
+    fi
+  fi
+fi
+
+if [ "$dirty_found" = "1" ] || [ "$orphan_found" = "1" ]; then
+  if [ "$dirty_found" = "1" ]; then
+    log "A protected tree has uncommitted agent work. Do NOT stash/reset blindly:"
+    log "  1. identify the owning lane and its issue before touching anything;"
+    log "  2. a merge into live will refuse while these paths are dirty — that refusal is the system working."
+  fi
   exit 2
 fi
 log "all protected trees clean"
