@@ -38,24 +38,44 @@ function grantExpiryFromDefaults(value: unknown): Date | null | undefined | "inv
   return new Date(parsed.data);
 }
 
-export function grantsFromDefaults(
+/**
+ * What a defaults payload asked for, including what had to be thrown away.
+ *
+ * Dropping an unreadable expiry is only fail-closed if the caller knows the
+ * drop happened. Both fallbacks below re-add a permission when it is missing
+ * from the result, and "missing because the payload never mentioned it" and
+ * "missing because its bound could not be read" call for opposite answers
+ * (FAI-10144, FAI-10152 round 4).
+ */
+type DefaultsGrants = {
+  grants: JoinGrant[];
+  /** Keys the payload named but whose expiry could not be read. */
+  unreadableExpiryKeys: Set<string>;
+};
+
+function collectGrantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined,
   key: "human" | "agent"
-): JoinGrant[] {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
+): DefaultsGrants {
+  const empty: DefaultsGrants = { grants: [], unreadableExpiryKeys: new Set() };
+  if (!defaultsPayload || typeof defaultsPayload !== "object") return empty;
   const scoped = defaultsPayload[key];
-  if (!scoped || typeof scoped !== "object") return [];
+  if (!scoped || typeof scoped !== "object") return empty;
   const grants = (scoped as Record<string, unknown>).grants;
-  if (!Array.isArray(grants)) return [];
+  if (!Array.isArray(grants)) return empty;
   const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
   const result: JoinGrant[] = [];
+  const unreadableExpiryKeys = new Set<string>();
   for (const item of grants) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
     if (typeof record.permissionKey !== "string") continue;
     if (!validPermissionKeys.has(record.permissionKey)) continue;
     const expiresAt = grantExpiryFromDefaults(record.expiresAt);
-    if (expiresAt === "invalid") continue;
+    if (expiresAt === "invalid") {
+      unreadableExpiryKeys.add(record.permissionKey);
+      continue;
+    }
     result.push({
       permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
       scope:
@@ -67,14 +87,29 @@ export function grantsFromDefaults(
       ...(expiresAt === undefined ? {} : { expiresAt }),
     });
   }
-  return result;
+  return { grants: result, unreadableExpiryKeys };
+}
+
+export function grantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  key: "human" | "agent"
+): JoinGrant[] {
+  return collectGrantsFromDefaults(defaultsPayload, key).grants;
 }
 
 export function agentJoinGrantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined
 ): JoinGrant[] {
-  const grants = grantsFromDefaults(defaultsPayload, "agent");
+  const { grants, unreadableExpiryKeys } = collectGrantsFromDefaults(defaultsPayload, "agent");
   if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
+    return grants;
+  }
+  // The payload *did* ask for `tasks:assign`, with a bound nobody could read.
+  // Appending the default here would hand out the indefinite version of exactly
+  // the grant the operator was trying to time-box — dropping the entry upstream
+  // would have widened authority instead of narrowing it. No grant at all is the
+  // fail-closed reading of "they wanted this bounded and the bound is unusable".
+  if (unreadableExpiryKeys.has("tasks:assign")) {
     return grants;
   }
   return [
@@ -90,6 +125,13 @@ export function humanJoinGrantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined,
   membershipRole: HumanCompanyMembershipRole
 ): JoinGrant[] {
-  const grants = grantsFromDefaults(defaultsPayload, "human");
-  return grants.length > 0 ? grants : grantsForHumanRole(membershipRole);
+  const { grants, unreadableExpiryKeys } = collectGrantsFromDefaults(defaultsPayload, "human");
+  if (grants.length > 0) return grants;
+  // Same widening, wider blast radius: a payload whose human grants were *all*
+  // unreadable leaves an empty list, and falling through to the role defaults
+  // would grant an admin the full indefinite set the invite was bounding. An
+  // empty result caused by rejected entries is not the same as an invite that
+  // named no human grants, which still gets the role defaults.
+  if (unreadableExpiryKeys.size > 0) return [];
+  return grantsForHumanRole(membershipRole);
 }

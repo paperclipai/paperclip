@@ -114,6 +114,41 @@ describe("agentJoinGrantsFromDefaults", () => {
     ).toEqual([{ permissionKey: "tasks:assign", scope: null }]);
   });
 
+  /**
+   * Dropping an unreadable expiry is only fail-closed if the drop is the end of
+   * it. `tasks:assign` is the one key the agent fallback re-adds when it is
+   * missing from the result, so an invite asking for a *bounded* `tasks:assign`
+   * with a bound nobody could parse used to come back as an *indefinite*
+   * `tasks:assign` — the drop widened the very grant it was protecting.
+   */
+  it.each([
+    ["a zone-free instant", "2026-09-06T12:34:56"],
+    ["a non-string", 1788000000000],
+    ["nonsense", "two weeks"],
+  ])("does not mint an indefinite tasks:assign when its expiry is %s", (_label, expiresAt) => {
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: {
+          grants: [
+            { permissionKey: "tasks:assign", scope: { projectId: "project-1" }, expiresAt },
+          ],
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("still appends tasks:assign when an unrelated grant has the unreadable expiry", () => {
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: {
+          grants: [
+            { permissionKey: "issues:cross-write", scope: null, expiresAt: "two weeks" },
+          ],
+        },
+      }),
+    ).toEqual([{ permissionKey: "tasks:assign", scope: null }]);
+  });
+
   it("does not duplicate tasks:assign when invite defaults already include it", () => {
     expect(
       agentJoinGrantsFromDefaults({
@@ -180,6 +215,56 @@ describe("human invite roles", () => {
     expect(humanJoinGrantsFromDefaults(null, "operator")).toEqual([
       { permissionKey: "tasks:assign", scope: null },
     ]);
+  });
+
+  /**
+   * The same widening as the agent path, with a wider blast radius. An invite
+   * whose human grants are *all* unreadable leaves an empty list, and the
+   * role-defaults fallback then hands an admin the complete indefinite
+   * management set the invite was trying to bound. An empty result caused by
+   * rejected entries is not the same thing as an invite that named no human
+   * grants at all — only the second should reach the role defaults.
+   */
+  it.each([
+    ["operator" as const],
+    ["admin" as const],
+    ["owner" as const],
+  ])("does not fall back to %s role defaults when every human grant expiry is unreadable", (role) => {
+    expect(
+      humanJoinGrantsFromDefaults(
+        {
+          human: {
+            grants: [
+              { permissionKey: "users:invite", scope: null, expiresAt: "two weeks" },
+              { permissionKey: "tasks:assign", scope: null, expiresAt: "2026-09-06T12:34:56" },
+            ],
+          },
+        },
+        role,
+      ),
+    ).toEqual([]);
+  });
+
+  it("still falls back to role defaults when the human grants list is genuinely empty", () => {
+    expect(humanJoinGrantsFromDefaults({ human: { grants: [] } }, "operator")).toEqual([
+      { permissionKey: "tasks:assign", scope: null },
+    ]);
+  });
+
+  it("keeps the readable human grants when only some expiries are unreadable", () => {
+    expect(
+      humanJoinGrantsFromDefaults(
+        {
+          human: {
+            grants: [
+              { permissionKey: "users:invite", scope: null, expiresAt: "two weeks" },
+              { permissionKey: "tasks:assign", scope: null },
+            ],
+          },
+        },
+        "admin",
+      ),
+    ).toEqual([{ permissionKey: "tasks:assign", scope: null }]);
   });
 
   it("preserves explicit human invite grants", () => {
