@@ -174,7 +174,9 @@ import {
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   evaluateBlockedRepollThrottle,
   evaluateIssueRewakeThrottle,
+  isBlockedRepollCircuitBreakerStreak,
   isImmediateNoopLifecycleIssueRewake,
+  isIssueRewakeCircuitBreakerStreak,
   isThrottleCandidateIssueRewake,
   ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT,
   shouldSuppressImmediateNoopLifecycleRewake,
@@ -24980,26 +24982,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               })),
             });
 
-            if (blockedDecision.blocked) {
+            // TSMC-21379: once the streak has consumed the entire lookback
+            // sample, every run the throttle can see reported the identical
+            // blocked disposition. The escalating cooldown above is still
+            // finite, so left alone this repeats forever at the 24h cap
+            // instead of ever actually stopping (TSB-5606). Treat that as
+            // circuit-open: skip unconditionally and surface one human-owned
+            // incident, rather than only cooling down.
+            const blockedCircuitOpen = isBlockedRepollCircuitBreakerStreak(blockedDecision.blockedStreak);
+            if (blockedDecision.blocked || blockedCircuitOpen) {
+              const skipReason = blockedCircuitOpen ? "issue_sweep_disposition_circuit_open" : "issue_blocked_repoll_throttled";
               await tx.insert(agentWakeupRequests).values({
                 companyId: agent.companyId,
                 agentId,
                 source,
                 triggerDetail,
-                reason: "issue_blocked_repoll_throttled",
+                reason: skipReason,
                 payload: {
                   ...(payload ?? {}),
                   issueId,
                   heartbeatSkip: {
-                    reason: "issue_blocked_repoll_throttled",
+                    reason: skipReason,
                     requestedReason: reason,
                     blockedStreak: blockedDecision.blockedStreak,
-                    cooldownMs: blockedDecision.cooldownMs,
-                    lastRunFinishedAt: blockedDecision.lastRunFinishedAt.toISOString(),
-                    nextAllowedAt: blockedDecision.nextAllowedAt.toISOString(),
-                    remediation:
-                      "The issue is blocked and nothing changed since the last run confirmed it. "
-                      + "Resolving a blocker, commenting, or any issue update wakes it immediately.",
+                    cooldownMs: blockedDecision.blocked ? blockedDecision.cooldownMs : null,
+                    lastRunFinishedAt: blockedDecision.blocked ? blockedDecision.lastRunFinishedAt.toISOString() : null,
+                    nextAllowedAt: blockedDecision.blocked ? blockedDecision.nextAllowedAt.toISOString() : null,
+                    remediation: blockedCircuitOpen
+                      ? "The issue kept returning the identical blocked disposition for the full lookback "
+                        + "sample; automatic re-wakes are held until a human resolves it or new issue input lands."
+                      : "The issue is blocked and nothing changed since the last run confirmed it. "
+                        + "Resolving a blocker, commenting, or any issue update wakes it immediately.",
                   },
                 },
                 status: "skipped",
@@ -25008,7 +25021,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 idempotencyKey: opts.idempotencyKey ?? null,
                 finishedAt: throttleNow,
               });
-              return { kind: "skipped" as const };
+              return {
+                kind: "skipped" as const,
+                ...(blockedCircuitOpen
+                  ? {
+                    circuitBreaker: {
+                      kind: "blocked_repoll" as const,
+                      issueId: issue.id,
+                      streak: blockedDecision.blockedStreak,
+                    },
+                  }
+                  : {}),
+              };
             }
           }
 
@@ -25115,24 +25139,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
             const throttleDecision = evaluateIssueRewakeThrottle(throttleInput);
 
-            if (throttleDecision.blocked) {
+            // TSMC-21379: same circuit-breaker line as the blocked-repoll
+            // path above — a no-progress streak that fills the entire
+            // lookback sample is structurally stuck, not just slow. Without
+            // this the escalating cooldown caps at 6 minutes and repeats
+            // forever, which is exactly how a sweep/stranded-recovery driven
+            // re-wake can spin 20+ runs before hitting the hard run ceiling.
+            const rewakeCircuitOpen = isIssueRewakeCircuitBreakerStreak(throttleDecision.noProgressStreak);
+            if (throttleDecision.blocked || rewakeCircuitOpen) {
+              const skipReason = rewakeCircuitOpen ? "issue_sweep_disposition_circuit_open" : "issue_rewake_throttled";
               await tx.insert(agentWakeupRequests).values({
                 companyId: agent.companyId,
                 agentId,
                 source,
                 triggerDetail,
-                reason: "issue_rewake_throttled",
+                reason: skipReason,
                 payload: {
                   ...(payload ?? {}),
                   issueId,
                   heartbeatSkip: {
-                    reason: "issue_rewake_throttled",
+                    reason: skipReason,
                     requestedReason: reason,
                     immediateNoopLifecycleWake,
                     noProgressStreak: throttleDecision.noProgressStreak,
-                    cooldownMs: throttleDecision.cooldownMs,
-                    lastRunFinishedAt: throttleDecision.lastRunFinishedAt.toISOString(),
-                    nextAllowedAt: throttleDecision.nextAllowedAt.toISOString(),
+                    cooldownMs: throttleDecision.blocked ? throttleDecision.cooldownMs : null,
+                    lastRunFinishedAt: throttleDecision.blocked ? throttleDecision.lastRunFinishedAt.toISOString() : null,
+                    nextAllowedAt: throttleDecision.blocked ? throttleDecision.nextAllowedAt.toISOString() : null,
+                    remediation: rewakeCircuitOpen
+                      ? "The issue kept returning the identical no-progress disposition for the full lookback "
+                        + "sample; automatic re-wakes are held until a human resolves it or new issue input lands."
+                      : undefined,
                   },
                 },
                 status: "skipped",
@@ -25141,7 +25177,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 idempotencyKey: opts.idempotencyKey ?? null,
                 finishedAt: throttleNow,
               });
-              return { kind: "skipped" as const };
+              return {
+                kind: "skipped" as const,
+                ...(rewakeCircuitOpen
+                  ? {
+                    circuitBreaker: {
+                      kind: "rewake_throttle" as const,
+                      issueId: issue.id,
+                      streak: throttleDecision.noProgressStreak,
+                    },
+                  }
+                  : {}),
+              };
             }
           }
         }
@@ -25230,6 +25277,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
+      if (outcome.kind === "skipped" && "circuitBreaker" in outcome && outcome.circuitBreaker) {
+        // Minted outside the wakeup transaction, matching
+        // enforceEquivalentFailureCircuitBreaker's pattern — issue creation
+        // opens its own transaction and must not nest inside the one that
+        // just held the issue row for update.
+        await enforceSweepDispositionCircuitBreaker({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: outcome.circuitBreaker.issueId,
+          kind: outcome.circuitBreaker.kind,
+          streak: outcome.circuitBreaker.streak,
+        });
+      }
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
@@ -26039,6 +26099,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       entityType: scope.type,
       entityId: scope.id,
       details: { incidentKey, failureCode: match.failures[0].errorCode ?? null },
+    });
+    return true;
+  }
+
+  /**
+   * TSMC-21379: the sweep/stranded-recovery healer counterpart to
+   * enforceEquivalentFailureCircuitBreaker. That breaker stops automatic
+   * retries after two equivalent genuine FAILURES; this one stops automatic
+   * re-wakes after a no-progress/blocked streak has consumed the entire
+   * throttle lookback sample — i.e. every run the throttle can see reported
+   * the identical disposition. The escalating cooldowns in
+   * issue-rewake-throttle.ts only space those re-wakes out and would
+   * otherwise repeat forever at the capped cooldown (TSB-5606: ~13h, 20+
+   * runs, tripped the hard issue_generation run ceiling). Idempotent via
+   * idempotencyKey so repeated throttle hits after the first do not mint
+   * duplicate incidents.
+   */
+  async function enforceSweepDispositionCircuitBreaker(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    kind: "blocked_repoll" | "rewake_throttle";
+    streak: number;
+  }) {
+    const { companyId, agentId, issueId, kind, streak } = input;
+    const incidentKey = `sweep_disposition_circuit:${companyId}:${issueId}`;
+    const issueRow = await db
+      .select({ id: issues.id, responsibleUserId: issues.responsibleUserId, projectId: issues.projectId })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issueRow) return false;
+    const responsibleUserId = issueRow.responsibleUserId ?? await resolveCompanyDefaultResponsibleUserId(companyId);
+    const circuitProjectId = issueRow.projectId ?? await resolveCompanyPrimaryProjectId(companyId, db);
+    const dispositionLabel = kind === "blocked_repoll" ? "blocked" : "no-progress";
+    await issuesSvc.create(companyId, {
+      title: "BOARD ACTION REQUIRED: Sweep re-wake circuit open — issue keeps returning the same disposition",
+      description: [
+        `Automatic sweep/stranded-recovery re-wakes were stopped after ${streak} consecutive runs `
+          + `reported the identical ${dispositionLabel} disposition on this issue with no new information.`,
+        "",
+        `- Incident key: \`${incidentKey}\``,
+        `- Held issue: \`${issueId}\``,
+        `- Detected via: \`${kind}\` throttle streak`,
+        "- Owner action: resolve the underlying blocker or add new information to the issue, "
+          + "or explicitly resume it. Re-wakes stay held until then.",
+      ].join("\n"),
+      status: "in_review",
+      priority: "high",
+      responsibleUserId,
+      ...(circuitProjectId ? { projectId: circuitProjectId } : {}),
+      originKind: "sweep_disposition_circuit",
+      originId: incidentKey,
+      originFingerprint: incidentKey,
+      idempotencyKey: incidentKey,
+      allowDuplicate: false,
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "sweep_disposition_circuit_breaker",
+      agentId,
+      runId: null,
+      action: "recovery.sweep_disposition_circuit_opened",
+      entityType: "issue",
+      entityId: issueId,
+      details: { incidentKey, kind, streak },
     });
     return true;
   }

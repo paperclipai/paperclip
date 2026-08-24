@@ -3,9 +3,11 @@ import {
   ISSUE_REWAKE_BASE_COOLDOWN_MS,
   ISSUE_REWAKE_MAX_COOLDOWN_MS,
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
+  ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
   isImmediateNoopLifecycleIssueRewake,
+  isIssueRewakeCircuitBreakerStreak,
   isThrottleCandidateIssueRewake,
   shouldSuppressImmediateNoopLifecycleRewake,
 } from "../services/issue-rewake-throttle.ts";

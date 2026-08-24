@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   ISSUE_BLOCKED_REPOLL_BASE_COOLDOWN_MS,
   ISSUE_BLOCKED_REPOLL_MAX_COOLDOWN_MS,
+  ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT,
   computeBlockedRepollCooldownMs,
   evaluateBlockedRepollThrottle,
+  isBlockedRepollCircuitBreakerStreak,
 } from "../services/issue-rewake-throttle.js";
 
 const NOW = new Date("2026-08-23T12:00:00.000Z");
@@ -84,5 +86,17 @@ describe("evaluateBlockedRepollThrottle", () => {
     });
     expect(d.blocked).toBe(true);
     if (d.blocked) expect(d.blockedStreak).toBe(1);
+  });
+});
+
+describe("isBlockedRepollCircuitBreakerStreak (TSMC-21379)", () => {
+  it("stays closed below the full lookback sample", () => {
+    expect(isBlockedRepollCircuitBreakerStreak(1)).toBe(false);
+    expect(isBlockedRepollCircuitBreakerStreak(ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT - 1)).toBe(false);
+  });
+
+  it("opens once the streak has consumed the entire lookback sample", () => {
+    expect(isBlockedRepollCircuitBreakerStreak(ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT)).toBe(true);
+    expect(isBlockedRepollCircuitBreakerStreak(ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT + 5)).toBe(true);
   });
 });

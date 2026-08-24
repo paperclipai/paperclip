@@ -314,6 +314,34 @@ export type BlockedRepollDecision =
       nextAllowedAt: Date;
     };
 
+/* ---------------------------------------------------------------------------
+ * Sweep-disposition circuit breaker (TSMC-21379)
+ *
+ * The escalating cooldowns above only space retries out — once the cooldown
+ * elapses, a wake proceeds again, runs, reports the same no-progress/blocked
+ * disposition, and the streak (capped at the sample size) computes the same
+ * max cooldown again. That loop never ends on its own: TSB-5606 spun for ~13
+ * hours and 20+ runs at the capped 6-minute cooldown until it tripped the
+ * hard ISSUE_GENERATION_RUN_CEILING, which is a symptom, not a fix.
+ *
+ * Once a no-progress/blocked streak has consumed the ENTIRE lookback sample
+ * (every run the throttle can see is the identical disposition), that is no
+ * longer a slow card — it is structurally stuck, the same signal the
+ * equivalent-failure circuit breaker uses for two equivalent genuine FAILURES
+ * in 24h. This applies that same breaker action (stop automatic re-wakes,
+ * hand the responsible human one incident) to the disposition-repeat case:
+ * the wake stays held, not just delayed, until genuine new issue input
+ * arrives or a human explicitly resumes it.
+ */
+
+export function isIssueRewakeCircuitBreakerStreak(noProgressStreak: number): boolean {
+  return noProgressStreak >= ISSUE_REWAKE_RUN_SAMPLE_LIMIT;
+}
+
+export function isBlockedRepollCircuitBreakerStreak(blockedStreak: number): boolean {
+  return blockedStreak >= ISSUE_BLOCKED_REPOLL_SAMPLE_LIMIT;
+}
+
 export function evaluateBlockedRepollThrottle(input: BlockedRepollInput): BlockedRepollDecision {
   if (input.issueStatus !== "blocked") return { blocked: false, blockedStreak: 0 };
   // Anything new on the issue is exactly the signal worth waking for.
