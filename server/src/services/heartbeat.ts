@@ -12136,6 +12136,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         let createdBlockerId: string | null = null;
         let reviewerAssigned: string | null = null;
         if (statedStatus === "done" || statedStatus === "cancelled") {
+          // TODO(TSMC-21479): run assertIssueCloseEvidenceSatisfied / evaluateCloseContractForDone gate here (extract to service layer)
           const applied = await issuesSvc.update(issue.id, {
             status: statedStatus,
             actorAgentId: run.agentId,
