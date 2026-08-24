@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -109,11 +109,17 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
+    // A valid run without a source issue (timer/unassigned heartbeat wakes) is
+    // still a real, attributable run: it exists, it belongs to this agent and
+    // company. WORA-770 showed the old fail-closed here stranded exactly those
+    // runs — checkout succeeded but every later comment/PATCH 403'd, including
+    // writes to the issue the same run had just claimed. Unscoped runs now pay
+    // the same per-run cap as scoped ones instead of being locked out; only a
+    // genuinely missing/mismatched run stays fail-closed above.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      (input.targetIssueIdentifier && sourceIssueId !== null && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
     ) {
       return null;
     }
@@ -200,4 +206,51 @@ export function crossIssueInfluenceLimitError(
       enforceAt: decision.enforceAt,
     },
   };
+}
+
+/**
+ * Give an unscoped heartbeat run its claimed issue as source, so writes to that
+ * issue after checkout are same-source (uncounted) instead of spending the
+ * run's cross-issue budget — parity with issue-woken runs.
+ *
+ * Only fills when the snapshot has no `issueId`/`taskId` yet: a scoped wake
+ * keeps its original source issue, and a non-object snapshot root is left
+ * untouched (`jsonb_set` cannot merge into scalars/arrays). Idempotent by
+ * construction; safe against clobbering concurrent scoped snapshots via the
+ * WHERE guard. Returns true when a row was back-filled.
+ */
+export async function backfillRunSourceIssueFromCheckout(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string; issueId: string },
+): Promise<boolean> {
+  // Same untrusted-header rule as observeCrossIssueInfluence: never let a
+  // malformed UUID reach PostgreSQL.
+  if (!isUuidLike(input.runId)) return false;
+  const result = await db
+    .update(heartbeatRuns)
+    .set({
+      contextSnapshot: sql`case
+        when jsonb_typeof(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)) = 'object'
+          then jsonb_set(
+            jsonb_set(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb), '{issueId}', to_jsonb(${input.issueId}::text), true),
+            '{taskId}',
+            to_jsonb(${input.issueId}::text),
+            true
+          )
+        else ${heartbeatRuns.contextSnapshot}
+      end`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+      // Null snapshots count as empty objects; scalar/array roots are skipped
+      // outright so the helper only reports a real back-fill.
+      sql`coalesce(jsonb_typeof(${heartbeatRuns.contextSnapshot}), 'object') = 'object'`,
+      sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', '') = ''`,
+      sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'taskId', '') = ''`,
+    ))
+    .returning({ id: heartbeatRuns.id });
+  return result.length > 0;
 }

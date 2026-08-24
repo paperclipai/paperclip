@@ -138,6 +138,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+const mockBackfillRunSourceIssueFromCheckout = vi.hoisted(() => vi.fn(async () => false));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -186,6 +187,7 @@ function registerRouteMocks() {
       "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
       { code: "cross_issue_influence_run_context_required" },
     ),
+    backfillRunSourceIssueFromCheckout: mockBackfillRunSourceIssueFromCheckout,
   }));
 
   vi.doMock("../services/index.js", () => ({

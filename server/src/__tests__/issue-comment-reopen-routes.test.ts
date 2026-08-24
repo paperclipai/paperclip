@@ -181,6 +181,7 @@ vi.mock("../services/cross-issue-influence-limit.js", () => ({
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
   crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,
+  backfillRunSourceIssueFromCheckout: vi.fn(async () => false),
 }));
 
 function createApp() {

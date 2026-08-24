@@ -244,6 +244,7 @@ import {
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
   crossIssueInfluenceLimitError,
+  backfillRunSourceIssueFromCheckout,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
@@ -10691,6 +10692,23 @@ export function issueRoutes(
       throw error;
     }
     const actor = getActorInfo(req);
+    // WORA-793: give an unscoped timer/unassigned run its claimed issue as source,
+    // so post-checkout writes are same-source instead of spending the run's
+    // cross-issue budget. Best-effort on purpose: the checkout is already committed
+    // and the gate admits unscoped runs under the cap, so a failed back-fill only
+    // costs budget parity — it must never fail the checkout response.
+    if (req.actor.type === "agent" && req.actor.agentId && checkoutRunId) {
+      try {
+        await backfillRunSourceIssueFromCheckout(db, {
+          companyId: issue.companyId,
+          runId: checkoutRunId,
+          agentId: req.actor.agentId,
+          issueId: issue.id,
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id, runId: checkoutRunId }, "failed to backfill run source issue from checkout");
+      }
+    }
     if (updated?.harnessKind === "skill_test") {
       await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
     }

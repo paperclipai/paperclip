@@ -198,7 +198,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("counts an unscoped run's write against the shared budget instead of failing closed (WORA-770)", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -207,10 +207,45 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({
+      allowed: true,
+      mode: "enforce",
+      count: 1,
+      cap: CROSS_ISSUE_INFLUENCE_LIMIT,
     });
+    // The audit trail records that this run had no source issue.
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        action: "issue.cross_issue_influence_observed",
+        details: expect.objectContaining({ sourceIssueId: null }),
+      }),
+    ]);
+  });
+
+  it("gives an unscoped run no same-issue free pass — every write is cross-issue", async () => {
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, { contextSnapshot: {} });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: false, count: CROSS_ISSUE_INFLUENCE_LIMIT + 1 });
+  });
+
+  it("matches the identifier only for a scoped run's own issue", async () => {
+    const fake = counterDb(0, { contextSnapshot: { taskId: "WORA-756" } });
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "66666666-6666-4666-8666-666666666666",
+      targetIssueIdentifier: "WORA-756",
+      kind: "comment",
+    })).resolves.toBeNull();
     expect(fake.inserted).toEqual([]);
   });
 });
