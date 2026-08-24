@@ -33,7 +33,7 @@ async function buildSandboxTarget(input: {
   });
   const runtime: Record<string, unknown> = {
     supportsSync: () => false,
-    effectiveSandboxCapabilities: vi.fn(async () => null),
+    resolveCapabilities: vi.fn(async () => null),
   };
   if (!input.omitMethod) {
     runtime.readSandboxDuplexBridgeInput = readSandboxDuplexBridgeInput;
