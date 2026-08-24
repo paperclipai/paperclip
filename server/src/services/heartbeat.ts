@@ -18636,11 +18636,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    * vocabulary, and it routes only on a POSITIVE agent-actionable signal with no
    * human-only signal present — never on absence of evidence.
    */
+  /**
+   * A run id is required by readIssueGenerationAdmission to exclude the current
+   * run from its own tally. The router is not a run, so pass a sentinel that
+   * matches nothing — the probe then counts every real run, which is exactly the
+   * question being asked.
+   */
+  const NIL_RUN_ID_FOR_ADMISSION_PROBE = "00000000-0000-0000-0000-000000000000";
+
   async function routeAgentActionableBoardAsks(opts?: { limit?: number }) {
     const limit = opts?.limit ?? 50;
     const candidates = await db
       .select({
         id: issues.id,
+        companyId: issues.companyId,
         identifier: issues.identifier,
         unblockDescriptor: issues.unblockDescriptor,
         assigneeAgentId: issues.assigneeAgentId,
@@ -18661,6 +18670,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // An unassigned card would be routed to nobody, which is a different
       // failure. Leave it for the operator rather than losing it.
       if (!candidate.assigneeAgentId) continue;
+
+      // TSMC-21471 REGRESSION GUARD, learned the hard way 2026-08-24.
+      //
+      // The first version of this router cleared the descriptor on any
+      // agent-actionable ask and moved the card to `todo`. For ceiling-parked
+      // cards that was wrong in a way that was invisible until it was live: the
+      // board descriptor was ALSO the brake. Clearing it made the card eligible
+      // for dispatch again while its generation budget was still exhausted, so
+      // it re-offered, hit the ceiling, cancelled before model dispatch, and
+      // repeated. Measured: 67 cancellations in 30 minutes across 13 cards,
+      // several re-offered 58 times, against ~86 in the whole preceding 24h.
+      //
+      // Routing a card back to the fleet is not the same as making it runnable.
+      // A card whose generation budget is spent is not actionable by anyone, so
+      // it stays parked and keeps its wait path.
+      const admission = await readIssueGenerationAdmission({
+        companyId: candidate.companyId,
+        issueId: candidate.id,
+        agentId: candidate.assigneeAgentId,
+        currentRunId: NIL_RUN_ID_FOR_ADMISSION_PROBE,
+      });
+      if (admission?.decision === "deny") {
+        logger.info(
+          { issueId: candidate.id, reason: admission.reason },
+          "board-ask router left an agent-actionable ask parked: generation budget exhausted",
+        );
+        continue;
+      }
       try {
         await issuesSvc.update(candidate.id, { status: "todo", unblockDescriptor: null });
         await issuesSvc.addComment(
