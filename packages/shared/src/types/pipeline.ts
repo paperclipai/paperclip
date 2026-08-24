@@ -201,7 +201,7 @@ export interface PipelineCaseDocumentRevision {
   createdAt: Date | string;
 }
 
-export type PipelineCaseOutputSourceRole = "origin" | "conversation" | "work" | "automation";
+export type PipelineCaseOutputSourceRole = "origin" | "conversation" | "work" | "automation" | "reference";
 export type PipelineCaseOutputKind = "document" | "work_product" | "attachment";
 
 export interface PipelineCaseOutputSource {
@@ -225,6 +225,7 @@ export interface PipelineCaseOutputItemBase {
   sourceIssuePath: string;
   sourceIssueTitle: string;
   sourceIssueStatus: string;
+  sourceKind?: "issue" | "case";
   sourceRole: PipelineCaseOutputSourceRole;
   sourceTrust?: SourceTrustMetadata | null;
   sourceRunId: string | null;

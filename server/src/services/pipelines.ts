@@ -5,6 +5,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  cases,
   documents,
   documentRevisions,
   heartbeatRuns,
@@ -13,6 +14,7 @@ import {
   issues,
   pipelineAutomationExecutions,
   pipelineCaseBlockers,
+  pipelineCaseCaseLinks,
   pipelineCaseDocuments,
   pipelineCaseEvents,
   pipelineCaseIssueLinks,
@@ -4063,6 +4065,34 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         return { case: inserted, created: true, event: ingestEvent, automationLedger: null };
       });
       const automationExecutions = await executeAutomationLedgers(automationLedgers, { type: "system" });
+      // Auto-link approved reference Cases (caseType starting with 'reference_')
+      // to this pipeline case so agents see reference documents in their context.
+      // Runs on both initial creation and retries (idempotent via onConflictDoNothing).
+      // Best-effort: failures must not block case creation.
+      try {
+        const referenceCases = await db
+          .select({ id: cases.id })
+          .from(cases)
+          .where(and(
+            eq(cases.companyId, input.companyId),
+            eq(cases.status, "approved"),
+            sql`${cases.caseType} LIKE 'reference_%'`,
+          ));
+        for (const refCase of referenceCases) {
+          await db
+            .insert(pipelineCaseCaseLinks)
+            .values({
+              companyId: input.companyId,
+              caseId: result.case.id,
+              linkedCaseId: refCase.id,
+              role: "reference",
+            })
+            .onConflictDoNothing({ target: [pipelineCaseCaseLinks.caseId, pipelineCaseCaseLinks.linkedCaseId] });
+        }
+      } catch (e) {
+        // Best-effort: don't block case creation if auto-linking fails, but log for diagnostics
+        console.warn(`[pipelines] auto-link reference cases failed for case ${result.case.id}:`, e);
+      }
       if ("automationLedger" in result && result.automationLedger) {
         return {
           ...result,

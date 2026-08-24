@@ -3820,7 +3820,11 @@ function isLowTrustOutput(item: PipelineCaseOutputItem) {
 }
 
 function documentAnchorPath(item: PipelineCaseDocumentOutputItem) {
-  return `${issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier })}#document-${encodeURIComponent(item.documentKey)}`;
+  // Case documents navigate to their Case route; issue documents use issueDetailPath.
+  const basePath = item.sourceKind === "case"
+    ? item.sourceIssuePath
+    : issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier });
+  return `${basePath}#document-${encodeURIComponent(item.documentKey)}`;
 }
 
 /** Renders an internal SPA link for app routes and a new-tab anchor for external URLs. */
@@ -3885,7 +3889,7 @@ function ItemOutputMeta({ item, children }: { item: PipelineCaseOutputItem; chil
   return (
     <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-(length:--text-micro) text-muted-foreground">
       <Link
-        to={issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier })}
+        to={item.sourceKind === "case" ? item.sourceIssuePath : issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier })}
         className="font-mono text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
         title={item.sourceIssueTitle}
       >
@@ -3939,7 +3943,10 @@ function ItemOutputDocumentRow({ item }: { item: PipelineCaseDocumentOutputItem 
 
 function ItemOutputWorkProductRow({ item }: { item: PipelineCaseWorkProductOutputItem }) {
   const lowTrust = isLowTrustOutput(item);
-  const href = item.url ?? issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier });
+  const fallbackPath = item.sourceKind === "case"
+    ? item.sourceIssuePath
+    : issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier });
+  const href = item.url ?? fallbackPath;
   return (
     <div className="group flex items-start gap-(--sz-11px) py-2.5 hover:bg-accent/50">
       <Package className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />

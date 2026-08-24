@@ -12,6 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
+import { cases } from "./cases.js";
 import { companies } from "./companies.js";
 import { documents } from "./documents.js";
 import { issues } from "./issues.js";
@@ -108,6 +109,26 @@ export const pipelineCaseIssueLinks = pgTable(
     companyCaseIdx: index("pipeline_case_issue_links_company_case_idx").on(table.companyId, table.caseId),
     automationAttemptIdx: index("pipeline_case_issue_links_automation_attempt_idx").on(table.automationAttemptId),
     roleCheck: check("pipeline_case_issue_links_role_check", sql`${table.role} in ('origin', 'conversation', 'work', 'automation')`),
+  }),
+);
+
+export const pipelineCaseCaseLinks = pgTable(
+  "pipeline_case_case_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    caseId: uuid("case_id").notNull().references(() => pipelineCases.id, { onDelete: "cascade" }),
+    linkedCaseId: uuid("linked_case_id").notNull().references(() => cases.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    createdByRunId: uuid("created_by_run_id"),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    caseLinkUq: uniqueIndex("pipeline_case_case_links_case_link_uq").on(table.caseId, table.linkedCaseId),
+    linkedCaseIdx: index("pipeline_case_case_links_linked_case_idx").on(table.linkedCaseId),
+    companyCaseIdx: index("pipeline_case_case_links_company_case_idx").on(table.companyId, table.caseId),
   }),
 );
 

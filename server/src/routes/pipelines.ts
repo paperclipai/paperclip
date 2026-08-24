@@ -5,6 +5,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  cases,
   documents,
   documentRevisions,
   heartbeatRuns,
@@ -13,6 +14,7 @@ import {
   issueRelations,
   pipelineAutomationExecutions,
   pipelineCaseBlockers,
+  pipelineCaseCaseLinks,
   pipelineCaseDocuments,
   pipelineCaseEvents,
   pipelineCaseIssueLinks,
@@ -215,6 +217,11 @@ const issueLinkRoleSchema = z.enum(["origin", "conversation", "work", "automatio
 const createIssueLinkSchema = z.object({
   issueId: z.string().guid(),
   role: issueLinkRoleSchema,
+});
+const caseLinkRoleSchema = z.enum(["origin", "conversation", "work", "automation", "reference"]);
+const createCaseLinkSchema = z.object({
+  linkedCaseId: z.string().uuid(),
+  role: caseLinkRoleSchema,
 });
 const bulkReviewSchema = z.object({
   items: z.array(reviewCaseSchema.extend({ caseId: z.string().guid() })).max(100),
@@ -2117,6 +2124,40 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       res.status(201).json(link);
     } catch (error) {
       codedConflictForUnique(error);
+    }
+  });
+
+  router.post("/cases/:caseId/case-links", validate(createCaseLinkSchema), async (req, res) => {
+    const caseId = req.params.caseId as string;
+    const companyId = await assertCaseAccess(db, req, caseId);
+    const actor = actorForMutation(req);
+    // verify the linked case exists + belongs to same company
+    const linkedCase = await db.select().from(cases).where(and(
+      eq(cases.id, req.body.linkedCaseId),
+      eq(cases.companyId, companyId),
+    )).limit(1).then((rows) => rows[0] ?? null);
+    if (!linkedCase) throw notFound("Case not found");
+    try {
+      const link = await db.transaction(async (tx) => {
+        const [created] = await tx.insert(pipelineCaseCaseLinks).values({
+          companyId,
+          caseId,
+          linkedCaseId: req.body.linkedCaseId,
+          role: req.body.role,
+          createdByRunId: actor.type === "agent" ? actor.runId : null,
+        }).onConflictDoNothing({ target: [pipelineCaseCaseLinks.caseId, pipelineCaseCaseLinks.linkedCaseId] }).returning();
+        await writeRouteEvent(tx, {
+          companyId,
+          caseId,
+          type: "case_linked",
+          actor,
+          payload: { linkedCaseId: req.body.linkedCaseId, role: req.body.role },
+        });
+        return created;
+      });
+      res.status(201).json(link ?? { ok: true, message: "Link already exists" });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
     }
   });
 
