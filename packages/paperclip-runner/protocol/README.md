@@ -30,3 +30,8 @@ The conformance manifest records every source file and its SHA-256 digest. Run
 runs the same generator with `--check` to reject drift. This check also compiles
 the JSON Schemas and validates every replay, question, and cross-language
 conformance fixture against its declared schema.
+
+The files in `fixtures/replay/golden/` are deterministic reducer oracles. Each
+accepted replay fixture has a complete session snapshot and a compact parity
+summary. `pnpm generate:replay-goldens` updates them after an intentional
+reducer change; package build and CI fail when they drift.

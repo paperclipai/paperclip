@@ -38,7 +38,9 @@ export async function buildProtocolManifest() {
     let expectation = "accept";
     let compatibilityCase = "canonical";
 
-    if (relativePath.startsWith("fixtures/replay/")) {
+    if (relativePath.startsWith("fixtures/replay/golden/")) {
+      compatibilityCase = "deterministic-replay-oracle";
+    } else if (relativePath.startsWith("fixtures/replay/")) {
       if (relativePath === expectedRejectedFixture) {
         expectation = "reject";
         compatibilityCase = "unknown-required-version";

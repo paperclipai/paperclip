@@ -7,15 +7,37 @@
     "node": ">=24.11.0"
   },
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "protocol",
+    "README.md"
+  ],
   "scripts": {
-    "build": "pnpm run check:protocol-manifest",
-    "typecheck": "node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs",
-    "test": "node --test test/protocol-contract.test.mjs",
+    "build": "pnpm run check:protocol-manifest && pnpm run build:typescript && node scripts/generate-replay-goldens.mjs --check",
+    "build:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json",
+    "typecheck": "node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs && node --check scripts/generate-protocol-schema-module.mjs && node --check scripts/generate-replay-goldens.mjs && pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/protocol-contract.test.mjs && vitest run",
     "generate:protocol-manifest": "node scripts/generate-protocol-manifest.mjs",
     "check:protocol-manifest": "node scripts/generate-protocol-manifest.mjs --check",
-    "check:protocol": "pnpm run typecheck && pnpm run check:protocol-manifest && pnpm test"
+    "generate:protocol-types": "node scripts/generate-protocol-schema-module.mjs",
+    "check:protocol-types": "node scripts/generate-protocol-schema-module.mjs --check",
+    "generate:replay-goldens": "pnpm run build:typescript && node scripts/generate-replay-goldens.mjs",
+    "check:replay-goldens": "pnpm run build:typescript && node scripts/generate-replay-goldens.mjs --check",
+    "check:protocol": "pnpm run typecheck && pnpm run check:protocol-manifest && pnpm test && pnpm run check:replay-goldens"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "json-schema-to-ts": "^3.1.1"
   },
   "devDependencies": {
-    "ajv": "^8.20.0"
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.10"
   }
 }
