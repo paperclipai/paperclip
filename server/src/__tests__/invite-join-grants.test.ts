@@ -8,6 +8,11 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
+import {
+  grantExpirySchema,
+  portableGrantExpirySchema,
+  updateMemberPermissionsSchema,
+} from "@paperclipai/shared";
 
 describe("agentJoinGrantsFromDefaults", () => {
   it("adds tasks:assign when invite defaults do not specify agent grants", () => {
@@ -288,5 +293,83 @@ describe("human invite roles", () => {
         scope: { companyId: "company-1" },
       },
     ]);
+  });
+});
+
+/**
+ * One expiry contract, four surfaces. The board's member-permissions call, the
+ * portable manifest, the plugin host and the invite defaults payload all write
+ * the same column, so a timestamp accepted by one has to be accepted by all of
+ * them. They had drifted: the board surface was `z.string().datetime()`, which
+ * takes `Z` and rejects `+02:00`, while the manifest was
+ * `z.string().datetime({ offset: true })`, which takes both. The same payload
+ * was therefore valid in a bundle and rejected over the API.
+ *
+ * These assert the shared schema itself rather than each call site, because the
+ * fix is that there is only one schema left to assert.
+ */
+describe("grant expiry contract", () => {
+  const boardExpiry = (expiresAt: unknown) =>
+    updateMemberPermissionsSchema.safeParse({
+      grants: [{ permissionKey: "tasks:assign", scope: null, expiresAt }],
+    }).success;
+
+  it.each([
+    ["a UTC Z instant", "2026-09-06T12:34:56Z"],
+    ["a positive offset", "2026-09-06T14:34:56+02:00"],
+    ["a negative offset", "2026-09-06T06:34:56-06:00"],
+  ])("accepts %s on every surface", (_label, value) => {
+    expect(grantExpirySchema.safeParse(value).success).toBe(true);
+    expect(portableGrantExpirySchema.safeParse(value).success).toBe(true);
+    expect(boardExpiry(value)).toBe(true);
+    // The invite payload reaches the same schema through `grantsFromDefaults`.
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: { grants: [{ permissionKey: "tasks:assign", scope: null, expiresAt: value }] },
+      }),
+    ).toEqual([{ permissionKey: "tasks:assign", scope: null, expiresAt: new Date(value) }]);
+  });
+
+  it.each([
+    ["a zone-free instant", "2026-09-06T12:34:56"],
+    ["a bare date", "2026-09-06"],
+    ["nonsense", "two weeks"],
+  ])("rejects %s on every surface", (_label, value) => {
+    expect(grantExpirySchema.safeParse(value).success).toBe(false);
+    expect(portableGrantExpirySchema.safeParse(value).success).toBe(false);
+    expect(boardExpiry(value)).toBe(false);
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: { grants: [{ permissionKey: "tasks:assign", scope: null, expiresAt: value }] },
+      }),
+    ).toEqual([]);
+  });
+
+  /**
+   * Null and omission are the two ways a payload declines to set a bound, and
+   * they do not mean the same thing: null clears an existing expiry, absent
+   * leaves it alone. Both must stay legal everywhere.
+   */
+  it("accepts an explicit null on every surface", () => {
+    expect(portableGrantExpirySchema.safeParse(null).success).toBe(true);
+    expect(boardExpiry(null)).toBe(true);
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: { grants: [{ permissionKey: "tasks:assign", scope: null, expiresAt: null }] },
+      }),
+    ).toEqual([{ permissionKey: "tasks:assign", scope: null, expiresAt: null }]);
+  });
+
+  it("accepts omission on every surface, without inventing a bound", () => {
+    expect(
+      updateMemberPermissionsSchema.safeParse({
+        grants: [{ permissionKey: "tasks:assign", scope: null }],
+      }).success,
+    ).toBe(true);
+    const [grant] = agentJoinGrantsFromDefaults({
+      agent: { grants: [{ permissionKey: "tasks:assign", scope: null }] },
+    });
+    expect(grant).toEqual({ permissionKey: "tasks:assign", scope: null });
+    expect("expiresAt" in grant!).toBe(false);
   });
 });

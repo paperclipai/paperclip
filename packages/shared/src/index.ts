@@ -2158,6 +2158,7 @@ export {
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
+  grantExpirySchema,
   updateMemberPermissionsSchema,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,

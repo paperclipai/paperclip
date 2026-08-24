@@ -7,6 +7,7 @@ import {
   issueCommentPresentationSchema,
 } from "./issue.js";
 import { routineVariableSchema } from "./routine.js";
+import { grantExpirySchema } from "./access.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -78,8 +79,14 @@ export const portabilityBlobManifestEntrySchema = z.object({
  * `new Date("2026-08-24T10:00:00")` resolves against the importing machine's
  * local zone, so the same manifest would grant a different window depending on
  * where it was imported.
+ *
+ * Now the manifest spelling of one shared contract rather than a second copy of
+ * it: `grantExpirySchema` lives with the grants domain in `./access.js`, so a
+ * timestamp writable over the API is writable in a manifest and vice versa.
+ * These were two independent `z.string().datetime(...)` calls and had already
+ * drifted apart on offsets (FAI-10152 round 4).
  */
-export const portableGrantExpirySchema = z.string().datetime({ offset: true }).nullable();
+export const portableGrantExpirySchema = grantExpirySchema.nullable();
 
 export const portabilityAgentManifestEntrySchema = z.object({
   slug: z.string().min(1),
