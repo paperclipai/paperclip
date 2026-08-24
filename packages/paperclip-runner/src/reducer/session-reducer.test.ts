@@ -14,7 +14,10 @@ import {
   type SessionSnapshot,
 } from "./session-reducer.js";
 
-const fixtureDirectory = new URL("../../protocol/fixtures/replay/", import.meta.url);
+const fixtureDirectory = new URL(
+  "../../protocol/fixtures/replay/",
+  import.meta.url,
+);
 const fixtureNames = [
   "happy-path",
   "failed-run",
@@ -36,7 +39,10 @@ async function loadFixture(name: string): Promise<PrpFixture> {
 
 async function loadGolden(name: string): Promise<SessionSnapshot> {
   return JSON.parse(
-    await readFile(new URL(`golden/${name}.snapshot.json`, fixtureDirectory), "utf8"),
+    await readFile(
+      new URL(`golden/${name}.snapshot.json`, fixtureDirectory),
+      "utf8",
+    ),
   ) as SessionSnapshot;
 }
 
@@ -97,7 +103,10 @@ describe("deterministic PRP session reducer", () => {
       payload: { requestId: "request_interrupted_permission" },
     };
 
-    const snapshot = reduceSessionEvents(createSessionSnapshot(fixture), [created, resolved]);
+    const snapshot = reduceSessionEvents(createSessionSnapshot(fixture), [
+      created,
+      resolved,
+    ]);
 
     expect(snapshot.requests[0]).toMatchObject({ type: "permission" });
     expect(snapshot.timeline.map((entry) => entry.summary)).toEqual([

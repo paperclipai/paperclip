@@ -24,7 +24,10 @@ const stale = [];
 
 await mkdir(goldenDirectory, { recursive: true });
 for (const fixtureName of fixtureNames) {
-  const source = await readFile(resolve(fixtureDirectory, `${fixtureName}.json`), "utf8");
+  const source = await readFile(
+    resolve(fixtureDirectory, `${fixtureName}.json`),
+    "utf8",
+  );
   const validation = parsePrpFixtureText(source);
   if (!validation.ok) {
     throw new Error(
@@ -50,10 +53,16 @@ for (const fixtureName of fixtureNames) {
 }
 
 if (stale.length > 0) {
-  process.stderr.write(`Replay golden files are stale:\n- ${stale.join("\n- ")}\n`);
+  process.stderr.write(
+    `Replay golden files are stale:\n- ${stale.join("\n- ")}\n`,
+  );
   process.exitCode = 1;
 } else if (check) {
-  process.stdout.write("Replay golden snapshots and parity summaries are current.\n");
+  process.stdout.write(
+    "Replay golden snapshots and parity summaries are current.\n",
+  );
 } else {
-  process.stdout.write("Generated Replay golden snapshots and parity summaries.\n");
+  process.stdout.write(
+    "Generated Replay golden snapshots and parity summaries.\n",
+  );
 }

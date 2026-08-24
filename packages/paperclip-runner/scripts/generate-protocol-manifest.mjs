@@ -22,7 +22,8 @@ const protocolRoot = resolve(packageRoot, "protocol");
 const schemaDirectory = resolve(protocolRoot, "schemas");
 const fixtureDirectory = resolve(protocolRoot, "fixtures");
 const outputPath = resolve(protocolRoot, "manifest.json");
-const expectedRejectedFixture = "fixtures/replay/unsupported-required-version.json";
+const expectedRejectedFixture =
+  "fixtures/replay/unsupported-required-version.json";
 
 export async function buildProtocolManifest() {
   const schemas = await loadSchemaCatalog(schemaDirectory);
@@ -48,7 +49,10 @@ export async function buildProtocolManifest() {
           assertReplayFixtureCompatibility(value);
           throw new Error(`${relativePath} did not fail closed`);
         } catch (error) {
-          if (!String(error.message).startsWith("unsupported_required_version:")) throw error;
+          if (
+            !String(error.message).startsWith("unsupported_required_version:")
+          )
+            throw error;
         }
         assertSchemaInstance(validators.fixture, value, relativePath, false);
       } else {
@@ -60,7 +64,11 @@ export async function buildProtocolManifest() {
       }
     } else if (relativePath === "fixtures/questions/codex.json") {
       assertCodexQuestionFixture(value);
-      assertSchemaInstance(validators.questionAdapterFixture, value, relativePath);
+      assertSchemaInstance(
+        validators.questionAdapterFixture,
+        value,
+        relativePath,
+      );
       compatibilityCase = "codex-structured-input";
     } else if (relativePath === "fixtures/conformance-minimal-run.json") {
       assertSchemaInstance(validators.conformanceFixture, value, relativePath);
@@ -102,10 +110,14 @@ async function main() {
   if (process.argv.includes("--check")) {
     const current = await readFile(outputPath, "utf8").catch(() => "");
     if (current !== encoded) {
-      process.stderr.write("The generated PRP contract manifest is stale. Run pnpm generate:protocol-manifest.\n");
+      process.stderr.write(
+        "The generated PRP contract manifest is stale. Run pnpm generate:protocol-manifest.\n",
+      );
       process.exitCode = 1;
     } else {
-      process.stdout.write("The generated PRP contract manifest matches its sources.\n");
+      process.stdout.write(
+        "The generated PRP contract manifest matches its sources.\n",
+      );
     }
   } else {
     await writeFile(outputPath, encoded);
@@ -113,4 +125,5 @@ async function main() {
   }
 }
 
-if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) await main();
+if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url))
+  await main();

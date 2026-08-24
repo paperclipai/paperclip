@@ -2,7 +2,10 @@ import {
   parsePrpFixtureText,
   type ProtocolValidationIssue,
 } from "../protocol/replay-contract.js";
-import { reducePrpFixture, type SessionSnapshot } from "../reducer/session-reducer.js";
+import {
+  reducePrpFixture,
+  type SessionSnapshot,
+} from "../reducer/session-reducer.js";
 
 export type ReplayResult =
   | { ok: true; snapshot: SessionSnapshot; issues: [] }
@@ -13,7 +16,11 @@ export function replayFixtureText(text: string): ReplayResult {
   if (!validation.ok) {
     return { ok: false, snapshot: null, issues: validation.issues };
   }
-  return { ok: true, snapshot: reducePrpFixture(validation.fixture), issues: [] };
+  return {
+    ok: true,
+    snapshot: reducePrpFixture(validation.fixture),
+    issues: [],
+  };
 }
 
 export function formatReplayResult(result: ReplayResult): string {

@@ -39,7 +39,10 @@ export type PrpTerminalState = FromSchema<
   { references: TerminalReferences }
 >;
 type RequestReferences = [typeof questionSetSchema];
-export type PrpRequest = FromSchema<typeof requestSchema, { references: RequestReferences }>;
+export type PrpRequest = FromSchema<
+  typeof requestSchema,
+  { references: RequestReferences }
+>;
 export type PrpStructuredRunResult = FromSchema<typeof resultSchema>;
 export type PrpEvent = FromSchema<
   typeof eventSchema,
@@ -162,7 +165,10 @@ function versionIssues(value: unknown): ProtocolValidationIssue[] {
       const payload = asRecord(event?.payload);
       const semanticTool = asRecord(payload?.semantic_tool);
       const semanticToolVersion = semanticTool?.schemaVersion;
-      if (typeof semanticToolVersion === "number" && semanticToolVersion !== 1) {
+      if (
+        typeof semanticToolVersion === "number" &&
+        semanticToolVersion !== 1
+      ) {
         issues.push({
           code: "unsupported_required_version",
           path: `/events/${index}/payload/semantic_tool/schemaVersion`,
@@ -206,7 +212,10 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
   const uniqueEvents = new Map<string, PrpEvent>();
   const semanticCalls = new Map<
     string,
-    { input?: { envelope: PrpSemanticToolEnvelope; index: number }; result?: { envelope: PrpSemanticToolEnvelope; index: number } }
+    {
+      input?: { envelope: PrpSemanticToolEnvelope; index: number };
+      result?: { envelope: PrpSemanticToolEnvelope; index: number };
+    }
   >();
   fixture.events.forEach((event, index) => {
     if (event.runId !== fixture.identity.runId) {
@@ -223,7 +232,8 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       issues.push({
         code: "binding_mismatch",
         path: `/events/${index}/normalizedSessionId`,
-        message: "event normalizedSessionId must match identity.normalizedSessionId",
+        message:
+          "event normalizedSessionId must match identity.normalizedSessionId",
       });
     }
     const existing = uniqueEvents.get(event.sourceEventId);
@@ -241,12 +251,18 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       return;
     }
     const payload = asRecord(event.payload);
-    const semanticTool = asRecord(payload?.semantic_tool) as PrpSemanticToolEnvelope | null;
+    const semanticTool = asRecord(
+      payload?.semantic_tool,
+    ) as PrpSemanticToolEnvelope | null;
     if (semanticTool !== null) {
       const correlation = asRecord(semanticTool.correlation);
       for (const [field, actual, expected] of [
         ["runId", correlation?.runId, event.runId],
-        ["normalizedSessionId", correlation?.normalizedSessionId, event.normalizedSessionId],
+        [
+          "normalizedSessionId",
+          correlation?.normalizedSessionId,
+          event.normalizedSessionId,
+        ],
         ["turnId", correlation?.turnId, event.turnId],
         ["itemId", correlation?.itemId, event.itemId],
       ] as const) {
@@ -284,7 +300,10 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       continue;
     }
     for (const field of ["operationId", "idempotencyKey"] as const) {
-      if (canonicalJson(call.input.envelope[field]) !== canonicalJson(call.result.envelope[field])) {
+      if (
+        canonicalJson(call.input.envelope[field]) !==
+        canonicalJson(call.result.envelope[field])
+      ) {
         issues.push({
           code: "binding_mismatch",
           path: `/events/${call.result.index}/payload/semantic_tool/${field}`,
@@ -312,13 +331,17 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
     issues.push({
       code: "binding_mismatch",
       path: "/events",
-      message: "scripted fixtures must contain exactly one unique run.result.proposed event",
+      message:
+        "scripted fixtures must contain exactly one unique run.result.proposed event",
     });
-  } else if (canonicalJson(proposedResults[0]?.payload) !== canonicalJson(fixture.result)) {
+  } else if (
+    canonicalJson(proposedResults[0]?.payload) !== canonicalJson(fixture.result)
+  ) {
     issues.push({
       code: "binding_mismatch",
       path: "/result",
-      message: "fixture result must match the run.result.proposed event payload",
+      message:
+        "fixture result must match the run.result.proposed event payload",
     });
   }
 
@@ -329,7 +352,8 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
     issues.push({
       code: "binding_mismatch",
       path: "/events",
-      message: "scripted fixtures must contain exactly one unique run.terminal event",
+      message:
+        "scripted fixtures must contain exactly one unique run.terminal event",
     });
   }
   return issues;
@@ -365,7 +389,10 @@ export function parsePrpFixtureText(text: string): ProtocolValidationResult {
         {
           code: "invalid_json",
           path: "/",
-          message: error instanceof Error ? error.message : "fixture is not valid JSON",
+          message:
+            error instanceof Error
+              ? error.message
+              : "fixture is not valid JSON",
         },
       ],
     };

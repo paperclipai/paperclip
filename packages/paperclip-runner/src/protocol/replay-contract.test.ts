@@ -8,7 +8,10 @@ import {
   PRP_PROTOCOL_VERSION,
 } from "./replay-contract.js";
 
-const fixtureDirectory = new URL("../../protocol/fixtures/replay/", import.meta.url);
+const fixtureDirectory = new URL(
+  "../../protocol/fixtures/replay/",
+  import.meta.url,
+);
 const validFixtures = [
   "happy-path.json",
   "failed-run.json",
@@ -18,7 +21,9 @@ const validFixtures = [
   "unknown-optional-fields.json",
 ];
 
-async function readFixture(name = "happy-path.json"): Promise<Record<string, unknown>> {
+async function readFixture(
+  name = "happy-path.json",
+): Promise<Record<string, unknown>> {
   return JSON.parse(
     await readFile(new URL(name, fixtureDirectory), "utf8"),
   ) as Record<string, unknown>;
@@ -36,7 +41,10 @@ describe("PRP v1 JSON Schema contract", () => {
 
   it("preserves unknown optional fields for forward compatibility", async () => {
     const result = parsePrpFixtureText(
-      await readFile(new URL("unknown-optional-fields.json", fixtureDirectory), "utf8"),
+      await readFile(
+        new URL("unknown-optional-fields.json", fixtureDirectory),
+        "utf8",
+      ),
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -49,7 +57,10 @@ describe("PRP v1 JSON Schema contract", () => {
 
   it("fails closed on an unsupported required protocol version", async () => {
     const result = parsePrpFixtureText(
-      await readFile(new URL("unsupported-required-version.json", fixtureDirectory), "utf8"),
+      await readFile(
+        new URL("unsupported-required-version.json", fixtureDirectory),
+        "utf8",
+      ),
     );
     expect(result).toMatchObject({
       ok: false,
@@ -111,7 +122,9 @@ describe("PRP v1 JSON Schema contract", () => {
   it("requires exactly one unique terminal event", async () => {
     const fixture = await readFixture();
     const events = fixture.events as Array<Record<string, unknown>>;
-    fixture.events = events.filter((event) => event.eventType !== "run.terminal");
+    fixture.events = events.filter(
+      (event) => event.eventType !== "run.terminal",
+    );
     expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
       ok: false,
       issues: [
@@ -137,6 +150,8 @@ describe("PRP v1 JSON Schema contract", () => {
         { min: 1, max: 2 },
       ),
     ).toBe(1);
-    expect(negotiateProtocolVersion({ min: 2, max: 3 }, { min: 1, max: 1 })).toBeNull();
+    expect(
+      negotiateProtocolVersion({ min: 2, max: 3 }, { min: 1, max: 1 }),
+    ).toBeNull();
   });
 });
