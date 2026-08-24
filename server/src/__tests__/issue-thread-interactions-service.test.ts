@@ -1220,6 +1220,127 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.idempotencyKey).toBe("run-1:questionnaire");
   });
 
+  it("lets a superseded interaction be re-created under the same idempotency key", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Superseded key reuse");
+    const commentId = randomUUID();
+    const idempotencyKey = "confirmation:issue:plan:revision-1";
+
+    const input = {
+      kind: "request_confirmation" as const,
+      idempotencyKey,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        prompt: "Proceed with the current draft?",
+      },
+    };
+
+    const first = await interactionsSvc.create({ id: issueId, companyId }, input, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: commentId,
+      createdAt: new Date(new Date(first.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+    expect(expired).toHaveLength(1);
+    expect(expired[0]?.status).toBe("expired");
+
+    // The whole point: a key burned by a supersede must be usable again, or the
+    // question is lost on this issue forever (no withdraw route exists).
+    const second = await interactionsSvc.create({ id: issueId, companyId }, input, {
+      userId: "local-board",
+    });
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.status).toBe("pending");
+    expect(second.idempotencyKey).toBe(idempotencyKey);
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.status === "pending")).toHaveLength(1);
+    expect(rows.filter((row) => row.status === "expired")).toHaveLength(1);
+  });
+
+  it("keeps idempotency for a still-pending interaction and still rejects a diverging request", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Pending key negative control");
+    const idempotencyKey = "confirmation:issue:plan:revision-2";
+
+    const input = {
+      kind: "request_confirmation" as const,
+      idempotencyKey,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        prompt: "Proceed with the current draft?",
+      },
+    };
+
+    const first = await interactionsSvc.create({ id: issueId, companyId }, input, {
+      userId: "local-board",
+    });
+    const replay = await interactionsSvc.create({ id: issueId, companyId }, input, {
+      userId: "local-board",
+    });
+    expect(replay.id).toBe(first.id);
+
+    await expect(interactionsSvc.create({ id: issueId, companyId }, {
+      ...input,
+      payload: {
+        version: 1 as const,
+        prompt: "A different question under the same key",
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({ status: 409 });
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("replays the winner when two creates race on the same idempotency key", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Racing key");
+    const idempotencyKey = "confirmation:issue:plan:revision-3";
+
+    const input = {
+      kind: "request_confirmation" as const,
+      idempotencyKey,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        prompt: "Proceed with the current draft?",
+      },
+    };
+
+    // Whichever call loses the insert lands in the unique-conflict branch and
+    // has to find the winner rather than surface the raw database error.
+    const [first, second] = await Promise.all([
+      interactionsSvc.create({ id: issueId, companyId }, input, { userId: "local-board" }),
+      interactionsSvc.create({ id: issueId, companyId }, input, { userId: "local-board" }),
+    ]);
+
+    expect(second.id).toBe(first.id);
+    expect(first.status).toBe("pending");
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(1);
+  });
+
   it("supersedes older pending confirmations from the same agent without crossing agent or kind", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Newer confirmation supersedes older");
     const firstAgentId = randomUUID();
