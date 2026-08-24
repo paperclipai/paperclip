@@ -227,6 +227,14 @@ export function getMergeConfirmationPullRequestReferences(
 const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =
   "issue_thread_interactions_company_issue_idempotency_uq";
 
+/**
+ * How many times a create may re-enter the insert after a uniqueness conflict
+ * whose winner had already gone terminal. Each extra attempt costs one failed
+ * insert; three is far past any contention a single issue's idempotency key
+ * sees in practice, and it stops an unbounded spin.
+ */
+const MAX_INTERACTION_CREATE_ATTEMPTS = 3;
+
 type IssueWakeTarget = {
   id: string;
   assigneeAgentId: string | null;
@@ -2389,7 +2397,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         || data.kind === "request_checkbox_confirmation"
         || data.kind === "request_item_verdicts";
 
-      let created: IssueThreadInteractionRow;
+      let created: IssueThreadInteractionRow | null = null;
       let superseded: IssueThreadInteractionRow[] = [];
       // A terminal issue must not regain pending actionable cards. FOR UPDATE
       // on the issue row serializes this insert both against terminal status
@@ -2493,36 +2501,45 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         return { row, supersededRows };
       });
 
-      try {
-        const result = await insertInteraction();
-        created = result.row;
-        superseded = result.supersededRows;
-      } catch (error) {
-        if (!normalizedData.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
-          throw error;
-        }
-        // The unique index is scoped to `status = 'pending'`, so this conflict
-        // can only come from a racing create that won the insert.
-        const existing = await getIdempotentInteraction({
-          issueId: issue.id,
-          companyId: issue.companyId,
-          idempotencyKey: normalizedData.idempotencyKey,
-        });
-        if (existing) {
-          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
-            throw conflict("Interaction idempotency key already exists for a different request", {
-              idempotencyKey: normalizedData.idempotencyKey,
-            });
+      // Every attempt ends one of three ways: the insert lands, a pending winner
+      // is found and replayed, or the winner went terminal between the conflict
+      // and the recovery lookup and freed the key again. Only the last case
+      // loops, and the retry has to re-enter this same handling rather than run
+      // bare — a third creator can claim the freed key in that window, and a
+      // bare retry would surface its uniqueness error as a 500 on a request
+      // that is idempotently valid. The bound keeps a key that is repeatedly
+      // claimed and released from spinning here forever.
+      for (let attempt = 1; !created; attempt += 1) {
+        try {
+          const result = await insertInteraction();
+          created = result.row;
+          superseded = result.supersededRows;
+        } catch (error) {
+          if (!normalizedData.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
+            throw error;
           }
-          return hydrateInteraction(existing);
+          // The unique index is scoped to `status = 'pending'`, so this conflict
+          // can only come from a racing create that won the insert.
+          const existing = await getIdempotentInteraction({
+            issueId: issue.id,
+            companyId: issue.companyId,
+            idempotencyKey: normalizedData.idempotencyKey,
+          });
+          if (existing) {
+            if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+              throw conflict("Interaction idempotency key already exists for a different request", {
+                idempotencyKey: normalizedData.idempotencyKey,
+              });
+            }
+            return hydrateInteraction(existing);
+          }
+          if (attempt >= MAX_INTERACTION_CREATE_ATTEMPTS) {
+            throw conflict(
+              "Interaction idempotency key is being claimed and released by concurrent creates",
+              { idempotencyKey: normalizedData.idempotencyKey },
+            );
+          }
         }
-        // The winner went terminal between the conflict and this lookup, so the
-        // key is free again. Insert once more instead of surfacing the raw
-        // uniqueness error as a 500. A second conflict is left to the caller:
-        // the window is a single lookup wide and cannot repeat indefinitely.
-        const retried = await insertInteraction();
-        created = retried.row;
-        superseded = retried.supersededRows;
       }
 
       await touchIssue(db, issue.id);

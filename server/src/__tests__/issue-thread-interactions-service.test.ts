@@ -1341,6 +1341,75 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("replays a winner that claims the key after the recovery lookup found it free", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Recovery retry contention");
+    const idempotencyKey = "confirmation:issue:plan:revision-4";
+
+    const input = {
+      kind: "request_confirmation" as const,
+      idempotencyKey,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        prompt: "Proceed with the current draft?",
+      },
+    };
+
+    // Drives the narrow window the recovery retry opens: the key is free at the
+    // lookup, and a competing creator claims it before the retry's insert runs.
+    // Each hooked attempt plants a real pending row so the insert hits the real
+    // unique index, not a synthetic error.
+    //
+    //   attempt 1 -> plant a winner, let the insert conflict, then remove the
+    //                winner. The recovery lookup finds the key free.
+    //   attempt 2 -> plant another winner and leave it. The retry conflicts
+    //                again, and this one has to be replayed rather than escape
+    //                as a raw PostgreSQL error.
+    // Planted through the real service so the winner is byte-for-byte an
+    // equivalent request — the replay branch checks that before returning it.
+    let attempts = 0;
+    const plantWinner = async () =>
+      await interactionsSvc.create({ id: issueId, companyId }, input, { userId: "local-board" });
+
+    const contendedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (callback: Parameters<typeof db.transaction>[0]) => {
+          attempts += 1;
+          const planted = await plantWinner();
+          try {
+            return await target.transaction(callback);
+          } finally {
+            if (attempts === 1) {
+              await db
+                .delete(issueThreadInteractions)
+                .where(eq(issueThreadInteractions.id, planted.id));
+            }
+          }
+        };
+      },
+    }) as typeof db;
+
+    const replayed = await issueThreadInteractionService(contendedDb).create(
+      { id: issueId, companyId },
+      input,
+      { userId: "local-board" },
+    );
+
+    expect(attempts).toBe(2);
+    expect(replayed.status).toBe("pending");
+    expect(replayed.idempotencyKey).toBe(idempotencyKey);
+
+    // The second planted winner owns the key; the create replayed it instead of
+    // inserting a duplicate.
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(replayed.id);
+  });
+
   it("supersedes older pending confirmations from the same agent without crossing agent or kind", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Newer confirmation supersedes older");
     const firstAgentId = randomUUID();
