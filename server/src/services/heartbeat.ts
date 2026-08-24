@@ -19658,48 +19658,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let skipped = 0;
 
       for (const agent of allAgents) {
-        const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
-        if (!invokability.invokable) continue;
-        const policy = parseHeartbeatPolicy(agent);
-        if (!policy.enabled || policy.intervalSec <= 0) continue;
+        // Isolate each agent's tick so one throwing agent (e.g. a heartbeat-enabled
+        // agent with a null defaultEnvironmentId) cannot abort the tick for every
+        // agent after it in the loop and silently kill the fleet-wide scheduler.
+        try {
+          const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
+          if (!invokability.invokable) continue;
+          const policy = parseHeartbeatPolicy(agent);
+          if (!policy.enabled || policy.intervalSec <= 0) continue;
 
-        if (cutoff) {
-          const eligibleIssue = await db
-            .select({ id: issues.id })
-            .from(issues)
-            .where(and(
-              eq(issues.companyId, agent.companyId),
-              eq(issues.assigneeAgentId, agent.id),
-              inArray(issues.status, ["todo", "in_progress"]),
-              gte(issues.createdAt, cutoff),
-            ))
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!eligibleIssue) continue;
+          if (cutoff) {
+            const eligibleIssue = await db
+              .select({ id: issues.id })
+              .from(issues)
+              .where(and(
+                eq(issues.companyId, agent.companyId),
+                eq(issues.assigneeAgentId, agent.id),
+                inArray(issues.status, ["todo", "in_progress"]),
+                gte(issues.createdAt, cutoff),
+              ))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (!eligibleIssue) continue;
+          }
+
+          checked += 1;
+          const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
+          const elapsedMs = now.getTime() - baseline;
+          if (elapsedMs < policy.intervalSec * 1000) continue;
+          const timerClaim = await claimDueTimerHeartbeat(agent, now, policy.intervalSec);
+          if (!timerClaim) continue;
+
+          const run = await enqueueWakeup(agent.id, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "heartbeat_timer",
+            requestedByActorType: "system",
+            requestedByActorId: "heartbeat_scheduler",
+            contextSnapshot: {
+              source: "scheduler",
+              reason: "interval_elapsed",
+              now: now.toISOString(),
+              timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
+            },
+          });
+          if (run) enqueued += 1;
+          else skipped += 1;
+        } catch (err) {
+          logger.error(
+            { err, agentId: agent.id, agentName: agent.name, companyId: agent.companyId },
+            "heartbeat timer tick failed for agent",
+          );
         }
-
-        checked += 1;
-        const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
-        const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
-        const timerClaim = await claimDueTimerHeartbeat(agent, now, policy.intervalSec);
-        if (!timerClaim) continue;
-
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-            timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
