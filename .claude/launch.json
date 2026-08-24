@@ -10,24 +10,6 @@
       ],
       "port": 3108,
       "autoPort": true
-    },
-    {
-      "name": "cloud-steps",
-      "runtimeExecutable": "/bin/sh",
-      "runtimeArgs": [
-        "-c",
-        "cd /Users/tonio/Projects/paperclip-cloud-steps/web && npm run dev -- --port 4182"
-      ],
-      "port": 4182
-    },
-    {
-      "name": "id-round3",
-      "runtimeExecutable": "/bin/sh",
-      "runtimeArgs": [
-        "-c",
-        "cd /Users/tonio/Projects/paperclip-id-round3/web && npx vite --port 4183"
-      ],
-      "port": 4183
     }
   ]
 }
