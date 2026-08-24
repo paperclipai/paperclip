@@ -446,6 +446,19 @@ impl DurableState {
         changed
     }
 
+    fn has_legacy_command_journal(&self) -> bool {
+        !self.processed_commands.is_empty() && self.processed_command_fingerprints.is_empty()
+    }
+
+    fn compact_legacy_command_journal(&mut self) {
+        self.processed_commands.clear();
+        self.processed_command_fingerprints.clear();
+        self.compacted_through_controller_seq = self.last_controller_command_seq;
+        self.record_diagnostic(
+            "pre-fingerprint command journal was compacted; prior commands remain non-reexecutable",
+        );
+    }
+
     pub(crate) fn record_diagnostic(&mut self, message: impl Into<String>) {
         self.diagnostics.push(redact_text(&message.into()));
         if self.diagnostics.len() > MAX_DIAGNOSTICS {
@@ -608,8 +621,18 @@ impl DurableStateStore {
                 "durable state is malformed and cannot be recovered: {error}"
             ))
         })?;
-        validate_binding(&state, config)?;
+        let has_legacy_command_journal = state.has_legacy_command_journal();
+        validate_binding(&state, config, has_legacy_command_journal)?;
+        let mut changed = false;
+        if has_legacy_command_journal {
+            state.compact_legacy_command_journal();
+            validate_binding(&state, config, false)?;
+            changed = true;
+        }
         if state.reconcile_pending_commands() {
+            changed = true;
+        }
+        if changed {
             self.save(&state)?;
         }
         Ok((state, true))
@@ -659,6 +682,7 @@ impl DurableStateStore {
 fn validate_binding(
     state: &DurableState,
     config: &DurableRunnerConfig,
+    allow_legacy_command_journal: bool,
 ) -> Result<(), DurableRunnerError> {
     if state.schema != STATE_SCHEMA
         || state.runner_instance_id != config.runner_instance_id
@@ -720,7 +744,7 @@ fn validate_binding(
             Ok(command.controller_seq)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let command_fingerprints_are_valid = state.processed_command_fingerprints.len()
+    let command_fingerprints_are_valid = (state.processed_command_fingerprints.len()
         == state.processed_commands.len()
         && state
             .processed_command_fingerprints
@@ -729,7 +753,10 @@ fn validate_binding(
                 state.processed_commands.contains_key(key)
                     && value.len() == 64
                     && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-            });
+            }))
+        || (allow_legacy_command_journal
+            && !state.processed_commands.is_empty()
+            && state.processed_command_fingerprints.is_empty());
     command_sequences.sort_unstable();
     let command_cursors_are_valid = match (command_sequences.first(), command_sequences.last()) {
         (None, None) => state.compacted_through_controller_seq == state.last_controller_command_seq,

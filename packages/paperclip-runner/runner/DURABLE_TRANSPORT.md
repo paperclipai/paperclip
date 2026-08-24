@@ -36,6 +36,11 @@ the process dies inside the effect window, recovery records an indeterminate
 result and refuses to execute that command again. Recent results are bounded;
 commands older than the compacted controller cursor fail closed.
 
+State written before complete-command fingerprints existed is migrated by
+compacting its legacy command journal through the last recorded controller
+sequence. The runner can recover, but it rejects redelivery of those older
+commands instead of guessing an identity or repeating an uncertain effect.
+
 The outbox has separate hard and reserved limits. P1/P2 events cannot consume
 the P0 reserve. When the soft limit is reached, the runner enters backpressure
 and rejects the new non-P0 event rather than silently losing it. Exhausting the

@@ -139,3 +139,47 @@ fn duplicate_replay_requires_the_complete_command_identity() {
 
     fs::remove_dir_all(directory).expect("remove integration-test state");
 }
+
+#[test]
+fn pre_fingerprint_journal_recovers_without_reexecuting_old_commands() {
+    let directory = temporary_directory();
+    let config = config(directory.clone());
+    let store = DurableStateStore::new(&directory).expect("create private state store");
+    let (mut state, _) = store.load_or_create(&config).expect("create durable state");
+    let command = command();
+    assert_eq!(
+        state.begin_command(&command).expect("journal command"),
+        CommandDisposition::Execute
+    );
+    store.save(&state).expect("persist pending command");
+
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&fs::read(store.path()).expect("read current durable state"))
+            .expect("parse current durable state");
+    legacy
+        .as_object_mut()
+        .expect("durable state must be an object")
+        .remove("processedCommandFingerprints");
+    fs::write(
+        store.path(),
+        serde_json::to_vec_pretty(&legacy).expect("serialize legacy state"),
+    )
+    .expect("write simulated pre-fingerprint state");
+
+    let (mut recovered, existed) = store
+        .load_or_create(&config)
+        .expect("migrate pre-fingerprint state");
+    assert!(existed);
+    assert!(recovered.processed_commands.is_empty());
+    assert!(recovered.processed_command_fingerprints.is_empty());
+    assert_eq!(recovered.compacted_through_controller_seq, 1);
+    assert!(matches!(
+        recovered
+            .begin_command(&command)
+            .expect("reject migrated command without reexecution"),
+        CommandDisposition::Reject(result)
+            if result.result["code"] == "command_history_compacted"
+    ));
+
+    fs::remove_dir_all(directory).expect("remove integration-test state");
+}
