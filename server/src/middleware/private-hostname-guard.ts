@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { Request, RequestHandler } from "express";
 import {
   collectInternalRuntimeInterfaceHosts,
@@ -34,7 +35,7 @@ function normalizeAllowedHostnames(values: string[]): string[] {
 export function resolvePrivateHostnameAllowSet(opts: {
   allowedHostnames: string[];
   bindHost: string;
-  networkInterfacesMap?: NodeJS.Dict<NodeJS.NetworkInterfaceInfo[]>;
+  networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
 }): Set<string> {
   const configuredAllow = normalizeAllowedHostnames(opts.allowedHostnames);
   const bindHost = opts.bindHost.trim().toLowerCase();
@@ -69,7 +70,7 @@ export function privateHostnameGuard(opts: {
   enabled: boolean;
   allowedHostnames: string[];
   bindHost: string;
-  networkInterfacesMap?: NodeJS.Dict<NodeJS.NetworkInterfaceInfo[]>;
+  networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
 }): RequestHandler {
   if (!opts.enabled) {
     return (_req, _res, next) => next();

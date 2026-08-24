@@ -1,3 +1,4 @@
+import os from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
 
@@ -8,7 +9,7 @@ function runGuard(
     enabled: boolean;
     allowedHostnames?: string[];
     bindHost?: string;
-    networkInterfacesMap?: NodeJS.Dict<NodeJS.NetworkInterfaceInfo[]>;
+    networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
   },
   input: {
     host?: string;
@@ -38,7 +39,7 @@ function runGuard(
   return { res, next };
 }
 
-function allowInternalInterfaceMap(): NodeJS.Dict<NodeJS.NetworkInterfaceInfo[]> {
+function allowInternalInterfaceMap(): NodeJS.Dict<os.NetworkInterfaceInfo[]> {
   return {
     eth0: [
       {
@@ -57,7 +58,7 @@ function createAppOpts(opts: {
   enabled: boolean;
   allowedHostnames?: string[];
   bindHost?: string;
-  networkInterfacesMap?: NodeJS.Dict<NodeJS.NetworkInterfaceInfo[]>;
+  networkInterfacesMap?: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
 }) {
   return {
     enabled: opts.enabled,
