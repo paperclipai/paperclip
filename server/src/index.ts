@@ -894,6 +894,56 @@ export async function startServer(): Promise<StartedServer> {
       + `after waiting. Operator tooling pinned to ${requestedListenPort} is now blind — see the `
       + "board-reachable guard. Find and stop whatever holds the port, then restart.",
     );
+
+    // TSMC-21399: refuse to become a SECOND control plane.
+    //
+    // The error above was already correct and already loud, and it changed nothing:
+    // the process carried on and started a full control plane — schedulers,
+    // reconcilers, healers, adapters — beside the one holding the canonical port,
+    // against the same database. On 2026-08-24 that had been running since
+    // Sat 2026-08-22 21:34: :3101 from ~/paperclip alongside the pinned :3100,
+    // with 4 running agents and its own codex adapter child. Two of everything on
+    // one database for 31 hours.
+    //
+    // A log line is not a control. If something is already answering Paperclip's
+    // health check on the canonical port, this process must not run — the port
+    // fallback exists so a RELOCATED board stays reachable, not so a DUPLICATE
+    // board can come up quietly next to it.
+    //
+    // Deliberately narrow, so it cannot wedge a legitimate boot: it engages only
+    // when the fallback already happened AND another plane actually answers. If
+    // nothing holds the canonical port, listenPort === requestedListenPort and
+    // none of this runs. PAPERCLIP_ALLOW_DUPLICATE_PLANE=1 is the escape hatch for
+    // a deliberate second instance (a test fixture, or a genuinely separate DB).
+    if (process.env.PAPERCLIP_ALLOW_DUPLICATE_PLANE !== "1") {
+      const canonicalHealthUrl = `http://127.0.0.1:${requestedListenPort}/api/health`;
+      let incumbent: string | null = null;
+      try {
+        const probe = await fetch(canonicalHealthUrl, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (probe.ok) {
+          const body = (await probe.json()) as { instance?: { sourceDir?: string; pid?: number } };
+          incumbent = `pid ${body.instance?.pid ?? "unknown"} from ${body.instance?.sourceDir ?? "unknown source"}`;
+        }
+      } catch {
+        // Not a Paperclip plane, or not answering. Whatever holds the port is not
+        // a control plane we would be duplicating, so the fallback is legitimate
+        // and the loud error above is the right outcome on its own.
+        incumbent = null;
+      }
+      if (incumbent) {
+        logger.error(
+          `REFUSING TO START A SECOND CONTROL PLANE. ${canonicalHealthUrl} is already served by `
+          + `${incumbent}. Two planes on one database run two schedulers, two reconcilers and two `
+          + "healers over the same rows. Stop the other plane, or set "
+          + "PAPERCLIP_ALLOW_DUPLICATE_PLANE=1 if a second instance is genuinely intended.",
+        );
+        throw new Error(
+          `duplicate control plane refused: ${canonicalHealthUrl} already served by ${incumbent}`,
+        );
+      }
+    }
   }
   
   const runtimeListenHost = config.host;
