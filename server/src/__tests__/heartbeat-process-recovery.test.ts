@@ -4930,6 +4930,133 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(false);
   });
 
+  it("refuses a done disposition when the file-mutation verifier contradicts the close (TSMC-21385)", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: [
+        "**TSMC-21377 done** Changed surface: server/src/services/heartbeat.ts",
+        "Final disposition: done (all close bar items satisfied)",
+        "",
+        "⚠️ File-mutation verifier: 1 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.",
+        "  • `/Users/glad0s/paperclip/server/src/services/heartbeat.ts` — [patch] Escape-drift detected",
+      ].join("\n"),
+      resultJson: {
+        disposition: {
+          status: "done",
+          hasBlocker: false,
+        },
+        result: [
+          "**TSMC-21377 done** Changed surface: server/src/services/heartbeat.ts",
+          "Final disposition: done (all close bar items satisfied)",
+          "",
+          "⚠️ File-mutation verifier: 1 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.",
+          "  • `/Users/glad0s/paperclip/server/src/services/heartbeat.ts` — [patch] Escape-drift detected",
+        ].join("\n"),
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "in_progress" ? row : null;
+      }),
+      5_000,
+    );
+    expect(issue?.status).toBe("in_progress");
+
+    // The refusal comment/activity-log write happens after the issue-status
+    // update completes, so poll for it rather than reading a single snapshot.
+    const activity = await waitForValue(async () =>
+      db.select().from(activityLog).where(eq(activityLog.entityId, issueId)).then((rows) =>
+        rows.some((event) => event.action === "issue.disposition_refused_file_mutation_verifier") ? rows : null
+      ),
+      5_000,
+    ) ?? [];
+    expect(activity.some((event) => event.action === "issue.disposition_applied")).toBe(false);
+    expect(activity.some((event) => event.action === "issue.disposition_refused_file_mutation_verifier")).toBe(true);
+    expect(activity).toContainEqual(expect.objectContaining({
+      action: "issue.disposition_refused_file_mutation_verifier",
+      details: expect.objectContaining({
+        statedStatus: "done",
+        appliedStatus: "in_progress",
+        refusalReason: "file_mutation_verifier_unmodified",
+        sourceRunId: runId,
+      }),
+    }));
+
+    const comments = await waitForValue(async () =>
+      db.select().from(issueComments).where(eq(issueComments.issueId, issueId)).then((rows) =>
+        rows.some((c) => c.body.includes("Disposition refused — file-mutation verifier contradiction")) ? rows : null
+      ),
+      5_000,
+    ) ?? [];
+    expect(comments.some((c) => c.body.includes("Disposition refused — file-mutation verifier contradiction"))).toBe(true);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+  });
+
+  it("still applies an ordinary done disposition when no file-mutation verifier contradiction is present (TSMC-21385 capture-rate)", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Fixed the issue and verified the targeted tests pass. No verifier warnings.",
+      resultJson: {
+        disposition: {
+          status: "done",
+          hasBlocker: false,
+        },
+        result: "Fixed the issue and verified the targeted tests pass. No verifier warnings.",
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "done" ? row : null;
+      }),
+      5_000,
+    );
+    expect(issue?.status).toBe("done");
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.disposition_applied")).toBe(true);
+    expect(activity.some((event) => event.action === "issue.disposition_refused_file_mutation_verifier")).toBe(false);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+  });
+
   it("returns an unblocked disposition-only handoff to todo when it omits a disposition", async () => {
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     await db.update(heartbeatRuns).set({

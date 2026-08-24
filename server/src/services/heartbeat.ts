@@ -4070,6 +4070,72 @@ export function inferTerminalDispositionFromStreamedText(text: string | null | u
   return last;
 }
 
+/**
+ * Hermes (and peer adapters) append a file-mutation verifier footer when a
+ * write/patch tool did not land on disk. The footer lives in the same final
+ * report string as the agent's PAPERCLIP_DISPOSITION token. Until TSMC-21385,
+ * the platform treated the token as absolute enforcement and the verifier as
+ * advice — so a run could self-close `done` while its own verifier said the
+ * claimed edits never happened (run 03c78d80 on TSMC-21377).
+ *
+ * Match is intentionally narrow: only the concrete "were NOT modified" failure
+ * form. A bare mention of the verifier, or a green verifier (no footer), must
+ * not affect disposition capture rate.
+ */
+const FILE_MUTATION_VERIFIER_CONTRADICTION_RE =
+  /File-mutation verifier:\s*\d+\s*file\(s\)\s*were\s+NOT\s+modified/i;
+
+export type FileMutationVerifierContradiction = {
+  matched: true;
+  unmodifiedFileCount: number | null;
+  excerpt: string;
+};
+
+export function detectFileMutationVerifierContradiction(
+  finalReport: string | null | undefined,
+): FileMutationVerifierContradiction | null {
+  if (!finalReport) return null;
+  const match = FILE_MUTATION_VERIFIER_CONTRADICTION_RE.exec(finalReport);
+  if (!match || match.index === undefined) return null;
+  const countMatch = match[0].match(/(\d+)\s*file\(s\)/i);
+  const parsedCount = countMatch ? Number(countMatch[1]) : NaN;
+  const unmodifiedFileCount = Number.isFinite(parsedCount) ? parsedCount : null;
+  // Capture the header plus following bullet lines for the refusal comment.
+  const tail = finalReport.slice(match.index);
+  const lines = tail.split(/\r?\n/);
+  const excerptLines: string[] = [];
+  for (let i = 0; i < lines.length && excerptLines.length < 16; i++) {
+    const line = lines[i] ?? "";
+    if (i === 0) {
+      excerptLines.push(line);
+      continue;
+    }
+    if (line.trim() === "") break;
+    // Bullet rows from Hermes: "  • `path` — [tool] preview"
+    if (/^\s*[•*\-]/.test(line) || /^\s+/.test(line)) {
+      excerptLines.push(line);
+      continue;
+    }
+    break;
+  }
+  return {
+    matched: true,
+    unmodifiedFileCount,
+    excerpt: excerptLines.join("\n").trim().slice(0, 2000),
+  };
+}
+
+export function shouldRefuseTerminalDispositionForFileMutationVerifier(input: {
+  statedStatus: string | null | undefined;
+  finalReport: string | null | undefined;
+}): FileMutationVerifierContradiction | null {
+  const status = input.statedStatus?.trim() ?? "";
+  // Only refuse closes that claim the work finished or is ready for review.
+  // blocked/cancelled remain enforceable — they do not assert delivered code.
+  if (status !== "done" && status !== "in_review") return null;
+  return detectFileMutationVerifierContradiction(input.finalReport);
+}
+
 function synthesizePlatformTerminalDisposition(input: {
   status: string;
   errorCode?: string | null;
@@ -11857,7 +11923,107 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const dispositionExcluded = (process.env.PAPERCLIP_DISPOSITION_EXCLUDE_COMPANY_IDS
       ?? "e212ce50-b524-408c-b3d4-0c6108d8c2e2")
       .split(",").map((s) => s.trim()).filter(Boolean).includes(issue.companyId);
-    if (Boolean(statedStatus) && !dispositionExcluded) {
+    // TSMC-21385: a done/in_review token is not enforceable when the same run's
+    // file-mutation verifier reports unmodified files. Capture rate stays intact
+    // (token still parsed); only the *apply* is refused, with a countable log.
+    const fileMutationVerifierContradiction =
+      shouldRefuseTerminalDispositionForFileMutationVerifier({
+        statedStatus,
+        finalReport: rawFinalReport,
+      });
+    let dispositionRefusedByFileMutationVerifier = false;
+    if (fileMutationVerifierContradiction && Boolean(statedStatus) && !dispositionExcluded) {
+      try {
+        const priorStatus = issue.status;
+        // Keep the card actionable under the same assignee so the failed edit
+        // can be retried; do not invent a blocked/Unblock tower for an internal
+        // verifier failure (that would mint noise cards on every patch miss).
+        if (priorStatus !== "in_progress") {
+          await issuesSvc.update(issue.id, {
+            status: "in_progress",
+            actorAgentId: run.agentId,
+            actorUserId: null,
+          });
+        }
+        const verifierBody = [
+          "## Disposition refused — file-mutation verifier contradiction",
+          "",
+          `Stated disposition \`${statedStatus}\` was **not** applied. The run's own file-mutation verifier reported that claimed file edits did not land (TSMC-21385).`,
+          "",
+          "### Verifier excerpt",
+          "",
+          "```",
+          fileMutationVerifierContradiction.excerpt,
+          "```",
+          "",
+          `- Source run: \`${run.id}\``,
+          `- Prior status: \`${priorStatus}\``,
+          "- Applied status: `in_progress` (downgraded; work remains open)",
+          "- Next step: re-attempt the failed write(s), verify on disk (`git status` / `read_file`), then restate disposition only after mutations land.",
+        ].join("\n");
+        await issuesSvc.addComment(issue.id, verifierBody, {
+          runId: run.id,
+        }, { authorType: "system" });
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "issue.disposition_refused_file_mutation_verifier",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            label: "Disposition refused: file-mutation verifier contradiction",
+            statedStatus,
+            appliedStatus: "in_progress",
+            priorStatus,
+            dispositionSource: "paperclip_disposition_token",
+            refusalReason: "file_mutation_verifier_unmodified",
+            unmodifiedFileCount: fileMutationVerifierContradiction.unmodifiedFileCount,
+            verifierExcerpt: fileMutationVerifierContradiction.excerpt,
+            sourceRunId: run.id,
+          },
+        });
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "disposition_downgraded_file_mutation_verifier",
+          payload: {
+            issueId: issue.id,
+            statedStatus,
+            appliedStatus: "in_progress",
+            unmodifiedFileCount: fileMutationVerifierContradiction.unmodifiedFileCount,
+            sourceRunId: run.id,
+          },
+        });
+        logger.warn(
+          {
+            runId: run.id,
+            issueId: issue.id,
+            statedStatus,
+            unmodifiedFileCount: fileMutationVerifierContradiction.unmodifiedFileCount,
+            metric: "disposition_downgraded_file_mutation_verifier",
+          },
+          "disposition_downgraded_file_mutation_verifier",
+        );
+        dispositionRefusedByFileMutationVerifier = true;
+        return; // do not apply done/in_review; skip missing-disposition re-wake
+      } catch (err) {
+        dispositionRefusedByFileMutationVerifier = true;
+        logger.warn(
+          {
+            err,
+            runId: run.id,
+            issueId: issue.id,
+            statedStatus,
+          },
+          "failed to refuse disposition after file-mutation verifier contradiction",
+        );
+      }
+    }
+    if (Boolean(statedStatus) && !dispositionExcluded && !dispositionRefusedByFileMutationVerifier) {
       try {
         let appliedStatus: string | null = null;
         let createdBlockerId: string | null = null;
