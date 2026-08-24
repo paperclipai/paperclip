@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod durable;
 pub mod fake_harness;
 pub mod local_runner;
 pub mod process_supervisor;
