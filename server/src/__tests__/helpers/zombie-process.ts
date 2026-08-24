@@ -50,7 +50,10 @@ export type ZombieLeadProcessGroup = Awaited<ReturnType<typeof spawnZombieLeadPr
 // keeps the pid, so the short-lived child's parent is now a `sleep` that never
 // calls wait(). The zombie therefore survives for the life of the group on any
 // host, whatever its init does with adopted orphans.
-export async function spawnZombieLeadProcessGroup() {
+export async function spawnZombieLeadProcessGroup(
+  options: { waitForZombie?: (pid: number) => Promise<boolean> } = {},
+) {
+  const waitForZombie = options.waitForZombie ?? waitForZombiePid;
   const leader = spawn(
     "/bin/sh",
     [
@@ -79,26 +82,34 @@ export async function spawnZombieLeadProcessGroup() {
     return match ? Number.parseInt(match[1] ?? "", 10) : Number.NaN;
   };
 
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    if (Number.isInteger(readPid("descendant")) && Number.isInteger(readPid("zombie"))) break;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-
+  // Everything past the spawn can fail, and the caller only installs cleanup
+  // once this resolves — so a failure here has to dispose the group itself or
+  // leave a detached `sleep 300` group running for the rest of the test session.
   const processGroupId = leader.pid ?? Number.NaN;
-  const descendantPid = readPid("descendant");
-  const zombiePid = readPid("zombie");
-  if (!Number.isInteger(processGroupId) || !Number.isInteger(descendantPid) || !Number.isInteger(zombiePid)) {
-    throw new Error(`Failed to capture zombie process group pids: ${stdout}`);
-  }
+  try {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      if (Number.isInteger(readPid("descendant")) && Number.isInteger(readPid("zombie"))) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
 
-  if (!(await waitForZombiePid(zombiePid))) {
-    throw new Error(
-      `Expected pid ${zombiePid} to become an unreaped zombie, got state ${readLinuxProcessState(zombiePid)}`,
-    );
-  }
+    const descendantPid = readPid("descendant");
+    const zombiePid = readPid("zombie");
+    if (!Number.isInteger(processGroupId) || !Number.isInteger(descendantPid) || !Number.isInteger(zombiePid)) {
+      throw new Error(`Failed to capture zombie process group pids: ${stdout}`);
+    }
 
-  return { leader, processGroupId, descendantPid, zombiePid };
+    if (!(await waitForZombie(zombiePid))) {
+      throw new Error(
+        `Expected pid ${zombiePid} to become an unreaped zombie, got state ${readLinuxProcessState(zombiePid)}`,
+      );
+    }
+
+    return { leader, processGroupId, descendantPid, zombiePid };
+  } catch (error) {
+    disposeZombieLeadProcessGroup({ leader, processGroupId });
+    throw error;
+  }
 }
 
 // Killing the leader would reap the zombie by orphaning it, so the whole group
@@ -121,4 +132,7 @@ export function disposeZombieLeadProcessGroup(group: Pick<ZombieLeadProcessGroup
   } catch {
     // Already gone.
   }
+  // The leader's stdout pipe is the helper's only handle on the worker's event
+  // loop; drop it so a disposed group cannot keep the suite from exiting.
+  group.leader.stdout?.destroy();
 }
