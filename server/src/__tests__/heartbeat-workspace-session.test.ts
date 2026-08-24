@@ -1910,6 +1910,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(false);
   });
 
+  it("preserves session context on execution precondition-return handoff wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "execution_precondition_returned" })).toBe(false);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });

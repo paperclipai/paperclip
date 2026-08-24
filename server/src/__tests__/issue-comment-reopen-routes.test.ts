@@ -3538,4 +3538,83 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     ));
   });
+
+  it("REVIEW_EVIDENCE_NOT_GREEN restores the executor without a native verdict", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "run-2",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "todo",
+        assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+        comment: "## REVIEW_EVIDENCE_NOT_GREEN\n\nRequired checks are still running; no verdict was consumed.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.executionState).toMatchObject({
+      status: "precondition_returned",
+      currentStageId: policy.stages[0].id,
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      changesRequestedCount: 0,
+    });
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "execution_precondition_returned",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          executionStage: expect.objectContaining({
+            wakeRole: "executor",
+            stageType: "review",
+            lastDecisionOutcome: null,
+            allowedActions: ["restore_precondition", "resubmit"],
+          }),
+        }),
+      }),
+    ));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "execution_changes_requested" }),
+    );
+  });
 });

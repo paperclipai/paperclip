@@ -877,7 +877,11 @@ export function IssueProperties({
   // "anyone can approve") is what every issue already does, so it shows nothing.
   const reviewPolicyBadge = issueReviewPolicyBadge(issue.reviewPolicy);
   const nextRunnableExecutionStage = (() => {
-    if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
+    if (
+      (issue.executionState?.status === "changes_requested" ||
+        issue.executionState?.status === "precondition_returned") &&
+      issue.executionState.currentStageType
+    ) {
       return issue.executionState.currentStageType;
     }
     if (issue.executionState) return null;
@@ -907,6 +911,9 @@ export function IssueProperties({
       : null;
     if (issue.executionState.status === "changes_requested") {
       return `${stageLabel} requested changes${participantLabel ? ` by ${participantLabel}` : ""}`;
+    }
+    if (issue.executionState.status === "precondition_returned") {
+      return `${stageLabel} returned for evidence${participantLabel ? ` by ${participantLabel}` : ""}`;
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
