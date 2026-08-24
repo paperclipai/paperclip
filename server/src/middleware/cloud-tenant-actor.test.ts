@@ -72,6 +72,13 @@ function createFakeDb(options: {
       };
     },
   } as unknown as Db;
+  // The role-default grant seeder wraps its insert in a transaction so it can
+  // hold the per-principal grant lock while it runs (FAI-10144). The fake runs
+  // the callback against itself: this double has no isolation to model, and the
+  // insert it is here to observe still lands in `insertedTables`.
+  (db as unknown as { transaction: unknown }).transaction = async (
+    fn: (tx: unknown) => unknown,
+  ) => fn({ ...db, execute: async () => [] });
   return { db, insertedTables, deletedTables, selectWheres };
 }
 

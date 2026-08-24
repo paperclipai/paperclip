@@ -280,6 +280,10 @@ describe("actorMiddleware authenticated session profile", () => {
       })),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
     } as any;
+    // `execute` is on the transaction handle because the role-default grant
+    // seeder takes the per-principal advisory lock before its insert
+    // (FAI-10144); this double has no locks to model, so it just answers.
+    db.execute = vi.fn(async () => []);
     db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<void>) => run(db));
     const app = express();
     app.use(
