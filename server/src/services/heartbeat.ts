@@ -4909,6 +4909,18 @@ async function resolveInstructionsConfigFingerprintMetadata(config: Record<strin
   return metadata;
 }
 
+function stripNonSemanticWorkspaceRevisionTimestamps(workspaceConfig: unknown) {
+  if (!workspaceConfig || typeof workspaceConfig !== "object" || Array.isArray(workspaceConfig)) {
+    return workspaceConfig;
+  }
+  const {
+    issueConfigRevisionAt: _issueConfigRevisionAt,
+    projectConfigRevisionAt: _projectConfigRevisionAt,
+    ...semanticWorkspaceConfig
+  } = workspaceConfig as Record<string, unknown>;
+  return semanticWorkspaceConfig;
+}
+
 function buildSessionConfigCategoryValues(input: {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
@@ -4942,7 +4954,7 @@ function buildSessionConfigCategoryValues(input: {
     modelProfile: input.modelProfile,
     instructions: input.instructions,
     issueOverrides: input.issueOverrides,
-    workspaceConfig,
+    workspaceConfig: stripNonSemanticWorkspaceRevisionTimestamps(workspaceConfig),
     environment: input.environment,
     envBindings: {
       environment: { env: input.environmentEnv },
@@ -6759,6 +6771,112 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+export type FinalizeRunTaskSessionMutation =
+  | {
+      kind: "upsert";
+      companyId: string;
+      agentId: string;
+      adapterType: string;
+      taskKey: string;
+      sessionParamsJson: Record<string, unknown> | null;
+      sessionDisplayId: string | null;
+      lastRunId: string | null;
+      lastError: string | null;
+    }
+  | {
+      kind: "clear";
+      companyId: string;
+      agentId: string;
+      adapterType: string;
+      taskKey: string;
+    };
+
+export async function finalizeRunningRunWithTaskSession(
+  db: Db,
+  input: {
+    runId: string;
+    status: string;
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>;
+    taskSessionMutation?: FinalizeRunTaskSessionMutation | null;
+    expectedStatuses?: readonly string[];
+  },
+) {
+  const expectedStatuses = input.expectedStatuses ?? ["running"];
+  if (expectedStatuses.length === 0) {
+    throw new Error("Run finalization requires at least one expected status");
+  }
+  const expectedStatusPredicate = expectedStatuses.length === 1
+    ? eq(heartbeatRuns.status, expectedStatuses[0])
+    : inArray(heartbeatRuns.status, [...expectedStatuses]);
+  const updated = await db.transaction(async (tx) => {
+    const run = await tx
+      .update(heartbeatRuns)
+      .set({ status: input.status, ...input.patch, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, input.runId), expectedStatusPredicate))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!run) return null;
+
+    const mutation = input.taskSessionMutation;
+    const existingSessionIsNotNewer = or(
+      isNull(agentTaskSessions.lastRunId),
+      sql`not exists (
+        select 1
+        from ${heartbeatRuns} as existing_session_run
+        join ${heartbeatRuns} as current_session_run
+          on current_session_run.id = ${run.id}::uuid
+        where existing_session_run.id = ${agentTaskSessions.lastRunId}
+          and (existing_session_run.created_at, existing_session_run.id)
+            > (current_session_run.created_at, current_session_run.id)
+      )`,
+    );
+    if (mutation) {
+      const sessionParamsJson = mutation.kind === "upsert" ? mutation.sessionParamsJson : null;
+      const sessionDisplayId = mutation.kind === "upsert" ? mutation.sessionDisplayId : null;
+      const lastError = mutation.kind === "upsert" ? mutation.lastError : null;
+      await tx
+        .insert(agentTaskSessions)
+        .values({
+          companyId: mutation.companyId,
+          agentId: mutation.agentId,
+          adapterType: mutation.adapterType,
+          taskKey: mutation.taskKey,
+          sessionParamsJson,
+          sessionDisplayId,
+          lastRunId: run.id,
+          lastError,
+        })
+        .onConflictDoUpdate({
+          target: [
+            agentTaskSessions.companyId,
+            agentTaskSessions.agentId,
+            agentTaskSessions.adapterType,
+            agentTaskSessions.taskKey,
+          ],
+          set: {
+            sessionParamsJson,
+            sessionDisplayId,
+            lastRunId: run.id,
+            lastError,
+            updatedAt: new Date(),
+          },
+          setWhere: existingSessionIsNotNewer,
+        });
+    }
+
+    return run;
+  });
+
+  if (updated) return { run: updated, updated: true as const };
+
+  const current = await db
+    .select()
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.runId))
+    .then((rows) => rows[0] ?? null);
+  return { run: current, updated: false as const };
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -7580,7 +7698,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(agentTaskSessions.taskKey, taskKey),
         ),
       )
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => {
+        const row = rows[0] ?? null;
+        if (row && row.sessionParamsJson == null && row.sessionDisplayId == null) return null;
+        return row;
+      });
   }
 
   async function getLatestRunForSession(
@@ -8895,53 +9017,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function upsertTaskSession(input: {
-    companyId: string;
-    agentId: string;
-    adapterType: string;
-    taskKey: string;
-    sessionParamsJson: Record<string, unknown> | null;
-    sessionDisplayId: string | null;
-    lastRunId: string | null;
-    lastError: string | null;
-  }) {
-    const existing = await getTaskSession(
-      input.companyId,
-      input.agentId,
-      input.adapterType,
-      input.taskKey,
-    );
-    if (existing) {
-      return db
-        .update(agentTaskSessions)
-        .set({
-          sessionParamsJson: input.sessionParamsJson,
-          sessionDisplayId: input.sessionDisplayId,
-          lastRunId: input.lastRunId,
-          lastError: input.lastError,
-          updatedAt: new Date(),
-        })
-        .where(eq(agentTaskSessions.id, existing.id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-    }
-
-    return db
-      .insert(agentTaskSessions)
-      .values({
-        companyId: input.companyId,
-        agentId: input.agentId,
-        adapterType: input.adapterType,
-        taskKey: input.taskKey,
-        sessionParamsJson: input.sessionParamsJson,
-        sessionDisplayId: input.sessionDisplayId,
-        lastRunId: input.lastRunId,
-        lastError: input.lastError,
-      })
-      .returning()
-      .then((rows) => rows[0] ?? null);
-  }
-
   async function clearTaskSessions(
     companyId: string,
     agentId: string,
@@ -9022,8 +9097,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    taskSessionMutation?: FinalizeRunTaskSessionMutation | null,
+    expectedStatuses?: readonly string[],
   ) {
-    return setRunStatusFromLive(runId, status, ["running"], patch);
+    const finalization = await finalizeRunningRunWithTaskSession(db, {
+      runId,
+      status,
+      patch,
+      taskSessionMutation,
+      expectedStatuses,
+    });
+    const updated = finalization.updated ? finalization.run : null;
+
+    if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
+      });
+      publishRunLifecyclePluginEvent(updated);
+      return { run: updated, updated: true as const };
+    }
+
+    return finalization;
   }
 
   // Move a run to a new status only when its current status is one of
@@ -14811,6 +14910,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceConfig: {
         requestedMode: requestedExecutionWorkspaceMode,
         effectiveMode: effectiveExecutionWorkspaceMode,
+        workspaceIdentity: {
+          projectId: issueContext?.projectId ?? null,
+          projectWorkspaceId: issueContext?.projectWorkspaceId ?? null,
+          executionWorkspaceId: issueContext?.executionWorkspaceId ?? null,
+        },
+        trustPreset,
         issueConfigRevisionAt: issueContext?.updatedAt instanceof Date
           ? issueContext.updatedAt.toISOString()
           : issueContext?.updatedAt ?? null,
@@ -16474,6 +16579,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterResult.summary ?? null,
       );
 
+      const taskSessionMutation: FinalizeRunTaskSessionMutation | null = taskKey
+        ? adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)
+          ? {
+              kind: "clear",
+              companyId: agent.companyId,
+              agentId: agent.id,
+              adapterType: agent.adapterType,
+              taskKey,
+            }
+          : {
+              kind: "upsert",
+              companyId: agent.companyId,
+              agentId: agent.id,
+              adapterType: agent.adapterType,
+              taskKey,
+              sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+                nextSessionState.params,
+                configuredModel,
+                sessionConfigMetadata,
+              ),
+              sessionDisplayId: nextSessionState.displayId,
+              lastRunId: run.id,
+              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+            }
+        : null;
+
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
         finishedAt: new Date(),
         error: runErrorMessage,
@@ -16488,7 +16619,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
-      });
+      }, taskSessionMutation);
       if (!persistedRunWrite.updated) {
         logger.info(
           {
@@ -16631,29 +16762,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
-        if (taskKey) {
-          if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
-            await clearTaskSessions(agent.companyId, agent.id, {
-              taskKey,
-              adapterType: agent.adapterType,
-            });
-          } else {
-            await upsertTaskSession({
-              companyId: agent.companyId,
-              agentId: agent.id,
-              adapterType: agent.adapterType,
-              taskKey,
-              sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
-                nextSessionState.params,
-                configuredModel,
-                sessionConfigMetadata,
-              ),
-              sessionDisplayId: nextSessionState.displayId,
-              lastRunId: finalizedRun.id,
-              lastError: runErrorMessage,
-            });
-          }
-        }
       }
       await finalizeAgentStatus(
         agent.id,
@@ -16699,6 +16807,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.warn({ err: flushErr, runId }, "failed to flush run output progress after error");
       });
 
+      const failedTaskSessionMutation: FinalizeRunTaskSessionMutation | null =
+        taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)
+          ? {
+              kind: "upsert",
+              companyId: agent.companyId,
+              agentId: agent.id,
+              adapterType: agent.adapterType,
+              taskKey,
+              sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+                previousSessionParams,
+                configuredModel,
+                sessionConfigMetadata,
+              ),
+              sessionDisplayId: previousSessionDisplayId,
+              lastRunId: run.id,
+              lastError: message,
+            }
+          : null;
+
       const failedRunWrite = await setRunStatusIfRunning(run.id, "failed", {
         error: message,
         errorCode: failureErrorCode,
@@ -16713,7 +16840,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
-      });
+      }, failedTaskSessionMutation);
       if (!failedRunWrite.updated) {
         logger.info(
           {
@@ -16771,22 +16898,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           legacySessionId: runtimeForAdapter.sessionId,
         });
 
-        if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
-          await upsertTaskSession({
-            companyId: agent.companyId,
-            agentId: agent.id,
-            adapterType: agent.adapterType,
-            taskKey,
-            sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
-              previousSessionParams,
-              configuredModel,
-              sessionConfigMetadata,
-            ),
-            sessionDisplayId: previousSessionDisplayId,
-            lastRunId: failedRun.id,
-            lastError: message,
-          });
-        }
       }
 
       await finalizeAgentStatus(agent.id, "failed", message, {
@@ -19173,12 +19284,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const finishedAt = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const cancelledWrite = await setRunStatusIfRunning(run.id, "cancelled", {
       finishedAt,
       error: reason,
       errorCode,
       ...(resultJson ? { resultJson } : {}),
-    });
+    }, null, CANCELLABLE_HEARTBEAT_RUN_STATUSES);
+    if (!cancelledWrite.updated) return cancelledWrite.run;
+    const cancelled = cancelledWrite.run;
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,
@@ -19210,8 +19323,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
+    let cancelledCount = 0;
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
+      const cancelledWrite = await setRunStatusIfRunning(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
         errorCode,
@@ -19222,12 +19336,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             errorMessage: reason,
           }),
         } : {}),
-      });
-
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: new Date(),
-        error: reason,
-      });
+      }, null, CANCELLABLE_HEARTBEAT_RUN_STATUSES);
+      const cancelled = cancelledWrite.updated ? cancelledWrite.run : null;
+      if (cancelled) {
+        cancelledCount += 1;
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
+        });
+      }
 
       const running = runningProcesses.get(run.id);
       if (running) {
@@ -19243,10 +19360,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           processGroupId: run.processGroupId,
         });
       }
-      await releaseIssueExecutionAndPromote(run);
+      if (cancelled) {
+        await releaseIssueExecutionAndPromote(cancelled);
+      }
     }
 
-    return runs.length;
+    return cancelledCount;
   }
 
   async function cancelPendingWakeupsForAgentsInternal(agentIds: string[], reason: string) {

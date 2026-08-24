@@ -10,6 +10,7 @@ import {
   agentWakeupRequests,
   agentRuntimeState,
   agents,
+  agentTaskSessions,
   approvals,
   assets,
   companies,
@@ -85,6 +86,7 @@ async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
+    await db.delete(agentTaskSessions);
     try {
       await db.delete(heartbeatRunEvents);
       await db.delete(heartbeatRuns);
