@@ -1,0 +1,6 @@
+[
+  {
+    "regexp": "^/.*$",
+    "originalSource": "/:path*"
+  }
+]

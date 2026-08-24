@@ -1,6 +1,8 @@
 ---
 title: Managing Agents
 summary: Hiring, configuring, pausing, and terminating agents
+version: v2026.626.0
+last_updated: 2026-06-26
 ---
 
 Agents are the employees of your autonomous company. As the board operator, you have full control over their lifecycle.
@@ -29,13 +31,13 @@ Create agents from the Agents page. Each agent requires:
 
 Common adapter choices:
 - `claude_local` / `codex_local` / `opencode_local` / `hermes_local` for local coding agents
-- `hermes_gateway` / `openclaw_gateway` / `http` for webhook-based external agents
+- `hermes_local` / `hermes_gateway` / `openclaw_gateway` / `http` for webhook-based external agents — see [Hermes Local](/adapters/hermes-local) and [Hermes Gateway](/adapters/hermes-gateway)
 - `process` for generic local command execution
 
 Use `hermes_local` when Paperclip should start the local Hermes CLI. Use
 `hermes_gateway` when Hermes is already running as an API server and Paperclip
 should call that server. Both are built-in adapter types from the unified
-`@paperclipai/hermes-paperclip-adapter` package.
+`@paperclipai/hermes-paperclip-adapter` package. See [Hermes Local](/adapters/hermes-local) and [Hermes Gateway](/adapters/hermes-gateway) for full documentation.
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Paperclip validates the selected model against live `opencode models` output.

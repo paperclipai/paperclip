@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -147,6 +148,7 @@ function FinanceSummaryCard({
 }
 
 export function Costs() {
+  usePageMeta("Costs", "Track spending and manage budgets across agents and projects.");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();

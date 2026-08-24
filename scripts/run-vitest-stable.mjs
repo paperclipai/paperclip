@@ -464,6 +464,8 @@ if (options.dryRun) {
   process.exit(0);
 }
 
+runMigrationJournalGuard();
+
 if (options.mode === generalModeName || options.mode === allModeName) {
   if (options.group) {
     runGeneralGroup(routeTests, options.group, options.shardIndex, options.shardCount);

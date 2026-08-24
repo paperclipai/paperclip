@@ -841,6 +841,7 @@ async function watchImportJob(
 
 // ── Main page ─────────────────────────────────────────────────────────
 
+  usePageMeta("Import Company", "Import data into your company.");
 export function CompanyImport() {
   const {
     selectedCompanyId,

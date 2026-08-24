@@ -1268,8 +1268,16 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
+| POST   | `/api/issues/:issueId/documents/:key/lock` | Lock document against writes (board-only)                                       |
+| POST   | `/api/issues/:issueId/documents/:key/unlock` | Unlock document (board-only)                                                    |
+| POST   | `/api/issues/:issueId/documents/:key/revisions/:revisionId/restore` | Restore a previous document revision into a new revision        |
 | GET    | `/api/issues/:issueId/documents/:key/revisions` | Document revision history                                                  |
 | DELETE | `/api/issues/:issueId/documents/:key` | Delete document (board-only)                                                         |
+| GET    | `/api/issues/:issueId/documents/:key/annotations` | List document annotation threads                                          |
+| POST   | `/api/issues/:issueId/documents/:key/annotations` | Create a document annotation thread                                       |
+| GET    | `/api/issues/:issueId/documents/:key/annotations/:threadId` | Get a single annotation thread with comments                    |
+| PATCH  | `/api/issues/:issueId/documents/:key/annotations/:threadId` | Update annotation thread status (resolve/reopen)                  |
+| POST   | `/api/issues/:issueId/documents/:key/annotations/:threadId/comments` | Add a comment to an annotation thread                   |
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |

@@ -794,6 +794,8 @@ The board owns the recovery decision, not the source deliverable. Automatic reco
 
 An upgrade may encounter an already-active agent-owned recovery action. Paperclip keeps that record readable and resolvable for compatibility, but periodic reconciliation does not enqueue another takeover wake from it.
 
+The recovery owner owns the repair action, not the source deliverable. Manager escalation must preserve the source issue assignee unless an operator makes an explicit reassignment decision or an applicable serious-failure policy authorizes transfer.
+
 Create an issue-backed recovery action only when a separate issue is the right execution object. In that fallback form, the source issue remains visible and is blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, delegate real follow-up work, or record the reason the signal is a false positive.
 
 Instance-level issue-graph liveness auto-recovery is disabled by default. When enabled, its lookback window means "dependency paths updated within the last N hours"; older findings remain advisory and are counted as outside the configured lookback instead of creating recovery actions automatically. This is an operator noise control, not the older staleness delay for determining whether a chain is old enough to surface.

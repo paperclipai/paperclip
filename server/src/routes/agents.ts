@@ -1183,6 +1183,10 @@ export function agentRoutes(
     if (!decision.allowed) {
       throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     }
+    // Gate agent creation behind the advanced_agents subscription feature.
+    // Free-tier companies without a subscription or without the feature in
+    // their tier will receive a 403 Paywall error.
+    await billingService(db).requireFeature(companyId, FEATURE_KEYS.ADVANCED_AGENTS);
     if (req.actor.type !== "agent") return null;
     const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     if (!actorAgent || actorAgent.companyId !== companyId) {

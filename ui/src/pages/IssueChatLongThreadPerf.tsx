@@ -2,6 +2,7 @@ import { Profiler, useEffect, useLayoutEffect, useMemo, useRef, useState, type P
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { IssueChatThread } from "../components/IssueChatThread";
+import { usePageMeta } from "@/hooks/usePageMeta";
 import {
   issueChatLongThreadAgentMap,
   issueChatLongThreadComments,
@@ -52,6 +53,7 @@ function MetricTile({ label, value, testId }: { label: string; value: string; te
 }
 
 export function IssueChatLongThreadPerf() {
+  usePageMeta("Issue Chat Long Thread Performance", "UX lab for long thread rendering performance.");
   const [metrics, setMetrics] = useState<RenderMetrics>(initialMetrics);
   const metricsRef = useRef<RenderMetrics>(initialMetrics);
   const renderStartedAtRef = useRef(performance.now());

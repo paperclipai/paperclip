@@ -24,6 +24,7 @@ COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
 COPY packages/mcp-server/package.json packages/mcp-server/
+COPY packages/agents-catalog/package.json packages/agents-catalog/
 COPY packages/skills-catalog/package.json packages/skills-catalog/
 COPY packages/tailscale-https-broker/package.json packages/tailscale-https-broker/
 COPY packages/teams-catalog/package.json packages/teams-catalog/

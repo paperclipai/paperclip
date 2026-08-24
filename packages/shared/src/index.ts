@@ -379,6 +379,7 @@ export {
   SECRET_SCOPES,
   STORAGE_PROVIDERS,
   BILLING_TYPES,
+  BILLING_PERIODS,
   FINANCE_EVENT_KINDS,
   FINANCE_DIRECTIONS,
   FINANCE_UNITS,
@@ -619,6 +620,21 @@ export {
   type PluginEventType,
   type PluginBridgeErrorCode,
 } from "./constants.js";
+
+export type { BillingPeriod } from "./constants.js";
+
+export {
+  generateSummarySlotSchema,
+  summarySlotKeySchema,
+  summarySlotQuerySchema,
+  summarySlotScopeKindSchema,
+  summarySlotScopeSelectorSchema,
+  summarySlotStatusSchema,
+  writeSummarySlotSchema,
+  type GenerateSummarySlotInput,
+  type SummarySlotScopeSelectorInput,
+  type WriteSummarySlotInput,
+} from "./validators/summary-slot.js";
 
 export {
   generateSummarySlotSchema,

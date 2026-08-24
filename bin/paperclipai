@@ -1,0 +1,26 @@
+#!/bin/sh
+# paperclipai — wrapper for the git-managed Paperclip CLI.
+# Lives in the git repo so it stays versioned alongside the source.
+#
+# All commands are forwarded to the source CLI at cli/src/index.ts,
+# run via tsx (no compilation needed). The repo root is the working
+# directory so all relative imports resolve.
+#
+# Symlinks are resolved so this works when invoked from
+# /opt/homebrew/bin/paperclipai → <repo>/bin/paperclipai.
+set -e
+
+# Resolve symlinks to find the real script path
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+  TARGET="$(readlink "$SCRIPT")"
+  case "$TARGET" in
+    /*) SCRIPT="$TARGET" ;;
+    *)  SCRIPT="$DIR/$TARGET" ;;
+  esac
+done
+
+REPO_ROOT="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+cd "$REPO_ROOT"
+exec node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts "$@"

@@ -174,6 +174,44 @@ function createRecordingTraceContext(): {
   return { traceContext, spans };
 }
 
+const execFileAsync = promisify(execFile);
+
+type RecordedSpan = { name: string; parentName: string | null; ended: boolean };
+
+/**
+ * A structural tracer that records each opened span's name, parent, and end
+ * state, so a test can assert the trace shape a runtime span runner produces.
+ * Mirrors the recorder used for the `pack`/`stage.sync` nesting tests.
+ */
+function createRecordingTraceContext(): {
+  traceContext: StartupTraceContext;
+  spans: RecordedSpan[];
+} {
+  const spans: RecordedSpan[] = [];
+  const byHandle = new WeakMap<StartupSpan, RecordedSpan>();
+  const tracer: StartupTracer = {
+    startSpan(name, _options, context) {
+      const parent = context as RecordedSpan | undefined;
+      const record: RecordedSpan = { name, parentName: parent?.name ?? null, ended: false };
+      spans.push(record);
+      const handle: StartupSpan = {
+        setAttribute() {},
+        setStatus() {},
+        end() {
+          record.ended = true;
+        },
+      };
+      byHandle.set(handle, record);
+      return handle;
+    },
+  };
+  const traceContext: StartupTraceContext = {
+    tracer,
+    contextWithSpan: (span) => byHandle.get(span),
+  };
+  return { traceContext, spans };
+}
+
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
 

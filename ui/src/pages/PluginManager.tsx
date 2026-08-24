@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToastActions } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -85,6 +86,7 @@ function ExperimentalBadge() {
  * @see PluginSettings — linked from the Settings icon on each plugin row.
  * @see doc/plugins/PLUGIN_SPEC.md §3 — Plugin Lifecycle for status semantics.
  */
+  usePageMeta("Plugin Manager", "Install, configure, and manage plugins.");
 export function PluginManager() {
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();

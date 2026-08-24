@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 /**
  * Company-context plugin page. Renders a plugin's `page` slot at
@@ -23,6 +24,7 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
+  usePageMeta("Plugin", "Plugin content and features.");
   const params = useParams<{
     companyPrefix?: string;
     pluginId?: string;

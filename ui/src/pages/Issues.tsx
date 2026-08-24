@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -57,7 +58,8 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
 }
 
 export function Issues() {
-  const { selectedCompanyId } = useCompany();
+  usePageMeta("Tasks", "Browse and manage all tasks across your projects.");
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
   const [searchParams] = useSearchParams();

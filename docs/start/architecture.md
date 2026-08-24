@@ -1,6 +1,8 @@
 ---
 title: Architecture
 summary: Stack overview, request flow, and adapter model
+version: v2026.626.0
+last_updated: 2026-06-26
 ---
 
 Paperclip is a monorepo with four main layers.

@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -788,6 +789,10 @@ export function AgentDetail() {
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
+  usePageMeta(
+    agent?.name ?? "Agent",
+    agent?.description ?? (agent ? `Agent: ${agent.name}` : undefined),
+  );
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;

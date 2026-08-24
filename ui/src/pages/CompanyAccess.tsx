@@ -26,12 +26,14 @@ import { useToast } from "@/context/ToastContext";
 import { Link, Navigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots } from "@/plugins/slots";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
 
 export function CompanyAccess() {
   const { selectedCompany, selectedCompanyId } = useCompany();
+  usePageMeta("Company Members", "Manage company members and permissions.");
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();

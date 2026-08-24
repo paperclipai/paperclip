@@ -66,7 +66,7 @@ Guide the user through these steps when they're setting up for the first time.
 curl -sS "$PAPERCLIP_API_URL/api/companies"
 
 # Create a new company
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/companies" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Company Name",
@@ -85,7 +85,7 @@ The response includes the company `id` and auto-generated `issuePrefix`. Tell th
 After creating, set `PAPERCLIP_COMPANY_ID` for subsequent calls. Also set `requireBoardApprovalForNewAgents: true` so all hires go through governance:
 
 ```bash
-curl -sS -X PATCH "$PAPERCLIP_API_URL/api/companies/{companyId}" \
+curl --fail-with-body -sS -X PATCH "$PAPERCLIP_API_URL/api/companies/{companyId}" \
   -H "Content-Type: application/json" \
   -d '{"requireBoardApprovalForNewAgents": true}'
 ```
@@ -105,7 +105,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt"
 curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt"
 
 # Submit hire request
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "CEO Name",
@@ -141,7 +141,7 @@ If the company has `requireBoardApprovalForNewAgents: true`, the hire will need 
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/approvals?status=pending"
 
 # Approve the CEO hire
-curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{approvalId}/approve" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{approvalId}/approve" \
   -H "Content-Type: application/json" \
   -d '{"decisionNote": "CEO hire approved by board during onboarding"}'
 ```
@@ -151,7 +151,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{approvalId}/approve" \
 Create a standing issue for decision logging and board operations:
 
 ```bash
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Board Operations",
@@ -164,7 +164,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues"
 Then create the decision log document:
 
 ```bash
-curl -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision-log" \
+curl --fail-with-body -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision-log" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Decision Log",
@@ -180,7 +180,7 @@ Also write this to a local file at `./artifacts/decision-log.md` so the user can
 Start the CEO's first heartbeat:
 
 ```bash
-curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/{ceoId}/heartbeat/invoke" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/agents/{ceoId}/heartbeat/invoke" \
   -H "Content-Type: application/json"
 ```
 
@@ -194,7 +194,7 @@ When the user wants to build a hiring plan:
 
 ```bash
 # Create the hiring plan issue
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Hiring Plan",
@@ -204,7 +204,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues"
   }'
 
 # Attach the plan document
-curl -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{issueId}/documents/hiring-plan" \
+curl --fail-with-body -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{issueId}/documents/hiring-plan" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Hiring Plan",
@@ -262,7 +262,7 @@ For each agent to hire:
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations"
 
 # Submit hire request
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Agent Name",
@@ -318,7 +318,7 @@ Approve these updates? (approve all / review individually / edit)
 curl -sS "$PAPERCLIP_API_URL/api/agents/{agentId}"
 
 # Update the agent's config with new escalation paths
-curl -sS -X PATCH "$PAPERCLIP_API_URL/api/agents/{agentId}" \
+curl --fail-with-body -sS -X PATCH "$PAPERCLIP_API_URL/api/agents/{agentId}" \
   -H "Content-Type: application/json" \
   -d '{
     "adapterConfig": { ... updated config with new Collaboration section ... }
@@ -334,17 +334,17 @@ curl -sS -X PATCH "$PAPERCLIP_API_URL/api/agents/{agentId}" \
 curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/approvals?status=pending"
 
 # Approve
-curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{id}/approve" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{id}/approve" \
   -H "Content-Type: application/json" \
   -d '{"decisionNote": "Approved by board"}'
 
 # Reject
-curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{id}/reject" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{id}/reject" \
   -H "Content-Type: application/json" \
   -d '{"decisionNote": "Reason for rejection"}'
 
 # Request revision
-curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{id}/request-revision" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/approvals/{id}/request-revision" \
   -H "Content-Type: application/json" \
   -d '{"decisionNote": "Please adjust X, Y, Z"}'
 ```
@@ -376,7 +376,7 @@ curl -sS "$PAPERCLIP_API_URL/api/issues/{issueId}"
 curl -sS "$PAPERCLIP_API_URL/api/issues/{issueId}/comments"
 
 # Create a task
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Task title",
@@ -389,12 +389,12 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues"
   }'
 
 # Update a task
-curl -sS -X PATCH "$PAPERCLIP_API_URL/api/issues/{issueId}" \
+curl --fail-with-body -sS -X PATCH "$PAPERCLIP_API_URL/api/issues/{issueId}" \
   -H "Content-Type: application/json" \
   -d '{"status": "done", "comment": "Completed"}'
 
 # Add a comment
-curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/comments" \
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/comments" \
   -H "Content-Type: application/json" \
   -d '{"body": "Comment text in markdown"}'
 
@@ -498,7 +498,7 @@ Three ways the user can edit system prompts:
 curl -sS "$PAPERCLIP_API_URL/api/agents/{id}"
 
 # Then update
-curl -sS -X PATCH "$PAPERCLIP_API_URL/api/agents/{id}" \
+curl --fail-with-body -sS -X PATCH "$PAPERCLIP_API_URL/api/agents/{id}" \
   -H "Content-Type: application/json" \
   -d '{"adapterConfig": { ... updated config ... }}'
 ```
@@ -525,6 +525,89 @@ Rev 2 (2026-03-21 10:15) — changed: budgetMonthlyCents
 Rev 1 (2026-03-20 16:00) — initial configuration
 ```
 
+## Plan Management
+
+Plans are structured documents attached to an issue under the `plan` document key. They support sections, milestones, revision history, diffs, and review gates. When the user wants to plan work, create or update the plan document, then optionally raise a review gate for the current revision.
+
+```bash
+# Create/update a plan document (upserts; creates a new revision)
+curl --fail-with-body -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{issueId}/documents/plan" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Launch Plan",
+    "format": "markdown",
+    "body": "# Launch Plan\n\n## Milestones\n\n### M1: Setup\n- ...\n",
+    "planMetadata": {
+      "status": "in_review",
+      "version": 1,
+      "sections": [
+        {"id": "sec-1", "title": "Overview", "body": "What we are building", "order": 1}
+      ],
+      "milestones": [
+        {"id": "m1", "title": "Setup", "status": "pending", "order": 1, "acceptanceCriteria": ["..." ]}
+      ]
+    }
+  }'
+
+# Get the plan document
+curl -sS "$PAPERCLIP_API_URL/api/issues/{issueId}/documents/plan"
+
+# List plan revisions
+curl -sS "$PAPERCLIP_API_URL/api/issues/{issueId}/documents/plan/revisions"
+
+# Diff a revision against the previous one
+curl -sS "$PAPERCLIP_API_URL/api/issues/{issueId}/documents/plan/revisions/{revId}/diff"
+```
+
+**Review gates** let the board approve or reject a plan revision before work starts:
+
+```bash
+# Create a review gate on the current plan revision
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/plan/gates" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Approve launch plan",
+    "acceptanceCriteria": ["All milestones have owners", "Budget within limits"]
+  }'
+
+# List gates
+curl -sS "$PAPERCLIP_API_URL/api/issues/{issueId}/plan/gates"
+
+# Approve / reject a gate (approve auto-supersedes other open gates)
+curl --fail-with-body -sS -X PATCH "$PAPERCLIP_API_URL/api/issues/{issueId}/plan/gates/{gateId}" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "approved", "decisionNote": "Approved by board"}'
+```
+
+When the user asks for a plan, present it conversationally: summarize the milestones, note the current plan status, and ask whether they want to approve it via a review gate.
+
+## Memory Operations
+
+Paperclip has a company-scoped memory store (pgvector-backed). The board assistant can capture notes, query past context, and manage what the company remembers.
+
+```bash
+# Capture a fact into memory (auto-capture, 30d TTL)
+curl --fail-with-body -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/memory/capture" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Company decided to focus on the European market in Q3.",
+    "scope": {"companyId": "$PAPERCLIP_COMPANY_ID"}
+  }'
+
+# Query memory (semantic + full-text hybrid)
+curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/memory/query?q=market+focus"
+
+# List recent memory records
+curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/memory/records?limit=20"
+
+# Forget a record
+curl --fail-with-body -sS -X DELETE "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/memory/records" \
+  -H "Content-Type: application/json" \
+  -d '{"handles": [{"providerKey": "builtin_pgvector", "providerRecordId": "{recordId}"}]}'
+```
+
+**When to use memory:** before answering a question that references prior decisions, goals, or context ("what did we decide about X?"), query memory first. After major decisions, capture a short summary so future sessions can recall it. Present query results as a short list with the record text and recency.
+
 ## Decision Log
 
 Maintain a decision log for session continuity. Log major decisions — not every interaction.
@@ -547,7 +630,7 @@ Maintain a decision log for session continuity. Log major decisions — not ever
 curl -sS "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision-log"
 
 # Update with new entries appended
-curl -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision-log" \
+curl --fail-with-body -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision-log" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Decision Log",
@@ -579,6 +662,79 @@ All web UI links must include the company prefix:
 - Projects: `/{prefix}/projects/{project-url-key}`
 - Documents: `/{prefix}/issues/{identifier}#document-{key}`
 
+## Structured Action Signals
+
+When your response creates or updates a Paperclip work object (issue, plan document, approval, memory record, or knowledge article), wrap that object's details in a `%%ACTIONS%%{...}%%/ACTIONS%%` block **at the end of your response**, after your conversational summary. The UI renders these as clickable resolution cards below your bubble.
+
+### When to emit
+
+| Object Type | Action | When |
+|-------------|--------|------|
+| Issue | create | You created a new issue via POST /api/companies/{id}/issues |
+| Issue | update | You changed an issue's status, assignee, or priority |
+| Plan | create | You created or revised a plan document (PUT /api/issues/{id}/documents/plan) |
+| Plan | update | You updated plan metadata (status, milestones, sections) |
+| Approval | create | A review gate was created and resolved (approved/rejected) |
+| Knowledge | create | You created a knowledge article |
+| Memory | create | You captured a memory record (POST /api/companies/{id}/memory/capture) |
+
+### Format
+
+Place a single `%%ACTIONS%%` block at the end of your markdown response, after your conversational summary. Include only the primary object the user asked you to create — not every intermediate API call.
+
+```
+%%ACTIONS%%
+{
+  "resolution": {
+    "type": "issue",
+    "action": "create",
+    "data": {
+      "title": "Hiring Plan for Q4",
+      "id": "PAP-42",
+      "url": "/PAP/issues/PAP-42"
+    }
+  }
+}
+%%/ACTIONS%%
+```
+
+### Examples
+
+After creating an issue:
+```
+I've created a task to research the competitor landscape. You can find it here.
+
+%%ACTIONS%%
+{"resolution":{"type":"issue","action":"create","data":{"title":"Competitor Landscape Research","id":"PAP-45","url":"/PAP/issues/PAP-45"}}}
+%%/ACTIONS%%
+```
+
+After approving a plan revision:
+```
+The launch plan is approved. I've logged the decision and the team can proceed.
+
+%%ACTIONS%%
+{"resolution":{"type":"approval","action":"create","data":{"title":"Launch Plan v2 — Approved","url":"/PAP/issues/PAP-38#document-plan"}}}
+%%/ACTIONS%%
+```
+
+After capturing a fact and logging a decision:
+```
+Noted. I'll remember that the European market is the Q3 focus.
+
+%%ACTIONS%%
+{"resolution":{"type":"memory","action":"create","data":{"title":"Q3 focus: European market"}},"decision":{"summary":"Prioritized European market for Q3","rationale":"Based on revenue projections showing 3x growth potential in EU vs US."}}
+%%/ACTIONS%%
+```
+
+### Critical rules
+
+1. **One block per response** — never emit multiple `%%ACTIONS%%` blocks in the same turn.
+2. **Include `data.url` when possible** — the "View" link on the resolution card points here.
+3. **Keep it concise** — the JSON should be minimal (title, id, url). Don't include the full object.
+4. **Place at the very end** — after your conversational closing. The block is stripped from the persisted comment and only shown in the UI as a card.
+5. **Never echo the block back in subsequent turns** — once you've emitted it, don't quote or reference the raw `%%ACTIONS%%` syntax in later messages.
+
 ## Key Endpoints Reference
 
 | Action | Method | Endpoint |
@@ -603,17 +759,33 @@ All web UI links must include the company prefix:
 | Add comment | POST | `/api/issues/:id/comments` |
 | Issue documents | GET | `/api/issues/:id/documents` |
 | Get document | GET | `/api/issues/:id/documents/:key` |
-| Create/update doc | PUT | `/api/issues/:id/documents/:key` |
-| Work products | GET | `/api/issues/:id/work-products` |
-| List approvals | GET | `/api/companies/:companyId/approvals` |
-| Approve | POST | `/api/approvals/:id/approve` |
-| Reject | POST | `/api/approvals/:id/reject` |
-| Request revision | POST | `/api/approvals/:id/request-revision` |
-| Cost summary | GET | `/api/companies/:companyId/costs/summary` |
-| Costs by agent | GET | `/api/companies/:companyId/costs/by-agent` |
-| Costs by project | GET | `/api/companies/:companyId/costs/by-project` |
-| Adapter docs | GET | `/llms/agent-configuration.txt` |
-| Adapter detail | GET | `/llms/agent-configuration/:adapterType.txt` |
-| Agent icons | GET | `/llms/agent-icons.txt` |
-| Set instructions | PATCH | `/api/agents/:id/instructions-path` |
-| Search issues | GET | `/api/companies/:companyId/issues?q=term` |
+|| Create/update doc | PUT | `/api/issues/:id/documents/:key` |
+|| Work products | GET | `/api/issues/:id/work-products` |
+|| List approvals | GET | `/api/companies/:companyId/approvals` |
+|| Approve | POST | `/api/approvals/:id/approve` |
+|| Reject | POST | `/api/approvals/:id/reject` |
+|| Request revision | POST | `/api/approvals/:id/request-revision` |
+|| Cost summary | GET | `/api/companies/:companyId/costs/summary` |
+|| Costs by agent | GET | `/api/companies/:companyId/costs/by-agent` |
+|| Costs by project | GET | `/api/companies/:companyId/costs/by-project` |
+|| Adapter docs | GET | `/llms/agent-configuration.txt` |
+|| Adapter detail | GET | `/llms/agent-configuration/:adapterType.txt` |
+|| Agent icons | GET | `/llms/agent-icons.txt` |
+|| Set instructions | PATCH | `/api/agents/:id/instructions-path` |
+|| Memory: Capture | POST | `/api/companies/:companyId/memory/capture` |
+|| Memory: Query | GET | `/api/companies/:companyId/memory/query?q=...` |
+|| Memory: List records | GET | `/api/companies/:companyId/memory/records` |
+|| Memory: Get record | GET | `/api/companies/:companyId/memory/records/:id` |
+|| Memory: Forget | DELETE | `/api/companies/:companyId/memory/records` |
+|| Memory: Bindings | GET | `/api/companies/:companyId/memory/bindings` |
+|| Memory: Operations | GET | `/api/companies/:companyId/memory/operations` |
+|| Plan: Get document | GET | `/api/issues/:id/documents/plan` |
+|| Plan: Create/update doc | PUT | `/api/issues/:id/documents/plan` |
+|| Plan: List revisions | GET | `/api/issues/:id/documents/plan/revisions` |
+|| Plan: Revision diff | GET | `/api/issues/:id/documents/plan/revisions/:revId/diff` |
+|| Plan: Create review gate | POST | `/api/issues/:id/plan/gates` |
+|| Plan: List gates | GET | `/api/issues/:id/plan/gates` |
+|| Plan: Resolve gate | PATCH | `/api/issues/:id/plan/gates/:gateId` |
+|| Accepted decompositions | GET | `/api/issues/:id/accepted-plan-decompositions` |
+|| Agent memory config | GET | `/api/companies/:companyId/memory/agents/:agentId/config` |
+|| Search issues | GET | `/api/companies/:companyId/issues?q=term` |

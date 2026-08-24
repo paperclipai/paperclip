@@ -22,6 +22,7 @@ const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "h
 
 export function InstanceGeneralSettings({ embedded = false }: { embedded?: boolean }) {
   const { setBreadcrumbs } = useBreadcrumbs();
+  usePageMeta("General Settings", "Configure general instance-wide settings.");
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
 

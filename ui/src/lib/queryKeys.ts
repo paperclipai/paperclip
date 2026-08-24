@@ -217,6 +217,12 @@ export const queryKeys = {
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
+    planDocument: (issueId: string) => ["issues", "plan-document", issueId] as const,
+    planRevisions: (issueId: string) => ["issues", "plan-revisions", issueId] as const,
+    planRevisionDiff: (issueId: string, revisionId: string, againstRevisionId?: string | null) =>
+      ["issues", "plan-revision-diff", issueId, revisionId, againstRevisionId ?? "__none__"] as const,
+    planGates: (issueId: string, revisionId?: string | null) =>
+      ["issues", "plan-gates", issueId, revisionId ?? "__all__"] as const,
     fileResources: (
       issueId: string,
       options: {
@@ -434,6 +440,13 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  billing: {
+    tiers: (companyId: string) => ["billing", companyId, "tiers"] as const,
+    subscription: (companyId: string) => ["billing", companyId, "subscription"] as const,
+    invoices: (companyId: string) => ["billing", companyId, "invoices"] as const,
+    overview: (companyId: string) => ["billing", companyId, "overview"] as const,
+    experimentVariant: (companyId: string) => ["billing", companyId, "experiment-variant"] as const,
+  },
   usageByProvider: (companyId: string, from?: string, to?: string) =>
     ["usage-by-provider", companyId, from, to] as const,
   usageByBiller: (companyId: string, from?: string, to?: string) =>
@@ -450,6 +463,12 @@ export const queryKeys = {
     ["usage-window-spend", companyId] as const,
   usageQuotaWindows: (companyId: string) =>
     ["usage-quota-windows", companyId] as const,
+  notifications: {
+    preferences: (companyId: string) => ["notifications", "preferences", companyId] as const,
+    list: (companyId: string, opts?: { unreadOnly?: boolean }) =>
+      ["notifications", "list", companyId, opts?.unreadOnly ?? false] as const,
+    unreadCount: (companyId: string) => ["notifications", "unread", companyId] as const,
+  },
   heartbeats: (companyId: string, agentId?: string) =>
     ["heartbeats", companyId, agentId] as const,
   runDetail: (runId: string) => ["heartbeat-run", runId] as const,
@@ -474,5 +493,38 @@ export const queryKeys = {
   },
   adapters: {
     all: ["adapters"] as const,
+  },
+  memory: {
+    list: (companyId: string, scope?: string, cursor?: string) =>
+      ["memory", companyId, "list", scope ?? "__all__", cursor ?? "__start__"] as const,
+    detail: (companyId: string, recordId: string) =>
+      ["memory", companyId, "detail", recordId] as const,
+    query: (companyId: string, q: string, scope?: string) =>
+      ["memory", companyId, "query", q, scope ?? "__all__"] as const,
+    operations: (companyId: string) => ["memory", companyId, "operations"] as const,
+    bindings: (companyId: string) => ["memory", companyId, "bindings"] as const,
+    targets: (companyId: string) => ["memory", companyId, "targets"] as const,
+    agentConfig: (companyId: string, agentId: string) =>
+      ["memory", companyId, "agent-config", agentId] as const,
+    extractionJobs: (companyId: string, status?: string) =>
+      ["memory", companyId, "extraction-jobs", status ?? "__all__"] as const,
+  },
+  companyTemplates: {
+    list: ["company-templates"] as const,
+    detail: (key: string) => ["company-templates", key] as const,
+  },
+  knowledge: {
+    list: (companyId: string, status?: string, cursor?: string) =>
+      ["knowledge", companyId, "list", status ?? "__all__", cursor ?? "__start__"] as const,
+    detail: (companyId: string, documentId: string) =>
+      ["knowledge", companyId, "detail", documentId] as const,
+    revisions: (companyId: string, documentId: string) =>
+      ["knowledge", companyId, "revisions", documentId] as const,
+    revisionDiff: (companyId: string, documentId: string, revA: string, revB: string) =>
+      ["knowledge", companyId, "diff", documentId, revA, revB] as const,
+    backlinks: (companyId: string, documentId: string) =>
+      ["knowledge", companyId, "backlinks", documentId] as const,
+    search: (companyId: string, q: string) =>
+      ["knowledge", companyId, "search", q] as const,
   },
 };

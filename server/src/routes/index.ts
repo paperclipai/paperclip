@@ -26,6 +26,7 @@ export { secretRoutes } from "./secrets.js";
 export { toolAccessRoutes } from "./tool-access.js";
 export { smokeLabRoutes } from "./smoke-lab.js";
 export { costRoutes } from "./costs.js";
+export { billingRoutes, billingWebhookRoute } from "./billing.js";
 export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";
 export { attentionRoutes } from "./attention.js";

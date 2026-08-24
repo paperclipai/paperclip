@@ -24,6 +24,7 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { usePageMeta } from "../hooks/usePageMeta";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
@@ -189,6 +190,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 }
 
 export function Agents() {
+  usePageMeta("Agents", "Manage your AI agents and their configurations.");
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();

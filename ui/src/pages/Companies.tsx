@@ -6,6 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
+import { usePageMeta } from "../hooks/usePageMeta";
 import { formatCents, relativeTime } from "../lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import {
 } from "lucide-react";
 
 export function Companies() {
+  usePageMeta("Companies", "Manage your companies and their settings.");
   const {
     companies,
     selectedCompanyId,

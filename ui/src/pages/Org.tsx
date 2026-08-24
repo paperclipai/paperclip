@@ -84,6 +84,7 @@ function OrgTreeNode({
   );
 }
 
+  usePageMeta("Organization", "View and manage your organization structure.");
 export function Org() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();

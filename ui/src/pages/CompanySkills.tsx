@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePageMeta } from "@/hooks/usePageMeta";
 import type {
   AgentDesiredSkillEntry,
   Agent,
@@ -3933,6 +3934,7 @@ function SkillPane({
 }
 
 export function CompanySkills() {
+  usePageMeta("Company Skills", "Manage skills, discovery, and skill versions for your company.");
   const { "*": routePath } = useParams<{ "*": string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();

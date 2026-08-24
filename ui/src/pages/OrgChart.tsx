@@ -158,6 +158,7 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 const statusDotColor: Record<string, string> = {
   running: "var(--hex-22d3ee)",
@@ -173,6 +174,7 @@ const defaultDotColor = "var(--hex-a3a3a3)";
 
 export function OrgChart() {
   const { selectedCompanyId } = useCompany();
+  usePageMeta("Org Chart", "Visualize your organization hierarchy.");
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
 

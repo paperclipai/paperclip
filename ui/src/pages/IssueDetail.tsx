@@ -1770,6 +1770,12 @@ export function IssueDetail() {
     }),
     enabled: !!issueId,
   });
+  usePageMeta(
+    issue?.title ?? null,
+    issue?.title
+      ? `Task ${issue.identifier}: ${issue.title}`
+      : "Task detail",
+  );
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const externalObjectsState = useIssueExternalObjects(issue?.id ?? null);
   // A closed isolated workspace no longer blocks the composer. The server reopens

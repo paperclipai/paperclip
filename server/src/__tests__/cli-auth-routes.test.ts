@@ -37,6 +37,13 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn((name: string) => name),
 }));
 
+vi.mock("../services/billing.js", () => ({
+  billingService: () => ({
+    requireFeature: vi.fn().mockResolvedValue({ allowed: true }),
+    checkFeatureAccess: vi.fn().mockResolvedValue({ allowed: true, reason: "free_feature" }),
+  }),
+}));
+
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 

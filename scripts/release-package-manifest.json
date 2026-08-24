@@ -70,6 +70,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/agents-catalog",
+    "name": "@paperclipai/agents-catalog",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/skills-catalog",
     "name": "@paperclipai/skills-catalog",
     "publishFromCi": true

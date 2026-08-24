@@ -194,6 +194,13 @@ function registerModuleMocks() {
     instanceSettingsService: () => mockInstanceSettingsService,
   }));
 
+  vi.doMock("../services/billing.js", () => ({
+    billingService: () => ({
+      requireFeature: vi.fn().mockResolvedValue({ allowed: true }),
+      checkFeatureAccess: vi.fn().mockResolvedValue({ allowed: true, reason: "free_feature" }),
+    }),
+  }));
+
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,

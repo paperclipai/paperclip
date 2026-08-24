@@ -1,11 +1,23 @@
 ---
 title: Approvals
-summary: Governance flows for hiring and strategy
+summary: Governance flows for hiring, strategy, and plan review gates
 ---
 
 Paperclip includes approval gates that keep the human board operator in control of key decisions.
 
 ## Approval Types
+
+### Plan Review Gates
+
+Plan review gates are structured approvals on plan document revisions. Each gate targets a milestone and lists acceptance criteria. When all gates for the current plan revision are approved, the plan status auto-transitions to `approved`.
+
+Key behaviors:
+- Gates are created per revision (`POST /issues/{id}/plan/gates`)
+- Each gate has acceptance criteria and an optional assigned agent
+- Approve or reject via `PATCH /issues/{id}/plan/gates/{gateId}`
+- A plan with one or more rejected gates stays `in_review` — a new revision with fresh gates is needed
+- Gate resolutions emit live events (`plan.gate_resolved`) for real-time UI updates
+- See the [Plan Documents API](/api/plans) for the full workflow
 
 ### Hire Agent
 

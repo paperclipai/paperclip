@@ -206,6 +206,7 @@ const FIXTURE_BODIES: Record<LabFixtureKey, ReactElement> = {
 };
 
 export function BootstrapSetupUxLab() {
+  usePageMeta("Bootstrap Setup UX Lab", "UX lab for bootstrap setup flows.");
   return (
     <div className="bg-background min-h-screen pb-16">
       <header className="border-b border-border bg-muted/20">

@@ -1,0 +1,18 @@
+Date,Description,Amount,Account,Category,Reconciled,Notes
+2026-02-04,Transfer from Robinhood (6362),100.00,Owner Contributions,Owner Capital,Y,Owner contribution (seed capital)
+2026-04-13,STRIPE TRANSFER,970.40,Revenue,Payment Processing,Y,Stripe settlement (net of fees)
+2026-04-16,MARBLISM.COM - DOVER DE,-35.00,Software,Subscriptions,Y,Marlbism subscription
+2026-04-17,SQ *LUV-A-LATTE ESPRES - TACOMA WA,-6.90,Meals & Entertainment,Meals,Y,Client meeting coffee (50% deductible)
+2026-04-18,MARBLISM.COM - DOVER DE,-257.00,Software,Subscriptions,Y,Marlbism subscription
+2026-04-18,Microsoft #G153395425 - MSBILL.INFO,-79.34,Software,Subscriptions,Y,Microsoft 365
+2026-05-19,STRIPE TRANSFER,4.51,Revenue,Payment Processing,Y,Stripe settlement (net of fees)
+2026-06-08,COSTCO GAS #0061 - FEDERAL WAY WA,-46.23,Automobile,Fuel,Y,Business vehicle fuel
+2026-06-08,COSTCO GAS #0061 - FEDERAL WAY WA,-29.89,Automobile,Fuel,Y,Business vehicle fuel
+2026-07-10,RAMBUR INC ACH,10.00,Revenue,Client Revenue,Y,Rambur client payment
+2026-07-13,RAMBUR INC ACH,2500.00,Revenue,Client Revenue,Y,Rambur client payment
+2026-07-15,VERCEL INC - COVINA CA,-44.16,Software,Hosting,Y,Vercel hosting
+2026-08-01,Interest earned July 2026,2.29,Other Income,Interest,Y,Bank interest
+2026-08-07,RAMBUR INC ACH,5000.00,Revenue,Client Revenue,Y,Rambur client payment
+2026-08-11,STRIPE TRANSFER,66.17,Revenue,Payment Processing,Y,Stripe settlement (net of fees)
+2026-08-13,RAMBUR INC ACH,2750.00,Revenue,Client Revenue,Y,Rambur client payment
+2026-08-14,VERCEL INC - COVINA CA,-22.08,Software,Hosting,Y,Vercel hosting

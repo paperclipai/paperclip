@@ -647,6 +647,7 @@ export function getAwsManagedPathPreview(input: {
 }
 
 export function Secrets() {
+  usePageMeta("Secrets", "Manage secrets and sensitive configuration values.");
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();

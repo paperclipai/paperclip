@@ -6,8 +6,10 @@ import { Card } from "@/components/ui/card";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 export function CliAuthPage() {
+  usePageMeta("CLI Authentication", "Authenticate the Paperclip CLI.");
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();

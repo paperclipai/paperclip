@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 interface GoalPropertiesToggleButtonProps {
   panelVisible: boolean;
@@ -47,6 +48,7 @@ export function GoalPropertiesToggleButton({
 }
 
 export function GoalDetail() {
+  usePageMeta("Goal Detail", "View goal details, progress, and associated tasks.");
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();

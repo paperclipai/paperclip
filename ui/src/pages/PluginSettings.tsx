@@ -21,6 +21,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
+import { usePageMeta } from "../hooks/usePageMeta";
 import {
   JsonSchemaForm,
   validateJsonSchemaForm,
@@ -61,6 +62,7 @@ import {
  */
 export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
+  usePageMeta("Plugin Settings", "Configure plugin settings and permissions.");
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");

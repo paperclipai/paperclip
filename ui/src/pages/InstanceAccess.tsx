@@ -10,8 +10,10 @@ import { Card } from "@/components/ui/card";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 export function InstanceAccess() {
+  usePageMeta("Instance Access", "Manage instance-level access and security settings.");
   const { companies } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();

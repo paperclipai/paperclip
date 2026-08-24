@@ -8,10 +8,12 @@ import { queryKeys } from "../lib/queryKeys";
 import { GoalTree } from "../components/GoalTree";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { usePageMeta } from "../hooks/usePageMeta";
 import { Button } from "@/components/ui/button";
 import { Target, Plus } from "lucide-react";
 
 export function Goals() {
+  usePageMeta("Goals", "View and manage company goals and objectives.");
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();

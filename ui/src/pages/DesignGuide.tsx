@@ -159,6 +159,7 @@ import {
   warnTeam,
 } from "@/pages/TeamCatalog.fixtures";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 /* ------------------------------------------------------------------ */
 /*  Sample data for the Issue Output surface showcase                  */
@@ -372,6 +373,7 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
+  usePageMeta("Design Guide", "Design system reference and UI component guide.");
 export function DesignGuide() {
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");

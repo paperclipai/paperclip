@@ -42,6 +42,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -65,6 +66,7 @@ function createValuesForAdapterType(
 
 export function NewAgent() {
   const { selectedCompanyId } = useCompany();
+  usePageMeta("New Agent", "Create a new AI agent for your company.");
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();

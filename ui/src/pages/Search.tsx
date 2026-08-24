@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePageMeta } from "@/hooks/usePageMeta";
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search as SearchIcon, AlertTriangle, FileQuestion, Plus, X } from "lucide-react";
 import {
@@ -171,6 +172,7 @@ function shapeError(error: unknown): { message: string; status?: number } {
 }
 
 export function Search() {
+  usePageMeta("Search", "Search across tasks, agents, projects, and documents.");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();

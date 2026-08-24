@@ -21,6 +21,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 type WorkspaceFormState = {
   name: string;
@@ -244,6 +245,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
+  usePageMeta("Workspace Detail", "Manage workspace resources and configuration.");
 export function ProjectWorkspaceDetail() {
   const { companyPrefix, projectId, workspaceId } = useParams<{
     companyPrefix?: string;

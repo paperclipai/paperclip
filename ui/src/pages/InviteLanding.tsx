@@ -14,6 +14,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDate } from "../lib/utils";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
@@ -207,6 +208,7 @@ function AwaitingJoinApprovalPanel({
   );
 }
 
+  usePageMeta("Invite", "Accept or decline a company invitation.");
 export function InviteLandingPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();

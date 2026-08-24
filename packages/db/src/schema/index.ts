@@ -115,6 +115,12 @@ export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decision
 export { smokeRuns, smokeRunSteps } from "./smoke_lab.js";
 export { costEvents } from "./cost_events.js";
 export { financeEvents } from "./finance_events.js";
+export { subscriptionTiers } from "./subscription_tiers.js";
+export { stripeCustomers } from "./stripe_customers.js";
+export { companySubscriptions } from "./company_subscriptions.js";
+export { subscriptionUsage } from "./subscription_usage.js";
+export { subscriptionInvoices } from "./subscription_invoices.js";
+export { stripeWebhookEvents } from "./stripe_webhook_events.js";
 export { approvals } from "./approvals.js";
 export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";

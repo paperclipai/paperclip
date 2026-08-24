@@ -1,6 +1,8 @@
 ---
 title: Deployment Overview
 summary: Deployment modes at a glance
+version: v2026.618.0
+last_updated: 2026-06-18
 ---
 
 Paperclip supports three deployment configurations, from zero-friction local to internet-facing production.

@@ -13,6 +13,31 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * Thrown for a `401` response from the Paperclip API. This is a distinct,
+ * unmistakable error class from `ApiRequestError`/`ApiConnectionError` so a
+ * rejected/expired credential can never be mistaken for — or folded into —
+ * the timeout/5xx/network-error retry path (RBR-1036). A 401 is a terminal
+ * auth failure: it means the credential is dead, not that the server is
+ * slow or unreachable, and it must never be retried on the assumption that
+ * trying again will help.
+ *
+ * `request()` always throws this immediately on the first `401` and does not
+ * loop or retry it (the one exception being the single, explicit interactive
+ * `recoverAuth` exchange used by the human-facing CLI board-login flow, which
+ * swaps in a fresh credential before making exactly one bounded retry — see
+ * `recoverAuth` on `PaperclipApiClient`). Callers that want to special-case
+ * auth failures (e.g. to avoid burning a run's retry budget against a token
+ * that can never succeed) should check `instanceof ApiAuthError` rather than
+ * inspecting `status === 401` on the generic `ApiRequestError`.
+ */
+export class ApiAuthError extends ApiRequestError {
+  constructor(message: string, details?: unknown, body?: unknown) {
+    super(401, message, details, body);
+    this.name = "ApiAuthError";
+  }
+}
+
 export class ApiConnectionError extends Error {
   url: string;
   method: string;
@@ -207,9 +232,15 @@ async function toApiError(response: Response): Promise<ApiRequestError> {
       (typeof body.message === "string" && body.message.trim()) ||
       `Request failed with status ${response.status}`;
 
+    if (response.status === 401) {
+      return new ApiAuthError(message, body.details, parsed);
+    }
     return new ApiRequestError(response.status, message, body.details, parsed);
   }
 
+  if (response.status === 401) {
+    return new ApiAuthError(`Request failed with status ${response.status}`, undefined, parsed);
+  }
   return new ApiRequestError(response.status, `Request failed with status ${response.status}`, undefined, parsed);
 }
 

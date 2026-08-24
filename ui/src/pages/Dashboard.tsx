@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
 import {
@@ -46,6 +47,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
+  usePageMeta("Dashboard", "Paperclip dashboard — view active agents, tasks, activity, and costs.");
   const { openOnboarding } = useDialogActions();
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();

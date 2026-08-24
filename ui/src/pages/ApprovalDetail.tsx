@@ -15,9 +15,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
+  usePageMeta("Approval Detail", "Review approval request details and take action.");
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();

@@ -1,4 +1,5 @@
 import type {
+  AcceptedPlanDecompositionResult,
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
@@ -24,6 +25,9 @@ import type {
   IssueTreeHold,
   IssueWatchdog,
   IssueWorkProduct,
+  PlanDocumentRevision,
+  PlanRevisionDiff,
+  PlanReviewGate,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
   UpsertIssueWatchdog,
@@ -241,6 +245,10 @@ export const issuesApi = {
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
+  createAcceptedPlanDecomposition: (
+    id: string,
+    data: { acceptedPlanRevisionId: string; children: Record<string, unknown>[] },
+  ) => api.post<AcceptedPlanDecompositionResult>(`/issues/${id}/accepted-plan-decompositions`, data),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (
@@ -321,6 +329,45 @@ export const issuesApi = {
     api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
   deleteDocument: (id: string, key: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
+  // ─── Plan document + review gates ──────────────────────────────────────
+  getPlanDocument: (id: string) =>
+    api.get<IssueDocument>(`/issues/${id}/documents/plan`),
+  upsertPlanDocument: (
+    id: string,
+    data: {
+      title?: string | null;
+      body: string;
+      changeSummary?: string | null;
+      baseRevisionId?: string | null;
+      planMetadata?: Record<string, unknown> | null;
+    },
+  ) => api.post<IssueDocument>(`/issues/${id}/documents/plan`, data),
+  listPlanRevisions: (id: string) =>
+    api.get<PlanDocumentRevision[]>(`/issues/${id}/documents/plan/revisions`),
+  getPlanRevisionDiff: (id: string, revisionId: string, againstRevisionId?: string) => {
+    const qs = againstRevisionId ? `?againstRevisionId=${encodeURIComponent(againstRevisionId)}` : "";
+    return api.get<PlanRevisionDiff>(`/issues/${id}/documents/plan/revisions/${revisionId}/diff${qs}`);
+  },
+  listPlanGates: (id: string, revisionId?: string) => {
+    const qs = revisionId ? `?revisionId=${encodeURIComponent(revisionId)}` : "";
+    return api.get<PlanReviewGate[]>(`/issues/${id}/plan/gates${qs}`);
+  },
+  createPlanGate: (
+    id: string,
+    data: {
+      milestoneId?: string | null;
+      acceptanceCriteria: string[];
+      assignedAgentId?: string | null;
+    },
+  ) => api.post<PlanReviewGate>(`/issues/${id}/plan/gates`, data),
+  resolvePlanGate: (
+    id: string,
+    gateId: string,
+    data: {
+      status: "approved" | "rejected";
+      resolutionComment?: string | null;
+    },
+  ) => api.patch<{ gate: PlanReviewGate; allApproved: boolean }>(`/issues/${id}/plan/gates/${gateId}`, data),
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (
     companyId: string,

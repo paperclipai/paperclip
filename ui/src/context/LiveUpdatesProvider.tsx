@@ -1260,6 +1260,33 @@ function handleLiveEvent(
       gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
     }
   }
+
+  if (event.type === "plan.gate_created") {
+    const issueId = readString(payload.issueId);
+    if (issueId) {
+      // Invalidate plan-gates queries for this issue (all revision scopes)
+      queryClient.invalidateQueries({ queryKey: ["issues", "plan-gates", issueId] });
+      // Also invalidate plan document to reflect any gate count changes
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.planDocument(issueId) });
+    }
+    return;
+  }
+
+  if (event.type === "plan.gate_resolved") {
+    const issueId = readString(payload.issueId);
+    if (issueId) {
+      queryClient.invalidateQueries({ queryKey: ["issues", "plan-gates", issueId] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.planDocument(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+    }
+    return;
+  }
+
+  if (event.type === "subscription.status.updated") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.billing.subscription(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.billing.overview(expectedCompanyId) });
+    return;
+  }
 }
 
 function resolveLiveCompanyId(

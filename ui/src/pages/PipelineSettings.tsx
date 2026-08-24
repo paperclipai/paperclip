@@ -112,6 +112,7 @@ import {
   type BreakdownCopyNames,
 } from "../lib/pipeline-breakdown";
 import { getPipelineStageColumnTone } from "../lib/pipeline-stage-presentation";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 type StageSectionKey = "instructions" | "advanced" | "secrets" | "activity" | "history";
 type ApproverKind = "any_human" | "user" | "agent";
@@ -1272,6 +1273,7 @@ function StageEventsList({
   );
 }
 
+  usePageMeta("Pipeline Settings", "Configure pipeline automation settings.");
 export function PipelineSettings() {
   const { pipelineId } = useParams<{ pipelineId: string }>();
   const { selectedCompanyId } = useCompany();

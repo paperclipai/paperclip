@@ -52,6 +52,7 @@ import {
   routineHasWorkspaceSpecificVariables,
   sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 type WorkspaceFormState = {
   name: string;
@@ -799,6 +800,7 @@ function ExecutionWorkspaceRoutinesList({
 }
 
 export function ExecutionWorkspaceDetail() {
+  usePageMeta("Execution Workspace", "View execution workspace details and runtime status.");
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const location = useLocation();
   const navigate = useNavigate();

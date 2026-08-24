@@ -63,7 +63,109 @@ rm -rf data/pglite
 pnpm dev
 ```
 
-## 5. Core Engineering Rules
+## 5. Agent Roster
+
+This section documents the agent workforce in the **Praxis M&A (GStack)** company.
+
+| # | Agent | Title | Role | Reports To | Target Budget/mo | Target Budget/yr | API Budget/mo | Status | Permissions |
+|---|-------|-------|------|------------|-----------------|-----------------|---------------|--------|-------------|
+|| 1 | **CEO** | Chief Executive Officer | agent | — (top) | $0 (governance) | $0 | $2,000 | running | assignTasks, createAgents, createSkills |
+|| 2 | **CTO** | Chief Technology Officer | agent | CEO | $1,000 | $12,000 | $1,000 | running | createSkills |
+|| 3 | **Staff Engineer** | Staff Engineer | agent | CEO | $300 | $3,600 | $300 | idle | createSkills |
+|| 4 | **Release Engineer** | Release Engineer | agent | CEO | $200 | $2,400 | $200 | running | createSkills |
+|| 5 | **QA Engineer** | QA Engineer | agent | CEO | $500 | $6,000 | $500 | idle | createSkills |
+|| 6 | **CSO** | Chief Security Officer | agent | CTO | $500 | $6,000 | $500 | idle | assignTasks, createAgents, createSkills |
+|| 7 | **Design Agent** | UX/UI Designer | designer | CTO | $300 | $3,600 | $300 | idle | assignTasks, createSkills |
+
+> **Notes**: 
+> - The "API Budget/mo" column reflects live values from `GET /api/companies/{companyId}/agents`. Report-to (managerAgentId) is still `null` in the database — the hierarchy above is the intended org structure.
+> - The **Release Engineer** serves as the Ship Agent role, covering `ship` and `land-and-deploy` skills. No separate Ship Agent identity is needed.
+> - The **CSO** role was previously `general` and has been corrected to `agent` (PRX-31/PRX-67).
+
+### Reporting Hierarchy
+
+```
+CEO (running)
+├── CTO (running)
+│   ├── CSO (idle)
+│   └── Design Agent (idle)
+├── Staff Engineer (idle)
+├── Release Engineer (running)
+└── QA Engineer (idle)
+```
+
+### Skill Wiring Status (Phase 2 Complete — 2026-08-22)
+
+All 7 agents are now wired with their assigned GStack skills via `POST /api/agents/{id}/skills/sync`. All skills use the `garrytan/gstack/` key prefix.
+
+| Agent | Skills Configured |
+|-------|-------------------|
+| **CEO** | office-hours, plan-ceo-review, context-save, context-restore |
+| **CTO** | plan-eng-review, spec, investigate, context-save, context-restore |
+| **CSO** | qa, investigate, context-save, context-restore |
+| **Design Agent** | design-consultation, design-review, design-html, context-save, context-restore |
+| **QA Engineer** | qa, qa-only, review, context-save, context-restore |
+| **Release Engineer** | ship, land-and-deploy, context-save, context-restore |
+| **Staff Engineer** | investigate, spec, context-save, context-restore |
+
+The `context-save` and `context-restore` skills are now imported at the company level and configured for all 7 agents. Child issues PRX-57 through PRX-62 are all marked `done`. See the company's `/api/companies/{companyId}/skills` endpoint for the full catalog.
+
+### Phase 1 Status
+
+**v0.5.0 Phase 1** — delivered 2026-08-19. Scope: Server boot fixes, integration wiring, notification delivery, marketplace auth, billing trust, H-series hotfixes, PostHog pre-stage instrumentation, knowledge starter packs API, and docs site (case studies, quickstart, Discord community). See `doc/retro/2026-08-19-engineering-retrospective.md` for the full retrospective.
+
+### Adapter Configuration
+
+All 7 agents use adapter type `hermes_local` (Hermes Agent local process adapter). No non-default adapter configs or runtime configs are set. No default environments are assigned.
+
+### Budget Summary
+
+> **Note**: "Target" figures are planned aspirational allocations from the PRX-1 plan. "API" figures are live values from `GET /api/companies/{companyId}/agents`. Both are soft limits — not system-enforced caps today.
+
+| Metric | Target Amount | API Amount |
+|--------|-------------|-----------|
+| Total monthly target budget | $2,800 | $4,800 |
+| Total yearly target budget | $33,600 | $57,600 |
+| Company-level budget | $0 (unlimited) | $0 (unlimited) |
+| Spent to date (current month) | $0 | $0 |
+
+## 6. Board Directive — VOY-1668: Hard Stop Paperclip Feature Development
+
+**Effective**: 2026-08-22 ~05:00 UTC
+
+**Directive**: All Paperclip platform feature development is stopped. Engineering resources shift from platform-building to Voyonder product delivery.
+
+### What is STOPPED
+
+- New Paperclip features (routes, services, UI pages, platform capabilities)
+- Paperclip platform enhancements not directly supporting Voyonder customers
+
+### What CONTINUES
+
+- P0/P1 production bug fixes in Paperclip
+- Security patches
+- Customer-blocking fixes
+- Voyonder product development (primary focus)
+- Customer acquisition and onboarding (VOY-1586)
+- Billing pipeline reliability fixes (in-progress P1/P2)
+- Infrastructure operations, monitoring, uptime
+
+### New Priority Stack
+
+1. P0/P1 Voyonder production issues
+2. Customer acquisition and onboarding
+3. Billing pipeline reliability
+4. Paperclip P0/P1 security and bug fixes
+5. Everything else — STOPPED
+
+### Voyonder Repository
+
+- URL: https://github.com/PraeSynBH/voyonder
+- Visibility: Private
+
+See `doc/status/2026-08-22-coo-board-directive-voy-1668.md` for the full directive document.
+
+## 7. Core Engineering Rules
 
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
@@ -91,7 +193,7 @@ When you are creating a plan file in the repository itself, new plan documents b
 6. Attach inspectable generated artifacts.
 When your task produces a user-inspectable deliverable file, follow the Paperclip skill's "Generated Artifacts and Work Products" workflow before final disposition. In this repo, prefer the self-contained skill helper at `skills/paperclip/scripts/paperclip-upload-artifact.sh` so the file is available through the Paperclip API, create/update an artifact work product when the file is the deliverable, link the uploaded artifact in the final issue comment, and then set status. Do not rely on local filesystem paths as the only access path. If an important file intentionally remains workspace-only, create/update a work product with `metadata.resourceRef.kind: "workspace_file"` and a workspace-relative path, then name that work product and path in the final comment. Treat browse/search as a fallback for recovering workspace files, not the preferred deliverable path. See `doc/AGENT-ARTIFACTS.md` for details and `.mp4`/`.webm` examples.
 
-## 6. Database Change Workflow
+## 8. Database Change Workflow
 
 When changing data model:
 
@@ -113,7 +215,7 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 9. Verification Before Hand-off
 
 Default local/agent test path:
 
@@ -142,7 +244,7 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 10. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -156,13 +258,13 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 11. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Pull Request Requirements
+## 12. Pull Request Requirements
 
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
@@ -173,7 +275,7 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
-## 11. Definition of Done
+## 13. Definition of Done
 
 A change is done when all are true:
 

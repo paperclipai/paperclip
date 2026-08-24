@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { usePageMeta } from "../hooks/usePageMeta";
 import {
   isStarred,
   resourceMembershipState,
@@ -363,6 +364,7 @@ function ProjectPluginOperationsList({
 
 /* ── Main project page ── */
 
+  usePageMeta("Project Detail", "View project details, tasks, and progress.");
 export function ProjectDetail() {
   const { companyPrefix, projectId, filter } = useParams<{
     companyPrefix?: string;

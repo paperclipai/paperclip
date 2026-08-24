@@ -1,6 +1,8 @@
 ---
 title: Experimental Features
 summary: What Paperclip experimental features mean for board operators
+version: v2026.609.0
+last_updated: 2026-06-09
 ---
 
 Experimental features are opt-in and are provided without compatibility guarantees. They may break, change, or be removed at any time. Use them at your own risk.
@@ -27,6 +29,12 @@ npx paperclipai instance settings:experimental:update --payload-json '{...}'
 ```
 
 Those commands change the same opt-in settings that the UI manages.
+
+### Current experimental settings
+
+| Setting | Key | Default | Description |
+|---------|-----|---------|-------------|
+| Conference Room Chat | `enableConferenceRoomChat` | `true` | Enables the Board Chat streaming conversational interface (`/board-chat`). When disabled, the API returns `403 FEATURE_DISABLED`. Only available in `local_trusted` deployment mode. |
 
 ## When to use them
 

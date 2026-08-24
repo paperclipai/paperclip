@@ -2813,6 +2813,111 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
+  function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
+    const result = parseObject(latestRun?.resultJson);
+    const context = parseObject(latestRun?.contextSnapshot);
+    const raw = result.providerQuotaRetryNotBefore ??
+      result.retryNotBefore ??
+      result.transientRetryNotBefore ??
+      context.providerQuotaRetryNotBefore ??
+      context.transientRetryNotBefore;
+    if (typeof raw === "string" || typeof raw === "number" || raw instanceof Date) {
+      const parsed = new Date(raw);
+      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) return parsed;
+    }
+    return new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+  }
+
+  async function ensureProviderQuotaWaitRecoveryMonitor(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    actionId: string;
+    agentId: string;
+  }) {
+    const existing = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.issue.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+      ))
+      .orderBy(desc(heartbeatRuns.scheduledRetryAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return existing;
+
+    const now = new Date();
+    const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    return db.transaction(async (tx) => {
+      const wakeup = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: input.issue.companyId,
+          agentId: input.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "provider_quota_recovery",
+          payload: withRecoveryModelProfileHint({
+            issueId: input.issue.id,
+            retryOfRunId: input.latestRun?.id ?? null,
+            retryReason: "provider_quota_recovery",
+            providerQuotaRetryNotBefore: retryAt.toISOString(),
+          }, "normal_model"),
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          idempotencyKey: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}`,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      const scheduledRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: input.issue.companyId,
+          agentId: input.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "scheduled_retry",
+          wakeupRequestId: wakeup.id,
+          retryOfRunId: input.latestRun?.id ?? null,
+          scheduledRetryAt: retryAt,
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: "provider_quota_recovery",
+          contextSnapshot: withRecoveryModelProfileHint({
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            wakeReason: "provider_quota_recovery",
+            retryReason: "provider_quota_recovery",
+            providerQuotaRetryNotBefore: retryAt.toISOString(),
+          }, "normal_model"),
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: scheduledRun.id, updatedAt: now })
+        .where(eq(agentWakeupRequests.id, wakeup.id));
+      await tx
+        .update(issueRecoveryActions)
+        .set({
+          monitorPolicy: {
+            type: "wait_recovery",
+            retryAgentId: input.agentId,
+            scheduledRunId: scheduledRun.id,
+            retryAt: retryAt.toISOString(),
+          },
+          timeoutAt: retryAt,
+          updatedAt: now,
+        })
+        .where(eq(issueRecoveryActions.id, input.actionId));
+      return scheduledRun;
+    });
+  }
+
   function buildRecoveryIssueInPlaceEscalationComment(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;

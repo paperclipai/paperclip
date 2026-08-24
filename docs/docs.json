@@ -17,6 +17,10 @@
     {
       "name": "GitHub",
       "url": "https://github.com/paperclip-ai/paperclip"
+    },
+    {
+      "name": "Discord",
+      "url": "https://discord.gg/m4HZY7xNG3"
     }
   ],
   "navigation": {
@@ -29,8 +33,27 @@
             "pages": [
               "start/what-is-paperclip",
               "start/quickstart",
+              "start/your-first-company",
               "start/core-concepts",
-              "start/architecture"
+              "start/architecture",
+              "start/faq",
+              "start/roadmap",
+              "releases"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Case Studies",
+        "groups": [
+          {
+            "group": "Case Studies",
+            "pages": [
+              "case-studies/index",
+              "case-studies/01-voyonder-customer-zero",
+              "case-studies/02-ai-agents-built-paperclip",
+              "case-studies/03-autonomous-agent-economy",
+              "case-studies/04-trail-life-troop"
             ]
           }
         ]
@@ -48,8 +71,11 @@
               "guides/board-operator/managing-tasks",
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
-              "guides/board-operator/execution-workspaces-and-runtime-services",
-              "guides/board-operator/delegation",
+              "guides/board-operator/template-companies",
+              "guides/board-operator/knowledge-starter-packs",
+              "guides/board-operator/marketplace-usage",
+              "guides/board-operator/billing-setup",
+              "guides/board-operator/notification-configuration",
               "guides/board-operator/experimental-features",
               "guides/board-operator/status-cards",
               "guides/board-operator/approvals",
@@ -99,6 +125,8 @@
             "group": "Agent Adapters",
             "pages": [
               "adapters/overview",
+              "adapters/hermes-local",
+              "adapters/hermes-gateway",
               "adapters/claude-local",
               "adapters/codex-local",
               "adapters/process",
@@ -121,12 +149,23 @@
               "api/companies",
               "api/agents",
               "api/issues",
+              "api/plans",
               "api/approvals",
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",
               "api/activity",
-              "api/dashboard"
+              "api/dashboard",
+              "api/memory",
+              "api/knowledge",
+              "api/chat",
+              "api/company-templates",
+              "api/knowledge-starter-packs",
+              "api/billing",
+              "api/notifications",
+              "api/marketplace",
+              "api/invites",
+              "api/onboarding"
             ]
           }
         ]
@@ -147,6 +186,7 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/paperclip-ai/paperclip",
+    "discord": "https://discord.gg/m4HZY7xNG3"
   }
 }

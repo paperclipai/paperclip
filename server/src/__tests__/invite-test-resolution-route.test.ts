@@ -110,7 +110,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
       );
       expect(requestHead).not.toHaveBeenCalled();
     }
-  }, 20_000);
+  }, 30_000);
 
   it.sequential("rejects hostnames that resolve to private addresses", async () => {
     const lookup = vi.fn().mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);

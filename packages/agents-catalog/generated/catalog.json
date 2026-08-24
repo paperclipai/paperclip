@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "packageName": "@paperclipai/agents-catalog",
+  "packageVersion": "0.1.0",
+  "generatedAt": "2026-08-17T00:00:00.000Z",
+  "agents": [
+    {
+      "id": "paperclipai:marketplace:engineering:senior-engineer",
+      "key": "paperclipai/marketplace/engineering/senior-engineer",
+      "kind": "bundled",
+      "category": "engineering",
+      "slug": "senior-engineer",
+      "name": "Senior Engineer",
+      "description": "A senior software engineer who plans implementation, writes production-quality code, reviews pull requests, and keeps documentation current.",
+      "icon": "code",
+      "role": "engineer",
+      "title": "Senior Engineer",
+      "path": "catalog/engineering/senior-engineer",
+      "recommendedForCompanyTypes": ["software", "startup", "generalist"],
+      "tags": ["engineering", "code", "pull-requests", "planning"],
+      "requiredSkills": [
+        { "catalogSkillKey": "github-pr-workflow", "required": true },
+        { "catalogSkillKey": "task-planning", "required": true },
+        { "catalogSkillKey": "doc-maintenance", "required": false }
+      ],
+      "defaultAdapterType": "process",
+      "defaultAdapterConfig": {},
+      "defaultPermissions": {},
+      "defaultBudgetMonthlyCents": 50000
+    },
+    {
+      "id": "paperclipai:marketplace:quality:qa-engineer",
+      "key": "paperclipai/marketplace/quality/qa-engineer",
+      "kind": "bundled",
+      "category": "quality",
+      "slug": "qa-engineer",
+      "name": "QA Engineer",
+      "description": "A quality assurance engineer who validates acceptance criteria, runs regression checks, and verifies work before it ships.",
+      "icon": "shield",
+      "role": "qa",
+      "title": "QA Engineer",
+      "path": "catalog/quality/qa-engineer",
+      "recommendedForCompanyTypes": ["software", "startup", "generalist"],
+      "tags": ["quality", "testing", "acceptance", "validation"],
+      "requiredSkills": [
+        { "catalogSkillKey": "qa-acceptance", "required": true },
+        { "catalogSkillKey": "agent-browser", "required": false }
+      ],
+      "defaultAdapterType": "process",
+      "defaultAdapterConfig": {},
+      "defaultPermissions": {},
+      "defaultBudgetMonthlyCents": 40000
+    },
+    {
+      "id": "paperclipai:marketplace:product:product-designer",
+      "key": "paperclipai/marketplace/product/product-designer",
+      "kind": "bundled",
+      "category": "product",
+      "slug": "product-designer",
+      "name": "Product Designer",
+      "description": "A product designer who turns requirements into wireframes and prototypes, and critiques designs for usability and polish.",
+      "icon": "sparkles",
+      "role": "designer",
+      "title": "Product Designer",
+      "path": "catalog/product/product-designer",
+      "recommendedForCompanyTypes": ["software", "startup", "product"],
+      "tags": ["design", "wireframe", "ux", "prototyping"],
+      "requiredSkills": [
+        { "catalogSkillKey": "wireframe", "required": true },
+        { "catalogSkillKey": "design-critique", "required": false }
+      ],
+      "defaultAdapterType": "process",
+      "defaultAdapterConfig": {},
+      "defaultPermissions": {},
+      "defaultBudgetMonthlyCents": 40000
+    },
+    {
+      "id": "paperclipai:marketplace:research:research-analyst",
+      "key": "paperclipai/marketplace/research/research-analyst",
+      "kind": "bundled",
+      "category": "research",
+      "slug": "research-analyst",
+      "name": "Research Analyst",
+      "description": "A research analyst who gathers market intelligence, tracks trends, and produces cited summaries for decision-making.",
+      "icon": "telescope",
+      "role": "researcher",
+      "title": "Research Analyst",
+      "path": "catalog/research/research-analyst",
+      "recommendedForCompanyTypes": ["generalist", "agency", "media"],
+      "tags": ["research", "trends", "intelligence", "analysis"],
+      "requiredSkills": [
+        { "catalogSkillKey": "last30days", "required": false },
+        { "catalogSkillKey": "doc-maintenance", "required": false }
+      ],
+      "defaultAdapterType": "process",
+      "defaultAdapterConfig": {},
+      "defaultPermissions": {},
+      "defaultBudgetMonthlyCents": 35000
+    },
+    {
+      "id": "paperclipai:marketplace:operations:operations-coordinator",
+      "key": "paperclipai/marketplace/operations/operations-coordinator",
+      "kind": "bundled",
+      "category": "operations",
+      "slug": "operations-coordinator",
+      "name": "Operations Coordinator",
+      "description": "An operations coordinator who triages incoming work, plans tasks, and keeps the board organized and moving.",
+      "icon": "git-branch",
+      "role": "general",
+      "title": "Operations Coordinator",
+      "path": "catalog/operations/operations-coordinator",
+      "recommendedForCompanyTypes": ["generalist", "startup", "agency"],
+      "tags": ["operations", "triage", "planning", "workflow"],
+      "requiredSkills": [
+        { "catalogSkillKey": "issue-triage", "required": true },
+        { "catalogSkillKey": "task-planning", "required": true }
+      ],
+      "defaultAdapterType": "process",
+      "defaultAdapterConfig": {},
+      "defaultPermissions": {},
+      "defaultBudgetMonthlyCents": 30000
+    },
+    {
+      "id": "paperclipai:marketplace:content:content-manager",
+      "key": "paperclipai/marketplace/content/content-manager",
+      "kind": "bundled",
+      "category": "content",
+      "slug": "content-manager",
+      "name": "Content Manager",
+      "description": "A content manager who plans content operations, writes release announcements, and keeps company documentation fresh.",
+      "icon": "file-code",
+      "role": "general",
+      "title": "Content Manager",
+      "path": "catalog/content/content-manager",
+      "recommendedForCompanyTypes": ["media", "agency", "generalist"],
+      "tags": ["content", "writing", "release-notes", "docs"],
+      "requiredSkills": [
+        { "catalogSkillKey": "release-announcement", "required": false },
+        { "catalogSkillKey": "doc-maintenance", "required": true }
+      ],
+      "defaultAdapterType": "process",
+      "defaultAdapterConfig": {},
+      "defaultPermissions": {},
+      "defaultBudgetMonthlyCents": 30000
+    }
+  ]
+}

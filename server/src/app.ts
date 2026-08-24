@@ -83,6 +83,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { seoRoutes } from "./routes/seo.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -132,6 +133,8 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/favicon.svg",
   "/site.webmanifest",
   "/sw.js",
+  "/robots.txt",
+  "/sitemap.xml",
 ]);
 
 export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
@@ -354,6 +357,12 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  // Stripe webhook receiver runs before auth middleware — it relies on the
+  // Stripe signature header for verification instead of a bearer token.
+  // Gated behind PAPERCLIP_BILLING_ENABLED to prevent accidental live charges.
+  if (process.env.PAPERCLIP_BILLING_ENABLED === "true") {
+    app.use("/api/billing", billingWebhookRoute(db));
+  }
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
@@ -527,6 +536,10 @@ export async function createApp(
     ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
     ?? null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
+  // Gated behind PAPERCLIP_BILLING_ENABLED to prevent accidental live charges.
+  if (process.env.PAPERCLIP_BILLING_ENABLED === "true") {
+    api.use(billingRoutes(db));
+  }
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(attentionRoutes(db));
@@ -661,6 +674,10 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
+
+  // SEO routes (robots.txt, sitemap.xml) — must be before the SPA fallback
+  // so crawlers get the correct response instead of the HTML shell.
+  app.use(seoRoutes(db));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {

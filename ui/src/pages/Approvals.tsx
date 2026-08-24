@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 type StatusFilter = "pending" | "all";
 
 export function Approvals() {
+  usePageMeta("Approvals", "Review and manage pending approvals for tasks and budget overrides.");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();

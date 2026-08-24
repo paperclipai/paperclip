@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, relativeTime } from "../lib/utils";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -25,6 +26,7 @@ function buildAgentHref(agent: InstanceSchedulerHeartbeatAgent) {
   return `/${agent.companyIssuePrefix}/agents/${encodeURIComponent(agent.agentUrlKey)}`;
 }
 
+  usePageMeta("Instance Settings", "Manage instance configuration and preferences.");
 export function InstanceSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();

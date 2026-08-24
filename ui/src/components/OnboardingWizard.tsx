@@ -356,12 +356,13 @@ function OnboardingWizardInner({
   // nothing but a slower open. Companies still gate it — the resolver needs
   // them to match the prefix at all.
   const routeOnboardingOptions =
-    companyPrefix && companiesLoading
+    (companyPrefix && companiesLoading) || !routeMissionSettled
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,
           companyPrefix,
           companies,
+          companyHasMission: routeCompanyHasMission,
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);

@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
@@ -77,6 +78,7 @@ function sortProjects(projects: Project[], sortField: ProjectSortField, sortDir:
 }
 
 export function Projects() {
+  usePageMeta("Projects", "Manage your projects and their associated tasks and workspaces.");
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();

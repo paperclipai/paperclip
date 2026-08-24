@@ -30,6 +30,7 @@ import {
 } from "@/components/timeline/WorkTimelineChart";
 import { formatDuration, TIMELINE_COLORS } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
 const TIMELINE_PAGE_LIMIT = 500;

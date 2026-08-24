@@ -1,0 +1,5 @@
+{"ts":"2026-08-15T11:35:25.698Z","cmd":"status","args":"","origin":"about:blank","durationMs":10,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-08-15T11:35:57.468Z","cmd":"goto","args":"https://southeastaksupply.com/","origin":"https://southeastaksupply.com/","durationMs":665,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-08-15T11:35:57.757Z","cmd":"snapshot","args":"-i","origin":"https://southeastaksupply.com/","durationMs":131,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-08-15T11:35:57.861Z","cmd":"console","args":"--errors","origin":"https://southeastaksupply.com/","durationMs":3,"status":"ok","hasCookies":false,"mode":"launched"}
+{"ts":"2026-08-15T11:35:57.962Z","cmd":"text","args":"","origin":"https://southeastaksupply.com/","durationMs":6,"status":"ok","hasCookies":false,"mode":"launched"}

@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useEffect } from "react";
 import { Link, useLocation } from "@/lib/router";
 import { AlertTriangle, Compass } from "lucide-react";
@@ -14,6 +15,12 @@ interface NotFoundPageProps {
 }
 
 export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPageProps) {
+  usePageMeta(
+    scope === "invalid_company_prefix" ? "Company Not Found" : "Page Not Found",
+    scope === "invalid_company_prefix"
+      ? "The requested company does not exist."
+      : "This page does not exist.",
+  );
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companies, selectedCompany } = useCompany();

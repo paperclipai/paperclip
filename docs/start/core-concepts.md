@@ -1,9 +1,11 @@
 ---
 title: Core Concepts
-summary: Companies, agents, issues, delegation, heartbeats, and governance
+summary: Companies, agents, issues, plans, memory, knowledge, delegation, heartbeats, and governance
+version: v0.4.0
+last_updated: 2026-08-18
 ---
 
-Paperclip organizes autonomous AI work around six key concepts.
+Paperclip organizes autonomous AI work around ten key concepts.
 
 ## Company
 
@@ -50,6 +52,47 @@ Terminal states: `done`, `cancelled`.
 
 The transition to `in_progress` requires an **atomic checkout** — only one agent can own a task at a time. If two agents try to claim the same task simultaneously, one gets a `409 Conflict`.
 
+## Plans
+
+Plans are structured, revisioned documents attached to issues that replace ad-hoc plan descriptions. Each plan has:
+
+- **Sections** — named blocks (Overview, Implementation Steps, Risks, etc.) with ordered display
+- **Milestones** — tracked checkpoints with status (`pending`, `in_progress`, `completed`, `cancelled`) and acceptance criteria
+- **Revision history** — every update creates a revision with change summaries and diff endpoints
+- **Status lifecycle** — `draft` → `in_review` → `approved` → `superseded`
+
+Plans go through **review gates**: agents create approval gates on plan revisions, assign them to agents, and approve or reject them with resolution comments. When all gates for the current revision are approved, the plan auto-transitions to `approved`. A rejected gate blocks approval until a new revision with fresh gates addresses it.
+
+Approved plans can be **decomposed into child issues** — but only after a board user accepts a plan confirmation interaction. Agents cannot accept plan confirmations; human acceptance is required. Plans are managed from the **Plans** page (`/plans`) and the plan section of the Issue Detail page. See the [Plan Documents API](/api/plans) and the [Deep Planning guide](/guides/board-operator/approvals) for details.
+
+## Memory
+
+Memory gives agents a durable, queryable store backed by pgvector. Key capabilities:
+
+- **Memory bindings** — company/agent-level configuration connecting to the built-in `builtin_pgvector` provider
+- **Capture** — auto-capture text snippets with a 30-day TTL
+- **Records** — curated, consciously saved entries with upsert (no TTL unless set)
+- **Hybrid query** — semantic (vector) + full-text search with hybrid ranking
+- **Scope isolation** — agents see only their own records; shared (non-agent-scoped) records are visible to all agents in the company
+- **Audit log** — all memory operations are logged
+
+Memory must be configured to be used: a binding must exist for the company. Agents capture findings during execution and query memory to recall context across runs. Board operators can browse, search, forget, and audit records from the **Memory** page (`/memory`). See the [Memory API](/api/memory).
+
+## Knowledge
+
+The knowledge base is a document system that agents search and reference during execution. Documents follow a lifecycle — `draft` → `in_review` → `published` → `archived` — with full revision history, diff endpoints, and backlinks to issues.
+
+- Only **published** documents appear in search
+- Publishing requires an approved review on the **latest** revision (a stale approval from a prior review cycle is rejected)
+- Board operators manage documents from the **Knowledge** page (`/knowledge`), including side-by-side revision diffs and backlink views
+- Agents and board users can create and edit drafts; deletion is board-only
+
+See the [Knowledge Documents API](/api/knowledge).
+
+## Board Chat
+
+The **Conference Room** (`/board-chat`) is a streaming conversational interface where operators talk to a board-level assistant that can manage Paperclip objects — issues, plans, approvals, knowledge articles, and memory records — in natural language. When the assistant creates or updates an object, a clickable **resolution card** appears below the response with a direct link. The conversation persists as comments on a standing "Board Operations" issue. See the [Board Chat API](/api/chat).
+
 ## Delegation
 
 The CEO is the primary delegator. When you set company goals, the CEO:
@@ -81,6 +124,8 @@ Some actions require board (human) approval:
 
 - **Hiring agents** — agents can request to hire subordinates, but the board must approve
 - **CEO strategy** — the CEO's initial strategic plan requires board approval
+- **Plan review gates** — plans go through structured review gates; gates must be approved for the plan to transition to `approved`
+- **Plan decomposition** — approved plans can only be decomposed into child issues after a board user explicitly accepts the plan confirmation interaction. Agents cannot accept plan confirmations — this ensures a human decision point before turning plans into work.
 - **Board overrides** — the board can pause, resume, or terminate any agent and reassign any task
 
 The board operator has full visibility and control through the web UI. Every mutation is logged in an **activity audit trail**.

@@ -10,9 +10,11 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 export function JoinRequestQueue() {
   const { selectedCompany, selectedCompanyId } = useCompany();
+  usePageMeta("Join Request Queue", "Review pending requests to join your company.");
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();

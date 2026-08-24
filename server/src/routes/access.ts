@@ -46,6 +46,7 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS,
   isUuidLike,
+  FEATURE_KEYS,
 } from "@paperclipai/shared";
 import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
 import {
@@ -87,6 +88,7 @@ import {
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
+import { billingService } from "../services/billing.js";
 import {
   grantsForHumanRole,
   normalizeHumanRole,
@@ -2908,6 +2910,8 @@ export function accessRoutes(
 
       if (req.body.requestedCompanyId) {
         assertCompanyAccess(req, req.body.requestedCompanyId);
+        // Gate board-level API key creation behind the api_access feature.
+        await billingService(db).requireFeature(req.body.requestedCompanyId, FEATURE_KEYS.API_ACCESS);
       }
 
       const key = await boardAuth.createNamedBoardApiKey({
@@ -3316,6 +3320,40 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+
+      // Gate invites: check unlimited_seats tier feature and seat limit.
+      const billing = billingService(db);
+      const accessResult = await billing.checkFeatureAccess(companyId, FEATURE_KEYS.UNLIMITED_SEATS);
+      if (!accessResult.allowed) {
+        // Feature not in tier — check the included seat count.
+        const tier = accessResult.tier;
+        const includedSeats = tier?.includedSeats ?? 0;
+        if (includedSeats > 0) {
+          const currentMemberCount = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(companyMemberships)
+            .where(
+              and(
+                eq(companyMemberships.companyId, companyId),
+                eq(companyMemberships.status, "active"),
+              ),
+            )
+            .then((rows) => rows[0]?.count ?? 0);
+          if (currentMemberCount >= includedSeats) {
+            throw paywall(
+              `Your current plan (${tier?.name ?? "unknown"}) is limited to ${includedSeats} active members. Upgrade to invite more.`,
+              { featureKey: FEATURE_KEYS.UNLIMITED_SEATS, tierName: tier?.name ?? undefined },
+            );
+          }
+        } else {
+          // No included seats AND no unlimited_seats feature — reject outright.
+          throw paywall(
+            "Your current plan does not support inviting additional members.",
+            { featureKey: FEATURE_KEYS.UNLIMITED_SEATS, tierName: tier?.name ?? undefined },
+          );
+        }
+      }
+
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,

@@ -92,6 +92,13 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+vi.mock("../services/billing.js", () => ({
+  billingService: () => ({
+    requireFeature: vi.fn().mockResolvedValue({ allowed: true }),
+    checkFeatureAccess: vi.fn().mockResolvedValue({ allowed: true, reason: "free_feature" }),
+  }),
+}));
+
 const testEnvironmentSpy = vi.fn();
 
 const externalAdapter: ServerAdapterModule = {

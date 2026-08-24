@@ -1,3 +1,4 @@
+import { usePageMeta } from "@/hooks/usePageMeta";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
@@ -626,6 +627,7 @@ function previewErrorMessage(error: unknown): string {
 }
 
 export function CompanyExport() {
+  usePageMeta("Export", "Export your company data and configurations.");
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();

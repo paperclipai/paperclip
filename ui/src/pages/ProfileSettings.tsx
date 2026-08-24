@@ -13,6 +13,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -22,6 +23,7 @@ function deriveInitials(name: string) {
 
 export function ProfileSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  usePageMeta("Profile Settings", "Update your user profile and preferences.");
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const avatarInputId = useId();

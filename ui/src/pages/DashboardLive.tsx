@@ -5,11 +5,13 @@ import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { EmptyState } from "../components/EmptyState";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 const DASHBOARD_LIVE_RUN_LIMIT = 50;
 
 export function DashboardLive() {
   const { selectedCompanyId, companies } = useCompany();
+  usePageMeta("Live Agent Runs", "View real-time active agent runs.");
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {

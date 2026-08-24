@@ -25,6 +25,7 @@ function buildDecomposition(
     ownerAgentId: "agent-codex",
     ownerUserId: null,
     ownerRunId: "run-story-1",
+    milestoneId: null,
     completedAt: "2026-05-28T06:22:00.000Z",
     createdAt: "2026-05-28T06:18:00.000Z",
     updatedAt: "2026-05-28T06:22:00.000Z",

@@ -11,9 +11,11 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate } from "../lib/utils";
 import { ListTodo } from "lucide-react";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 export function MyIssues() {
   const { selectedCompanyId } = useCompany();
+  usePageMeta("My Issues", "View issues assigned to you.");
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {

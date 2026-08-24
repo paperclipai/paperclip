@@ -4,8 +4,10 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { NotFoundPage } from "./NotFound";
+import { usePageMeta } from "../hooks/usePageMeta";
 
 export function CompanySettingsPluginPage() {
+  usePageMeta("Plugin Settings", "Configure plugin settings for your company.");
   const params = useParams<{
     companyPrefix?: string;
     settingsRoutePath?: string;

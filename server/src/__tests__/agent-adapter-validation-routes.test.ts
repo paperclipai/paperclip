@@ -102,13 +102,18 @@ function registerModuleMocks() {
     builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => mockCompanySkillService,
     budgetService: () => mockBudgetService,
-    heartbeatService: () => mockHeartbeatService,
-    issueApprovalService: () => mockIssueApprovalService,
-    issueService: () => ({}),
-    logActivity: mockLogActivity,
-    secretService: () => mockSecretService,
-    syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-    workspaceOperationService: () => ({}),
+    logActivity: vi.fn(),
+    syncInstructionsBundleConfigFromFilePath: vi.fn(),
+    workspaceOperationService: () => mockWorkspaceOperationService,
+    notifyHireApproved: vi.fn(),
+    deduplicateAgentName: vi.fn((name: string) => name),
+    ISSUE_LIST_DEFAULT_LIMIT: 50,
+  }));
+  vi.doMock("../services/billing.js", () => ({
+    billingService: () => ({
+      requireFeature: vi.fn().mockResolvedValue({ allowed: true }),
+      checkFeatureAccess: vi.fn().mockResolvedValue({ allowed: true, reason: "free_feature" }),
+    }),
   }));
 
   vi.doMock("../services/instance-settings.js", () => ({
