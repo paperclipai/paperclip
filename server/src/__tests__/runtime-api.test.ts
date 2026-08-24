@@ -172,6 +172,32 @@ describe("runtime API discovery", () => {
     ).toBe("http://10.42.0.42:8000");
   });
 
+  it("keeps loopback first when the server is only bound to loopback", () => {
+    expect(
+      buildLocalRuntimeApiCandidateUrls({
+        publicApiUrl: "http://127.0.0.1:3210",
+        allowedHostnames: ["192.168.1.50"],
+        bindHost: "127.0.0.1",
+        port: 3210,
+        networkInterfacesMap: {
+          eth0: [
+            {
+              address: "10.42.0.42",
+              family: "IPv4",
+              internal: false,
+              netmask: "255.255.255.0",
+              cidr: "10.42.0.42/24",
+              mac: "00:00:00:00:00:00",
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      "http://127.0.0.1:3210",
+      "http://host.docker.internal:3210",
+    ]);
+  });
+
   it("prefers usable interface hosts and skips link-local addresses", () => {
     expect(
       collectReachableInterfaceHosts({

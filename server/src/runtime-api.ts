@@ -250,6 +250,7 @@ export function buildLocalRuntimeApiCandidateUrls(input: {
   const publicOrigin = normalizeOrigin(input.publicApiUrl);
   const publicHostname = publicOrigin ? new URL(publicOrigin).hostname : null;
   const bindHost = normalizeHost(input.bindHost);
+  const bindHostIsLoopback = bindHost !== "" && isLoopbackHost(bindHost);
   const internalInterfaceHosts = collectInternalRuntimeInterfaceHosts({
     networkInterfacesMap: input.networkInterfacesMap,
   });
@@ -265,29 +266,38 @@ export function buildLocalRuntimeApiCandidateUrls(input: {
 
   pushCandidate(candidates, seen, input.preferredRuntimeApiUrl);
 
-  if (bindHost && !isWildcardHost(bindHost) && !isLoopbackHost(bindHost) && !sameHostname(bindHost, publicHostname)) {
-    pushCandidate(candidates, seen, formatOrigin("http:", bindHost, input.port));
-  }
-
-  for (const host of internalInterfaceHosts) {
-    if (sameHostname(host, publicHostname)) continue;
-    pushCandidate(candidates, seen, formatOrigin("http:", host, input.port));
-  }
-
-  for (const rawHost of input.allowedHostnames) {
-    const host = normalizeHost(rawHost);
-    if (!host || sameHostname(host, publicHostname)) continue;
-    pushCandidate(candidates, seen, formatOrigin("http:", host, input.port));
-  }
-
-  if (loopbackOrigin) {
+  if (bindHostIsLoopback && loopbackOrigin) {
     pushCandidate(candidates, seen, loopbackOrigin);
     pushCandidate(candidates, seen, formatOrigin("http:", "host.docker.internal", input.port));
   }
 
-  for (const host of otherInterfaceHosts) {
-    if (sameHostname(host, publicHostname)) continue;
-    pushCandidate(candidates, seen, formatOrigin("http:", host, input.port));
+  if (bindHost && !isWildcardHost(bindHost) && !isLoopbackHost(bindHost) && !sameHostname(bindHost, publicHostname)) {
+    pushCandidate(candidates, seen, formatOrigin("http:", bindHost, input.port));
+  }
+
+  if (!bindHostIsLoopback) {
+    for (const host of internalInterfaceHosts) {
+      if (sameHostname(host, publicHostname)) continue;
+      pushCandidate(candidates, seen, formatOrigin("http:", host, input.port));
+    }
+
+    for (const rawHost of input.allowedHostnames) {
+      const host = normalizeHost(rawHost);
+      if (!host || sameHostname(host, publicHostname)) continue;
+      pushCandidate(candidates, seen, formatOrigin("http:", host, input.port));
+    }
+  }
+
+  if (!bindHostIsLoopback && loopbackOrigin) {
+    pushCandidate(candidates, seen, loopbackOrigin);
+    pushCandidate(candidates, seen, formatOrigin("http:", "host.docker.internal", input.port));
+  }
+
+  if (!bindHostIsLoopback) {
+    for (const host of otherInterfaceHosts) {
+      if (sameHostname(host, publicHostname)) continue;
+      pushCandidate(candidates, seen, formatOrigin("http:", host, input.port));
+    }
   }
 
   pushCandidate(candidates, seen, publicOrigin);

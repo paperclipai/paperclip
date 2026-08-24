@@ -641,6 +641,8 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
   });
 
   afterEach(() => {
@@ -696,7 +698,6 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual([
-      "http://192.168.1.50:3210",
       "http://127.0.0.1:3210",
       "http://host.docker.internal:3210",
     ]);

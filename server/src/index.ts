@@ -881,15 +881,18 @@ export async function startServer(): Promise<StartedServer> {
     port: listenPort,
   });
   const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || advertisedApiUrl;
+  // PAPERCLIP_RUNTIME_API_URL is a per-server export, not a startup override.
+  // A nested/local server may start inside an agent shell that already carries
+  // the parent server's runtime URL, which can be a public origin or a dead
+  // port for the new process. Always derive a fresh runtime control-plane URL
+  // for this server instance.
   const runtimeApiCandidates = buildLocalRuntimeApiCandidateUrls({
-    preferredRuntimeApiUrl: process.env.PAPERCLIP_RUNTIME_API_URL?.trim() || null,
     publicApiUrl: configuredApiUrl,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
     port: listenPort,
   });
   const runtimeApiUrl = choosePrimaryLocalRuntimeApiUrl({
-    preferredRuntimeApiUrl: process.env.PAPERCLIP_RUNTIME_API_URL?.trim() || null,
     publicApiUrl: configuredApiUrl,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
