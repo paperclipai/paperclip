@@ -27,6 +27,7 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getRelationSummaries: vi.fn(),
   update: vi.fn(),
+  softDelete: vi.fn(),
   getDependencyReadiness: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -236,6 +237,67 @@ describe("issue dependency wakeups in issue routes", () => {
           payload: expect.objectContaining({
             issueId: "issue-2",
             resolvedBlockerIssueId: "issue-1",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("wakes dependents when the final blocker is soft-deleted (AGE-770)", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-101",
+      title: "Blocker to be deleted",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.softDelete.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-101",
+      title: "Blocker to be deleted",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      deletedAt: new Date().toISOString(),
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        assigneeAgentId: "agent-2",
+        blockerIssueIds: ["issue-1"],
+      },
+    ]);
+
+    const res = await request(await createApp()).delete("/api/issues/issue-1");
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({
+            issueId: "issue-2",
+            resolvedBlockerIssueId: "issue-1",
+            mutation: "blocker_deleted",
           }),
         }),
       );

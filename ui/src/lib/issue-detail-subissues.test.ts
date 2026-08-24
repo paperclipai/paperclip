@@ -36,6 +36,7 @@ function siblingIssue(
     parentId: "parent-1",
     title: `Sibling ${id}`,
     hiddenAt: null,
+    deletedAt: null,
     ...overrides,
   } as Issue;
 }

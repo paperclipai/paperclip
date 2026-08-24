@@ -1227,6 +1227,7 @@ async function listIssueDependencyReadinessMap(
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
       blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      blockerDeletedAt: issues.deletedAt,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -1259,9 +1260,14 @@ async function listIssueDependencyReadinessMap(
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    // A soft-deleted blocker can never transition to "done" by anyone, so
+    // treat it as resolved instead of leaving every dependent permanently
+    // blocked. Only done blockers resolve dependents; cancelled blockers stay
+    // unresolved until an operator removes or replaces the blocker
+    // relationship explicitly.
+    if (row.blockerDeletedAt) {
+      // resolved: don't add to unresolvedBlockerIssueIds
+    } else if (row.blockerStatus !== "done") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -1331,7 +1337,10 @@ async function listUnresolvedBlockerIssueIds(
         eq(issues.companyId, companyId),
         inArray(issues.id, uniqueBlockerIssueIds),
         // Cancelled blockers intentionally remain unresolved until the relation changes.
+        // A soft-deleted blocker can never transition to done by anyone, so treat it
+        // as resolved instead of leaving the dependent permanently blocked (AGE-770).
         ne(issues.status, "done"),
+        isNull(issues.deletedAt),
       ),
     )
     .then((rows) => rows.map((row) => row.id));
@@ -3244,6 +3253,7 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  deletedAt: issues.deletedAt,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -5212,6 +5222,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          deletedAt: issues.deletedAt,
         })
         .from(issues)
         .where(eq(issues.id, input.issueId))
@@ -5222,6 +5233,7 @@ export function issueService(db: Db) {
       }
 
       if (
+        lockedIssue.deletedAt ||
         lockedIssue.status !== "in_progress" ||
         lockedIssue.assigneeAgentId !== input.actorAgentId ||
         lockedIssue.checkoutRunId !== input.expectedCheckoutRunId
@@ -8136,13 +8148,38 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
+    // Soft-delete: identifiers/issue_number must never be reused once an issue
+    // has been created, because merged/open PRs may already cite the
+    // AGE-nnn slug in their title or body. Hard-deleting the row (see
+    // `remove` above) frees the row from MAX(issue_number), which the
+    // self-correcting counter in `create`/`importIssues` uses to mint the
+    // next identifier — so a hard delete can cause a brand-new issue to be
+    // minted with a slug some other artifact already references. Marking
+    // `deletedAt` instead keeps the row (and its issue_number) counted
+    // forever while hiding it from default list/board views via
+    // `visibleIssueCondition()`. Identifier/UUID lookups (`getById`,
+    // `getByIdentifier`) intentionally do NOT filter on `deletedAt` so
+    // provenance lookups from PRs/commits still resolve the tombstoned issue.
+    softDelete: async (id: string) => {
+      const now = new Date();
+      const [updated] = await db
+        .update(issues)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(and(eq(issues.id, id), isNull(issues.deletedAt)))
+        .returning();
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
+
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, deletedAt: issues.deletedAt })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      if (issueCompany.deletedAt) throw notFound("Issue not found");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
@@ -8202,6 +8239,7 @@ export function issueService(db: Db) {
         .where(
           and(
             eq(issues.id, id),
+            isNull(issues.deletedAt),
             inArray(issues.status, expectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
@@ -8222,6 +8260,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          deletedAt: issues.deletedAt,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -8246,6 +8285,7 @@ export function issueService(db: Db) {
           .where(
             and(
               eq(issues.id, id),
+              isNull(issues.deletedAt),
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
@@ -8308,6 +8348,7 @@ export function issueService(db: Db) {
             .where(
               and(
                 eq(issues.id, id),
+                isNull(issues.deletedAt),
                 inArray(issues.status, expectedStatuses),
                 eq(issues.executionRunId, current.executionRunId),
                 or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
@@ -8322,13 +8363,17 @@ export function issueService(db: Db) {
         }
       }
 
-      // If this run already owns it and it's in_progress, return it (no self-409)
+      // If this run already owns it and it's in_progress, return it (no self-409).
+      // Re-check deleted_at here too: a delete can land between the earlier
+      // `current` read and this branch, and this path returns the row as-is
+      // without an UPDATE guard to catch it (AGE-770).
       if (
+        !current.deletedAt &&
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
-        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+        const row = await db.select().from(issues).where(and(eq(issues.id, id), isNull(issues.deletedAt))).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
         return enriched;
