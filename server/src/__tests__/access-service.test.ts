@@ -178,6 +178,46 @@ describeEmbeddedPostgres("access service", () => {
     expect(remaining).toHaveLength(0);
   }, 30_000);
 
+  /**
+   * The role-default seeder is the third writer of the table. `ON CONFLICT DO
+   * NOTHING` makes it idempotent against rows that exist when it runs, which is
+   * not the same as safe against a concurrent revocation: unlocked, an
+   * operator's delete commits and this insert lands after it, putting back a
+   * default grant the operator just removed (Greptile P1 at `9ec80cd9c`,
+   * FAI-10144). Same shape of proof as above — an unlocked seeder commits
+   * straight through and no session ever waits.
+   */
+  it("queues a role-default grant re-seed behind an in-flight grant write", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await seedArchivableMemberWithGrant(company, owner.principalId);
+    const access = accessService(db);
+
+    const lock = holdGrantWriterLock({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+    });
+    await lock.isTaken;
+
+    let seedSettled = false;
+    const seeding = access
+      .ensureRoleDefaultGrants(company.id, member.principalId, "operator", owner.principalId)
+      .then(() => { seedSettled = true; });
+
+    await waitForAdvisoryLockWaiter();
+    expect(seedSettled).toBe(false);
+
+    lock.release();
+    await lock.holder;
+    await seeding;
+
+    const seeded = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(seeded.map((grant) => grant.permissionKey).sort()).toContain("tasks:assign");
+  }, 30_000);
+
   it("queues an instance-level access removal behind an in-flight grant write", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await seedArchivableMemberWithGrant(company, owner.principalId);
