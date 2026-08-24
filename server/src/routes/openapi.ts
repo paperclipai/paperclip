@@ -3265,6 +3265,33 @@ registry.registerPath({
 
 // ─── Approvals ───────────────────────────────────────────────────────────────
 
+const boardTokenExceptionCreateSchema = z.object({
+  issueId: z.string().uuid(),
+  agentId: z.string().uuid().nullable().optional(),
+  capTokens: z.number().int().positive(),
+  reason: z.string().min(1),
+  expiresAt: z.string().datetime(),
+});
+const boardTokenExceptionRevokeSchema = z.object({ reason: z.string().min(1) });
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/board-token-exceptions",
+  tags: ["board-token-exceptions"],
+  summary: "Create a board-authorized token-ceiling exception",
+  request: { params: z.object({ companyId: z.string().uuid() }), body: jsonBody(boardTokenExceptionCreateSchema) },
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/board-token-exceptions/{id}/revoke",
+  tags: ["board-token-exceptions"],
+  summary: "Revoke a board-authorized token-ceiling exception",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(boardTokenExceptionRevokeSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/approvals",

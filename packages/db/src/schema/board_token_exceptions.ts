@@ -27,6 +27,9 @@ export const boardTokenExceptions = pgTable(
     createdByUserId: text("created_by_user_id"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: text("revoked_by_user_id"),
+    revokedByAgentId: uuid("revoked_by_agent_id").references(() => agents.id),
+    revocationReason: text("revocation_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
