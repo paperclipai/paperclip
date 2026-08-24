@@ -35,6 +35,50 @@ function normalizeExpiresAt(value: Date | string | null): Date | null {
 }
 
 /**
+ * The one lock every writer of `principal_permission_grants` takes, so that no
+ * two of them can interleave.
+ *
+ * It is the principal's `company_memberships` row rather than the grant rows
+ * themselves because a replacement *deletes and reinserts* grants instead of
+ * updating them in place, and a lock on a row that is about to stop existing
+ * orders nothing — see `grantRowsPreservingExpiry` for the full reasoning. The
+ * membership row is never deleted by a grant write, so blocking on it and
+ * reading afterwards makes the read a new statement with a new snapshot, and
+ * the waiter observes the winner's committed rows.
+ *
+ * Both writers have to take it, not just the replacement path.
+ * `setPrincipalPermission` is a read-then-write too: it finds a grant row and
+ * then updates it by id, so a replacement that lands in between deletes the row
+ * it read and inserts a new one with a new id, the update matches nothing, and
+ * the expiry change is discarded with no error (FAI-10144, Greptile P1 at
+ * `1b6afcce`). Its revoke path has the same shape in reverse — a delete that
+ * lands inside a replacement's read-then-write window is undone by the
+ * reinsert, resurrecting a grant an operator just removed.
+ *
+ * `tx` must be a real transaction. In autocommit the lock is released at the
+ * end of the statement that took it and serializes nothing.
+ *
+ * A principal with no membership row has no grants, so there is nothing to
+ * serialize and the empty lock read is correct.
+ */
+async function lockPrincipalGrantWrites(
+  tx: Pick<Db, "select">,
+  input: { companyId: string; principalType: PrincipalType; principalId: string },
+) {
+  await tx
+    .select({ id: companyMemberships.id })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, input.companyId),
+        eq(companyMemberships.principalType, input.principalType),
+        eq(companyMemberships.principalId, input.principalId),
+      ),
+    )
+    .for("update");
+}
+
+/**
  * Rows for a wholesale grant replacement, with each grant's expiry carried
  * forward when the payload does not mention it.
  *
@@ -63,18 +107,14 @@ function normalizeExpiresAt(value: Date | string | null): Date | null {
  * prevent.
  *
  * So the serializing lock is taken on the principal's `company_memberships`
- * row, which a grant replacement never deletes. Blocking there and *then*
- * reading the grants makes the read a new statement with a new snapshot, so the
- * waiter observes the winner's committed rows. This lock has to live here
- * rather than in the callers: two of the four call sites invoke this as the
- * first statement in their transaction and hold no other lock.
+ * row, which a grant replacement never deletes — see
+ * `lockPrincipalGrantWrites`. This lock has to be taken here rather than in the
+ * callers: two of the four call sites invoke this as the first statement in
+ * their transaction and hold no other lock.
  *
- * A principal with no membership row has no grants to preserve, so there is
- * nothing to serialize and the empty lock read is correct.
- *
- * `FOR UPDATE` stays on the grant read too. It is redundant against another
- * replacement, but `setPrincipalPermission` updates these rows in place without
- * touching the membership row, and that writer still has to be ordered.
+ * `FOR UPDATE` stays on the grant read too. It is redundant once both writers
+ * hold the membership lock, but it keeps the rows this function reads pinned
+ * for the duration of the replacement that follows.
  */
 export async function grantRowsPreservingExpiry(
   tx: Pick<Db, "select">,
@@ -87,17 +127,7 @@ export async function grantRowsPreservingExpiry(
     now: Date;
   },
 ) {
-  await tx
-    .select({ id: companyMemberships.id })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.companyId, input.companyId),
-        eq(companyMemberships.principalType, input.principalType),
-        eq(companyMemberships.principalId, input.principalId),
-      ),
-    )
-    .for("update");
+  await lockPrincipalGrantWrites(tx, input);
 
   const existing = await tx
     .select({
@@ -785,58 +815,60 @@ export function accessService(db: Db) {
     expiresAt: Date | null | undefined = undefined,
   ) {
     if (!enabled) {
-      await db
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, principalType),
-            eq(principalPermissionGrants.principalId, principalId),
-            eq(principalPermissionGrants.permissionKey, permissionKey),
-          ),
-        );
+      await db.transaction(async (tx) => {
+        await lockPrincipalGrantWrites(tx, { companyId, principalType, principalId });
+        await tx
+          .delete(principalPermissionGrants)
+          .where(
+            and(
+              eq(principalPermissionGrants.companyId, companyId),
+              eq(principalPermissionGrants.principalType, principalType),
+              eq(principalPermissionGrants.principalId, principalId),
+              eq(principalPermissionGrants.permissionKey, permissionKey),
+            ),
+          );
+      });
       return;
     }
 
     assertGrantScopesAreSaveable([{ permissionKey, scope }]);
     await ensureMembership(companyId, principalType, principalId, "member", "active");
 
-    const existing = await db
-      .select()
-      .from(principalPermissionGrants)
-      .where(
-        and(
-          eq(principalPermissionGrants.companyId, companyId),
-          eq(principalPermissionGrants.principalType, principalType),
-          eq(principalPermissionGrants.principalId, principalId),
-          eq(principalPermissionGrants.permissionKey, permissionKey),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-
-    if (existing) {
-      await db
-        .update(principalPermissionGrants)
-        .set({
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await lockPrincipalGrantWrites(tx, { companyId, principalType, principalId });
+      // Written against the natural key rather than a row id read moments
+      // earlier, so a replacement that recycles the row cannot turn this into
+      // an update of zero rows. `expiresAt` is left out of the conflict update
+      // when it is `undefined`, which is how "leave the existing bound alone"
+      // is expressed; a fresh insert has no bound to keep, so it takes null.
+      await tx
+        .insert(principalPermissionGrants)
+        .values({
+          companyId,
+          principalType,
+          principalId,
+          permissionKey,
           scope,
+          expiresAt: expiresAt ?? null,
           grantedByUserId,
-          ...(expiresAt === undefined ? {} : { expiresAt }),
-          updatedAt: new Date(),
+          createdAt: now,
+          updatedAt: now,
         })
-        .where(eq(principalPermissionGrants.id, existing.id));
-      return;
-    }
-
-    await db.insert(principalPermissionGrants).values({
-      companyId,
-      principalType,
-      principalId,
-      permissionKey,
-      scope,
-      expiresAt: expiresAt ?? null,
-      grantedByUserId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+        .onConflictDoUpdate({
+          target: [
+            principalPermissionGrants.companyId,
+            principalPermissionGrants.principalType,
+            principalPermissionGrants.principalId,
+            principalPermissionGrants.permissionKey,
+          ],
+          set: {
+            scope,
+            grantedByUserId,
+            ...(expiresAt === undefined ? {} : { expiresAt }),
+            updatedAt: now,
+          },
+        });
     });
   }
 

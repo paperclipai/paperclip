@@ -21,7 +21,7 @@ import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.js";
-import { grantRowsPreservingExpiry } from "../services/access.js";
+import { accessService, grantRowsPreservingExpiry } from "../services/access.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -668,7 +668,8 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       if (rows.length > 0) await tx.insert(principalPermissionGrants).values(rows);
     }
 
-    it("preserves the winner's shortened bound instead of clearing it", async () => {
+    /** An agent holding a single two-week `issues:cross-write` grant. */
+    async function seedBoundedGrant() {
       const companyId = randomUUID();
       const agentId = randomUUID();
 
@@ -704,6 +705,20 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
         expiresAt: new Date(NOW.getTime() + 14 * 24 * 60 * 60 * 1000),
       });
 
+      return { companyId, agentId };
+    }
+
+    /** The single grant row left behind, whatever id it now carries. */
+    async function grantRowsFor(companyId: string) {
+      return db
+        .select({ expiresAt: principalPermissionGrants.expiresAt })
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.companyId, companyId));
+    }
+
+    it("preserves the winner's shortened bound instead of clearing it", async () => {
+      const { companyId, agentId } = await seedBoundedGrant();
+
       // The operator shortens the bound to one day.
       const shortened = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
 
@@ -728,14 +743,64 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       await winner;
       await waiter;
 
-      const rows = await db
-        .select({ expiresAt: principalPermissionGrants.expiresAt })
-        .from(principalPermissionGrants)
-        .where(eq(principalPermissionGrants.companyId, companyId));
+      const rows = await grantRowsFor(companyId);
 
       expect(rows).toHaveLength(1);
       // Without the membership lock this is null: the bound is gone and the
       // grant is indefinite again.
+      expect(rows[0]!.expiresAt).not.toBeNull();
+      expect(rows[0]!.expiresAt!.getTime()).toBe(shortened.getTime());
+    });
+
+    /**
+     * The other writer of these rows. `setPrincipalPermission` backs the
+     * per-permission endpoint, and it is a read-then-write too: it used to find
+     * the grant row and then update it by id. A replacement landing in between
+     * deletes the row it read and inserts a new one with a new id, so the
+     * update matched nothing and the operator's shortened bound was discarded
+     * with no error — the failure direction that leaves authority open longer
+     * than intended (Greptile P1 at `1b6afcce`).
+     *
+     * The replacement here is the one that carries an omitted expiry forward,
+     * so if the update is lost the row keeps the original two-week bound rather
+     * than the one day the operator asked for.
+     */
+    it("keeps an in-place expiry update that races a replacement", async () => {
+      const { companyId, agentId } = await seedBoundedGrant();
+      const access = accessService(db);
+      const shortened = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
+
+      let releaseLock!: () => void;
+      const lockTaken = new Promise<void>((resolve) => { releaseLock = resolve; });
+
+      const replacement = db.transaction(async (tx) => {
+        await replaceGrants(tx, { companyId, principalId: agentId });
+        releaseLock();
+        // Held open so the update is genuinely blocked on the lock rather than
+        // merely scheduled after it.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      });
+
+      await lockTaken;
+      const update = access.setPrincipalPermission(
+        companyId,
+        "agent",
+        agentId,
+        PERMISSION_KEY,
+        true,
+        null,
+        { projectId: "p" },
+        shortened,
+      );
+
+      await replacement;
+      await update;
+
+      const rows = await grantRowsFor(companyId);
+
+      expect(rows).toHaveLength(1);
+      // Without the shared lock this is the original two-week bound: the update
+      // addressed a row the replacement had already destroyed.
       expect(rows[0]!.expiresAt).not.toBeNull();
       expect(rows[0]!.expiresAt!.getTime()).toBe(shortened.getTime());
     });
