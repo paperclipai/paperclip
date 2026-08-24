@@ -82,6 +82,7 @@ import {
   type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { Kbd, modEnterLabel } from "@/components/ui/kbd";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -4362,8 +4363,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           />
         ) : null}
 
-        <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
+        <Button
+          size="sm"
+          data-testid="issue-chat-send-button"
+          disabled={!canSubmit}
+          aria-keyshortcuts="Meta+Enter Control+Enter"
+          onClick={() => void handleSubmit()}
+        >
           {submitting ? "Posting..." : "Send"}
+          <Kbd className="hidden sm:inline-flex">{modEnterLabel()}</Kbd>
         </Button>
       </div>
 
