@@ -17,6 +17,8 @@ import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { toolAccessService } from "./tool-access.js";
+import { createToolGatewayService } from "./tool-gateway.js";
 
 const MANAGED_AGENT_ENTITY_TYPE = "managed_agent";
 const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
@@ -181,6 +183,73 @@ export function pluginManagedAgentService(
   const agentSvc = agentService(db);
   const approvalSvc = approvalService(db);
   const instructions = agentInstructionsService();
+  const toolAccess = toolAccessService(db);
+  const toolGateway = createToolGatewayService(db);
+
+  async function reconcileDeclaredPluginToolAccess(
+    companyId: string,
+    declaration: PluginManagedAgentDeclaration,
+    agentId: string,
+  ) {
+    const declaredPluginTools = declaration.permissions?.pluginTools;
+    const declaredPluginKeys = new Set(Array.isArray(declaredPluginTools)
+      ? declaredPluginTools.filter((value): value is string => typeof value === "string")
+      : []);
+    if (!declaredPluginKeys.has(options.pluginKey) && !declaredPluginKeys.has(options.manifest?.id ?? "")) return;
+    const toolNames = [...new Set((options.manifest?.tools ?? []).map((tool) => `${options.pluginKey}:${tool.name}`))].sort();
+    if (toolNames.length === 0) return;
+
+    const profileKey = `plugin-managed:${options.pluginKey}:${declaration.agentKey}`;
+    const entries = toolNames.map((toolName) => ({ selectorType: "tool_name" as const, effect: "include" as const, toolName }));
+    const profiles = await toolAccess.listProfiles(companyId);
+    let profile = profiles.find((candidate) => candidate.profileKey === profileKey) ?? null;
+    if (profile) {
+      profile = await toolAccess.updateProfile(profile.id, {
+        name: `${declaration.displayName} plugin tools`,
+        description: `Tools declared for ${declaration.displayName} by ${options.pluginKey}. Managed automatically by Paperclip.`,
+        status: "active",
+        defaultAction: "deny",
+        metadata: { managedByPlugin: options.pluginKey, managedAgentKey: declaration.agentKey },
+        entries,
+      });
+    } else {
+      profile = await toolAccess.createProfile(companyId, {
+        profileKey,
+        name: `${declaration.displayName} plugin tools`,
+        description: `Tools declared for ${declaration.displayName} by ${options.pluginKey}. Managed automatically by Paperclip.`,
+        status: "active",
+        defaultAction: "deny",
+        metadata: { managedByPlugin: options.pluginKey, managedAgentKey: declaration.agentKey },
+        entries,
+      });
+    }
+    if (!profile.bindings.some((binding) => binding.targetType === "agent" && binding.targetId === agentId)) {
+      await toolAccess.bindProfile(profile.id, { targetType: "agent", targetId: agentId, priority: 10 }, { actorType: "plugin", actorId: options.pluginId });
+    }
+    const gateways = await toolGateway.listNamedGateways(companyId);
+    const managedGateway = gateways.find((gateway) =>
+      gateway.metadata?.managedByPlugin === options.pluginKey
+      && gateway.metadata?.managedAgentKey === declaration.agentKey
+      && gateway.agentId === agentId
+    );
+    if (!managedGateway) {
+      await toolGateway.createNamedGateway({
+        companyId,
+        body: {
+          name: `${declaration.displayName} plugin tools`,
+          slug: `plugin-managed-${options.pluginKey}-${declaration.agentKey}`.replace(/[^a-z0-9-]+/gi, "-").toLowerCase(),
+          description: `Runtime delivery for tools declared by ${options.pluginKey} for ${declaration.displayName}.`,
+          profileId: profile.id,
+          defaultProfileMode: "gateway_only",
+          contextScopeType: "agent",
+          contextScopeId: agentId,
+          agentId,
+          metadata: { managedByPlugin: options.pluginKey, managedAgentKey: declaration.agentKey },
+        },
+        actor: {},
+      });
+    }
+  }
 
   function declarationFor(agentKey: string) {
     const declaration = options.manifest?.agents?.find((agent) => agent.agentKey === agentKey);
@@ -212,6 +281,7 @@ export function pluginManagedAgentService(
     effectiveAdapterType?: string,
   ) {
     const adapterType = effectiveAdapterType ?? (await resolveManagedAdapterType(companyId, declaration));
+    await reconcileDeclaredPluginToolAccess(companyId, declaration, agentId);
     const defaultsJson = {
       agentKey: declaration.agentKey,
       displayName: declaration.displayName,

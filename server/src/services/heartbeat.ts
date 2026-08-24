@@ -3334,6 +3334,28 @@ type ManagedMcpGatewayRunConfig = {
   }>;
 };
 
+export function mergeManagedMcpRuntimeServers(
+  runtimeServers: AdapterRuntimeMcpServer[],
+  managedConfig: ManagedMcpGatewayRunConfig | null,
+): AdapterRuntimeMcpServer[] {
+  if (!managedConfig?.managedMcpOnly) return runtimeServers;
+  const seenNames = new Set(runtimeServers.map((server) => server.name));
+  const merged = runtimeServers.map((server) => ({ ...server }));
+  for (const gateway of managedConfig.gateways) {
+    if (seenNames.has(gateway.name)) continue;
+    seenNames.add(gateway.name);
+    merged.push({
+      name: gateway.name,
+      url: gateway.endpointPath.startsWith("http://") || gateway.endpointPath.startsWith("https://")
+        ? gateway.endpointPath
+        : `${paperclipApiBaseUrl()}${gateway.endpointPath.startsWith("/") ? "" : "/"}${gateway.endpointPath}`,
+      token: gateway.bearerToken,
+      connectionId: `managed-gateway:${gateway.id}`,
+    });
+  }
+  return merged;
+}
+
 function paperclipApiBaseUrl(): string {
   const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
   if (!configured) {
@@ -16182,7 +16204,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agent,
           runId: run.id,
         });
-        const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
         const managedMcpConfig = await createManagedMcpRunConfig({
           db,
           agent,
@@ -16194,6 +16215,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
+        // ACP adapters consume MCP servers through runtimeMcp rather than the
+        // CLI-specific managed config in the execution context. Deliver named
+        // gateways through both paths so engine selection cannot hide tools.
+        const runtimeMcp = createAdapterRuntimeMcpAccess(
+          mergeManagedMcpRuntimeServers(runtimeMcpServers, managedMcpConfig),
+        );
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,

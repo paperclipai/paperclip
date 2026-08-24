@@ -96,6 +96,15 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Total model-token throughput, including discounted cached input tokens. */
+export function totalTrackedTokens(usage: {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}): number {
+  return usage.inputTokens + usage.cachedInputTokens + usage.outputTokens;
+}
+
 /** Humanize a millisecond duration into a compact `1h 2m`, `45m 12s`, `12s` string. */
 export function formatDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0s";

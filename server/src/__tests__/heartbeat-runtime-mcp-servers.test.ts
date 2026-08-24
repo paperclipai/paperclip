@@ -21,7 +21,52 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
+import {
+  buildPaperclipRuntimeMcpServers,
+  mergeManagedMcpRuntimeServers,
+} from "../services/heartbeat.js";
+
+describe("managed MCP runtime delivery", () => {
+  it("adds named gateways to the ACP runtime MCP surface with an absolute URL", () => {
+    const previousApiUrl = process.env.PAPERCLIP_API_URL;
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test/api";
+    const servers = mergeManagedMcpRuntimeServers([], {
+      version: 1,
+      managedMcpOnly: true,
+      gateways: [{
+        id: "gateway-1",
+        name: "GTM Clip - CMO",
+        endpointPath: "/api/tool-gateway/gateways/gateway-1/mcp",
+        bearerToken: "pcgw_secret",
+        tokenPrefix: "pcgw_",
+      }],
+    });
+
+    expect(servers).toEqual([{
+      name: "GTM Clip - CMO",
+      url: "https://paperclip.example.test/api/tool-gateway/gateways/gateway-1/mcp",
+      token: "pcgw_secret",
+      connectionId: "managed-gateway:gateway-1",
+    }]);
+    if (previousApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+    else process.env.PAPERCLIP_API_URL = previousApiUrl;
+  });
+
+  it("does not duplicate a runtime connection with the same name", () => {
+    const existing = [{ name: "GTM Clip - CMO", url: "https://runtime.test/mcp", token: "runtime", connectionId: "connection-1" }];
+    expect(mergeManagedMcpRuntimeServers(existing, {
+      version: 1,
+      managedMcpOnly: true,
+      gateways: [{
+        id: "gateway-1",
+        name: "GTM Clip - CMO",
+        endpointPath: "/api/tool-gateway/gateways/gateway-1/mcp",
+        bearerToken: "managed",
+        tokenPrefix: "pcgw_",
+      }],
+    })).toEqual(existing);
+  });
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

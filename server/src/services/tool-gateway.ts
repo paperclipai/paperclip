@@ -1871,9 +1871,16 @@ export function createToolGatewayService(
     const connectedTools = await connectedMcpToolsForCompany(session.companyId);
     const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
-    const tool = [...allTools(), ...connectedTools, ...virtualTools]
-      .filter((candidate) => session.agentId || (candidate.providerType !== "paperclip_self" && candidate.providerType !== "paperclip_plugin"))
-      .find((candidate) => candidate.name === toolName);
+    const candidates = [...allTools(), ...connectedTools, ...virtualTools]
+      .filter((candidate) => session.agentId || (candidate.providerType !== "paperclip_self" && candidate.providerType !== "paperclip_plugin"));
+    let tool = candidates.find((candidate) => candidate.name === toolName);
+    if (!tool) {
+      const pluginAliasMatches = candidates.filter((candidate) =>
+        candidate.providerType === "paperclip_plugin"
+        && candidate.name.slice(candidate.name.lastIndexOf(":") + 1) === toolName
+      );
+      if (pluginAliasMatches.length === 1) tool = pluginAliasMatches[0];
+    }
     if (!tool) {
       throw new ToolGatewayHttpError(404, `Tool "${toolName}" not found`, "tool_not_found", { tool: toolName });
     }
