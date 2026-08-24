@@ -64,6 +64,7 @@ import {
   skillAccentColor,
   skillCreateDraftToPayload,
   splitCategoryDraft,
+  updateSkillDraftTagline,
   type SkillCreateDraft,
 } from "@/lib/skill-create";
 import { getRecentStudioSkillIds, trackRecentStudioSkill } from "@/lib/recent-skills";
@@ -579,14 +580,7 @@ function StudioNewSkillPanel({
             id="skill-tagline"
             value={draft.tagline}
             onChange={(event) => {
-              const nextTagline = event.target.value;
-              patchDraft({
-                tagline: nextTagline,
-                description: draft.description ? draft.description : nextTagline,
-                markdown: draft.markdown === defaultSkillMarkdown(draft.name, draft.tagline)
-                  ? defaultSkillMarkdown(draft.name, nextTagline)
-                  : draft.markdown,
-              });
+              setDraft((current) => updateSkillDraftTagline(current, event.target.value));
             }}
             placeholder="Review repository changes for correctness, tests, and maintainability."
             className="min-h-20"

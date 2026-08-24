@@ -366,6 +366,48 @@ describe("SkillStudio create mode", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/skills/studio/created-skill"));
   });
 
+  it("uses the full tagline as a new skill description instead of its first character (#11862)", async () => {
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.querySelector("#skill-name")).toBeTruthy());
+    await inputValue(node.querySelector("#skill-name") as HTMLInputElement, "Code Review");
+    const tagline = node.querySelector("#skill-tagline") as HTMLTextAreaElement;
+    await inputValue(tagline, "E");
+    await inputValue(tagline, "Evaluate pull requests with clear evidence.");
+    await click(buttonsNamed(node, "Create skill")[0] as HTMLButtonElement);
+
+    await waitFor(() => expect(mockCompanySkillsApi.create).toHaveBeenCalled());
+    expect(mockCompanySkillsApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        description: "Evaluate pull requests with clear evidence.",
+      }),
+    );
+  });
+
+  it("preserves a fork's source description when its tagline changes", async () => {
+    routeState.search = "?forkFrom=source-skill";
+
+    const node = await renderStudio();
+
+    await waitFor(() => expect(node.textContent).toContain("Forking Demo Skill"));
+    await inputValue(
+      node.querySelector("#skill-tagline") as HTMLTextAreaElement,
+      "A revised fork tagline.",
+    );
+    await click(buttonsNamed(node, "Create fork")[0] as HTMLButtonElement);
+
+    await waitFor(() => expect(mockCompanySkillsApi.create).toHaveBeenCalled());
+    expect(mockCompanySkillsApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        description: "A demo skill.",
+        forkedFromSkillId: "source-skill",
+        tagline: "A revised fork tagline.",
+      }),
+    );
+  });
+
   it("forwards the folderId query param so the new skill is filed there (PAP-14086)", async () => {
     routeState.search = "?folderId=folder-my-skills";
 
