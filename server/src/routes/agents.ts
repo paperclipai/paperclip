@@ -1014,16 +1014,27 @@ export function agentRoutes(
     const grants = membership
       ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
       : [];
-    // A lapsed grant confers nothing, so it must not be reported as authority
-    // either. `decidePrincipalGrant` denies an expired `tasks:assign` with
-    // `deny_expired_grant`, and reading the row's presence alone had this
-    // surface answering `taskAssignSource: "explicit_grant"` for an agent the
-    // evaluator refuses — a detail page contradicting the decision it describes
-    // (FAI-10144). The rows themselves are still returned with their
-    // `expiresAt`, so a client can show the bound rather than infer it.
-    const hasExplicitTaskAssignGrant = grants.some(
-      (grant) => grant.permissionKey === "tasks:assign" && principalGrantIsActive(grant),
-    );
+    // A grant reported as authority here has to be one the evaluator would
+    // actually honour, which means both of `decidePrincipalGrant`'s
+    // preconditions and not merely the presence of a row (FAI-10144):
+    //
+    // - it must not have lapsed — an expired `tasks:assign` is denied with
+    //   `deny_expired_grant`;
+    // - it must sit behind an *active* membership — `getMembership` above
+    //   returns the row in any standing, and suspension deliberately leaves the
+    //   grants in place, so the row outlives the authority.
+    //
+    // Either one missing had this surface answering `taskAssignSource:
+    // "explicit_grant"` for an agent the evaluator refuses, and answering it
+    // ahead of the `simple_default` branch below, which has always required
+    // `active`. A detail page that contradicts the decision it describes is how
+    // an operator concludes a suspension did not take.
+    //
+    // The rows themselves are still returned, with their `expiresAt` and the
+    // membership beside them, so a client can show what is on file instead of
+    // inferring authority from it.
+    const hasExplicitTaskAssignGrant = membership?.status === "active"
+      && grants.some((grant) => grant.permissionKey === "tasks:assign" && principalGrantIsActive(grant));
 
     if (agent.role === "ceo") {
       return {

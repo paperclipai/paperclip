@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   companySkillPolicies,
+  principalGrantBackedByActiveMembership,
   principalGrantNotExpired,
   principalPermissionGrants,
 } from "@paperclipai/db";
@@ -151,9 +152,15 @@ export function companySkillPolicyService(db: Db) {
         eq(principalPermissionGrants.principalType, principalType),
         eq(principalPermissionGrants.principalId, principal.id),
         inArray(principalPermissionGrants.permissionKey, ["skills:create", "skills:suggest-changes"]),
-        // Bypasses `decidePrincipalGrant`, so expiry is applied here too
-        // (FAI-10144) — a lapsed grant confers nothing anywhere.
+        // Bypasses `decidePrincipalGrant`, so this read applies that decider's
+        // preconditions itself (FAI-10144): a lapsed grant confers nothing
+        // anywhere, and neither does a live one behind a membership that is no
+        // longer active. This path answers `legacy_compatibility` where central
+        // authorization answers `deny_missing_membership`, so without the
+        // second predicate a suspended principal kept mutating company skills
+        // through the one reader that never asked.
         principalGrantNotExpired(),
+        principalGrantBackedByActiveMembership(),
       ))
       .limit(1)
       .then((rows) => rows[0] ?? null);

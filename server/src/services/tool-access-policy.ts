@@ -5,6 +5,7 @@ import {
   agents,
   heartbeatRuns,
   issues,
+  principalGrantBackedByActiveMembership,
   principalGrantNotExpired,
   principalPermissionGrants,
   projects,
@@ -1030,11 +1031,15 @@ export function toolAccessPolicyService(db: Db) {
         eq(principalPermissionGrants.principalType, principalType),
         eq(principalPermissionGrants.principalId, principalId),
         eq(principalPermissionGrants.permissionKey, "tools:use"),
-        // This read bypasses `decidePrincipalGrant`, so it applies expiry
-        // itself (FAI-10144). Without it a lapsed `tools:use` grant would keep
-        // conferring tool access after the same grant stopped conferring
-        // everything else.
+        // This read bypasses `decidePrincipalGrant`, so it applies that
+        // decider's two preconditions itself (FAI-10144). Without expiry, a
+        // lapsed `tools:use` grant would keep conferring tool access after the
+        // same grant stopped conferring everything else. Without the membership
+        // predicate, so would a suspended principal's row: suspension does not
+        // delete grants, deliberately, so the row survives and only the
+        // membership standing says it no longer counts.
         principalGrantNotExpired(),
+        principalGrantBackedByActiveMembership(),
       ));
     return grants.some((grant) => scopeAllowsTool(grant.scope, ctx));
   }

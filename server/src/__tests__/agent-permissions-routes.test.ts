@@ -1674,6 +1674,58 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("simple_default");
   }, 15_000);
 
+  it("stops reporting a live grant as explicit authority once the membership is suspended", async () => {
+    // Same shape as the lapsed-grant case above, on the other precondition.
+    // `getMembership` returns the row in any standing and suspension leaves the
+    // grants in place deliberately, so a presence check kept answering
+    // `explicit_grant` for an agent `decidePrincipalGrant` denies with
+    // `deny_missing_membership` — and answered it *ahead* of the
+    // `simple_default` branch, which has always required `active`. There is no
+    // fallback here: a suspended member has no task-assignment authority at all
+    // (FAI-10151 finding 1).
+    mockAccessService.getMembership.mockResolvedValue({
+      id: "membership-1",
+      companyId,
+      principalType: "agent",
+      principalId: agentId,
+      status: "suspended",
+      membershipRole: "member",
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([
+      {
+        id: "grant-1",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "tasks:assign",
+        scope: null,
+        grantedByUserId: "board-user",
+        expiresAt: null,
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.taskAssignSource).toBe("none");
+    expect(res.body.access.canAssignTasks).toBe(false);
+    // The row is still reported, with its membership beside it: what is on file
+    // is not the same claim as what it confers.
+    expect(res.body.access.grants).toHaveLength(1);
+  }, 15_000);
+
   it("reports simple-mode task assignment as enabled for active company agent members", async () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
 

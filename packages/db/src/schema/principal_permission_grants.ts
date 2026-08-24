@@ -1,6 +1,7 @@
-import { gt, isNull, or, sql, type SQL } from "drizzle-orm";
+import { eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { companyMemberships } from "./company_memberships.js";
 
 export const principalPermissionGrants = pgTable(
   "principal_permission_grants",
@@ -69,6 +70,35 @@ export function principalGrantNotExpired(now: Date = new Date()): SQL {
     isNull(principalPermissionGrants.expiresAt),
     gt(principalPermissionGrants.expiresAt, now),
   )!;
+}
+
+/**
+ * The membership half of the same rule, as a correlated predicate.
+ *
+ * `decidePrincipalGrant` denies before it ever looks at a grant unless the
+ * principal holds an **active** membership. A reader that queries this table
+ * directly skips that gate, so a suspended principal's row kept conferring
+ * through it after central authorization had stopped honouring the very same
+ * row — the two disagreed about one grant. Expiry had the identical shape and
+ * is why `principalGrantNotExpired` exists; this is its other half.
+ *
+ * Correlated to the grant row's own identity columns rather than to bound
+ * parameters, so a reader inherits the rule by appending one condition to the
+ * `where` it already has, with no join to thread through its projection and
+ * nothing to keep in sync at the call site.
+ *
+ * `archived` is not called out separately: the rule is `active`, and every
+ * other standing — `pending`, `suspended`, `archived`, or no row at all —
+ * confers nothing, which is exactly what the evaluator does.
+ */
+export function principalGrantBackedByActiveMembership(): SQL {
+  return sql`exists (select 1 from ${companyMemberships} where ${
+    eq(companyMemberships.companyId, principalPermissionGrants.companyId)
+  } and ${
+    eq(companyMemberships.principalType, principalPermissionGrants.principalType)
+  } and ${
+    eq(companyMemberships.principalId, principalPermissionGrants.principalId)
+  } and ${eq(companyMemberships.status, "active")})`;
 }
 
 /**

@@ -15,6 +15,7 @@ export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export {
   principalPermissionGrants,
+  principalGrantBackedByActiveMembership,
   principalGrantIsActive,
   principalGrantLock,
   principalGrantNotExpired,
