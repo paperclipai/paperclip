@@ -4362,6 +4362,62 @@ async function listIssueBoardActionRequirementMap(
     });
   }
 
+  // TSMC-21447: a board-owned unblock descriptor IS an operator ask.
+  //
+  // The platform has two independent ways to say "a human must decide this",
+  // and until now they did not talk to each other. `boardActionRequired` derived
+  // ONLY from a pending interaction or approval, while the recovery and guard
+  // paths express the same thing by writing
+  // `unblock_descriptor = {owner: "board", action: "..."}` on a blocked issue.
+  //
+  // Measured 2026-08-24 across all eight companies: **29 blocked issues carried a
+  // board-owned descriptor and NOT ONE of them derived boardActionRequired** —
+  // TSB 7, DP 6, TSR 5, TSMC 5, TSM 2, TSC 2, TSBC 1, TSK 1. Every one was
+  // invisible in the Operator Console, some for over 18 days, while the platform
+  // itself had already recorded that it was waiting on a person. Cards even
+  // titled "BOARD ACTION REQUIRED" sat unflagged.
+  //
+  // That is the hidden-operator-decision trap at portfolio scale, and it is the
+  // root cause of blocked work that never moves: nothing was broken, nobody was
+  // asked.
+  //
+  // Interactions and approvals still win when present — they carry an explicit
+  // accept/reject transition, which a descriptor does not.
+  const boardOwnedBlocks = await dbOrTx
+    .select({
+      id: issues.id,
+      unblockDescriptor: issues.unblockDescriptor,
+      blockedTransitionAt: issues.blockedTransitionAt,
+      updatedAt: issues.updatedAt,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, companyId),
+      eq(issues.status, "blocked"),
+      inArray(issues.id, issueIds),
+      sql`${issues.unblockDescriptor} ->> 'owner' = 'board'`,
+    ));
+  for (const blocked of boardOwnedBlocks) {
+    if (result.has(blocked.id)) continue;
+    const descriptor = parseObject(blocked.unblockDescriptor ?? null);
+    const rawAction = typeof descriptor.action === "string" ? descriptor.action.trim() : "";
+    const action = rawAction.length > 0 ? rawAction : null;
+    result.set(blocked.id, {
+      source: "interaction",
+      kind: "interaction",
+      state: "pending_board_decision",
+      sourceId: blocked.id,
+      sourceKind: "unblock_descriptor",
+      title: null,
+      summary: action,
+      createdAt: blocked.blockedTransitionAt ?? blocked.updatedAt ?? new Date(),
+      decisionText: action
+        ? `The issue is blocked pending a board decision: ${action}`
+        : "The issue is blocked pending a board decision recorded on its unblock descriptor.",
+      resumeText: "The issue can continue once the board records the decision and clears the descriptor.",
+    });
+  }
+
   // A prior projection treated stale-state terminal interactions as fresh
   // pending asks. Keep that history observable, but never turn it back into a
   // board-action-required badge: there is no valid accept/reject transition

@@ -18589,6 +18589,80 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
 
+  /**
+   * TSMC-21447: self-heal a blocked issue whose blockers have ALL gone terminal
+   * and which has nothing else holding it.
+   *
+   * Measured 2026-08-24 across the portfolio: 82 blocked issues, of which 11 had
+   * every blocker already `done`/`cancelled`. Nothing in the platform moves such
+   * an issue. TSMC-21406 fixed the wake that was being suppressed, but a wake only
+   * offers the card to a lane — it does not change the status, and the lane has no
+   * particular reason to. Five had to be moved by hand that morning; a sixth
+   * (TSMC-17030) re-entered the class 35 minutes AFTER that deploy, which is how we
+   * know waking was never the missing piece.
+   *
+   * Deliberately conservative — it clears ONLY when every one of these holds:
+   *   - the issue has at least one blocker relation and every one is terminal;
+   *   - there is no `unblockDescriptor` (a board- or agent-owned descriptor is a
+   *     real hold and, for board-owned ones, is now surfaced to the operator);
+   *   - there is no `executionPolicy.externalWait`;
+   *   - the description carries no sanctioned `External owner:` / `External action:`
+   *     prose (TSKB0385 — partially-recognised but real).
+   * On the same snapshot that predicate matched 3 of the 11, not all 11. That
+   * asymmetry is the point: the other 8 are still blocked for a reason, and a
+   * healer that cleared them would be the bulk-flip TSKB's blocked-lint rule
+   * explicitly forbids.
+   *
+   * Moves to `todo` and leaves the assignee alone, so normal dispatch picks it up.
+   */
+  async function healResolvedBlockerIssues(opts?: { limit?: number }) {
+    const limit = opts?.limit ?? 50;
+    const candidates = await db
+      .select({ id: issues.id, companyId: issues.companyId, identifier: issues.identifier })
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.unblockDescriptor),
+        sql`coalesce(${issues.executionPolicy}::text, '') NOT ILIKE '%externalWait%'`,
+        sql`coalesce(${issues.description}, '') !~* 'External (owner|action)\s*:'`,
+        sql`EXISTS (SELECT 1 FROM ${issueRelations} r WHERE r.related_issue_id = ${issues.id} AND r.type = 'blocks')`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${issueRelations} r
+          JOIN ${issues} bi ON bi.id = r.issue_id
+          WHERE r.related_issue_id = ${issues.id} AND r.type = 'blocks'
+            AND bi.status NOT IN ('done','cancelled')
+        )`,
+      ))
+      .limit(limit);
+
+    const healed: string[] = [];
+    for (const candidate of candidates) {
+      try {
+        await issuesSvc.update(candidate.id, { status: "todo" });
+        await issuesSvc.addComment(
+          candidate.id,
+          "Unblocked automatically: every blocker on this issue is `done` or `cancelled`, and the "
+          + "issue carries no unblock descriptor, no external wait, and no `External owner:` hold. "
+          + "Nothing else was waiting on it — it was simply never moved.\n\n"
+          + "If this is wrong, re-block it **with a wait path** (`blockedByIssueIds`, "
+          + "`executionPolicy.externalWait`, or an `unblockDescriptor`) so the reason is "
+          + "machine-visible and this healer leaves it alone. TSMC-21447.",
+          {},
+        );
+        healed.push(candidate.identifier ?? candidate.id);
+      } catch (err) {
+        logger.warn({ err, issueId: candidate.id }, "resolved-blocker healer could not clear issue");
+      }
+    }
+    if (healed.length > 0) {
+      logger.warn(
+        { healedCount: healed.length, identifiers: healed },
+        "resolved-blocker healer moved blocked issues to todo — every blocker terminal, no other hold",
+      );
+    }
+    return { healed: healed.length, identifiers: healed };
+  }
+
   async function healAssigneeNotInvokableBlockedIssues(opts?: {
     agentId?: string | null;
     companyId?: string | null;
@@ -26675,6 +26749,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+    healResolvedBlockerIssues,
     sweepRestartLaneRecovery,
     healAssigneeNotInvokableBlockedIssues,
 

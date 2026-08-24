@@ -1831,6 +1831,11 @@ export async function startServer(): Promise<StartedServer> {
               const assigneeNotInvokableHealed = await heartbeat.healAssigneeNotInvokableBlockedIssues({
                 source: "periodic.heal_assignee_not_invokable",
               });
+              // TSMC-21447: clear blocked issues whose blockers are all terminal and
+              // which have no other hold. Runs beside the assignee-not-invokable healer
+              // because it is the same shape of problem: the reason to be blocked is
+              // gone, and nothing else was ever going to notice.
+              await heartbeat.healResolvedBlockerIssues();
               if (
                 promotion.promoted > 0 ||
                 reconciled.assignmentDispatched > 0 ||
