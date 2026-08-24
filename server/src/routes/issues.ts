@@ -248,12 +248,14 @@ import {
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
   assertCrossIssueWriteFence,
+  assertCrossIssueWriteFenceUnexpiredAtCommit,
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
   type CrossIssueWriteFence,
 } from "../services/cross-issue-influence-limit.js";
+import type { CrossIssueWriteBasis } from "../services/cross-issue-write-basis.js";
 import type { CrossIssueWriteOperation } from "../services/cross-issue-write-basis.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -278,6 +280,15 @@ function recordCrossIssueWriteFence(req: Request, fence: CrossIssueWriteFence | 
 function hasPendingCrossIssueWriteFences(req: Request) {
   return (pendingCrossIssueWriteFences.get(req)?.length ?? 0) > 0;
 }
+
+/**
+ * What each fence resolved to when it was re-asserted at the top of the
+ * persistence transaction. Kept so the commit-boundary expiry re-check knows
+ * which writes are actually riding a grant, and skips the ones riding a
+ * structural basis that has no expiry to cross.
+ */
+const resolvedCrossIssueWriteBases =
+  new WeakMap<Request, Array<[CrossIssueWriteFence, CrossIssueWriteBasis | null]>>();
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -3015,8 +3026,29 @@ export function issueRoutes(
     tx: Parameters<typeof assertCrossIssueWriteFence>[1],
     req: Request,
   ) {
+    const bases: Array<[CrossIssueWriteFence, CrossIssueWriteBasis | null]> = [];
     for (const fence of pendingCrossIssueWriteFences.get(req) ?? []) {
-      await assertCrossIssueWriteFence(db, tx, fence);
+      bases.push([fence, await assertCrossIssueWriteFence(db, tx, fence)]);
+    }
+    resolvedCrossIssueWriteBases.set(req, bases);
+  }
+
+  /**
+   * The expiry half of the same fences, re-asserted as the *last* statement of
+   * the persistence transaction.
+   *
+   * The opening check locks its inputs, which holds every one of them still
+   * except the clock. A grant that was active when the transaction started can
+   * lapse while the mutation runs, so the boundary that has to be authorized is
+   * the last one, not the first. A refusal here throws inside `tx`, so the
+   * mutation rolls back to zero rows exactly as a revocation does.
+   */
+  async function assertPendingCrossIssueWriteFencesUnexpired(
+    tx: Parameters<typeof assertCrossIssueWriteFence>[1],
+    req: Request,
+  ) {
+    for (const [fence, basis] of resolvedCrossIssueWriteBases.get(req) ?? []) {
+      await assertCrossIssueWriteFenceUnexpiredAtCommit(db, tx, fence, basis);
     }
   }
 
@@ -3038,7 +3070,9 @@ export function issueRoutes(
     if (!hasPendingCrossIssueWriteFences(req)) return svc.addComment(...args);
     return db.transaction(async (tx) => {
       await assertPendingCrossIssueWriteFences(tx, req);
-      return svc.addComment(args[0], args[1], args[2], args[3], tx);
+      const inserted = await svc.addComment(args[0], args[1], args[2], args[3], tx);
+      await assertPendingCrossIssueWriteFencesUnexpired(tx, req);
+      return inserted;
     });
   }
 
@@ -4499,6 +4533,7 @@ export function issueRoutes(
     // and rolls the whole resolution back if it was revoked mid-flight.
     const interactionSvc = issueThreadInteractionService(db, {
       preCommitAuthorityGuard: (tx) => assertPendingCrossIssueWriteFences(tx, req),
+      postMutationAuthorityGuard: (tx) => assertPendingCrossIssueWriteFencesUnexpired(tx, req),
     });
     const current = await interactionSvc.getForIssue(issue, interactionId);
     const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(
@@ -7130,6 +7165,7 @@ export function issueRoutes(
       );
       if (!recoveryAction) throw notFound("Active recovery action not found");
 
+      await assertPendingCrossIssueWriteFencesUnexpired(tx, req);
       return { issue, recoveryAction };
     });
     for (const publication of postCommitActivityPublications) publishActivity(publication);
@@ -10128,6 +10164,7 @@ export function issueRoutes(
             }, tx);
           }
 
+          await assertPendingCrossIssueWriteFencesUnexpired(tx, req);
           return updated;
         });
       } else {
@@ -11947,6 +11984,7 @@ export function issueRoutes(
       // withdrawal back if the basis or grant was revoked mid-request.
       const interactionSvc = issueThreadInteractionService(db, {
         preCommitAuthorityGuard: (tx) => assertPendingCrossIssueWriteFences(tx, req),
+        postMutationAuthorityGuard: (tx) => assertPendingCrossIssueWriteFencesUnexpired(tx, req),
       });
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
@@ -12632,6 +12670,7 @@ export function issueRoutes(
             });
           }
 
+          await assertPendingCrossIssueWriteFencesUnexpired(tx, req);
           return { comment: insertedComment, issue: updated };
         });
       } catch (err) {
@@ -12699,6 +12738,7 @@ export function issueRoutes(
             // Last statement, so the comment keeps its position after any
             // relay comment the update wrote.
             const inserted = await svc.addComment(commentArgs[0], commentArgs[1], commentArgs[2], commentArgs[3], tx);
+            await assertPendingCrossIssueWriteFencesUnexpired(tx, req);
             return { issue: updated, comment: inserted };
           });
         } catch (err) {

@@ -421,6 +421,37 @@ async function explicitGrantLookup(
 }
 
 /**
+ * The instant this agent's `issues:cross-write` grant lapsed, measured at
+ * `now` — or null when there is no grant or it is still active.
+ *
+ * Split out for the commit boundary. By the time this runs the fence already
+ * holds the grant row `FOR SHARE`, so the row itself cannot have changed; the
+ * only question left is the one no lock can answer, which is whether the clock
+ * has passed `expires_at` since the fence let the write through. An absent row
+ * reports null rather than a lapse: deletion is revocation, and the fence's
+ * lock is what makes that binding.
+ */
+export async function crossIssueWriteGrantLapsedAt(
+  db: BasisReader,
+  companyId: string,
+  actorAgentId: string,
+  now: Date,
+): Promise<Date | null> {
+  const grant = await db
+    .select({ expiresAt: principalPermissionGrants.expiresAt })
+    .from(principalPermissionGrants)
+    .where(and(
+      eq(principalPermissionGrants.companyId, companyId),
+      eq(principalPermissionGrants.principalType, "agent"),
+      eq(principalPermissionGrants.principalId, actorAgentId),
+      eq(principalPermissionGrants.permissionKey, CROSS_ISSUE_WRITE_PERMISSION_KEY),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (!grant) return null;
+  return principalGrantIsActive(grant, now) ? null : grant.expiresAt ?? null;
+}
+
+/**
  * Resolve the first basis that authorizes `actorAgentId` to write to
  * `targetIssueId` from a run checked out on `sourceIssueId`.
  *

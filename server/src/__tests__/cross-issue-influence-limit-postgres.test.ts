@@ -19,6 +19,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   assertCrossIssueWriteFence,
+  assertCrossIssueWriteFenceUnexpiredAtCommit,
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.js";
@@ -1330,6 +1331,113 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       // lapsed. A clock read on entry would have let this write land.
       expect(persistedResult.status).toBe("rejected");
       expect(await countMutations(seeded.companyId)).toBe(0);
+    });
+
+    /**
+     * The fence answered "still authorized" and *then* the grant ran out while
+     * the mutation statements executed. Locking cannot catch this: the fence
+     * holds every row its decision read, but `expires_at` is compared against
+     * the clock, and no lock stops the clock. So the boundary that has to be
+     * authorized is the last one before COMMIT, not the first one after BEGIN.
+     *
+     * Deterministic rather than timing-dependent: the bound is crossed by
+     * waiting for it explicitly between the fence and the write, so the window
+     * this proves is the one the code has to close, not one the scheduler
+     * happened to produce.
+     */
+    it("rolls the write back when the grant expires after the fence but before the commit", async () => {
+      const seeded = await seedGrantedAgent({ membershipStatus: "active", expiresAt: null });
+
+      const decision = await gate(seeded, "COMMIT-EXPIRY-1");
+      expect(decision?.fence).toMatchObject({ basisAtCheck: "explicit_permission_grant" });
+
+      const expiresAt = new Date(Date.now() + 200);
+      await db
+        .update(principalPermissionGrants)
+        .set({ expiresAt })
+        .where(eq(principalPermissionGrants.companyId, seeded.companyId));
+
+      const persisted = db.transaction(async (tx) => {
+        // Passes: the grant is still live at this instant.
+        const basis = await assertCrossIssueWriteFence(db, tx, decision?.fence);
+        expect(basis).toBe("explicit_permission_grant");
+
+        while (Date.now() <= expiresAt.getTime()) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+
+        await tx.insert(activityLog).values(mutationRow(seeded));
+        await assertCrossIssueWriteFenceUnexpiredAtCommit(db, tx, decision?.fence, basis);
+      });
+
+      await expect(persisted).rejects.toThrow();
+      // The whole point: not "denied next time", but zero rows from this write.
+      expect(await countMutations(seeded.companyId)).toBe(0);
+
+      const refusals = await db
+        .select({ details: activityLog.details })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, seeded.companyId),
+          eq(activityLog.action, "issue.cross_issue_write_grant_expired_in_flight"),
+        ));
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]!.details).toMatchObject({
+        basisAtCheck: "explicit_permission_grant",
+        basisAtWrite: "explicit_permission_grant",
+        grantExpiredAt: expiresAt.toISOString(),
+      });
+    });
+
+    it("commits normally when the grant is still live at the commit boundary", async () => {
+      const seeded = await seedGrantedAgent({ membershipStatus: "active", expiresAt: null });
+
+      const decision = await gate(seeded, "COMMIT-EXPIRY-2");
+      await db
+        .update(principalPermissionGrants)
+        .set({ expiresAt: new Date(Date.now() + 60_000) })
+        .where(eq(principalPermissionGrants.companyId, seeded.companyId));
+
+      await db.transaction(async (tx) => {
+        const basis = await assertCrossIssueWriteFence(db, tx, decision?.fence);
+        await tx.insert(activityLog).values(mutationRow(seeded));
+        await assertCrossIssueWriteFenceUnexpiredAtCommit(db, tx, decision?.fence, basis);
+      });
+
+      expect(await countMutations(seeded.companyId)).toBe(1);
+    });
+
+    /**
+     * A write riding a structural basis has no expiry to cross, so the commit
+     * boundary must not start refusing it because some unrelated grant row
+     * happens to have lapsed. Guards against the re-check being wired to the
+     * grant table rather than to the basis the fence actually accepted.
+     */
+    it("ignores a lapsed grant when the write is riding a structural basis", async () => {
+      const seeded = await seedGrantedAgent({ membershipStatus: "active", expiresAt: null });
+      // Make the actor the target's assignee, so the basis walk stops before it
+      // ever reaches the grant.
+      await db
+        .update(issues)
+        .set({ assigneeAgentId: seeded.agentId })
+        .where(eq(issues.id, seeded.targetIssueId));
+
+      const decision = await gate(seeded, "COMMIT-EXPIRY-3");
+      expect(decision?.fence).toMatchObject({ basisAtCheck: "actor_is_target_assignee" });
+
+      await db
+        .update(principalPermissionGrants)
+        .set({ expiresAt: new Date(Date.now() - 60_000) })
+        .where(eq(principalPermissionGrants.companyId, seeded.companyId));
+
+      await db.transaction(async (tx) => {
+        const basis = await assertCrossIssueWriteFence(db, tx, decision?.fence);
+        expect(basis).toBe("actor_is_target_assignee");
+        await tx.insert(activityLog).values(mutationRow(seeded));
+        await assertCrossIssueWriteFenceUnexpiredAtCommit(db, tx, decision?.fence, basis);
+      });
+
+      expect(await countMutations(seeded.companyId)).toBe(1);
     });
   });
 });

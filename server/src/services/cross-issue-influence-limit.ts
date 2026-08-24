@@ -5,8 +5,10 @@ import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
+  type CrossIssueWriteBasis,
   type CrossIssueWriteGrantDecision,
   type CrossIssueWriteOperation,
+  crossIssueWriteGrantLapsedAt,
   evaluateCrossIssueWriteGrant,
   resolveCrossIssueWriteBasis,
 } from "./cross-issue-write-basis.js";
@@ -426,6 +428,7 @@ async function auditCrossIssueWriteGrantDenied(
 }
 
 const CROSS_ISSUE_WRITE_GRANT_REVOKED_ACTIVITY = "issue.cross_issue_write_grant_revoked_in_flight";
+const CROSS_ISSUE_WRITE_GRANT_EXPIRED_ACTIVITY = "issue.cross_issue_write_grant_expired_in_flight";
 
 /**
  * Re-assert the authority the cap gate resolved, inside the transaction that is
@@ -443,8 +446,8 @@ export async function assertCrossIssueWriteFence(
   auditDb: Db,
   tx: Parameters<typeof resolveCrossIssueWriteBasis>[0],
   fence: CrossIssueWriteFence | null | undefined,
-) {
-  if (!fence) return;
+): Promise<CrossIssueWriteBasis | null> {
+  if (!fence) return null;
   const authority = await resolveCrossIssueWriteBasis(
     tx,
     {
@@ -456,7 +459,7 @@ export async function assertCrossIssueWriteFence(
     },
     { lockAuthorityInputs: true },
   );
-  if (authority.basis !== null) return;
+  if (authority.basis !== null) return authority.basis;
 
   const context = {
     event: "cross_issue_write_grant",
@@ -505,6 +508,84 @@ export async function assertCrossIssueWriteFence(
     logger.warn({ ...context, err }, "Failed to audit a cross-issue write refused for revoked authority");
   }
   logger.warn(context, "cross-issue write refused: authority revoked between the cap gate and the write");
+  throw crossIssueWriteGrantError({ issueIdentifier: fence.targetIssueIdentifier });
+}
+
+/**
+ * Re-assert the *expiry* half of the fence at the last authorized write
+ * boundary — after the mutation statements, immediately before commit.
+ *
+ * `assertCrossIssueWriteFence` locks every row its decision reads, which pins
+ * all of them except the one input that moves on its own. `expires_at` is not
+ * compared against a row, it is compared against the clock, and the clock keeps
+ * running after the lock is taken. So a grant that was active when the fence
+ * ran can lapse while the mutation executes, and the write commits on authority
+ * that no longer holds. No lock closes that, because no lock stops time; the
+ * only fix is to ask again where there is nothing left to happen but COMMIT.
+ *
+ * Runs only when the grant was the basis the fence accepted. A write riding a
+ * structural basis — the actor is the target's assignee, created it, or shares
+ * its parent — has no expiry to cross, and re-reading the grant table for it
+ * would be a query per write for an answer that cannot matter.
+ *
+ * `auditDb` is the pooled handle for the same reason it is in the fence: the
+ * throw rolls `tx` back, and the evidence has to survive that.
+ */
+export async function assertCrossIssueWriteFenceUnexpiredAtCommit(
+  auditDb: Db,
+  tx: Parameters<typeof resolveCrossIssueWriteBasis>[0],
+  fence: CrossIssueWriteFence | null | undefined,
+  basisAtWrite: CrossIssueWriteBasis | null,
+) {
+  if (!fence || basisAtWrite !== "explicit_permission_grant") return;
+  const lapsedAt = await crossIssueWriteGrantLapsedAt(tx, fence.companyId, fence.agentId, new Date());
+  if (!lapsedAt) return;
+
+  const context = {
+    event: "cross_issue_write_grant",
+    companyId: fence.companyId,
+    runId: fence.runId,
+    agentId: fence.agentId,
+    sourceIssueId: fence.sourceIssueId,
+    targetIssueId: fence.targetIssueId,
+    kind: fence.kind,
+    basisAtCheck: fence.basisAtCheck,
+    basisAtWrite,
+    grantExpiredAt: lapsedAt.toISOString(),
+    enforceAt: fence.enforceAt,
+  };
+  try {
+    await auditDb.insert(activityLog).values({
+      companyId: fence.companyId,
+      actorType: "agent",
+      actorId: fence.agentId,
+      agentId: fence.agentId,
+      runId: fence.runId,
+      responsibleUserId: fence.responsibleUserId,
+      action: CROSS_ISSUE_WRITE_GRANT_EXPIRED_ACTIVITY,
+      entityType: "issue",
+      entityId: fence.targetIssueId,
+      details: {
+        kind: fence.kind,
+        operation: fence.operation,
+        sourceIssueId: fence.sourceIssueId,
+        targetIssueId: fence.targetIssueId,
+        targetIssueIdentifier: fence.targetIssueIdentifier,
+        basisAtCheck: fence.basisAtCheck,
+        basisAtWrite,
+        // Distinct from the revoked-in-flight row: the authority was not taken
+        // away mid-write, it ran out mid-write. Both refuse the same way and
+        // both leave zero rows, but an operator reading the trail should not
+        // have to guess which happened.
+        grantExpiredAt: lapsedAt.toISOString(),
+        grantMode: "enforce",
+        grantEnforceAt: fence.enforceAt,
+      },
+    });
+  } catch (err) {
+    logger.warn({ ...context, err }, "Failed to audit a cross-issue write refused for an expired grant");
+  }
+  logger.warn(context, "cross-issue write refused: grant expired between the fence and the commit");
   throw crossIssueWriteGrantError({ issueIdentifier: fence.targetIssueIdentifier });
 }
 

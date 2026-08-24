@@ -130,6 +130,18 @@ export type IssueThreadInteractionServiceOptions = {
    * resolution path cannot forget to fence itself.
    */
   preCommitAuthorityGuard?: (tx: Db) => Promise<void>;
+  /**
+   * Runs as the *last* statement of every transaction this service opens,
+   * after the resolution has written but before it commits.
+   *
+   * `preCommitAuthorityGuard` locks the rows its decision reads, which holds
+   * them still through commit. It cannot hold the clock still, so a grant that
+   * was active when the transaction opened can lapse while the resolution
+   * writes. The routes pass the expiry re-check here so the authorized boundary
+   * is the last one rather than the first (FAI-10144); throwing rolls the whole
+   * resolution back the same way the opening guard does.
+   */
+  postMutationAuthorityGuard?: (tx: Db) => Promise<void>;
 };
 
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
@@ -1472,7 +1484,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       ...args: unknown[]
     ) => Promise<unknown>)(async (tx: Db) => {
       await opts.preCommitAuthorityGuard?.(tx);
-      return callback(tx);
+      const result = await callback(tx);
+      await opts.postMutationAuthorityGuard?.(tx);
+      return result;
     }, ...rest)) as unknown as Db["transaction"];
   const pullRequestStateCache = new Map<string, { state: PullRequestMergeState; checkedAt: number }>();
   const now = opts.now ?? (() => new Date());
