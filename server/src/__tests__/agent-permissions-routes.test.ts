@@ -924,13 +924,14 @@ describe.sequential("agent permission routes", () => {
       }));
 
     expect([200, 201]).toContain(res.status);
-    expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
-      companyId,
-      "agent",
-      agentId,
-      "member",
-      "active",
-    );
+    // The route no longer ensures the membership itself. That call ran on the
+    // pool before the grant's transaction opened, so a removal committing in
+    // the gap was invisible to the write that followed — and it *activated*
+    // whatever membership it found, so writing a permission quietly re-admitted
+    // a principal an operator had stood down. `setPrincipalPermission` now does
+    // it inside its own transaction, under the grant lock, and refuses an
+    // archived member rather than reviving one (FAI-10152 round 4).
+    expect(mockAccessService.ensureMembership).not.toHaveBeenCalled();
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
       "agent",

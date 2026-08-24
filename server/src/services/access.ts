@@ -478,6 +478,27 @@ export function accessService(db: Db) {
         throw conflict("Only human company members can be archived");
       }
       if (existing.status === "archived") {
+        // Not a no-op. Archiving is idempotent on the membership row, but the
+        // grants are a separate table with no foreign key to it, so "already
+        // archived" is not the same as "already has no grants" — a writer that
+        // raced the first archive can leave rows behind it. Returning here
+        // meant the obvious remedy, calling archive again, was the one thing
+        // that could not clean them up. Take the lock and repeat the delete;
+        // on the common path it removes nothing (FAI-10152 round 4).
+        await lockPrincipalGrantWrites(tx, {
+          companyId,
+          principalType: existing.principalType,
+          principalId: existing.principalId,
+        });
+        await tx
+          .delete(principalPermissionGrants)
+          .where(
+            and(
+              eq(principalPermissionGrants.companyId, companyId),
+              eq(principalPermissionGrants.principalType, existing.principalType),
+              eq(principalPermissionGrants.principalId, existing.principalId),
+            ),
+          );
         return { member: existing, reassignedIssueCount: 0 };
       }
       if (input.reassignment?.assigneeUserId === existing.principalId) {
@@ -698,6 +719,69 @@ export function accessService(db: Db) {
     return listUserCompanyAccess(userId);
   }
 
+  /**
+   * The membership half of a grant write, on the caller's transaction and under
+   * the grant advisory lock the caller already holds.
+   *
+   * Two things separate it from `ensureMembership`. It runs inside `tx`, so the
+   * membership check and the grant write are one serialized operation rather
+   * than a pooled read followed by an unrelated transaction — a revoker
+   * committing in that gap left an archived membership carrying a live grant
+   * row, dormant until the principal was re-added and it woke up with them.
+   *
+   * And it never writes the membership. `ensureMembership(…, "member",
+   * "active")` in front of a grant write was an *activation*: it flipped a
+   * pending or suspended principal to active, and outside the lock at that, so
+   * writing a permission quietly re-admitted someone an operator had stood
+   * down. Standing is decided by the membership endpoints; this only reads it.
+   * An `archived` row is refused outright, because that is the tombstone every
+   * removal path leaves (`archiveMember`, `setUserCompanyAccess`) and it is the
+   * one state where the removal also deleted the grants — writing them back is
+   * resurrection. `pending` and `suspended` are left alone: those keep their
+   * grants by design, and `decidePrincipalGrant` already refuses to honour a
+   * grant behind either.
+   *
+   * Absent means never a member rather than removed, so it is still created —
+   * that is how the default-grant seeders admit a freshly built agent.
+   *
+   * Ordering falls out of the lock the caller holds: a revoker either commits
+   * first, and this sees `archived` and refuses, or it waits, and archives the
+   * membership and drops the grants after this commits (FAI-10152 round 4).
+   */
+  async function ensureMembershipForGrantWrite(
+    tx: Db,
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+  ) {
+    const existing = await tx
+      .select()
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, principalType),
+          eq(companyMemberships.principalId, principalId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (existing) {
+      if (existing.status === "archived") {
+        throw conflict(
+          `Principal ${principalType}:${principalId} has been removed from company ${companyId} and cannot be granted permissions`,
+        );
+      }
+      return existing;
+    }
+
+    return tx
+      .insert(companyMemberships)
+      .values({ companyId, principalType, principalId, status: "active", membershipRole: "member" })
+      .returning()
+      .then((rows) => rows[0]);
+  }
+
   async function ensureMembership(
     companyId: string,
     principalType: PrincipalType,
@@ -741,6 +825,23 @@ export function accessService(db: Db) {
   ) {
     assertGrantScopesAreSaveable(grants);
     await db.transaction(async (tx) => {
+      // Lock first, then read the membership. Revalidating at all is the point:
+      // every caller that ensures a membership does it on the pool before this
+      // transaction opens, so a removal committing in that gap was invisible —
+      // this deleted the principal's grants and reinserted the caller's set
+      // behind the revoker's own delete, leaving an archived member holding a
+      // full grant set that woke up the moment they were re-added.
+      //
+      // Taking the lock explicitly rather than leaning on the one
+      // `grantRowsPreservingExpiry` takes puts the membership read *after* it,
+      // which is what makes the answer binding: a revoker has then either
+      // committed, and this reads `archived` and refuses, or it is queued
+      // behind this transaction and drops the grants once we commit. The read
+      // stays non-locking on purpose — `archiveMember` holds the membership row
+      // and waits for this same advisory lock, so taking it `FOR UPDATE` here
+      // would close a deadlock cycle (FAI-10152 round 4).
+      await lockPrincipalGrantWrites(tx, { companyId, principalType, principalId });
+      await ensureMembershipForGrantWrite(tx, companyId, principalType, principalId);
       const rows = await grantRowsPreservingExpiry(tx, {
         companyId,
         principalType,
@@ -850,11 +951,15 @@ export function accessService(db: Db) {
     }
 
     assertGrantScopesAreSaveable([{ permissionKey, scope }]);
-    await ensureMembership(companyId, principalType, principalId, "member", "active");
 
     const now = new Date();
     await db.transaction(async (tx) => {
       await lockPrincipalGrantWrites(tx, { companyId, principalType, principalId });
+      // Inside the transaction and under the lock, not before either. Read on
+      // the pooled handle first, this was a check whose answer could be false by
+      // the time the grant landed: a revoker archiving the membership in that
+      // gap left the row it deleted being reinserted right behind it.
+      await ensureMembershipForGrantWrite(tx, companyId, principalType, principalId);
       // Written against the natural key rather than a row id read moments
       // earlier, so a replacement that recycles the row cannot turn this into
       // an update of zero rows. `expiresAt` is left out of the conflict update

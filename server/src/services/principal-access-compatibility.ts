@@ -49,6 +49,32 @@ export async function insertMissingPrincipalGrants(
   const now = new Date();
   return db.transaction(async (tx) => {
     await tx.execute(principalGrantLock(input));
+    // Under the lock, so this answer is binding for the insert that follows.
+    // `ON CONFLICT DO NOTHING` is idempotent against rows, not against
+    // standing: a seeder queued behind a removal resumed after it and put the
+    // role's default grants back on a principal who had just been removed —
+    // rows nothing reads while the membership is archived, and full authority
+    // again the moment they were re-added. Skip rather than throw: this runs
+    // from the startup backfill and from company clone, where a principal
+    // removed mid-sweep is an expected state, not an error.
+    //
+    // Only `archived` is skipped. That is the tombstone both removal paths
+    // leave behind, and the only state in which the removal also deleted the
+    // grants. An absent row means never a member rather than removed, and is
+    // left to behave exactly as before (FAI-10152 round 4).
+    const membership = await tx
+      .select({ status: companyMemberships.status })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, input.companyId),
+          eq(companyMemberships.principalType, input.principalType),
+          eq(companyMemberships.principalId, input.principalId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (membership?.status === "archived") return 0;
+
     const inserted = await tx
       .insert(principalPermissionGrants)
       .values(

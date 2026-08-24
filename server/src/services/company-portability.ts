@@ -3534,7 +3534,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     grantedByUserId: string | null,
   ) {
     if (permissionGrants.length === 0) return;
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    // Membership is ensured inside `setPrincipalPermission`, atomically with
+    // the grant and refusing an archived member. See FAI-10144.
     for (const grant of permissionGrants) {
       await access.setPrincipalPermission(
         companyId,

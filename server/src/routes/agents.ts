@@ -1153,7 +1153,10 @@ export function agentRoutes(
     agentId: string,
     grantedByUserId: string | null,
   ) {
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    // No `ensureMembership` here: `setPrincipalPermission` does it inside its
+    // own transaction, under the grant lock, and refuses an archived membership
+    // rather than reviving it. Doing it out here first would revive the row a
+    // revoker had just archived and hand the grant straight back (FAI-10144).
     await access.setPrincipalPermission(
       companyId,
       "agent",
@@ -3595,7 +3598,6 @@ export function agentRoutes(
 
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
-    await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     // No expiry argument on purpose. This endpoint's payload is a boolean
     // `canAssignTasks` toggle, not a grant editor, so there is no bound for a
     // caller to express here. Omitting the argument is the safe half of the
