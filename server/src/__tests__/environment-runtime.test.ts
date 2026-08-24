@@ -5639,6 +5639,70 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
+  it("destroys reusable plugin-backed sandbox leases scoped to an environment", async () => {
+    const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
+    // The holding run is finished, so the reservation is stale and destroyable.
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentDestroyLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const result = await runtimeWithPlugin.destroyReusableSandboxLeasesForEnvironment({
+      environmentId: reusableLease.environmentId!,
+      failureReason: "environment_deleted",
+    });
+
+    expect(result).toEqual({ destroyed: 1, failed: 0, skippedLiveRun: 0 });
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentDestroyLease",
+      expect.objectContaining({
+        driverKey: "fake-plugin",
+        providerLeaseId: "reusable-plugin-lease",
+      }),
+      31234,
+    );
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "expired",
+      failureReason: "environment_deleted",
+      cleanupStatus: "success",
+    });
+  });
+
+  it("keeps a reusable lease held by an in-flight run out of the environment-scoped destroy", async () => {
+    const { pluginId, reusableLease } = await seedReusablePluginSandboxLease();
+    // seedEnvironment leaves the holding run in `running` status.
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async () => undefined),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const result = await runtimeWithPlugin.destroyReusableSandboxLeasesForEnvironment({
+      environmentId: reusableLease.environmentId!,
+      failureReason: "environment_deleted",
+    });
+
+    expect(result).toEqual({ destroyed: 0, failed: 0, skippedLiveRun: 1 });
+    expect(workerManager.call).not.toHaveBeenCalled();
+    // The lease keeps its reusable status, so the delete guard still blocks.
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+      leasePolicy: "reuse_by_environment",
+    });
+  });
+
   it("sweeps reusable cleanup with the configuration recorded on the lease", async () => {
     const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
     const environmentsSvc = environmentService(db);

@@ -959,7 +959,7 @@ export async function prepareSandboxManagedRuntime(input: {
             //    wipes the target tree EXCEPT `.paperclip-runtime`, so the overlay tar,
             //    which sits under `.paperclip-runtime`, survives to run its own extract.
             if (gitSnapshot) {
-              await emitRuntimeStatus(input.onRuntimeProgress, "git_sync", "Syncing git history to sandbox");
+              await emitRuntimeStatus(input.onRuntimeProgress, "git_sync", "Syncing git history to environment");
               const gitTarPath = path.join(tempDir, "git-workspace.tar");
               const remoteGitTar = path.posix.join(runtimeRootDir, "git-workspace-upload.tar");
               await withShallowGitWorkspaceClone({
@@ -986,7 +986,7 @@ export async function prepareSandboxManagedRuntime(input: {
             // 2. workspace-overlay tar. A git-backed overlay merges on top of the just
             //    extracted git tree (no wipe); a plain workspace wipes every child except
             //    the preserved names first. The extract runs AFTER the git extract.
-            await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing workspace to sandbox");
+            await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing workspace to environment");
             const workspaceTarPath = path.join(tempDir, "workspace.tar");
             const workspaceArchiveDir = gitSnapshot ? path.join(tempDir, "workspace-overlay") : input.workspaceLocalDir;
             if (gitSnapshot) {
@@ -1043,7 +1043,7 @@ export async function prepareSandboxManagedRuntime(input: {
       inboundTaskIsRequired.push(true);
       inboundTasks.push(() =>
         runStepSpan(`stage.asset.${asset.key}`, async () => {
-          await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing runtime assets to sandbox");
+          await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing runtime assets to environment");
           const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
           const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
           // Every asset — default OR custom-provisioned (e.g. an adapter credential
@@ -1137,7 +1137,7 @@ export async function prepareSandboxManagedRuntime(input: {
               throw new Error(`additional source projectId is not a simple path segment: ${projectId}`);
             }
             const remoteProjectDir = path.posix.join(runtimeRootDir, label);
-            await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing referenced project to sandbox");
+            await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing referenced project to environment");
             await stageConfinedSyncIn({
               files: [{
                 sourcePath: localPath,
@@ -1237,7 +1237,7 @@ export async function prepareSandboxManagedRuntime(input: {
               let remoteWorkspaceStatus = "dirty";
               try {
                 if (gitSnapshot) {
-                  await emitRuntimeStatus(input.onRuntimeProgress, "export", "Exporting git changes from sandbox");
+                  await emitRuntimeStatus(input.onRuntimeProgress, "export", "Exporting git changes from environment");
                   importedRef = createImportedGitRef("sandbox");
                   const remoteGitBundle = path.posix.join(runtimeRootDir, "git-delta.bundle");
                   const remoteWorkspaceStatusPath = path.posix.join(runtimeRootDir, "workspace-status.txt");
@@ -1323,7 +1323,7 @@ export async function prepareSandboxManagedRuntime(input: {
                   }
                 }
 
-                await emitRuntimeStatus(input.onRuntimeProgress, "restore", "Restoring workspace from sandbox");
+                await emitRuntimeStatus(input.onRuntimeProgress, "restore", "Restoring workspace from environment");
                 const extractedDir = path.join(tempDir, "workspace");
                 if (nativeSyncOut) {
                   // Native outbound: the provider materializes the sandbox workspace into
@@ -1405,7 +1405,7 @@ export async function prepareSandboxManagedRuntime(input: {
                     : undefined,
                 });
               } finally {
-                await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing sandbox workspace");
+                await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing workspace");
                 if (importedRef) {
                   await deleteLocalGitRef({ localDir: input.workspaceLocalDir, ref: importedRef });
                 }

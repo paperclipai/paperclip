@@ -40,6 +40,7 @@
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
+    "check:node-version": "node scripts/check-node-version-policy.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
     "test:install-sh-docker": "./scripts/test-install-sh-docker.sh",
@@ -76,7 +77,7 @@
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.11.0"
   },
   "packageManager": "pnpm@9.15.4",
   "pnpm": {

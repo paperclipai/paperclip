@@ -67,6 +67,8 @@ import {
   upsertIssueDocumentSchema,
   updateIssueSchema,
   isClosedIsolatedExecutionWorkspace,
+  isMarkdownArtifactWorkProduct,
+  isMarkdownAttachmentContent,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
@@ -107,7 +109,7 @@ import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
-import { validate } from "../middleware/validate.js";
+import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
@@ -138,6 +140,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
@@ -262,18 +265,18 @@ function prefersMinimalIssueUpdateResponse(req: Request) {
 }
 
 const refreshExternalObjectsSchema = z.object({
-  objectIds: z.array(z.string().uuid()).max(50).optional(),
+  objectIds: z.array(z.string().guid()).max(50).optional(),
 }).strict();
 const inboxArchiveBodySchema = z.object({
   userId: z.string().trim().min(1).optional(),
 }).strict().default({});
 const externalObjectSummariesSchema = z.object({
-  issueIds: z.array(z.string().uuid()).max(1000),
+  issueIds: z.array(z.string().guid()).max(1000),
 }).strict();
 
 const promoteLowTrustOutputSchema = z.object({
   sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
-  sourceArtifactId: z.string().uuid(),
+  sourceArtifactId: z.string().guid(),
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().min(1).max(8_000),
 });
@@ -457,7 +460,7 @@ function requiresPaperclipAttachmentMetadata(input: {
 }
 
 const attachmentArtifactMetadataInputSchema = z.object({
-  attachmentId: z.string().uuid(),
+  attachmentId: z.string().guid(),
 }).passthrough();
 
 function buildCreateIssueActivityStatusDetails(
@@ -2830,6 +2833,7 @@ export function issueRoutes(
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
+  const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
@@ -7888,7 +7892,108 @@ export function issueRoutes(
       actor,
       workProductChanged: true,
     });
+    await materializeArtifactReviewDocumentBestEffort({ issue, workProduct: product, actor });
     res.status(201).json(product);
+  });
+
+  async function ensureArtifactReviewDocumentForWorkProduct(input: {
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    workProduct: NonNullable<Awaited<ReturnType<typeof workProductsSvc.getById>>>;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const { issue, workProduct, actor } = input;
+    const result = await artifactReviewDocumentsSvc.ensureForWorkProduct({
+      issue: { id: issue.id, companyId: issue.companyId },
+      workProduct,
+    });
+    if (!result.revisionChanged) return result;
+    const doc = result.document;
+    await issueReferencesSvc.syncDocument(doc.id);
+    await externalObjectsSvc.syncDocumentSafely(doc.id);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: result.created ? "issue.document_created" : "issue.document_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        key: doc.key,
+        documentId: doc.id,
+        title: doc.title,
+        format: doc.format,
+        revisionNumber: doc.latestRevisionNumber,
+        workProductId: workProduct.id,
+        artifactReviewDocument: true,
+      },
+    });
+    for (const remap of result.remappedAnnotations) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.document_annotation_remapped",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: doc.key,
+          documentId: doc.id,
+          threadId: remap.thread.id,
+          revisionNumber: doc.latestRevisionNumber,
+          anchorState: remap.thread.anchorState,
+          anchorConfidence: remap.thread.anchorConfidence,
+          snapshotId: remap.snapshot.id,
+        },
+      });
+    }
+    await revalidateActiveSourceRecoveryAfterCommittedWrite({
+      issue,
+      trigger: "document",
+      actor,
+      documentChanged: true,
+    });
+    return result;
+  }
+
+  async function materializeArtifactReviewDocumentBestEffort(input: {
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    workProduct: NonNullable<Awaited<ReturnType<typeof workProductsSvc.getById>>>;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    if (!isMarkdownArtifactWorkProduct(input.workProduct)) return;
+    try {
+      await ensureArtifactReviewDocumentForWorkProduct(input);
+    } catch (error) {
+      // Work-product writes stay fail-open: raw open and download remain
+      // available, and the explicit review-document endpoint is the retry path.
+      logger.warn(
+        { err: error, issueId: input.issue.id, workProductId: input.workProduct.id },
+        "markdown work product review-document materialization failed",
+      );
+    }
+  }
+
+  router.post("/issues/:id/work-products/:workProductId/review-document", async (req, res) => {
+    const id = req.params.id as string;
+    const workProductId = req.params.workProductId as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+    const workProduct = await workProductsSvc.getById(workProductId);
+    if (!workProduct || workProduct.issueId !== issue.id || workProduct.companyId !== issue.companyId) {
+      res.status(404).json({ error: "Work product not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    const result = await ensureArtifactReviewDocumentForWorkProduct({ issue, workProduct, actor });
+    res.status(result.created ? 201 : 200).json(result.document);
   });
 
   router.post("/issues/:id/low-trust/promotions", validate(promoteLowTrustOutputSchema), async (req, res) => {
@@ -8087,6 +8192,11 @@ export function issueRoutes(
       actor,
       workProductChanged: true,
     });
+    const reviewDocumentInputChanged = ["type", "provider", "metadata", "title", "createdByRunId"]
+      .some((key) => Object.prototype.hasOwnProperty.call(patch, key));
+    if (reviewDocumentInputChanged || sourceTrust) {
+      await materializeArtifactReviewDocumentBestEffort({ issue, workProduct: product, actor });
+    }
     res.json(product);
   });
 
@@ -8359,7 +8469,7 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
+  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validateIssueMutationBody(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (isSkillTestScopedActor(req)) {
@@ -8696,7 +8806,7 @@ export function issueRoutes(
     });
   });
 
-  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
+  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validateIssueMutationBody(createChildIssueSchema), async (req, res) => {
     const parentId = req.params.id as string;
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
@@ -8878,7 +8988,7 @@ export function issueRoutes(
     res.json(decompositions);
   });
 
-  router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
+  router.post("/issues/:id/accepted-plan-decompositions", validateIssueMutationBody(createAcceptedPlanDecompositionSchema), async (req, res) => {
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
@@ -9247,7 +9357,7 @@ export function issueRoutes(
     },
   );
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+  router.patch("/issues/:id", validateIssueMutationBody(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
@@ -10447,18 +10557,21 @@ export function issueRoutes(
         dependentIssueId: string;
         resolvedBlockerIssueId: string;
         blockerIssueIds: string[];
+        blockedTransitionAt?: Date | string | null;
         source: string;
         mutation: string;
       }) => {
         const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: input.dependentIssueId,
           blockerIssueIds: input.blockerIssueIds,
+          blockedTransitionAt: input.blockedTransitionAt,
         });
         try {
           const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
             companyId: issue.companyId,
             dependentIssueId: input.dependentIssueId,
             blockerIssueIds: input.blockerIssueIds,
+            blockedTransitionAt: input.blockedTransitionAt,
           });
           if (existingWake) return;
         } catch (err) {
@@ -10643,6 +10756,7 @@ export function issueRoutes(
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: issue.id,
             blockerIssueIds: dependent.blockerIssueIds,
+            blockedTransitionAt: dependent.blockedTransitionAt,
             source: "issue.blockers_resolved",
             mutation: "blocker_done",
           });
@@ -10670,6 +10784,7 @@ export function issueRoutes(
             dependentIssueId: issue.id,
             resolvedBlockerIssueId,
             blockerIssueIds: readiness.blockerIssueIds,
+            blockedTransitionAt: issue.blockedTransitionAt,
             source: "issue.blockers_restored",
             mutation: "blocked_dependency_restored",
           });
@@ -12502,16 +12617,19 @@ export function issueRoutes(
         dependentIssueId: string;
         resolvedBlockerIssueId: string;
         blockerIssueIds: string[];
+        blockedTransitionAt?: Date | string | null;
       }) => {
         const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
           dependentIssueId: input.dependentIssueId,
           blockerIssueIds: input.blockerIssueIds,
+          blockedTransitionAt: input.blockedTransitionAt,
         });
         try {
           const existingWake = await findExistingIssueBlockersResolvedWakeForReadyState(db, {
             companyId: currentIssue.companyId,
             dependentIssueId: input.dependentIssueId,
             blockerIssueIds: input.blockerIssueIds,
+            blockedTransitionAt: input.blockedTransitionAt,
           });
           if (existingWake) return;
         } catch (err) {
@@ -12675,6 +12793,7 @@ export function issueRoutes(
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: currentIssue.id,
             blockerIssueIds: dependent.blockerIssueIds,
+            blockedTransitionAt: dependent.blockedTransitionAt,
           });
         }
       }
@@ -12997,7 +13116,16 @@ export function issueRoutes(
       objectContentType: object.contentType,
       originalFilename: attachment.originalFilename,
     });
-    res.setHeader("Content-Type", responseContentType);
+    // Markdown bodies are stored as UTF-8; declare the charset so inline
+    // (raw) views do not mojibake. SVG/inline checks below stay on the bare type.
+    const isMarkdownResponse = isMarkdownAttachmentContent({
+      contentType: responseContentType,
+      originalFilename: attachment.originalFilename,
+    });
+    res.setHeader(
+      "Content-Type",
+      isMarkdownResponse ? `${responseContentType}; charset=utf-8` : responseContentType,
+    );
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (responseContentType === SVG_CONTENT_TYPE) {

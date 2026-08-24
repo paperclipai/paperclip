@@ -15,6 +15,8 @@ import type {
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
+  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
   prepareAdapterExecutionTargetRuntime,
@@ -31,6 +33,8 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexLossReason } from "../duplex-telemetry.js";
+import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../duplex-bridge-broker.js";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -2047,6 +2051,8 @@ async function buildRuntime(input: {
           adapterKey: input.engine.adapterType,
           timeoutSec,
           hostApiToken: env.PAPERCLIP_API_KEY,
+          enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
+          duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(remoteTarget),
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
           runtimeSpan: input.runtimeSpan,
@@ -4003,6 +4009,47 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (input.kind === "terminal") {
         const terminal = input.terminal;
         const timedOut = input.timedOut;
+        // Read the sandbox duplex control-channel disposition at the ACP
+        // terminal-finalization boundary, before the bridge teardown. A control
+        // channel that died mid-turn latches a failure with a typed loss reason;
+        // a healthy channel or a normal-teardown loss reports a success. Only a
+        // nominally completed, non-timed-out terminal is success-eligible, so the
+        // seam reads the disposition only there. For that success-eligible
+        // terminal the seam marks the host-observed orderly completion, so a later
+        // teardown loss cannot flip the run to a failure. The file bridge path
+        // never sets these methods, so the optional calls no-op there.
+        let duplexLossReason: DuplexLossReason | null = null;
+        if (terminal.status === "completed" && !timedOut) {
+          // Success-eligible terminal. Atomically read the disposition and mark
+          // the orderly completion in one broker step. No `await` separates the
+          // read from the mark, so a teardown loss cannot slip in between them. A
+          // latched loss fails the run closed; a healthy channel marks its
+          // orderly completion, so a later teardown loss stays a normal teardown.
+          const disposition = prepared.paperclipBridge?.settleRunDisposition?.() ?? null;
+          if (disposition?.failed) {
+            duplexLossReason = disposition.lossReason ?? "other";
+          }
+        } else {
+          // Non-success-eligible terminal (failed, cancelled, or timed out). A
+          // deliberate host teardown follows, so mark the orderly completion now.
+          // This stops the teardown `channel_exit` from latching `lossSeq`, from
+          // emitting a false loss event, and from incrementing the loss counters.
+          // The mark no-ops once a loss latched, so a real mid-run loss still
+          // fails the run.
+          prepared.paperclipBridge?.markOrderlyCompletion?.();
+        }
+        // A terminal that reports "completed" but whose duplex control channel
+        // died before the completion is not a success. The seam fails it closed.
+        const channelLost = duplexLossReason !== null;
+        // Build the boundary failure message only from the closed loss-reason
+        // enum, so no raw provider text rides the message.
+        const channelLostMessage = duplexLossReason
+          ? `The sandbox duplex control channel was lost (${duplexLossReason}) before the run completed.`
+          : null;
+        // A completed, non-timed-out turn whose channel stayed live is the one
+        // success path. Every other outcome — a failed, cancelled, or timed-out
+        // terminal, or a completed terminal with a lost channel — is a failure.
+        const turnSucceeded = terminal.status === "completed" && !timedOut && !channelLost;
         // Read usage before the settlement can discard runtime state.
         const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
         const turnUsage = summarizeAcpxTurnUsage({
@@ -4026,10 +4073,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           handle: sessionHandle,
           reason: timedOut
             ? "paperclip timeout cleanup"
-            : failedTurn
-              ? `paperclip turn ${terminal.status}`
-              : "paperclip completed turn cleanup",
-          discardPersistentState: terminal.status === "cancelled" || timedOut,
+            : channelLost
+              ? "paperclip duplex channel lost cleanup"
+              : failedTurn
+                ? `paperclip turn ${terminal.status}`
+                : "paperclip completed turn cleanup",
+          discardPersistentState: terminal.status === "cancelled" || timedOut || channelLost,
           dropWarmEntry: false,
           recordCloseError: false,
           cancelTurnReason: null,
@@ -4037,23 +4086,32 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-          : resultErrorMessage(terminal);
+          : channelLost
+            ? channelLostMessage
+            : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         await emitAcpxLog(ctx, {
-          type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
-          summary: terminal.status,
+          type: turnSucceeded ? "acpx.result" : "acpx.error",
+          summary: channelLost ? "duplex_channel_lost" : terminal.status,
           stopReason: terminalStopReason,
           message: errorMessage,
         });
         // The one clean-completion path clears the run failure flag; every other
-        // path keeps it set, so the run root span closes with error status.
-        runFailed = terminal.status === "completed" && !timedOut ? false : true;
+        // path keeps it set, so the run root span closes with error status. A
+        // completed terminal with a lost duplex channel keeps the flag set.
+        runFailed = turnSucceeded ? false : true;
         capturedResult = {
-          exitCode: terminal.status === "completed" ? 0 : 1,
+          exitCode: turnSucceeded ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+          errorCode: terminal.status === "failed"
+            ? "acpx_turn_failed"
+            : timedOut
+              ? "acpx_timeout"
+              : channelLost
+                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+                : null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -4063,7 +4121,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
           resultJson: {
-            status: terminal.status,
+            status: channelLost ? "failed" : terminal.status,
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,
@@ -4081,12 +4139,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           }),
           clearSession,
         };
-        // The turn phase finished. A completed, non-timed-out turn is `ok`; every
-        // other terminal outcome is `failed`.
+        // The turn phase finished. A completed, non-timed-out turn with a live
+        // duplex channel is `ok`; every other terminal outcome is `failed`.
         await emitPhase(
           "turn",
           turnPhaseStart,
-          terminal.status === "completed" && !timedOut ? "ok" : "failed",
+          turnSucceeded ? "ok" : "failed",
         );
         // Return the typed turn completion so the coordinator settles for the right
         // cause. The completion carries no live resources; the settlement claims the
@@ -4114,6 +4172,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           return {
             kind: "cancelled",
             cause: { kind: "turn_cancelled", reason: terminal.stopReason ?? "cancelled" },
+            resources: emptyConsumed,
+          };
+        }
+        // A completed terminal whose duplex control channel died mid-turn returns
+        // a failed completion, so the coordinator settles for a failure and the
+        // reuse decision forbids a save. The message carries only the typed loss
+        // reason, so no raw provider text rides the cause.
+        if (channelLost) {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: new Error(channelLostMessage ?? "The sandbox duplex control channel was lost."),
+            },
             resources: emptyConsumed,
           };
         }

@@ -205,7 +205,6 @@ Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly 
 // values only.
 const claudeLoginCapability: AdapterLoginCapability = {
   panelMode: "submitted_browser_code",
-  sandboxTransport: "pseudo_terminal",
   timeoutPolicy: "fixed",
   getCommand: () => CLAUDE_SETUP_TOKEN_COMMAND,
   parsePrompt: (output) => {
@@ -220,13 +219,13 @@ const claudeLoginCapability: AdapterLoginCapability = {
 };
 
 // The Codex interactive login capability. Codex runs `codex login --device-auth`
-// over the streamed exec channel. The flow shows a one-time code that the user
-// enters in the browser. The caller sets the host-side timeout. The device-login
-// flow writes its credential inside the sandbox, so the capability declares no
-// terminal credential capture and no completion claim.
+// on a real pseudo-terminal, because a pipe emits no login prompt. The flow shows
+// a one-time code that the user enters in the browser. The caller sets the
+// host-side timeout. The device-login flow writes its credential inside the
+// sandbox, so the capability declares no terminal credential capture and no
+// completion claim.
 const codexLoginCapability: AdapterLoginCapability = {
   panelMode: "displayed_code",
-  sandboxTransport: "streamed_exec",
   timeoutPolicy: "caller_bounded",
   getCommand: () => CODEX_DEVICE_LOGIN_COMMAND,
   parsePrompt: (output) => {
@@ -243,7 +242,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
     agentId: "claude",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=22.12.0",
+      nodeRange: ">=24.11.0",
       packages: ["@agentclientprotocol/claude-agent-acp"],
     },
   },
@@ -317,7 +316,7 @@ const codexLocalAdapter: ServerAdapterModule = {
     agentId: "codex",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=22.13.0",
+      nodeRange: ">=24.11.0",
       packages: ["@agentclientprotocol/codex-acp"],
     },
   },
@@ -382,7 +381,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
     agentId: "gemini",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=20.0.0",
+      nodeRange: ">=24.11.0",
       packages: ["@google/gemini-cli"],
     },
   },

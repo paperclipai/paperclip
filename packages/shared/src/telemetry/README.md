@@ -304,6 +304,92 @@ record, so a worker can never forge a parent. The host validates the
 trace context the worker sends no span, so the whole provider-span path is a
 no-op.
 
+## Sandbox Duplex Transport Telemetry
+
+Paperclip opens a fixed observability surface for the sandbox duplex transport.
+This surface is separate from the first-party events and from the startup spans
+above. The generated telemetry contract does not cover it, so this section is its
+canonical contract. The code owner is
+`packages/adapter-utils/src/duplex-telemetry.ts`. That module holds each name and
+each enum value as a literal constant, so the surface never drifts.
+
+The surface is opt-in. The host injects a recorder that binds the span to the
+OTel tracer, the counter to the guarded counter store in
+`server/src/services/tool-runtime-metrics.ts`, and the event to the run-events
+bridge. The default recorder is a no-op, so the whole surface stays inert until
+the host binds a real recorder. Every recorder call sits inside an error swallow,
+so a telemetry failure never breaks the request path.
+
+The surface carries no user content. No route, no query, no request body, no
+token, and no raw identifier rides a span, a counter, or an event. Each record
+carries only the closed dimension keys below and, for the request span, a
+latency. The `provider` dimension carries only the allowlisted public value
+`daytona`. Any other plugin key maps to `other` before the record reaches a sink,
+so a raw plugin key never reaches a span attribute, a counter label, or an event
+field.
+
+### Spans
+
+| Span | Scope | Latency |
+| --- | --- | --- |
+| `sandbox.duplex.channel_open` | One duplex channel-open attempt. The `outcome` dimension is `ok` when the channel opened and readiness passed, or `error` when the open or readiness failed. | none |
+| `sandbox.duplex.request` | One duplex request the broker forwarded to the host. | The request latency in milliseconds. |
+
+### Event
+
+| Event | Scope |
+| --- | --- |
+| `sandbox.duplex.transport` | The host emits it at each transport boundary: a ready duplex channel, a fallback to the file bridge, and a terminal channel loss. Its dimensions record the boundary. |
+
+### Counters
+
+| Counter | Scope |
+| --- | --- |
+| `sandbox_duplex_channel_open_total` | One successful duplex channel open. |
+| `sandbox_duplex_fallback_total` | One fallback to the file bridge. The `fallback_reason` dimension records the cause. |
+| `sandbox_duplex_loss_total` | One terminal duplex channel loss. The `loss_class` dimension records the phase. |
+| `sandbox_duplex_session_leak_total` | One leaked provider session at teardown. |
+
+### Aggregate byte ledger metrics
+
+The host aggregate byte ledger owns one process-scoped gauge and two
+process-scoped counters. The ledger bounds the retained bytes across every live
+duplex route in one process. It sets the gauge on each reserve and each release.
+It increments a counter on a rejected reservation and on an accounting defect.
+These records carry no dimension label. The guarded counter store keys each
+counter on `(companyId, metric)`, and the gauge reports one process value, so no
+dynamic dimension rides them. The code owner is
+`packages/adapter-utils/src/duplex-aggregate-byte-ledger.ts`, and the metric
+names are literal constants in `duplex-telemetry.ts`.
+
+| Metric | Type | Scope |
+| --- | --- | --- |
+| `sandbox_duplex_aggregate_bytes_in_use` | gauge | The aggregate retained bytes across every live duplex route. The ledger sets it on each reserve and each release. |
+| `sandbox_duplex_aggregate_byte_reservation_rejections_total` | counter | One rejected aggregate byte reservation. The ledger increments it when a reservation would pass the aggregate ceiling. |
+| `sandbox_duplex_aggregate_byte_accounting_underflow_total` | counter | One aggregate byte accounting defect. The ledger increments it on a double release or on a transfer of a token it does not hold. |
+
+### Dimension keys
+
+Counters carry no dimension labels. The guarded counter store keys each counter
+on `(companyId, metric)` with no label column, so the `fallback_reason` and
+`loss_class` values fold into the counter metric name instead. The full closed
+dimension set below rides only the spans and the `sandbox.duplex.transport`
+event, which use only these closed keys. A test asserts the exact set, so a new
+key never reaches a sink by accident.
+
+| Key | Type | Optional | Value set |
+| --- | --- | --- | --- |
+| `provider` | string | no | `daytona`, or `other` for any other plugin key. |
+| `transport` | string | no | `duplex` or `file`. A fallback record uses `file`; every other record uses `duplex`. |
+| `outcome` | string | yes | `ok` or `error`. |
+| `fallback_reason` | string | yes | `gate_off`, `capability_absent`, `open_failed`, `ready_invalid`, `ready_nonce_mismatch`, `ready_timeout`, or `contaminated`. It rides only a fallback record. |
+| `loss_class` | string | yes | `pre_dispatch` or `post_dispatch`, relative to the first request dispatch. It rides only a loss record. |
+| `loss_reason` | string | yes | `stdin_eof`, `provider_exit`, `heartbeat_timeout`, `rpc_failure`, `write_error`, `transport_closed`, or `other`. The host maps every loss cause to one of these values, so no raw provider text reaches a sink. `write_error` marks a rejected host-to-sandbox write. `transport_closed` marks a reason-less provider transport close with no exit data. It rides only a loss record. |
+
+To add a name or an enum value, extend the literal constant in
+`duplex-telemetry.ts` first, then update the test that asserts the closed set.
+Keep every dimension low-cardinality and free of user content.
+
 ## Sandbox Startup Run-Log Event
 
 Paperclip writes one `run.startup.step` event to the run log for each bring-up

@@ -319,7 +319,7 @@ describe("TaskChatComposer", () => {
 
     const chip = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-mode"]')!;
     expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip.textContent).toContain("Agent");
+    expect(chip.textContent).toContain("Auto");
 
     pressKey("Tab", { shiftKey: true });
     expect(chip.getAttribute("data-pending-work-mode")).toBe("planning");

@@ -251,7 +251,7 @@ export const pluginManagedAgentDeclarationSchema = z.object({
   instructions: z.object({
     entryFile: z.string().min(1).max(200).optional(),
     content: z.string().max(200_000).optional(),
-    files: z.record(z.string().max(200_000)).optional(),
+    files: z.record(z.string(), z.string().max(200_000)).optional(),
     assetPath: z.string().min(1).max(500).optional(),
   }).optional(),
 });
@@ -287,7 +287,7 @@ export const pluginManagedRoutineDeclarationSchema = z.object({
   description: z.string().max(10_000).nullable().optional(),
   assigneeRef: pluginManagedResourceRefSchema.extend({ resourceKind: z.literal("agent") }).nullable().optional(),
   projectRef: pluginManagedResourceRefSchema.extend({ resourceKind: z.literal("project") }).nullable().optional(),
-  goalId: z.string().uuid().nullable().optional(),
+  goalId: z.string().guid().nullable().optional(),
   status: z.enum(ROUTINE_STATUSES).optional(),
   priority: z.enum(ISSUE_PRIORITIES).optional(),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
@@ -1200,7 +1200,7 @@ export type InstallPlugin = z.infer<typeof installPluginSchema>;
  * the plugin's instanceConfigSchema is done at the service layer.
  */
 export const upsertPluginConfigSchema = z.object({
-  companyId: z.string().uuid(),
+  companyId: z.string().guid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 
@@ -1211,7 +1211,7 @@ export type UpsertPluginConfig = z.infer<typeof upsertPluginConfigSchema>;
  * Allows a partial merge of config values.
  */
 export const patchPluginConfigSchema = z.object({
-  companyId: z.string().uuid(),
+  companyId: z.string().guid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 

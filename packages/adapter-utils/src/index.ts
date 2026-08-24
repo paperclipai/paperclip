@@ -86,7 +86,6 @@ export type {
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 export {
   ADAPTER_LOGIN_PANEL_MODES,
-  ADAPTER_LOGIN_SANDBOX_TRANSPORTS,
   ADAPTER_LOGIN_TIMEOUT_POLICIES,
   ADAPTER_LOGIN_COMPLETION_CLAIMS,
   assertValidAdapterLoginCapability,
@@ -94,7 +93,6 @@ export {
 } from "./login-capability.js";
 export type {
   AdapterLoginPanelMode,
-  AdapterLoginSandboxTransport,
   AdapterLoginTimeoutPolicy,
   AdapterLoginCompletionClaim,
   AdapterLoginPrompt,

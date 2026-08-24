@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
 import { envCommand } from "./commands/env.js";
@@ -250,6 +251,8 @@ auth
 registerClientAuthCommands(auth);
 
 async function main(): Promise<void> {
+  warnIfUnsupportedNodeVersion(process.versions.node, (message) => console.warn(message));
+
   let failed = false;
   try {
     await program.parseAsync();

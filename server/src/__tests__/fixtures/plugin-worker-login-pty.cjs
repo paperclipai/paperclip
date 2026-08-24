@@ -50,17 +50,17 @@ rl.on("line", (line) => {
       result: {
         ok: true,
         supportedMethods: [
-          "setupTokenPtyOpen",
-          "setupTokenPtyInput",
-          "setupTokenPtyStop",
-          "setupTokenPtyClose",
+          "loginPtyOpen",
+          "loginPtyInput",
+          "loginPtyStop",
+          "loginPtyClose",
         ],
       },
     });
     return;
   }
 
-  if (method === "setupTokenPtyOpen") {
+  if (method === "loginPtyOpen") {
     const directive = parseDirective(params.providerLeaseId);
     const mode = directive.mode ?? "normal";
     const workerSessionId = directive.workerSessionId ?? "ws-1";
@@ -92,7 +92,7 @@ rl.on("line", (line) => {
       for (const entry of outputs) {
         send({
           jsonrpc: "2.0",
-          method: "setupTokenPty.output",
+          method: "loginPty.output",
           params: {
             workerSessionId: entry.sid ?? workerSessionId,
             chunk: entry.chunk,
@@ -102,7 +102,7 @@ rl.on("line", (line) => {
       if (typeof directive.exitCode === "number") {
         send({
           jsonrpc: "2.0",
-          method: "setupTokenPty.exit",
+          method: "loginPty.exit",
           params: { workerSessionId, exitCode: directive.exitCode },
         });
       }
@@ -110,14 +110,14 @@ rl.on("line", (line) => {
     return;
   }
 
-  if (method === "setupTokenPtyInput") {
+  if (method === "loginPtyInput") {
     // Echo the input back as one output notification for the bound session, so a
     // test proves the input reaches the worker and the output routes back.
     for (const entry of routes.values()) {
       if (entry.workerSessionId === params.workerSessionId) {
         send({
           jsonrpc: "2.0",
-          method: "setupTokenPty.output",
+          method: "loginPty.output",
           params: { workerSessionId: entry.workerSessionId, chunk: `echo:${params.data}` },
         });
       }
@@ -126,12 +126,12 @@ rl.on("line", (line) => {
     return;
   }
 
-  if (method === "setupTokenPtyStop") {
+  if (method === "loginPtyStop") {
     send({ jsonrpc: "2.0", id: message.id, result: null });
     return;
   }
 
-  if (method === "setupTokenPtyClose") {
+  if (method === "loginPtyClose") {
     const entry = routes.get(params.hostRouteId);
     routes.delete(params.hostRouteId);
     const closeMode = entry ? entry.closeMode : "ack";

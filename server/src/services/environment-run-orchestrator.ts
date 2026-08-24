@@ -42,6 +42,8 @@ import {
   type AdapterRemoteExecutionSpec,
   type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
+import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
@@ -153,6 +155,14 @@ export function environmentRunOrchestrator(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     environmentRuntime?: EnvironmentRuntimeService;
+    /**
+     * The process-owned aggregate byte ledger for the sandbox duplex channel.
+     * The server root creates one ledger per host process and injects the same
+     * object here. The orchestrator stamps it onto the sandbox execution target,
+     * so one shared gauge bounds the aggregate retained bytes across all live
+     * duplex routes. Absent keeps the bridge inert for this seam.
+     */
+    duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -347,6 +357,12 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    /**
+     * The host duplex telemetry recorder for this run. The orchestrator threads
+     * it to `resolveEnvironmentExecutionTarget`, which stamps it on the sandbox
+     * target. Absent keeps the safe no-op default in the bridge.
+     */
+    duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -515,6 +531,8 @@ export function environmentRunOrchestrator(
         leaseMetadata: (lease.metadata as Record<string, unknown> | null) ?? null,
         lease,
         environmentRuntime,
+        duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
+        duplexAggregateByteLedger: options.duplexAggregateByteLedger ?? null,
       });
       const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
       const authoritativeRoot =

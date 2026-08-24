@@ -813,7 +813,7 @@ describe("buildIssueChatMessages", () => {
       agentId: "agent-1",
       agentName: "CodexCoder",
       adapterType: "codex_local",
-      currentStatusMessage: "Syncing git worktree to sandbox",
+      currentStatusMessage: "Syncing git worktree to environment",
       currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
       currentToolName: "bash",
       lastAssistantSnippet: "Checking repository status",
@@ -837,7 +837,7 @@ describe("buildIssueChatMessages", () => {
         custom: {
           kind: "live-run",
           runId: "run-active-1",
-          currentStatusMessage: "Syncing git worktree to sandbox",
+          currentStatusMessage: "Syncing git worktree to environment",
           currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
           currentToolName: "bash",
           lastAssistantSnippet: "Checking repository status",
