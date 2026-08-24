@@ -235,6 +235,36 @@ describe("run-scoped semantic tool authority", () => {
     );
   });
 
+  it("recovers a completed mutation when the primary receipt commit fails", async () => {
+    let executions = 0;
+    const store = new MemoryIdempotencyStore({ failCompleteOnce: true });
+    const dispatcher = new PaperclipSemanticDispatcher({
+      contextProvider: () => runContext(),
+      idempotencyStore: store,
+      bindings: [
+        {
+          operationId: "write_document",
+          execute: () => {
+            executions += 1;
+            return { value: mutationReceipt("write-recovered") };
+          },
+        },
+      ],
+    });
+
+    const first = await dispatcher.dispatch(
+      call("write_document", writeDocumentInput(), "call_recovery_first"),
+    );
+    const retry = await dispatcher.dispatch(
+      call("write_document", writeDocumentInput(), "call_recovery_retry"),
+    );
+
+    expect(first).toMatchObject({ ok: true, duplicate: false });
+    expect(retry).toMatchObject({ ok: true, duplicate: true });
+    expect(executions).toBe(1);
+    expect(store.recoveryCount).toBe(1);
+  });
+
   it("reports an in-progress retry without running a concurrent mutation", async () => {
     const store = new MemoryIdempotencyStore();
     let releaseExecution!: () => void;
@@ -321,6 +351,7 @@ describe("run-scoped semantic tool authority", () => {
           throw new Error("store unavailable");
         },
         complete: () => undefined,
+        recover: () => undefined,
         release: () => undefined,
       },
       bindings: [
@@ -502,10 +533,13 @@ class MemoryIdempotencyStore implements PaperclipSemanticIdempotencyStore {
   >();
   readonly #tokenToScope = new Map<string, string>();
   #sequence = 0;
+  #failCompleteOnce: boolean;
+  recoveryCount = 0;
   readonly claimed: Promise<void>;
   #resolveClaimed!: () => void;
 
-  constructor() {
+  constructor(options: { failCompleteOnce?: boolean } = {}) {
+    this.#failCompleteOnce = options.failCompleteOnce ?? false;
     this.claimed = new Promise<void>((resolve) => {
       this.#resolveClaimed = resolve;
     });
@@ -531,6 +565,19 @@ class MemoryIdempotencyStore implements PaperclipSemanticIdempotencyStore {
   }
 
   complete(token: string, outcome: PaperclipSemanticStoredOutcome): void {
+    if (this.#failCompleteOnce) {
+      this.#failCompleteOnce = false;
+      throw new Error("primary receipt commit failed");
+    }
+    this.#storeOutcome(token, outcome);
+  }
+
+  recover(token: string, outcome: PaperclipSemanticStoredOutcome): void {
+    this.recoveryCount += 1;
+    this.#storeOutcome(token, outcome);
+  }
+
+  #storeOutcome(token: string, outcome: PaperclipSemanticStoredOutcome): void {
     const scope = this.#tokenToScope.get(token);
     const entry = scope === undefined ? undefined : this.#entries.get(scope);
     if (scope === undefined || entry?.token !== token) {

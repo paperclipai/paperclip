@@ -98,7 +98,11 @@ export function paperclipSemanticAuthorizationBoundary(
   if (code.includes("company")) return "company";
   if (code.includes("actor") || code.includes("role")) return "actor";
   if (code.includes("claim") || code.includes("absent")) return "grant";
-  if (code.includes("idempotency") || code.includes("revision")) {
+  if (
+    code.includes("idempotency") ||
+    code.includes("revision") ||
+    code.includes("receipt")
+  ) {
     return "revision";
   }
   if (code.includes("ownership") || code.includes("run_mismatch")) {
@@ -118,7 +122,9 @@ export function paperclipSemanticOutcome(input: {
   if (input.ok) return input.duplicate === true ? "duplicate" : "succeeded";
   if (input.code.includes("conflict")) return "conflict";
   if (input.code === "operation_absent") return "unavailable";
-  if (input.code.includes("binding")) return "failed";
+  if (input.code.includes("binding") || input.code.includes("recovery")) {
+    return "failed";
+  }
   return "denied";
 }
 

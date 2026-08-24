@@ -81,6 +81,7 @@ export type PaperclipSemanticDenialCode =
   | "idempotency_conflict"
   | "idempotency_in_progress"
   | "receipt_store_unavailable"
+  | "receipt_recovery_failed"
   | "binding_failed"
   | "binding_output_invalid";
 
@@ -184,7 +185,11 @@ export type PaperclipSemanticIdempotencyClaim =
 
 /**
  * The claim operation must be atomic. Production bindings must persist this
- * store before they expose mutation actions.
+ * store before they expose mutation actions. `complete` is the primary commit
+ * path. `recover` is a required, idempotent fallback that must durably resolve
+ * a claim to the same outcome when the primary commit reports an ambiguous or
+ * transient failure. A store without an independent recovery path cannot be
+ * used to expose mutation actions.
  */
 export interface PaperclipSemanticIdempotencyStore {
   claim(input: {
@@ -195,6 +200,10 @@ export interface PaperclipSemanticIdempotencyStore {
     | PaperclipSemanticIdempotencyClaim
     | Promise<PaperclipSemanticIdempotencyClaim>;
   complete(
+    token: string,
+    outcome: PaperclipSemanticStoredOutcome,
+  ): void | Promise<void>;
+  recover(
     token: string,
     outcome: PaperclipSemanticStoredOutcome,
   ): void | Promise<void>;

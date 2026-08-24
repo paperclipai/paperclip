@@ -37,8 +37,10 @@ const writeDocument = paperclipSemanticAction("write_document");
 explicit list of application bindings. Unbound actions are absent. Actor claims
 and run-delegated claims are intersected. Optional discovery returns only bound
 actions that pass the same authorization check. Mutation actions also require
-an atomic idempotency store. Raw tool content never enters semantic receipts;
-receipts contain a digest and allowlisted references only.
+an atomic idempotency store. The store must provide an idempotent recovery path
+for a mutation that succeeds before its primary receipt commit fails. Raw tool
+content never enters semantic receipts; receipts contain a digest and
+allowlisted references only.
 
 ## Generated inventory
 

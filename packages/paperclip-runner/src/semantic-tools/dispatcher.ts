@@ -490,18 +490,25 @@ export class PaperclipSemanticDispatcher {
       try {
         await this.#idempotencyStore!.complete(claim.token, stored);
       } catch {
-        decision = deniedDecision(
-          decision,
-          "binding_failed",
-          "The mutation receipt could not be committed.",
-        );
-        return this.#denial(
-          call,
-          "binding_failed",
-          descriptor,
-          currentContext,
-          decision,
-        );
+        try {
+          await this.#idempotencyStore!.recover(claim.token, stored);
+        } catch {
+          // The application effect may have happened. Keep the claim reserved
+          // and stop automatic retries. The store's operator recovery path can
+          // commit the same sanitized outcome without repeating the effect.
+          decision = deniedDecision(
+            decision,
+            "receipt_recovery_failed",
+            "The mutation receipt needs operator recovery.",
+          );
+          return this.#denial(
+            call,
+            "receipt_recovery_failed",
+            descriptor,
+            currentContext,
+            decision,
+          );
+        }
       }
     }
 
