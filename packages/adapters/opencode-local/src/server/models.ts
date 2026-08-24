@@ -9,7 +9,11 @@ import {
 import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const MODELS_DISCOVERY_TIMEOUT_MS = 30_000;
+// Keep the last successful listing around well past its fresh TTL so a failing
+// `opencode models` (host overload, ollama queue, provider hiccup) can still be
+// answered from cache instead of degrading every consumer to an empty list.
+const MODELS_STALE_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 // `opencode models` is a lightweight metadata call, but on a shared ollama
 // daemon it can queue behind an in-flight `opencode run` generation on the
 // same host and either time out or fail with an opaque error. Retry a few
@@ -29,7 +33,10 @@ function resolveOpenCodeCommand(input: unknown): string {
   return asString(input, envOverride);
 }
 
-const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+const discoveryCache = new Map<
+  string,
+  { fetchedAt: number; expiresAt: number; models: AdapterModel[] }
+>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -114,7 +121,7 @@ function discoveryCacheKey(command: string, cwd: string, env: Record<string, str
 
 function pruneExpiredDiscoveryCache(now: number) {
   for (const [key, value] of discoveryCache.entries()) {
-    if (value.expiresAt <= now) discoveryCache.delete(key);
+    if (now - value.fetchedAt > MODELS_STALE_FALLBACK_MAX_AGE_MS) discoveryCache.delete(key);
   }
 }
 
@@ -189,9 +196,26 @@ export async function discoverOpenCodeModelsCached(input: {
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  try {
+    const models = await discoverOpenCodeModels({ command, cwd, env });
+    discoveryCache.set(key, { fetchedAt: now, expiresAt: now + MODELS_CACHE_TTL_MS, models });
+    return models;
+  } catch (err) {
+    // Stale-but-known listing beats an empty answer when the CLI itself is
+    // failing (host overload, ollama queue, transient provider outage). The
+    // availability probe treats this list as advisory anyway, so serving a
+    // stale catalog for a bounded window is strictly better than nothing.
+    if (cached && cached.models.length > 0) {
+      const ageMinutes = Math.round((now - cached.fetchedAt) / 60_000);
+      console.warn(
+        `[opencode-local] \`opencode models\` failed (${
+          err instanceof Error ? err.message : String(err)
+        }); serving cached listing from ${ageMinutes}min ago.`,
+      );
+      return cached.models;
+    }
+    throw err;
+  }
 }
 
 export function isTruthyEnvFlag(value: string | undefined): boolean {

@@ -142,4 +142,87 @@ describe("openCode models", () => {
     await assertion;
     expect(spy).toHaveBeenCalledTimes(3);
   });
+
+  it("serves the stale cached listing when discovery fails after the fresh TTL", async () => {
+    vi.useFakeTimers();
+    const okResult = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "ollama/qwen2.5-coder:7b\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    };
+    const failedResult = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "host overloaded",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    };
+    const spy = vi
+      .spyOn(serverUtils, "runChildProcess")
+      .mockResolvedValueOnce(okResult)
+      .mockResolvedValue(failedResult);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
+    ]);
+
+    // Well past the fresh TTL, but inside the stale-fallback window.
+    vi.setSystemTime(new Date(Date.now() + 10 * 60 * 1000));
+
+    const assertion = expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
+    ]);
+    await vi.runAllTimersAsync();
+    await assertion;
+    // One successful discovery plus all three failing retry attempts.
+    expect(spy).toHaveBeenCalledTimes(4);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("serving cached listing from 10min ago"),
+    );
+  });
+
+  it("drops the stale fallback once it exceeds the retention window", async () => {
+    vi.useFakeTimers();
+    const okResult = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "ollama/qwen2.5-coder:7b\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    };
+    const failedResult = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "host overloaded",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    };
+    const spy = vi
+      .spyOn(serverUtils, "runChildProcess")
+      .mockResolvedValueOnce(okResult)
+      .mockResolvedValue(failedResult);
+
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
+    ]);
+
+    // Beyond the stale-fallback window: nothing left to fall back to.
+    vi.setSystemTime(new Date(Date.now() + 7 * 60 * 60 * 1000));
+
+    const assertion = expect(listOpenCodeModels()).resolves.toEqual([]);
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
 });
