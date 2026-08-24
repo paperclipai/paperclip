@@ -2296,6 +2296,99 @@ describe("effective run session config freshness", () => {
     expect(relocated.categoryFingerprints.runtimeSkills).toBe(base.categoryFingerprints.runtimeSkills);
   });
 
+  it("does not dual-fire adapterConfig when only runtime skills change (TSMC-21377)", async () => {
+    // The live symptom this guards: quiet codex multi-wakes reset the task session
+    // with `changedCategories: adapterConfig, runtimeSkills` on every wake, because
+    // the skills list was fingerprinted twice — once under runtimeSkills and again
+    // inside adapterConfig via paperclipRuntimeSkills. The caller now strips it
+    // (heartbeat.ts `sessionFingerprintAdapterConfig`); this asserts the outcome.
+    //
+    // The neighbouring "names safe categories …" case only asserts `toContain`,
+    // which still passes when adapterConfig fires too. That is the gap here.
+    const base = await buildSessionConfigMetadata();
+    const skillBumped = await buildSessionConfigMetadata({
+      runtimeSkills: [
+        {
+          key: "paperclip",
+          runtimeName: "paperclip",
+          source: "/tmp/paperclip/runtime-skills/paperclip",
+          versionId: null,
+          currentVersionId: "skill-version-2",
+          sourceStatus: "available",
+          missingDetail: null,
+        },
+      ],
+    });
+
+    expect(skillBumped.categoryFingerprints.runtimeSkills).not.toBe(
+      base.categoryFingerprints.runtimeSkills,
+    );
+    expect(skillBumped.categoryFingerprints.adapterConfig).toBe(
+      base.categoryFingerprints.adapterConfig,
+    );
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(base),
+      configMetadata: skillBumped,
+    });
+
+    expect(decision.reset).toBe(true);
+    expect(decision.changedCategories).toContain("runtimeSkills");
+    expect(decision.changedCategories).not.toContain("adapterConfig");
+  });
+
+  it("strips paperclipRuntimeSkills from the adapterConfig fingerprint even when a caller leaves it in (TSMC-21377)", async () => {
+    // Enforcement, not documentation. The heartbeat run path strips this before
+    // building the metadata, but that is call-site discipline: delete one line in
+    // `sessionFingerprintAdapterConfig` and the dual-fire silently returns.
+    // buildSessionConfigCategoryValues now strips it too, so the category value
+    // cannot carry the skills list whoever builds it. This test is what fails if
+    // that structural strip is removed.
+    const withSkillsInAdapterConfig = async (currentVersionId: string) =>
+      buildSessionConfigMetadata({
+        effectiveAdapterConfig: {
+          command: "codex",
+          model: "gpt-5.4-mini",
+          env: {
+            OPENAI_API_KEY: "resolved-secret-value",
+            PLAIN_FLAG: "plain-value",
+          },
+          paperclipRuntimeSkills: [
+            { key: "paperclip", currentVersionId },
+          ],
+        },
+      });
+
+    const before = await withSkillsInAdapterConfig("skill-version-1");
+    const after = await withSkillsInAdapterConfig("skill-version-2");
+
+    expect(after.categoryFingerprints.adapterConfig).toBe(
+      before.categoryFingerprints.adapterConfig,
+    );
+
+    // …and the rest of adapterConfig is still fingerprinted, so this is a targeted
+    // omission rather than the whole category going blind.
+    const modelChanged = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: {
+        command: "codex",
+        model: "gpt-5.4-nano",
+        env: {
+          OPENAI_API_KEY: "resolved-secret-value",
+          PLAIN_FLAG: "plain-value",
+        },
+        paperclipRuntimeSkills: [
+          { key: "paperclip", currentVersionId: "skill-version-1" },
+        ],
+      },
+    });
+
+    expect(modelChanged.categoryFingerprints.adapterConfig).not.toBe(
+      before.categoryFingerprints.adapterConfig,
+    );
+  });
+
   it("resets when effective adapter config changes after model/profile/env resolution", async () => {
     const base = await buildSessionConfigMetadata();
     const next = await buildSessionConfigMetadata({

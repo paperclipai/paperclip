@@ -6076,12 +6076,25 @@ function buildSessionConfigCategoryValues(input: {
         ),
       )
     : input.runtimeSkills;
+  // TSMC-21377: runtime skills have their own session-fingerprint category, and
+  // `paperclipRuntimeSkills` is also injected into the adapter config the runtime
+  // actually launches with. Fingerprinting the same list twice made every skill
+  // change move BOTH categories, so a quiet codex multi-wake reset its task
+  // session on each wake with `changedCategories: adapterConfig, runtimeSkills`
+  // and re-uploaded the full guard context uncached.
+  //
+  // The heartbeat run path already strips this before calling us. Stripping it
+  // here as well makes the guarantee structural rather than a discipline every
+  // future call site has to remember — the category value simply cannot carry
+  // the skills list, whoever builds it.
+  const adapterConfigForFingerprint = { ...parseObject(input.effectiveAdapterConfig) };
+  delete adapterConfigForFingerprint.paperclipRuntimeSkills;
   return {
     adapter: {
       adapterType: input.adapterType,
       agentConfigRevision: input.agentConfigRevision,
     },
-    adapterConfig: input.effectiveAdapterConfig,
+    adapterConfig: adapterConfigForFingerprint,
     agentRuntimeConfig: input.agentRuntimeConfig,
     modelProfile: input.modelProfile,
     instructions: input.instructions,
