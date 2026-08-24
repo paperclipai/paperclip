@@ -101,11 +101,11 @@ export const secretsConfigSchema = z.object({
 
 export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
-}).passthrough().default({});
+}).passthrough().prefault({});
 
 export const updatesConfigSchema = z.object({
   checkEnabled: z.boolean().default(true),
-}).passthrough().default({});
+}).passthrough().prefault({});
 
 export const paperclipConfigSchema = z
   .object({
@@ -210,18 +210,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function unwrapConfigSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
-  let current = schema;
+  let current: z.ZodTypeAny = schema;
   while (true) {
-    if (current instanceof z.ZodEffects) {
-      current = current.innerType();
-      continue;
-    }
     if (current instanceof z.ZodOptional) {
-      current = current.unwrap();
+      current = current.unwrap() as z.ZodTypeAny;
       continue;
     }
     if (current instanceof z.ZodDefault) {
-      current = current.removeDefault();
+      current = current.unwrap() as z.ZodTypeAny;
       continue;
     }
     return current;

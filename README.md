@@ -311,7 +311,7 @@ fi
 bash install.sh
 ```
 
-The installer ensures Node.js 20 or newer is available, installs a managed
+The installer ensures Node.js 24.11 or newer is available, installs a managed
 Paperclip CLI under `~/.paperclip/cli`, and starts interactive onboarding. It
 can also install Paperclip as a background service on supported Linux and
 macOS systems. The checksum detects transfer or publishing mistakes, but it is
@@ -376,7 +376,7 @@ pnpm dev
 
 This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
-> **Requirements:** Node.js 20+, pnpm 9.15+
+> **Requirements:** Node.js 24.11+, pnpm 9.15+
 
 <br/>
 

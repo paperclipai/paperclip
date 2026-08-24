@@ -5,6 +5,8 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexTelemetryRecorder } from "@paperclipai/adapter-utils/duplex-telemetry";
+import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import {
   clampSpanLabel,
   getActiveStepContext,
@@ -200,6 +202,15 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
   tracer?: ExecTracer;
+  // The host duplex telemetry recorder. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the safe no-op default in the
+  // bridge, so the surface stays inert until the host injects a real recorder.
+  duplexTelemetryRecorder?: DuplexTelemetryRecorder | null;
+  // The process-owned aggregate byte ledger. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the bridge inert for this seam.
+  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -291,12 +302,36 @@ export async function resolveEnvironmentExecutionTarget(input: {
       !capabilityResolutionFailed &&
       (!effectiveCapabilities || effectiveCapabilities.persistentProcessSessions);
 
+    // Resolve the per-run duplex bridge kill switch. It rides the host-side
+    // sandbox target on the same seam as `effectiveCapabilities`, so the value
+    // stays on the host and never enters the sandbox environment. Fail closed:
+    // an absent runtime, an absent method, or a read error keeps the file
+    // bridge. The stamp never turns a read error into a grant.
+    let enableSandboxDuplexBridge = false;
+    if (input.environmentRuntime?.readSandboxDuplexBridgeInput) {
+      try {
+        const duplexBridgeInput = await input.environmentRuntime.readSandboxDuplexBridgeInput();
+        enableSandboxDuplexBridge = duplexBridgeInput.enableDuplexBridge === true;
+      } catch {
+        enableSandboxDuplexBridge = false;
+      }
+    }
+
     return {
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
       shellCommand,
       remoteCwd,
+      enableSandboxDuplexBridge,
+      // Attach the host duplex telemetry recorder next to the runner. The bridge
+      // binds it to the fixed observability surface. Absent keeps the no-op
+      // default, so the surface stays inert on a run with no injected recorder.
+      duplexTelemetryRecorder: input.duplexTelemetryRecorder ?? null,
+      // Attach the process-owned aggregate byte ledger next to the runner. The
+      // bridge passes it to the broker, the decoder, and the response-body reader.
+      // Absent keeps the bridge inert for this seam.
+      duplexAggregateByteLedger: input.duplexAggregateByteLedger ?? null,
       ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,

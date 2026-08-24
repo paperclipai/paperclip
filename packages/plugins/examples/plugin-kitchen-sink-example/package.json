@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.1",
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "react": "^19.2.8",
@@ -33,5 +33,8 @@
   },
   "peerDependencies": {
     "react": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

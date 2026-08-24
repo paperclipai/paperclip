@@ -24,10 +24,10 @@ interface FakeDriverOptions {
 function createFakeDriver(options: FakeDriverOptions = {}) {
   const disposeCalls = { count: 0 };
   const driver: SandboxLoginDriver = {
-    async execStreaming(_command, onStdout) {
+    async start(_command, onData) {
       if (options.execError) throw options.execError;
       for (const chunk of options.chunks ?? []) {
-        onStdout(chunk);
+        onData(chunk);
       }
       if (options.hang) {
         // Never resolve. The runner must fall back to its timeout or signal.

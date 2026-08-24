@@ -20,7 +20,7 @@ export const externalObjectCanonicalIdentitySchema = z
     scheme: z.enum(["http", "https"]),
     host: z.string().trim().min(1),
     path: z.string().trim().min(1),
-    queryParamHashes: z.record(z.string().regex(/^[a-f0-9]{64}$/)).optional(),
+    queryParamHashes: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).optional(),
   })
   .strict();
 
