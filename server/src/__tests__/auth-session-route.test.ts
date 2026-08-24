@@ -22,13 +22,26 @@ function createSelectChain(rows: unknown[]) {
   };
 }
 
+/**
+ * The cloud-tenant auth path seeds role-default grants, and that seeder holds
+ * the per-principal grant lock inside a transaction (FAI-10144). These doubles
+ * have no isolation or locking to model, so the transaction runs its callback
+ * against the same object and the lock statement just answers. Without the two
+ * methods the middleware throws and every test here reads 500.
+ */
+function withGrantSeeder(db: any) {
+  db.execute = vi.fn(async () => []);
+  db.transaction = vi.fn(async (run: (tx: unknown) => unknown) => run(db));
+  return db;
+}
+
 function createDb() {
-  return {
+  return withGrantSeeder({
     select: vi
       .fn()
       .mockImplementationOnce(() => createSelectChain([]))
       .mockImplementationOnce(() => createSelectChain([])),
-  } as any;
+  } as any);
 }
 
 describe("actorMiddleware authenticated session profile", () => {
@@ -76,7 +89,7 @@ describe("actorMiddleware authenticated session profile", () => {
   it("trusts Cloud tenant identity headers and seeds board access", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const inserts: Array<{ values: Record<string, unknown> }> = [];
-    const db = {
+    const db = withGrantSeeder({
       insert: vi.fn(() => {
         const chain = {
           values(values: Record<string, unknown>) {
@@ -101,7 +114,7 @@ describe("actorMiddleware authenticated session profile", () => {
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
       select: vi.fn(() => createSelectChain([])),
-    } as any;
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -172,7 +185,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return Promise.resolve(undefined).then(resolve);
       },
     };
-    const db = {
+    const db = withGrantSeeder({
       select: vi.fn(() => ({
         from: (table: unknown) => ({
           where: () =>
@@ -185,7 +198,7 @@ describe("actorMiddleware authenticated session profile", () => {
       })),
       insert: vi.fn(() => insertChain),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-    } as any;
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -248,7 +261,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return Promise.resolve(undefined).then(resolve);
       },
     };
-    const db = {
+    const db = withGrantSeeder({
       select: vi.fn(() => ({
         from: (table: unknown) => ({
           where: () =>
@@ -279,12 +292,7 @@ describe("actorMiddleware authenticated session profile", () => {
         },
       })),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-    } as any;
-    // `execute` is on the transaction handle because the role-default grant
-    // seeder takes the per-principal advisory lock before its insert
-    // (FAI-10144); this double has no locks to model, so it just answers.
-    db.execute = vi.fn(async () => []);
-    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<void>) => run(db));
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -349,7 +357,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return Promise.resolve(undefined).then(resolve);
       },
     };
-    const db = {
+    const db = withGrantSeeder({
       select: vi.fn(() => ({
         from: (table: unknown) => ({
           where: () =>
@@ -365,7 +373,7 @@ describe("actorMiddleware authenticated session profile", () => {
           return Promise.resolve(undefined);
         },
       })),
-    } as any;
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {
