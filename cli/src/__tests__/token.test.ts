@@ -210,6 +210,34 @@ describe("token commands", () => {
     });
   });
 
+  it("rejects conflicting board token expiration options before creating a key", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit);
+
+    await expect(createProgram().parseAsync([
+      "token", "board", "create",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--never-expires",
+      "--ttl-days", "14",
+    ], { from: "user" })).rejects.toThrow("exit:1");
+
+    await expect(createProgram().parseAsync([
+      "token", "board", "create",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--expires-at", "2026-06-06T00:00:00.000Z",
+      "--ttl-days", "14",
+    ], { from: "user" })).rejects.toThrow("exit:1");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(error.mock.calls.map((call) => String(call[0])).join("\n")).toContain("Choose only one board token expiration mode");
+  });
+
   it("lists and revokes board tokens", async () => {
     const fetchMock = vi
       .fn()
