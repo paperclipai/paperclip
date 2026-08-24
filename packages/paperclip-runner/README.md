@@ -5,8 +5,11 @@ This private workspace package contains the staged Paperclip Runner work.
 The package currently exposes only the language-neutral PRP v1 TypeScript
 contract, provider-neutral structured questions and responses, deterministic
 fixture validation/replay, structured-result normalization, and the session
-reducer oracle. It does not add a runner process, provider transport, server
-adapter, semantic-tool authorization, or production Paperclip behavior.
+reducer oracle. It also contains a package-local Rust runner, scripted fake
+harness, bounded process supervisor, and cross-language replay oracle. These
+Rust binaries are test infrastructure. No server code starts or invokes them.
+The package does not add a provider transport, server adapter, semantic-tool
+authorization, or production Paperclip behavior.
 
 The first provider scope is Codex. The protocol contains provider-neutral event
 and semantic receipt shapes, but their presence does not authorize a tool or
@@ -20,6 +23,16 @@ Run the complete contract gate with:
 ```sh
 pnpm --filter @paperclipai/paperclip-runner check:protocol
 ```
+
+Run the Rust runner gate with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner check:runner
+```
+
+This command checks Rust formatting, builds and tests the minimal workspace,
+verifies bounded process cleanup, exercises the fake local runner, and compares
+the Rust conformance and replay summaries with the shared fixtures.
 
 Use `generate:protocol-manifest` after a schema or fixture change,
 `generate:protocol-types` after a schema change, and

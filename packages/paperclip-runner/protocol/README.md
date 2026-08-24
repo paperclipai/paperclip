@@ -35,3 +35,8 @@ The files in `fixtures/replay/golden/` are deterministic reducer oracles. Each
 accepted replay fixture has a complete session snapshot and a compact parity
 summary. `pnpm generate:replay-goldens` updates them after an intentional
 reducer change; package build and CI fail when they drift.
+
+The files in `fixtures/local-runner/scripts/` drive the package-local fake
+harness. They cover successful, failed, interrupted, interactive, duplicate
+terminal, process-cleanup, and oversized-frame behavior without starting a
+production adapter.
