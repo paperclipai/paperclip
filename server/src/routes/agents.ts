@@ -3596,6 +3596,12 @@ export function agentRoutes(
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+    // No expiry argument on purpose. This endpoint's payload is a boolean
+    // `canAssignTasks` toggle, not a grant editor, so there is no bound for a
+    // caller to express here. Omitting the argument is the safe half of the
+    // contract: `setPrincipalPermission` reads absent as "leave the existing
+    // bound alone", so flipping this toggle cannot un-time-box a grant an
+    // operator bounded through the member-permissions surface (FAI-10144).
     await access.setPrincipalPermission(
       agent.companyId,
       "agent",

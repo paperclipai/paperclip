@@ -517,13 +517,31 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     companyId: string,
     principalType: PrincipalType,
     principalId: string,
-    grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>,
+    grants: Array<{
+      permissionKey: PermissionKey;
+      scope?: Record<string, unknown> | null;
+      expiresAt?: string | Date | null;
+    }>,
   ) {
+    // Absent keeps the bound the permission already carried, which is what the
+    // real host does; a fake that dropped the field would let a plugin's tests
+    // pass against behaviour the host does not have (FAI-10144).
+    const existing = new Map(
+      getPrincipalGrants(companyId, principalType, principalId).map(
+        (grant) => [grant.permissionKey, grant.expiresAt ?? null] as const,
+      ),
+    );
     const stamped = grants.map((grant) => ({
       principalType,
       principalId,
       permissionKey: grant.permissionKey,
       scope: grant.scope && typeof grant.scope === "object" ? grant.scope : null,
+      expiresAt:
+        grant.expiresAt === undefined
+          ? existing.get(grant.permissionKey) ?? null
+          : grant.expiresAt === null
+            ? null
+            : new Date(grant.expiresAt),
     })) as PrincipalPermissionGrant[];
     principalGrants.set(principalGrantsKey(companyId, principalType, principalId), stamped);
     const member = [...accessMembers.values()].find(

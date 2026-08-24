@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -94,6 +95,84 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
     expect(rows).toEqual([]);
     services.dispose();
   });
+
+  /**
+   * `authorization.grants.set` replaces a principal's whole grant set, so it is
+   * a grant-authoring surface and has to carry a bound both ways: a plugin must
+   * be able to time-box what it grants, and a plugin that predates the field
+   * must not un-time-box an operator's bound by round-tripping the set without
+   * it (FAI-10144).
+   */
+  it("carries, keeps and clears a grant expiry through the plugin grant surface", async () => {
+    const company = await createCompany(db, "PXP");
+    const agent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "Sweep agent",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        permissions: {},
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+    const bound = "2026-09-06T12:34:56.789Z";
+    const readBack = async () =>
+      db
+        .select()
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.principalId, agent.id))
+        .then((rows) => rows[0]!);
+
+    await services.authorization.setGrants({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      grants: [{ permissionKey: "tasks:assign", expiresAt: bound }],
+    });
+    expect((await readBack()).expiresAt?.toISOString()).toBe(bound);
+
+    // Omission must not widen.
+    await services.authorization.setGrants({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      grants: [{ permissionKey: "tasks:assign" }],
+    });
+    expect((await readBack()).expiresAt?.toISOString()).toBe(bound);
+
+    // Explicit null is the one way to remove it.
+    await services.authorization.setGrants({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      grants: [{ permissionKey: "tasks:assign", expiresAt: null }],
+    });
+    expect((await readBack()).expiresAt).toBeNull();
+
+    // A zone-free instant would resolve against whichever machine runs the
+    // host, so it is refused rather than stored — and nothing is written.
+    await expect(
+      services.authorization.setGrants({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: agent.id,
+        grants: [{ permissionKey: "tasks:assign", expiresAt: "2026-09-06T12:34:56" }],
+      }),
+    ).rejects.toThrow("timezone offset");
+    expect((await readBack()).expiresAt).toBeNull();
+
+    services.dispose();
+  }, 30_000);
 
   it("redacts invite token hashes and sensitive defaults from plugin invite reads", async () => {
     const company = await createCompany(db, "PAZ");

@@ -43,6 +43,77 @@ describe("agentJoinGrantsFromDefaults", () => {
     ]);
   });
 
+  /**
+   * A join creates the grant row fresh, so there is no existing bound for the
+   * "absent keeps what is there" rule to fall back on. That makes this parser
+   * the only thing standing between an operator's time-boxed invite and a
+   * standing grant: drop the expiry here and the invite confers forever
+   * (FAI-10144).
+   */
+  it("carries an invite grant expiry through as a Date", () => {
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: {
+          grants: [
+            {
+              permissionKey: "issues:cross-write",
+              scope: { projectIds: ["project-1"] },
+              expiresAt: "2026-09-06T12:34:56.789Z",
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      {
+        permissionKey: "issues:cross-write",
+        scope: { projectIds: ["project-1"] },
+        expiresAt: new Date("2026-09-06T12:34:56.789Z"),
+      },
+      { permissionKey: "tasks:assign", scope: null },
+    ]);
+  });
+
+  it("omits the field entirely when the defaults never mention an expiry", () => {
+    const [grant] = agentJoinGrantsFromDefaults({
+      agent: { grants: [{ permissionKey: "agents:create", scope: null }] },
+    });
+    // Not `expiresAt: null` — absent is what `setPrincipalGrants` reads as
+    // "leave any existing bound alone", and the two must stay distinguishable.
+    expect(grant).toEqual({ permissionKey: "agents:create", scope: null });
+    expect("expiresAt" in grant!).toBe(false);
+  });
+
+  it("keeps an explicit null, which is how a bound is removed", () => {
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: { grants: [{ permissionKey: "tasks:assign", scope: null, expiresAt: null }] },
+      }),
+    ).toEqual([{ permissionKey: "tasks:assign", scope: null, expiresAt: null }]);
+  });
+
+  /**
+   * `defaultsPayload` is operator-authored JSON that no schema validates. An
+   * expiry we cannot read must not degrade to "no expiry" — that is the exact
+   * widening this field exists to prevent — so the grant goes instead. A
+   * zone-free instant counts as unreadable: it would resolve against whichever
+   * machine accepted the invite.
+   */
+  it.each([
+    ["a zone-free instant", "2026-09-06T12:34:56"],
+    ["a non-string", 1788000000000],
+    ["nonsense", "two weeks"],
+  ])("drops a grant whose expiry is %s", (_label, expiresAt) => {
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: {
+          grants: [
+            { permissionKey: "issues:cross-write", scope: { projectIds: ["p"] }, expiresAt },
+          ],
+        },
+      }),
+    ).toEqual([{ permissionKey: "tasks:assign", scope: null }]);
+  });
+
   it("does not duplicate tasks:assign when invite defaults already include it", () => {
     expect(
       agentJoinGrantsFromDefaults({
