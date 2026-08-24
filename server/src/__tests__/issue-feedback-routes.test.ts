@@ -180,6 +180,8 @@ describe("issue feedback trace routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  // First test after vi.resetModules() pays the full dynamic-import/transform cost of
+  // issues.ts; under CI load that alone can approach the default 5000ms test timeout.
   it("flushes a newly shared feedback trace immediately after saving the vote", async () => {
     const targetId = "11111111-1111-4111-8111-111111111111";
     mockIssueService.getById.mockResolvedValue({
@@ -222,7 +224,7 @@ describe("issue feedback trace routes", () => {
       traceId: "trace-1",
       limit: 1,
     });
-  });
+  }, 15000);
 
   it("rejects non-board callers before fetching a feedback trace", async () => {
     const app = await createApp({
