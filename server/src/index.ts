@@ -1836,6 +1836,8 @@ export async function startServer(): Promise<StartedServer> {
               // because it is the same shape of problem: the reason to be blocked is
               // gone, and nothing else was ever going to notice.
               await heartbeat.healResolvedBlockerIssues();
+              // TSMC-21471: return board asks a lane can actually do. Zero LLM.
+              await heartbeat.routeAgentActionableBoardAsks();
               if (
                 promotion.promoted > 0 ||
                 reconciled.assignmentDispatched > 0 ||

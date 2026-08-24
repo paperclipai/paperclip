@@ -90,6 +90,7 @@ import {
 // git-credentials module became its canonical home; existing importers keep working.
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
+import { classifyBoardAsk } from "./board-ask-actionability.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { validateControlledAgentSkillScope } from "./controlled-agent-admission.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -18615,6 +18616,78 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    *
    * Moves to `todo` and leaves the assignee alone, so normal dispatch picks it up.
    */
+  /**
+   * TSMC-21471: route a board ask back to the fleet when it is not actually a
+   * human decision — and keep it moving without the operator.
+   *
+   * Measured 2026-08-24: all 30 board-owned unblock descriptors across the
+   * portfolio were the generation/token-ceiling guard's own template — "Record the
+   * business disposition, split the remaining work into bounded issues, or approve
+   * a deterministic route before resuming generation." Twenty-five identical
+   * copies of that sentence, four of a token-cap variant, one input-ceiling
+   * variant. Zero named a credential, a payment, a signature or an irreversible
+   * public action. Splitting work into bounded issues is a lane's job.
+   *
+   * The guard was converting "this lane hit a ceiling" into "a human must decide",
+   * which is how work stops for days with nobody at fault.
+   *
+   * Zero LLM. classifyBoardAsk is pure regex over the platform's own humanCategory
+   * vocabulary, and it routes only on a POSITIVE agent-actionable signal with no
+   * human-only signal present — never on absence of evidence.
+   */
+  async function routeAgentActionableBoardAsks(opts?: { limit?: number }) {
+    const limit = opts?.limit ?? 50;
+    const candidates = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        unblockDescriptor: issues.unblockDescriptor,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        sql`${issues.unblockDescriptor} ->> 'owner' = 'board'`,
+      ))
+      .limit(limit);
+
+    const routed: string[] = [];
+    for (const candidate of candidates) {
+      const descriptor = parseObject(candidate.unblockDescriptor ?? null);
+      const action = typeof descriptor.action === "string" ? descriptor.action.trim() : "";
+      const verdict = classifyBoardAsk(action);
+      if (verdict.humanOnly) continue;
+      // An unassigned card would be routed to nobody, which is a different
+      // failure. Leave it for the operator rather than losing it.
+      if (!candidate.assigneeAgentId) continue;
+      try {
+        await issuesSvc.update(candidate.id, { status: "todo", unblockDescriptor: null });
+        await issuesSvc.addComment(
+          candidate.id,
+          "**Routed back to the fleet — this was not a human decision.**\n\n"
+          + `The board-owned unblock descriptor said: _"${action}"_\n\n`
+          + `${verdict.reason}${verdict.matched ? ` (matched: \`${verdict.matched}\`)` : ""}\n\n`
+          + "You own this card. Do the thing the descriptor describes — split it into bounded "
+          + "issues, record the disposition, or take the documented route — and carry on. "
+          + "If you genuinely need a person, re-block it with a descriptor that names WHAT only "
+          + "a human can supply (a credential, a payment, a signature, an OAuth flow, or an "
+          + "irreversible public action). A ceiling you hit is not one of those. TSMC-21471.",
+          {},
+        );
+        routed.push(candidate.identifier ?? candidate.id);
+      } catch (err) {
+        logger.warn({ err, issueId: candidate.id }, "board-ask router could not route issue back");
+      }
+    }
+    if (routed.length > 0) {
+      logger.warn(
+        { routedCount: routed.length, identifiers: routed },
+        "board-ask router returned agent-actionable board asks to the fleet",
+      );
+    }
+    return { routed: routed.length, identifiers: routed };
+  }
+
   async function healResolvedBlockerIssues(opts?: { limit?: number }) {
     const limit = opts?.limit ?? 50;
     const candidates = await db
@@ -26750,6 +26823,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     reconcileStrandedAssignedIssues,
     healResolvedBlockerIssues,
+    routeAgentActionableBoardAsks,
     sweepRestartLaneRecovery,
     healAssigneeNotInvokableBlockedIssues,
 

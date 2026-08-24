@@ -164,6 +164,7 @@ import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalizatio
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { classifyBoardAsk } from "./board-ask-actionability.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -4402,6 +4403,16 @@ async function listIssueBoardActionRequirementMap(
     const descriptor = parseObject(blocked.unblockDescriptor ?? null);
     const rawAction = typeof descriptor.action === "string" ? descriptor.action.trim() : "";
     const action = rawAction.length > 0 ? rawAction : null;
+    // TSMC-21471: a board-owned descriptor is not automatically a human ask.
+    // Measured 2026-08-24: ALL 30 live board-owned descriptors were the ceiling
+    // guard's own template ("...split the remaining work into bounded issues...") —
+    // agent work, parked on a person. Surfacing those unfiltered would have put
+    // thirty near-identical non-asks in the operator's queue, and a queue nobody
+    // reads fails the same way an invisible one does.
+    // routeAgentActionableBoardAsks() clears these; this check keeps them out of
+    // the Console in the meantime. Both call the same pure classifier so they
+    // cannot disagree.
+    if (!classifyBoardAsk(action).humanOnly) continue;
     result.set(blocked.id, {
       source: "interaction",
       kind: "interaction",
