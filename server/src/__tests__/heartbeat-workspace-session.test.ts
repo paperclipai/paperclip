@@ -2270,6 +2270,32 @@ function sessionParamsWithConfigMetadata(
 }
 
 describe("effective run session config freshness", () => {
+  it("keeps category fingerprints stable across consecutive metadata builds", async () => {
+    const first = await buildSessionConfigMetadata();
+    const second = await buildSessionConfigMetadata();
+
+    expect(second.categoryFingerprints).toEqual(first.categoryFingerprints);
+  });
+
+  it("does not fingerprint runtime skill source paths or source diagnostics", async () => {
+    const base = await buildSessionConfigMetadata();
+    const relocated = await buildSessionConfigMetadata({
+      runtimeSkills: [
+        {
+          key: "paperclip",
+          runtimeName: "paperclip-renamed",
+          source: "/private/var/folders/new-runtime-skills/paperclip",
+          versionId: null,
+          currentVersionId: "skill-version-1",
+          sourceStatus: "missing",
+          missingDetail: "old path was removed",
+        },
+      ],
+    });
+
+    expect(relocated.categoryFingerprints.runtimeSkills).toBe(base.categoryFingerprints.runtimeSkills);
+  });
+
   it("resets when effective adapter config changes after model/profile/env resolution", async () => {
     const base = await buildSessionConfigMetadata();
     const next = await buildSessionConfigMetadata({

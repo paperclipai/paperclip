@@ -69,6 +69,8 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  parseCompanyActivityWindow,
+  getActivityWindowState,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "@paperclipai/shared/home-paths";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -95,6 +97,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { clampMonitorNextCheckAt } from "./run-gate.js";
 import { inferDefaultCloseContractForIssueCreate } from "./issue-close-evidence.js";
 import { applyTwoTierQaMintOverrides } from "./two-tier-qa-routing.js";
 import { instanceSettingsService, isTruthyRuntimeEnvValue } from "./instance-settings.js";
@@ -8482,6 +8485,15 @@ export function issueService(db: Db) {
           }),
         );
 
+        if (values.monitorNextCheckAt) {
+          values.monitorNextCheckAt = await clampMonitorNextCheckAt({
+            dbOrTx: tx,
+            companyId,
+            assigneeAgentId: values.assigneeAgentId,
+            nextCheckAt: values.monitorNextCheckAt,
+          });
+        }
+
         const [issue] = await tx.insert(issues).values(values).returning();
         if (liveAssigneeResolution?.substituted) {
           const substitutionBody = buildLiveAssigneeSubstitutionComment(liveAssigneeResolution);
@@ -9102,6 +9114,16 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+
+        if (patch.monitorNextCheckAt instanceof Date) {
+          patch.monitorNextCheckAt = await clampMonitorNextCheckAt({
+            dbOrTx: tx,
+            companyId: existing.companyId,
+            assigneeAgentId: nextAssigneeAgentId,
+            nextCheckAt: patch.monitorNextCheckAt,
+          });
+        }
+
         const updated = await tx
           .update(issues)
           .set(patch)

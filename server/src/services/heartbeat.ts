@@ -5986,6 +5986,28 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  // Runtime source locations and diagnostics are per-host observations, not
+  // configuration.  Only a skill's stable identity belongs in the session
+  // freshness boundary; otherwise materialization or a missing local path can
+  // cause the same skill version to reset an otherwise reusable task session.
+  const runtimeSkills = Array.isArray(input.runtimeSkills)
+    ? input.runtimeSkills
+      .map((entry) => {
+        const skill = parseObject(entry);
+        const contentHash = readNonEmptyString(skill.contentHash);
+        return {
+          key: readNonEmptyString(skill.key),
+          versionId: readNonEmptyString(skill.versionId),
+          currentVersionId: readNonEmptyString(skill.currentVersionId),
+          ...(contentHash ? { contentHash } : {}),
+        };
+      })
+      .sort((left, right) =>
+        `${left.key ?? ""}:${left.versionId ?? left.currentVersionId ?? ""}`.localeCompare(
+          `${right.key ?? ""}:${right.versionId ?? right.currentVersionId ?? ""}`,
+        ),
+      )
+    : input.runtimeSkills;
   return {
     adapter: {
       adapterType: input.adapterType,
@@ -6004,7 +6026,7 @@ function buildSessionConfigCategoryValues(input: {
       routine: { env: input.routineEnv },
     },
     secrets: sanitizedSecretManifest,
-    runtimeSkills: input.runtimeSkills,
+    runtimeSkills,
   } satisfies Record<EffectiveRunSessionConfigCategory, unknown>;
 }
 
@@ -9248,7 +9270,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     try {
-      await enqueueWakeup(targetAgentId, {
+      const wakeup = await enqueueWakeup(targetAgentId, {
         source: input.source,
         triggerDetail: input.triggerDetail,
         reason: wakeReason,
@@ -9276,6 +9298,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           manualTrigger: input.activitySource === "manual",
         },
       });
+
+      if (!wakeup) {
+        if (input.clearOnClientError) {
+          await db
+            .update(issues)
+            .set({
+              ...buildIssueMonitorClearedPatch({
+                issue: claimed,
+                policy,
+                clearReason: "dispatch_skipped",
+                clearedAt: input.now,
+              }),
+              updatedAt: new Date(),
+            })
+            .where(eq(issues.id, claimed.id));
+
+          await logActivity(db, {
+            companyId: claimed.companyId,
+            actorType: input.actorType,
+            actorId: input.actorId,
+            agentId: input.agentId,
+            runId: input.runId,
+            action: "issue.monitor_dispatch_skipped",
+            entityType: "issue",
+            entityId: claimed.id,
+            details: {
+              identifier: claimed.identifier,
+              reason: "Agent not invokable or wakeup skipped",
+              source: input.activitySource,
+            },
+          });
+
+          return { outcome: "skipped" as const };
+        }
+        throw conflict("Agent is not invokable or wakeup skipped");
+      }
 
       await db
         .update(issues)
@@ -16430,14 +16488,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 .limit(1)
                 .then((rows) => rows.length > 0);
               if (progressed) {
-                void trackWakeup(agentId, {
-                  source: "automation",
-                  triggerDetail: "completion_continuation",
-                  reason: "issue_continuation_needed",
-                  payload: { issueId: lastIssueId },
-                  contextSnapshot: { issueId: lastIssueId, wakeReason: "completion_continuation", continuedFromRunId: lastRun.id },
-                });
-                continuationOffered = true;
+                // TSMC-21372 Phase-1: cap consecutive completion_continuation chains on same issue
+                // to prevent token-burn loops while preserving productive multi-run work (N>=3 allowed).
+                // Reuses ISSUE_REWAKE_* constants for lookback/sample (90min / 8 runs) per audit.
+                const chainLookback = new Date(Date.now() - ISSUE_REWAKE_LOOKBACK_MS);
+                const recentContRuns = await db
+                  .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot, finishedAt: heartbeatRuns.finishedAt })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.agentId, agentId),
+                    eq(heartbeatRuns.status, "succeeded"),
+                    gt(heartbeatRuns.finishedAt, chainLookback),
+                  ))
+                  .orderBy(desc(heartbeatRuns.finishedAt))
+                  .limit(ISSUE_REWAKE_RUN_SAMPLE_LIMIT)
+                  .then((rows) => rows);
+                const contChainCount = recentContRuns.filter((r) => {
+                  const snap = parseObject(r.contextSnapshot ?? null);
+                  return readNonEmptyString(snap.issueId) === lastIssueId &&
+                    snap.wakeReason === "completion_continuation";
+                }).length;
+                const MAX_COMPLETION_CONTINUATION_CHAIN = 3;
+                if (contChainCount < MAX_COMPLETION_CONTINUATION_CHAIN) {
+                  void trackWakeup(agentId, {
+                    source: "automation",
+                    triggerDetail: "completion_continuation",
+                    reason: "issue_continuation_needed",
+                    payload: { issueId: lastIssueId },
+                    contextSnapshot: { issueId: lastIssueId, wakeReason: "completion_continuation", continuedFromRunId: lastRun.id },
+                  });
+                  continuationOffered = true;
+                }
+                // else: fall through to completion_chain or idle; chain cap engaged
               }
             }
           }
@@ -19540,15 +19622,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // on the same card look "reconfigured" (changedCategories adapterConfig) and
     // reset the task session each time — 719 codex session resets on 2026-08-22,
     // each re-uploading the full guard context uncached (the ChatGPT weekly burn).
-    // Runtime skill entries are fingerprinted in a key-sorted copy: list order is
-    // not part of the configuration, and an order flip alone must not reset a session.
+    // Runtime skills have their own session-fingerprint category.  Keep them out
+    // of adapterConfig so a skills change does not spuriously dual-fire both
+    // adapterConfig and runtimeSkills.
     const sessionFingerprintRuntimeSkills = [...runtimeSkillEntries].sort((a, b) =>
       String(a.key).localeCompare(String(b.key)),
     );
-    const sessionFingerprintAdapterConfig: Record<string, unknown> = {
-      ...runtimeConfig,
-      paperclipRuntimeSkills: sessionFingerprintRuntimeSkills,
-    };
+    const sessionFingerprintAdapterConfig: Record<string, unknown> = { ...runtimeConfig };
+    delete sessionFingerprintAdapterConfig.paperclipRuntimeSkills;
     if (issueGenerationAdmission?.decision === "allow") {
       // TSMC-20820: a granted resource-ceiling continuation round runs with
       // its FRESH configured per-run budget. Clamping continuations to the
@@ -19677,7 +19758,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readSessionWorkspaceSource(explicitResumeSessionParams) ??
       readSessionWorkspaceSource(taskSessionParamsWithMetadata);
     const ephemeralStatusOnlyRecoverySession = isEphemeralStatusOnlyRecoverySession(context);
-    const previousSessionParams =
+    let previousSessionParams =
       explicitResumeSessionParams ??
       (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
         ? { sessionId: explicitResumeSessionDisplayId }
@@ -19688,6 +19769,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
         ),
       );
+    // TSMC-21374 P0: merge thin explicit resume (sessionId-only) with stored task-session cwd/__paperclipWorkspaceSource
+    // so that resolveRuntimeSessionParamsForWorkspace sees previousCwd for the TSMC-21089 convergence guard.
+    // Explicit sessionId remains authoritative. Covers transient_failure_retry/handoff thin resumes.
+    const isThinSessionIdOnly =
+      previousSessionParams &&
+      Object.keys(previousSessionParams).length === 1 &&
+      !!readNonEmptyString(previousSessionParams.sessionId);
+    if (isThinSessionIdOnly && taskSessionParamsWithMetadata) {
+      previousSessionParams = {
+        ...taskSessionParamsWithMetadata,
+        ...previousSessionParams,
+      };
+    }
     const {
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
       workspace: resolvedWorkspace,

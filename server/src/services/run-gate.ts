@@ -438,3 +438,41 @@ export function runGateService(db: Db) {
 }
 
 export type RunGateService = ReturnType<typeof runGateService>;
+
+export async function clampMonitorNextCheckAt(input: {
+  dbOrTx: any;
+  companyId: string;
+  assigneeAgentId: string | null | undefined;
+  nextCheckAt: Date;
+}): Promise<Date> {
+  if (!input.assigneeAgentId) {
+    return input.nextCheckAt;
+  }
+  const company = await input.dbOrTx
+    .select({ name: companies.name, activityWindow: companies.activityWindow })
+    .from(companies)
+    .where(eq(companies.id, input.companyId))
+    .then((rows: any[]) => rows[0] ?? null);
+  if (!company) {
+    return input.nextCheckAt;
+  }
+  const window = parseCompanyActivityWindow(company.activityWindow);
+  if (!window) {
+    return input.nextCheckAt;
+  }
+  const agent = await input.dbOrTx
+    .select({ adapterType: agents.adapterType, runtimeConfig: agents.runtimeConfig })
+    .from(agents)
+    .where(eq(agents.id, input.assigneeAgentId))
+    .then((rows: any[]) => rows[0] ?? null);
+
+  if (agent && isActivityWindowExemptAgent({ adapterType: agent.adapterType, runtimeConfig: agent.runtimeConfig })) {
+    return input.nextCheckAt;
+  }
+
+  const state = getActivityWindowState(window, input.nextCheckAt);
+  if (!state.open && state.nextChangeAt) {
+    return state.nextChangeAt;
+  }
+  return input.nextCheckAt;
+}
