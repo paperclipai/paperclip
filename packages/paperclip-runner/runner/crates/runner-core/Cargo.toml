@@ -25,3 +25,7 @@ path = "src/bin/paperclip-runnerd.rs"
 [[bin]]
 name = "fake-harness"
 path = "src/bin/fake-harness.rs"
+
+[[bin]]
+name = "fake-codex-app-server"
+path = "src/bin/fake-codex-app-server.rs"

@@ -28,6 +28,7 @@
     "test": "pnpm run test:typescript && pnpm run test:rust",
     "test:typescript": "node --test test/protocol-contract.test.mjs && vitest run",
     "test:rust": "cargo test --manifest-path runner/Cargo.toml --locked --workspace",
+    "test:codex": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --test codex_provider",
     "test:durable": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core durable::",
     "generate:protocol-manifest": "node scripts/generate-protocol-manifest.mjs",
     "check:protocol-manifest": "node scripts/generate-protocol-manifest.mjs --check",

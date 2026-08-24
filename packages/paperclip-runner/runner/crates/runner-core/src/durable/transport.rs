@@ -1402,6 +1402,7 @@ mod tests {
     fn reconnect_replays_unacked_events_and_not_command_effects() {
         struct EventExecutor {
             session_open_calls: Arc<AtomicUsize>,
+            shutdown_calls: Arc<AtomicUsize>,
         }
 
         impl super::super::CommandExecutor for EventExecutor {
@@ -1423,6 +1424,11 @@ mod tests {
                 Ok(super::super::CommandExecution::result(
                     json!({"status": "completed"}),
                 ))
+            }
+
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.shutdown_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
             }
         }
 
@@ -1544,16 +1550,19 @@ mod tests {
         });
 
         let session_open_calls = Arc::new(AtomicUsize::new(0));
+        let shutdown_calls = Arc::new(AtomicUsize::new(0));
         super::super::run_durable_runner(
             config,
             BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap(),
             EventExecutor {
                 session_open_calls: session_open_calls.clone(),
+                shutdown_calls: shutdown_calls.clone(),
             },
         )
         .unwrap();
         server.join().unwrap();
         assert_eq!(session_open_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(shutdown_calls.load(Ordering::SeqCst), 1);
         let store = super::super::DurableStateStore::new(&directory).unwrap();
         let state_bytes = std::fs::read(store.path()).unwrap();
         let final_state: DurableState = serde_json::from_slice(&state_bytes).unwrap();

@@ -1,8 +1,8 @@
 # Durable PRP transport
 
 This layer gives `paperclip-runnerd` a provider-neutral, package-local PRP v1
-transport. Nothing in the Paperclip server invokes the durable mode yet, and no
-provider is installed by this change.
+transport. Nothing in the Paperclip server invokes the durable mode yet. Codex
+is the only installed provider; other providers remain unavailable.
 
 ## Trust boundary
 
@@ -29,6 +29,17 @@ source sequence the runner has produced; acknowledged prefixes are removed
 atomically from durable state. After disconnect, every remaining event is sent
 again with the same identity and source sequence.
 
+Executors retain polled events until runnerd acknowledges each event after its
+outbox commit. Batches commit one event at a time, so a later oversized event or
+capacity failure cannot roll back the accepted prefix or discard the
+unacknowledged suffix. Each retained executor event has a stable identity that
+runnerd derives into its PRP `sourceEventId`. If the process stops after the
+outbox commit but before the executor acknowledgement, a bounded durable
+receipt journal recognizes and byte-validates the retained copy without
+appending a second event. Receipts outlive transport ACK removal; because the
+provider queue is ordered and bounded, a possibly retained front event cannot
+be evicted while later events advance the journal.
+
 Commands require a contiguous controller sequence. The runner journals a
 pending command before invoking its executor and persists its result afterward.
 An exact duplicate returns the stored result without repeating the effect. If
@@ -49,7 +60,8 @@ P0 reserve is an explicit unrecoverable condition.
 ## Current boundary
 
 Durable mode is selected only when `paperclip-runnerd` receives
-`--connect-url`. Its transport-only executor handles runner lifecycle commands
-and rejects provider commands with `provider_not_installed`. The existing local
-fake-runner mode remains unchanged. Codex execution, semantic tools, server
-coordination, and the user-facing adapter belong to later layers.
+`--connect-url`. Its executor accepts a Codex app-server descriptor through
+`run.prepare`, owns the provider process group, resumes the persisted Codex
+thread after runner restart, and translates provider notifications to PRP
+events. The existing local fake-runner mode remains unchanged. Semantic tools,
+server coordination, and the user-facing adapter belong to later layers.

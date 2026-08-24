@@ -3,11 +3,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use paperclip_runner_core::durable::{
-    capture_bootstrap_ticket, run_durable_runner, Command, CommandExecution, CommandExecutor,
-    DurableRunnerConfig, DurableRunnerError,
+    capture_bootstrap_ticket, run_durable_runner, DurableRunnerConfig,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
-use serde_json::json;
+use paperclip_runner_core::provider_backend::CodexCommandExecutor;
 
 fn value(args: &[String], name: &str) -> Result<String, LocalRunnerError> {
     let index = args
@@ -39,27 +38,6 @@ fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, Loc
     })
 }
 
-struct TransportOnlyExecutor;
-
-impl CommandExecutor for TransportOnlyExecutor {
-    fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
-        Ok(CommandExecution::result(
-            if matches!(
-                command.command_type.as_str(),
-                "runner.shutdown" | "runner.suspend" | "runner.drain"
-            ) {
-                json!({"status": "completed"})
-            } else {
-                json!({
-                    "status": "rejected",
-                    "code": "provider_not_installed",
-                    "message": "the durable transport is active, but no provider is installed in this build",
-                })
-            },
-        ))
-    }
-}
-
 fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
@@ -71,10 +49,11 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     let duration = |name: &str, default: u64| {
         optional_u64(args, name).map(|value| Duration::from_millis(value.unwrap_or(default)))
     };
+    let state_dir = PathBuf::from(value(args, "--state-dir")?);
     run_durable_runner(
         DurableRunnerConfig {
             connect_url: value(args, "--connect-url")?,
-            state_dir: PathBuf::from(value(args, "--state-dir")?),
+            state_dir: state_dir.clone(),
             runner_instance_id: value(args, "--runner-id")?,
             environment_lease_id: value(args, "--environment-lease-id")?,
             run_id: value(args, "--run-id")?,
@@ -90,7 +69,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
             max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
         },
         ticket,
-        TransportOnlyExecutor,
+        CodexCommandExecutor::new(state_dir),
     )
     .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
