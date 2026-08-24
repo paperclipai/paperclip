@@ -2334,6 +2334,88 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("terminalizes a run orphaned by control-plane restart instead of leaving it running forever", async () => {
+    // TSMC-21439: hot restart deliberately skips the normal shutdown drain for
+    // runs it intends to hand off live. When the handoff itself is missing
+    // (dead process, no shutdown snapshot) that run is classified "lost" but
+    // was never given the terminal write drainRunningRunsForShutdown gives
+    // every other interrupted run — it stayed "running" forever. Assert the
+    // reconciler now closes that gap using the exact lostRunIds list it just
+    // computed, with the same retry/wake/issue/agent side effects as a normal
+    // graceful-shutdown interrupt.
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "orphaned-by-restart-version",
+        requestedAt: new Date("2026-08-24T11:05:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+
+      const heartbeat = heartbeatService(db);
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-24T11:06:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [runId],
+        terminalizedRunIds: [runId],
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        lostRunIds: [runId],
+        terminalizedRunIds: [runId],
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      const orphanedRun = runs.find((row) => row.id === runId);
+      const retryRun = runs.find((row) => row.retryOfRunId === runId);
+      expect(orphanedRun).toMatchObject({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      });
+      expect(retryRun).toMatchObject({
+        status: "queued",
+        retryOfRunId: runId,
+        processLossRetryCount: 1,
+      });
+
+      const wakeup = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("cancelled");
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.executionRunId).toBe(retryRun?.id);
+
+      const agent = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      expect(agent?.status).toBe("idle");
+    });
+  });
+
   it("reports a preflight run that finished before snapshot capture as finalized", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",

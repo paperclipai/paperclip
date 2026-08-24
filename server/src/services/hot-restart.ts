@@ -68,6 +68,12 @@ export type HotRestartReport = {
   adoptedRunIds: string[];
   finalizedWhileDownRunIds: string[];
   lostRunIds: string[];
+  // Subset of lostRunIds that reconcileHotRestartAdoption also terminalized
+  // (status: interrupted, errorCode: server_shutdown_interrupted) before this
+  // report was written. lostRunIds still means "the process handoff failed" —
+  // this field records that the durable row was cleaned up in the same pass
+  // rather than left "running" for a staleness-gated reap sweep to find.
+  terminalizedRunIds: string[];
   skippedRunIds: string[];
   runs: HotRestartReportRun[];
 };

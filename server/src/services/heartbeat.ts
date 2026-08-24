@@ -13391,6 +13391,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adoptedRunIds: [] as string[],
         finalizedWhileDownRunIds: [] as string[],
         lostRunIds: [] as string[],
+        terminalizedRunIds: [] as string[],
         skippedRunIds: [] as string[],
       };
     }
@@ -13400,6 +13401,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adoptedRunIds: [] as string[],
         finalizedWhileDownRunIds: [] as string[],
         lostRunIds: [] as string[],
+        terminalizedRunIds: [] as string[],
         skippedRunIds: [] as string[],
       };
     }
@@ -13637,6 +13639,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       classify(candidate, "adopted", processPidAlive ? "process_pid_alive" : "process_group_alive", patch);
     }
 
+    // Runs classified "lost" above have no live process to adopt and, because
+    // hot restart deliberately skipped the normal shutdown drain for them,
+    // never got a terminal write on the way down either. Reconcile them now
+    // with the exact list the handoff already computed, rather than leaving
+    // them "running" for a staleness-gated reap sweep to find eventually.
+    const { terminalizedRunIds } = await terminalizeHotRestartLostRuns({
+      lostRunIds,
+      previousServerPid: intent.previousServerPid,
+      now,
+    });
+
     const report = await writeHotRestartReport({
       version: 1,
       requestedAt: intent.requestedAt,
@@ -13650,6 +13663,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       adoptedRunIds,
       finalizedWhileDownRunIds,
       lostRunIds,
+      terminalizedRunIds,
       skippedRunIds,
       runs: reportRuns,
     });
@@ -13662,6 +13676,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adoptedRunIds,
         finalizedWhileDownRunIds,
         lostRunIds,
+        terminalizedRunIds,
         missingSnapshotRunIds,
         skippedRunIds,
       },
@@ -13673,8 +13688,123 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       adoptedRunIds,
       finalizedWhileDownRunIds,
       lostRunIds,
+      terminalizedRunIds,
       skippedRunIds,
     };
+  }
+
+  // Shared terminal-write path for a "running" row that will never receive
+  // another heartbeat from its own process: graceful shutdown drain and
+  // hot-restart-orphan cleanup both need the identical sequence (status flip,
+  // wake cancel, liveness classification, lease release, retry-or-promote,
+  // event, agent status) or one of the two silently diverges from the other.
+  async function finalizeStrandedRunningRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    now: Date;
+    message: string;
+    errorCode: string;
+    signal?: "SIGINT" | "SIGTERM";
+  }) {
+    const { run, agent, now, message, errorCode, signal } = input;
+    const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
+      finishedAt: now,
+      error: message,
+      errorCode,
+      ...(signal ? { signal } : {}),
+      resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+        resultJson: parseObject(run.resultJson),
+        errorCode,
+        errorMessage: message,
+      }),
+    });
+    if (!interruptedStatus.updated || !interruptedStatus.run) return null;
+    let interrupted = interruptedStatus.run;
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: now,
+      error: null,
+    });
+    interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
+
+    await releaseEnvironmentLeasesForRun({
+      runId: interrupted.id,
+      companyId: interrupted.companyId,
+      agentId: interrupted.agentId,
+      status: interrupted.status,
+      failureReason: interrupted.error ?? undefined,
+    });
+
+    const retry = await enqueueProcessLossRetry(interrupted, agent, now);
+    if (!retry) {
+      await releaseIssueExecutionAndPromote(interrupted);
+    }
+
+    await appendRunEvent(interrupted, await nextRunEventSeq(interrupted.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message,
+      payload: {
+        ...(signal ? { signal } : {}),
+        ...(run.processPid ? { processPid: run.processPid } : {}),
+        ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+        ...(retry ? { retryRunId: retry.id } : {}),
+      },
+    });
+
+    await finalizeAgentStatus(run.agentId, "interrupted", message, {
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+    });
+
+    return { run: interrupted, retryRunId: retry?.id ?? null };
+  }
+
+  // A run classified "lost" by reconcileHotRestartAdoption has no live process
+  // to adopt and, precisely because hot restart skips the normal shutdown
+  // drain (that is the whole point of hot restart), never went through
+  // finalizeStrandedRunningRun on the way down either. Left alone it stays
+  // "running" forever — the reap sweeps only catch runs whose adapter tracks
+  // a local child pid, and even then only after a staleness window that a
+  // deploy's own continuity check does not wait for. The handoff already
+  // knows exactly which runs it lost; use that list instead of a timeout.
+  async function terminalizeHotRestartLostRuns(input: {
+    lostRunIds: string[];
+    previousServerPid: number | null;
+    now: Date;
+  }) {
+    const { lostRunIds, previousServerPid, now } = input;
+    if (lostRunIds.length === 0) return { terminalizedRunIds: [] as string[] };
+
+    const rows = await db
+      .select({ run: heartbeatRuns, agent: agents })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(inArray(heartbeatRuns.id, lostRunIds), eq(heartbeatRuns.status, "running")));
+
+    const message = `Run orphaned by control-plane restart: previous server (pid ${
+      previousServerPid ?? "unknown"
+    }) exited without handing this run off`;
+
+    const terminalizedRunIds: string[] = [];
+    for (const { run, agent } of rows) {
+      const result = await finalizeStrandedRunningRun({
+        run,
+        agent,
+        now,
+        message,
+        errorCode: "server_shutdown_interrupted",
+      });
+      if (result) terminalizedRunIds.push(result.run.id);
+    }
+
+    if (terminalizedRunIds.length > 0) {
+      logger.warn(
+        { previousServerPid, terminalizedRunIds },
+        "terminalized hot-restart-orphaned runs at startup",
+      );
+    }
+
+    return { terminalizedRunIds };
   }
 
   async function drainRunningRunsForShutdown(
@@ -13725,57 +13855,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
-      const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
-        finishedAt: now,
-        error: message,
+      const result = await finalizeStrandedRunningRun({
+        run,
+        agent,
+        now,
+        message,
         errorCode: "server_shutdown_interrupted",
         signal,
-        resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
-          resultJson: parseObject(run.resultJson),
-          errorCode: "server_shutdown_interrupted",
-          errorMessage: message,
-        }),
       });
-      if (!interruptedStatus.updated || !interruptedStatus.run) continue;
-      let interrupted = interruptedStatus.run;
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: now,
-        error: null,
-      });
-      interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
-
-      await releaseEnvironmentLeasesForRun({
-        runId: interrupted.id,
-        companyId: interrupted.companyId,
-        agentId: interrupted.agentId,
-        status: interrupted.status,
-        failureReason: interrupted.error ?? undefined,
-      });
-
-      const retry = await enqueueProcessLossRetry(interrupted, agent, now);
-      if (!retry) {
-        await releaseIssueExecutionAndPromote(interrupted);
-      } else {
-        retryRunIds.push(retry.id);
-      }
-
-      await appendRunEvent(interrupted, await nextRunEventSeq(interrupted.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message,
-        payload: {
-          signal,
-          ...(run.processPid ? { processPid: run.processPid } : {}),
-          ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
-          ...(retry ? { retryRunId: retry.id } : {}),
-        },
-      });
-
-      await finalizeAgentStatus(run.agentId, "interrupted", message, {
-        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-      });
-      interruptedRunIds.push(interrupted.id);
+      if (!result) continue;
+      interruptedRunIds.push(result.run.id);
+      if (result.retryRunId) retryRunIds.push(result.retryRunId);
     }
 
     if (interruptedRunIds.length > 0) {
