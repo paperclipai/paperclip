@@ -361,7 +361,8 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
         const AssigneePicker = SDK.AssigneePicker ?? missing("AssigneePicker");
         const ProjectPicker = SDK.ProjectPicker ?? missing("ProjectPicker");
         const ManagedRoutinesList = SDK.ManagedRoutinesList ?? missing("ManagedRoutinesList");
-        export { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast, copyTextToClipboard, MetricCard, StatusBadge, DataTable, TimeseriesChart, MarkdownBlock, MarkdownEditor, KeyValueList, ActionBar, LogView, JsonTree, Spinner, ErrorBoundary, FileTree, IssuesList, AssigneePicker, ProjectPicker, ManagedRoutinesList };
+        const registerAgentIcon = SDK.registerAgentIcon ?? missing("registerAgentIcon");
+        export { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast, copyTextToClipboard, MetricCard, StatusBadge, DataTable, TimeseriesChart, MarkdownBlock, MarkdownEditor, KeyValueList, ActionBar, LogView, JsonTree, Spinner, ErrorBoundary, FileTree, IssuesList, AssigneePicker, ProjectPicker, ManagedRoutinesList, registerAgentIcon };
       `;
       break;
   }
