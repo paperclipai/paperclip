@@ -634,6 +634,67 @@ describe("company portability", () => {
     ]);
   });
 
+  /**
+   * The export and the import are each asserted on their own above, and each
+   * can be right while the pair is wrong: the export formatter and the import
+   * normalizer are separate hand-rolled code, so a shape one emits and the
+   * other cannot read passes both halves and still widens the clone. This
+   * drives the actual exported bytes back through `importBundle` and checks the
+   * instant reaching the write path is the source's, to the millisecond
+   * (FAI-10144).
+   */
+  it("round-trips a non-null grant expiry from exported bytes back through import", async () => {
+    const bound = new Date("2026-09-06T12:34:56.789Z");
+    const exportDb = {
+      select: vi.fn((selection: Record<string, unknown>) => ({
+        from: vi.fn(() => ({
+          where: vi.fn(async () => {
+            if (!selection.permissionKey) return [];
+            return [
+              {
+                principalId: "agent-1",
+                permissionKey: "skills:create",
+                scope: { targetAgentIds: ["agent-1"] },
+                expiresAt: bound,
+              },
+            ];
+          }),
+        })),
+      })),
+    };
+
+    const exported = await companyPortabilityService(exportDb as any).exportBundle("company-1", {
+      // Skills off on both legs: this is about the grant expiry surviving the
+      // trip, and carrying the skill bundle through would only add mocks.
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+    });
+
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      status: input.status,
+    }));
+
+    await companyPortabilityService({} as any).importBundle({
+      source: { type: "inline", files: exported.files },
+      include: { company: false, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    // Only the expiry argument is asserted; scope identifiers are remapped on
+    // import and that remapping is covered by the import test below.
+    const call = accessSvc.setPrincipalPermission.mock.calls.find(
+      (args: unknown[]) => args[3] === "skills:create",
+    );
+    expect(call).toBeDefined();
+    expect(call?.[7]).toEqual(bound);
+  });
+
   it("exports hire approval policy only when approval is required", async () => {
     const portability = companyPortabilityService({} as any);
 
