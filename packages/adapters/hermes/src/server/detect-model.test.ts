@@ -92,7 +92,7 @@ test("resolveProvider still infers from the requested model when Hermes config i
 
 async function withHermesHomeConfig(
   configLines: string[],
-  fn: () => Promise<void>,
+  fn: (tempHome: string) => Promise<void>,
 ) {
   const tempHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-adapter-"));
   const hermesDir = join(tempHome, ".hermes");
@@ -109,7 +109,7 @@ async function withHermesHomeConfig(
   }
 
   try {
-    await fn();
+    await fn(tempHome);
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -136,6 +136,287 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
     expect(codes.includes("hermes_no_api_keys")).toBe(false);
     expect(result.status).toBe("pass");
   });
+});
+
+test("testEnvironment does not report provider keys that exist only in the server process", async () => {
+  await withHermesHomeConfig([], async () => {
+    process.env.OPENAI_API_KEY = "host-only-placeholder";
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "openai/gpt-4.1-mini",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+    expect(codes.includes("hermes_api_keys_found")).toBe(false);
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+  });
+});
+
+test("testEnvironment finds configured provider keys case-insensitively on Windows", async () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  try {
+    await withHermesHomeConfig([
+      "model:",
+      "  default: openai/gpt-4.1-mini",
+      "  provider: openai",
+    ], async () => {
+      const result = await testEnvironment({
+        companyId: "company-test",
+        adapterType: "hermes_local",
+        config: {
+          hermesCommand: "python3",
+          model: "openai/gpt-4.1-mini",
+          env: {
+            OpenAI_Api_Key: "agent-config-placeholder",
+          },
+        },
+      });
+
+      const codes = result.checks.map((check) => check.code);
+      expect(codes.includes("hermes_api_keys_found")).toBe(true);
+      expect(codes.includes("hermes_no_api_keys")).toBe(false);
+    });
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  }
+});
+
+test("testEnvironment resolves the configured Windows home case-insensitively", async () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  try {
+    await withHermesHomeConfig([], async (tempHome) => {
+      await writeFile(
+        join(tempHome, ".hermes", ".env"),
+        "OPENAI_API_KEY=agent-config-placeholder\n",
+        "utf8",
+      );
+      delete process.env.HOME;
+      delete process.env.USERPROFILE;
+
+      const result = await testEnvironment({
+        companyId: "company-test",
+        adapterType: "hermes_local",
+        config: {
+          hermesCommand: "python3",
+          model: "openai/gpt-4.1-mini",
+          env: {
+            UserProfile: tempHome,
+          },
+        },
+      });
+
+      const codes = result.checks.map((check) => check.code);
+      expect(codes.includes("hermes_api_keys_found")).toBe(true);
+      expect(codes.includes("hermes_no_api_keys")).toBe(false);
+    });
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  }
+});
+
+test("testEnvironment detects model config from the configured child HOME", async () => {
+  await withHermesHomeConfig([], async () => {
+    const childHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-child-home-"));
+    const childHermesDir = join(childHome, ".hermes");
+    await mkdir(childHermesDir, { recursive: true });
+    await writeFile(
+      join(childHermesDir, "config.yaml"),
+      [
+        "model:",
+        "  default: openrouter/gpt-4.1-mini",
+        "  provider: openrouter",
+        "  api_key: child-home-secret",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const result = await testEnvironment({
+        companyId: "company-test",
+        adapterType: "hermes_local",
+        config: {
+          hermesCommand: "python3",
+          model: "openrouter/gpt-4.1-mini",
+          env: { HOME: childHome },
+        },
+      });
+
+      const codes = result.checks.map((check) => check.code);
+      expect(codes.includes("hermes_api_key_in_config")).toBe(true);
+      expect(codes.includes("hermes_no_api_keys")).toBe(false);
+    } finally {
+      await rm(childHome, { recursive: true, force: true });
+    }
+  });
+});
+
+test("testEnvironment does not fall back to the server home when child HOME is explicitly empty", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: openrouter/gpt-4.1-mini",
+    "  provider: openrouter",
+    "  api_key: server-home-secret",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "openrouter/gpt-4.1-mini",
+        env: { HOME: "" },
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+    expect(codes.includes("hermes_api_key_in_config")).toBe(false);
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+  });
+});
+
+test("testEnvironment resolves config.yaml and .env from explicit child HERMES_HOME", async () => {
+  const hermesHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-explicit-home-"));
+
+  try {
+    await writeFile(
+      join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  default: explicit-hermes-home-model",
+        "  provider: openai",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(join(hermesHome, ".env"), "OPENAI_API_KEY=explicit-home-key\n", "utf8");
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "explicit-hermes-home-model",
+        env: {
+          HERMES_HOME: hermesHome,
+          HOME: "",
+          USERPROFILE: "",
+        },
+      },
+    });
+
+    expect(result.checks.some((check) => check.code === "hermes_api_keys_found")).toBe(true);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_provider_unsupported",
+    }));
+  } finally {
+    await rm(hermesHome, { recursive: true, force: true });
+  }
+});
+
+test("testEnvironment prioritizes mixed-case child HERMES_HOME over Windows LOCALAPPDATA for config.yaml and .env", async () => {
+  const originalPlatform = process.platform;
+  const hermesHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-windows-explicit-home-"));
+  const localAppData = await mkdtemp(join(tmpdir(), "hermes-paperclip-windows-conflicting-localappdata-"));
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  try {
+    await writeFile(
+      join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  default: explicit-priority-model",
+        "  provider: explicit-home-provider",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      join(hermesHome, ".env"),
+      "OPENAI_API_KEY=from-explicit-hermes-home-only\n",
+      "utf8",
+    );
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "explicit-priority-model",
+        env: {
+          hErMeS_hOmE: hermesHome,
+          LOCALAPPDATA: localAppData,
+          HOME: "",
+          USERPROFILE: "",
+        },
+      },
+    });
+
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_api_keys_found",
+      message: "API keys found: OpenAI",
+    }));
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_provider_unsupported",
+      message: expect.stringContaining('"explicit-home-provider"'),
+    }));
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+    await rm(hermesHome, { recursive: true, force: true });
+    await rm(localAppData, { recursive: true, force: true });
+  }
+});
+
+test("testEnvironment resolves native Windows LOCALAPPDATA/hermes config.yaml and .env", async () => {
+  const originalPlatform = process.platform;
+  const localAppData = await mkdtemp(join(tmpdir(), "hermes-paperclip-localappdata-"));
+  const hermesHome = join(localAppData, "hermes");
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  try {
+    await mkdir(hermesHome, { recursive: true });
+    await writeFile(
+      join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  default: windows-localappdata-model",
+        "  provider: openai",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(join(hermesHome, ".env"), "OpenAI_Api_Key=windows-localappdata-key\n", "utf8");
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "windows-localappdata-model",
+        env: {
+          LOCALAPPDATA: localAppData,
+          HOME: "",
+          USERPROFILE: "",
+        },
+      },
+    });
+
+    expect(result.checks.some((check) => check.code === "hermes_api_keys_found")).toBe(true);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_provider_unsupported",
+    }));
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+    await rm(localAppData, { recursive: true, force: true });
+  }
 });
 
 test("testEnvironment describes provider-omitted runtime config without inventing provider auto", async () => {

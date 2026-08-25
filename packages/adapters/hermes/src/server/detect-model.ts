@@ -32,8 +32,9 @@ export interface DetectedModel {
  * Read the Hermes config file and extract the default model config.
  */
 export async function detectModel(
-  configPath?: string,
+  configPath?: string | null,
 ): Promise<DetectedModel | null> {
+  if (configPath === null) return null;
   const filePath = configPath ?? join(homedir(), ".hermes", "config.yaml");
 
   let content: string;
