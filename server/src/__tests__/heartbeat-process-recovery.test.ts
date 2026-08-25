@@ -367,6 +367,21 @@ async function waitForValue<T>(
   return latest ?? null;
 }
 
+async function waitForActivityEvent(
+  db: ReturnType<typeof createDb>,
+  issueId: string,
+  match: (row: typeof activityLog.$inferSelect) => boolean,
+  timeoutMs = 8_000,
+) {
+  return waitForValue(async () => {
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    return rows.find(match) ?? null;
+  }, timeoutMs);
+}
+
 async function waitForHeartbeatIdle(
   db: ReturnType<typeof createDb>,
   timeoutMs = 3_000,
@@ -1529,6 +1544,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     expect(recoveryWakeups).toHaveLength(0);
     await waitForHeartbeatIdle(db);
+
+    const escalationActivity = await waitForActivityEvent(db, input.issueId, (event) =>
+      (event.details as Record<string, unknown> | null)?.recoveryActionId === action.id,
+    );
+    expect(escalationActivity).toBeTruthy();
+
     const sourceIssue = await db
       .select()
       .from(issues)
@@ -5694,7 +5715,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       executionRunId: retryRun?.id ?? null,
     });
 
-    const comments = await selectRecoveryCommentsForIssue(issueId);
+    const comments = await waitForValue(async () => {
+      const rows = await selectRecoveryCommentsForIssue(issueId);
+      return rows.length > 0 ? rows : null;
+    }) ?? [];
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({
       authorType: "system",
@@ -6361,7 +6385,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sourceIssueId: issueId,
     });
 
-    const comments = await selectRecoveryCommentsForIssue(issueId);
+    const comments = await waitForValue(async () => {
+      const rows = await selectRecoveryCommentsForIssue(issueId);
+      return rows.length > 0 ? rows : null;
+    }) ?? [];
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({
       authorType: "system",
