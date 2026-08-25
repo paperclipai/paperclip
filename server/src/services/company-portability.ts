@@ -85,6 +85,7 @@ import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
@@ -5210,6 +5211,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
+
+    if (include.agents) {
+      const importedAgentSlugs = new Set(
+        plan.preview.plan.agentPlans
+          .filter((entry) => entry.action !== "skip")
+          .map((entry) => entry.slug),
+      );
+      const selectsNativeRunner = sourceManifest.agents.some((agent) =>
+        importedAgentSlugs.has(agent.slug)
+        && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
+          === "paperclip_runner",
+      );
+      if (
+        selectsNativeRunner
+        && (await instanceSettingsService(db).getExperimental()).enableNativeRunner !== true
+      ) {
+        throw unprocessable(
+          "Paperclip Runner is experimental and disabled on this instance.",
+          { code: "paperclip_runner_rollout_disabled" },
+        );
+      }
+    }
 
     // Content-addressed blobs double as the bundle's tamper seal. Verify every
     // blob before any row is written so a corrupted package cannot leave a

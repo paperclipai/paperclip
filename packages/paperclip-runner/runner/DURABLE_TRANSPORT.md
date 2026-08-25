@@ -1,8 +1,9 @@
 # Durable PRP transport
 
-This layer gives `paperclip-runnerd` a provider-neutral, package-local PRP v1
-transport. Nothing in the Paperclip server invokes the durable mode yet. Codex
-is the only installed provider; other providers remain unavailable.
+This layer gives `paperclip-runnerd` a provider-neutral PRP v1 transport. The
+Paperclip server invokes durable mode only for a selected, flag-enabled
+`paperclip_runner` agent or recovery of its persisted native run. Codex is the
+only installed provider; other providers remain unavailable.
 
 ## Trust boundary
 
@@ -18,6 +19,11 @@ is the only installed provider; other providers remain unavailable.
   monotonically increasing counters, and session-bound associated data.
   Plaintext, replayed, out-of-order, oversized, or incorrectly bound frames
   fail closed.
+- Cross-language authentication primitives use the UTF-8 domain bytes followed
+  by a NUL byte, then each input as an unsigned 64-bit big-endian byte length
+  and its raw bytes. Challenge proofs cover the lexicographically key-sorted,
+  compact JSON challenge payload. The server-to-runner integration test is the
+  parity gate for these TypeScript and Rust encodings.
 - The durable state directory is private, symlinks are rejected, and updates
   use a private temporary file, file sync, atomic rename, and directory sync.
   Credentials and lease tokens are never written to this state.
@@ -60,8 +66,10 @@ P0 reserve is an explicit unrecoverable condition.
 ## Current boundary
 
 Durable mode is selected only when `paperclip-runnerd` receives
-`--connect-url`. Its executor accepts a Codex app-server descriptor through
-`run.prepare`, owns the provider process group, resumes the persisted Codex
-thread after runner restart, and translates provider notifications to PRP
-events. The existing local fake-runner mode remains unchanged. Semantic tools,
-server coordination, and the user-facing adapter belong to later layers.
+`--connect-url`. Its executor accepts a Codex app-server descriptor and bound
+completion contract through `run.prepare`, owns the provider process group,
+resumes the persisted Codex thread after runner restart, and translates
+provider notifications to PRP events. The server supplies the bootstrap ticket
+only through the child environment, stores the process identity for bounded
+cancellation, and waits for the durable result and terminal pair. The existing
+local fake-runner mode remains unchanged.

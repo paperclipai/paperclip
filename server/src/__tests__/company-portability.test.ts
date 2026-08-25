@@ -98,6 +98,10 @@ const agentInstructionsSvc = {
   materializeManagedBundle: vi.fn(),
 };
 
+const instanceSettingsSvc = {
+  getExperimental: vi.fn(async () => ({ enableNativeRunner: false })),
+};
+
 vi.mock("../services/companies.js", () => ({
   companyService: () => companySvc,
 }));
@@ -150,6 +154,10 @@ vi.mock("../services/agent-instructions.js", () => ({
   agentInstructionsService: () => agentInstructionsSvc,
 }));
 
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => instanceSettingsSvc,
+}));
+
 vi.mock("../routes/org-chart-svg.js", () => ({
   renderOrgChartPng: vi.fn(async () => Buffer.from("png")),
 }));
@@ -167,6 +175,7 @@ describe("company portability", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     secretSvc.create.mockResolvedValue({ id: "secret-created" });
     secretSvc.remove.mockResolvedValue(true);
     secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
@@ -5713,5 +5722,47 @@ describe("company portability", () => {
     expect(preview.plan.agentPlans).toHaveLength(0);
     expect(preview.plan.projectPlans).toHaveLength(0);
     expect(preview.plan.issuePlans).toHaveLength(0);
+  });
+
+  it("rejects runner imports while disabled and accepts the same selection when enabled", async () => {
+    const portability = companyPortabilityService({} as any);
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: false, agents: true, projects: false, issues: false },
+    });
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-created",
+      ...input,
+    }));
+    const request = {
+      source: {
+        type: "inline" as const,
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company" as const, companyId: "company-1" },
+      agents: "all" as const,
+      collisionStrategy: "rename" as const,
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "codex" },
+        },
+      },
+    };
+
+    await expect(portability.importBundle(request, "user-1")).rejects.toMatchObject({
+      status: 422,
+      details: { code: "paperclip_runner_rollout_disabled" },
+    });
+    expect(agentSvc.create).not.toHaveBeenCalled();
+
+    instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    await portability.importBundle(request, "user-1");
+    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterType: "paperclip_runner",
+      adapterConfig: expect.objectContaining({ provider: "codex" }),
+    }));
   });
 });

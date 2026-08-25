@@ -70,6 +70,7 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -644,7 +645,10 @@ export async function createApp(
       { toolGateway },
     ),
   );
-  api.use(adapterRoutes());
+  api.use(adapterRoutes({
+    getNativeRunnerEnabled: async () =>
+      (await instanceSettingsService(db).getExperimental()).enableNativeRunner === true,
+  }));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

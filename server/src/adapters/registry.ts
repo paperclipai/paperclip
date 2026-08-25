@@ -339,6 +339,52 @@ const codexLocalAdapter: ServerAdapterModule = {
   loginCapability: codexLoginCapability,
 };
 
+const paperclipRunnerAdapter: ServerAdapterModule = {
+  type: "paperclip_runner",
+  async execute(ctx) {
+    const message = "paperclip_runner requires the native runner coordinator";
+    await ctx.onLog("stderr", `${message}\n`);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: message,
+      errorCode: "paperclip_runner_coordinator_required",
+      provider: "codex",
+      summary: message,
+    };
+  },
+  async testEnvironment(context) {
+    const result = await codexTestEnvironment(context);
+    return { ...result, adapterType: "paperclip_runner" };
+  },
+  listSkills: listCodexSkills,
+  syncSkills: syncCodexSkills,
+  sessionCodec: codexSessionCodec,
+  models: codexModels,
+  listModels: listCodexModels,
+  refreshModels: refreshCodexModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
+  agentConfigurationDoc:
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex through the Rust Paperclip runner and authenticated PRP transport.\n",
+  getConfigSchema: () => ({
+    fields: [
+      {
+        key: "provider",
+        label: "Provider",
+        type: "select",
+        default: "codex",
+        options: [{ value: "codex", label: "Codex" }],
+        hint: "Paperclip Runner currently supports only Codex app-server.",
+      },
+    ],
+  }),
+  loginCapability: codexLoginCapability,
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -518,6 +564,7 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,

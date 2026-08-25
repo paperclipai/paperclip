@@ -52,6 +52,9 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends cargo rustc \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
@@ -64,7 +67,7 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 # same ARG again for the runtime fallback; an ARG goes out of scope at the
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
 ARG PAPERCLIP_BUILD_COMMIT=""
-RUN pnpm --filter @paperclipai/server build
+RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 FROM base AS production

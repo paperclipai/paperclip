@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, completionContracts, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   DurablePrpControlPlane,
   type PaperclipSemanticToolDefinition,
@@ -56,6 +56,12 @@ export interface PreparedRunnerPrpSession {
     readonly disposition: "committed" | "duplicate";
     readonly resultId: string;
   }>;
+  waitForTerminal(timeoutMs?: number): Promise<{
+    readonly result: PrpStructuredRunResult;
+    readonly terminal: PrpTerminalState;
+    readonly turnId?: string;
+    readonly providerSessionId?: string;
+  }>;
   release(): Promise<void>;
 }
 
@@ -95,6 +101,20 @@ function validateInput(input: PrepareRunnerPrpSessionInput): void {
   }
 }
 
+function completionCriterionIds(value: unknown): string[] | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const criteria = (value as Record<string, unknown>).criteria;
+  if (!Array.isArray(criteria)) return null;
+  const ids = criteria.map((criterion) => {
+    if (typeof criterion !== "object" || criterion === null || Array.isArray(criterion)) return null;
+    const id = (criterion as Record<string, unknown>).id;
+    return typeof id === "string" && id.length > 0 ? id : null;
+  });
+  if (ids.some((id) => id === null)) return null;
+  const typedIds = ids as string[];
+  return new Set(typedIds).size === typedIds.length ? typedIds : null;
+}
+
 /**
  * Creates the hidden, run-bound PRP authority. This module does not select a
  * runtime or start runnerd. The flagged adapter owns those actions later.
@@ -126,7 +146,12 @@ export function runnerPrpCoordinator(
       );
 
       const [binding] = await db
-        .select({ run: heartbeatRuns, issue: issues, agent: agents })
+        .select({
+          run: heartbeatRuns,
+          issue: issues,
+          agent: agents,
+          completionContract: completionContracts,
+        })
         .from(heartbeatRuns)
         .innerJoin(
           issues,
@@ -140,6 +165,14 @@ export function runnerPrpCoordinator(
           and(
             eq(agents.id, heartbeatRuns.agentId),
             eq(agents.companyId, heartbeatRuns.companyId),
+          ),
+        )
+        .innerJoin(
+          completionContracts,
+          and(
+            eq(completionContracts.id, heartbeatRuns.completionContractId),
+            eq(completionContracts.companyId, heartbeatRuns.companyId),
+            eq(completionContracts.issueId, heartbeatRuns.nativeIssueId),
           ),
         )
         .where(
@@ -160,6 +193,7 @@ export function runnerPrpCoordinator(
         binding.run.driverKind !== "codex" ||
         !binding.run.completionContractId ||
         !binding.run.completionContractSha256 ||
+        binding.completionContract.canonicalSha256 !== binding.run.completionContractSha256 ||
         binding.issue.assigneeAgentId !== input.agentId ||
         binding.issue.executionRunId !== input.runId ||
         ["paused", "terminated", "pending_approval", "error"].includes(
@@ -168,6 +202,10 @@ export function runnerPrpCoordinator(
       ) {
         throw new Error("runner_prp_run_not_authorized");
       }
+      const criterionIds = completionCriterionIds(
+        binding.completionContract.contractJson,
+      );
+      if (!criterionIds) throw new Error("runner_prp_run_not_authorized");
 
       const semanticAuthority = new PaperclipRunnerSemanticAuthority(db, {
         companyId: input.companyId,
@@ -185,6 +223,22 @@ export function runnerPrpCoordinator(
         runnerSourceInstanceId: input.runnerInstanceId,
         completionContractId: binding.run.completionContractId,
         completionContractSha256: binding.run.completionContractSha256,
+        completionContractRevision: String(binding.completionContract.revision),
+        completionContractCriterionIds: criterionIds,
+      });
+      type StoredCompletedRun = NonNullable<Awaited<ReturnType<typeof nativeStore.readCompletedRun>>>;
+      type CompletedRun = StoredCompletedRun & { readonly providerSessionId?: string };
+      const withProviderSession = async (stored: StoredCompletedRun): Promise<CompletedRun> => {
+        const providerSessionId = await nativeStore.readProviderSessionId();
+        return {
+          ...stored,
+          ...(providerSessionId ? { providerSessionId } : {}),
+        };
+      };
+      let completedRun: CompletedRun | null = null;
+      let resolveTerminal!: (value: CompletedRun) => void;
+      const terminalEvent = new Promise<CompletedRun>((resolveTerminalPromise) => {
+        resolveTerminal = resolveTerminalPromise;
       });
       const authority = new DurablePrpControlPlane({
         stateDirectory: resolve(stateRoot, input.runId),
@@ -202,6 +256,12 @@ export function runnerPrpCoordinator(
         onCommittedEvent: async (event) => {
           await nativeStore.appendEvent(event);
           await nativeStore.reconcileTerminalEvent(event);
+          if (event.eventType === "run.terminal") {
+            const stored = await nativeStore.readCompletedRun();
+            if (!stored) throw new Error("native_terminal_result_missing");
+            completedRun = await withProviderSession(stored);
+            resolveTerminal(completedRun);
+          }
         },
         onSemanticToolInput: async (call) => {
           const result = await semanticAuthority.dispatch({
@@ -248,6 +308,33 @@ export function runnerPrpCoordinator(
         completeRun: (completeInput) => {
           if (released) throw new Error("runner_prp_session_released");
           return nativeStore.completeRun(completeInput);
+        },
+        waitForTerminal: async (timeoutMs = 60 * 60 * 1_000) => {
+          if (released) throw new Error("runner_prp_session_released");
+          if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 24 * 60 * 60 * 1_000) {
+            throw new Error("runner_prp_terminal_timeout_invalid");
+          }
+          if (completedRun) return completedRun;
+          const stored = await nativeStore.readCompletedRun();
+          if (stored) {
+            completedRun = await withProviderSession(stored);
+            return completedRun;
+          }
+          let timer: NodeJS.Timeout | null = null;
+          try {
+            return await Promise.race([
+              terminalEvent,
+              new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(
+                  () => reject(new Error("runner_prp_terminal_timeout")),
+                  timeoutMs,
+                );
+                timer.unref();
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
         },
         release: async () => {
           if (released) return;

@@ -8,3 +8,5 @@ coverage
 data
 tmp
 *.log
+packages/paperclip-runner/dist
+packages/paperclip-runner/runner/target

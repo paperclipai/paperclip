@@ -18,14 +18,14 @@ every connection and event, and persists commands and cumulative event ACK
 state across server restarts.
 The package also publishes the canonical semantic action declarations and
 their input and output schemas. Its package-local dispatcher projects only
-bound, run-authorized actions and emits redacted semantic receipts. It does not
-add application bindings, a server adapter, or production Paperclip behavior.
+bound, run-authorized actions and emits redacted semantic receipts.
 
 The first and only installed provider is Codex. Dynamic semantic tools remain
 undiscoverable unless the hidden server coordinator projects one of the five
 same-task read bindings for an already persisted native Codex run. Catalog
-membership alone does not grant authority, and no production adapter can create
-or start such a run yet. See
+membership alone does not grant authority. The server can now create and start
+a Codex-backed native run only through the default-off `paperclip_runner`
+adapter. See
 [`SEMANTIC_ACTIONS.md`](SEMANTIC_ACTIONS.md) for the catalog boundary.
 
 The package has two initial public surfaces:
@@ -39,7 +39,15 @@ The package has two initial public surfaces:
 No SDK, browser, React, eval, live-console, lab, or provider-experiment entry
 point is exported. The package remains private in this wave. The server route
 at `/api/runner/v1/connect/:runId` has no authority until the hidden coordinator
-registers an exact existing run binding, and no production adapter starts it.
+registers an exact existing run binding. Fresh native starts are rejected
+unless the instance `enableNativeRunner` flag is enabled. Existing direct
+adapters keep their original execution path.
+
+The package build compiles the release `paperclip-runnerd` executable and
+stages it under `dist/bin`. The normal server build vendors that directory, so
+an installed server does not depend on a separate system Rust installation or
+a manually copied binary. `pnpm-lock.yaml` remains under the repository's
+existing lockfile process.
 
 Run the complete contract gate with:
 

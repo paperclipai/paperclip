@@ -63,7 +63,7 @@ const result: PrpStructuredRunResult = {
   reportedWorkDisposition: "done",
   summary: "The hidden runner completed the bounded task.",
   completionClaim: {
-    contractRevision: "contract-v1",
+    contractRevision: "1",
     objectiveSatisfied: true,
     criteria: [],
     remainingWork: [],
@@ -226,6 +226,8 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
       runnerSourceInstanceId: seed.runnerInstanceId,
       completionContractId: seed.completionContractId,
       completionContractSha256: seed.completionContractSha256,
+      completionContractRevision: "1",
+      completionContractCriterionIds: [],
     });
   }
 
@@ -339,6 +341,27 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
   it("persists events and results idempotently and leases finalization", async () => {
     const seed = await seedNativeRun();
     const nativeStore = store(seed);
+    await expect(nativeStore.completeRun({
+      result: {
+        ...result,
+        completionClaim: { ...result.completionClaim, contractRevision: "2" },
+      },
+      terminal,
+    })).rejects.toThrow("native_result_completion_contract_mismatch");
+    await expect(nativeStore.completeRun({
+      result: {
+        ...result,
+        completionClaim: {
+          ...result.completionClaim,
+          criteria: [{
+            criterionId: "not-bound",
+            status: "satisfied",
+            evidenceRefs: [],
+          }],
+        },
+      },
+      terminal,
+    })).rejects.toThrow("native_result_completion_contract_mismatch");
     const event = runnerEvent(seed);
     await expect(nativeStore.appendEvent(event)).resolves.toMatchObject({
       disposition: "committed",
