@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { getTableName } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -291,6 +292,9 @@ function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
+  // Rows keyed by physical table name, for lookups the generic selection-shape
+  // fallback below cannot tell apart (agents vs company_memberships both select `id`).
+  tableRowOverrides: Record<string, unknown[]> = {},
 ) {
   const runRows = Array.isArray(runAgentOrRows)
     ? runAgentOrRows
@@ -304,7 +308,20 @@ function createRunContextDb(
   const firstRun = runRows[0] ?? {};
   const runAgentId = typeof firstRun.agentId === "string" ? firstRun.agentId : ownerAgentId;
   const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
-  const rowsForSelection = async (selection: Record<string, unknown>) => {
+  const overriddenTables = Object.keys(tableRowOverrides);
+  const rowsForTable = (table: unknown) => {
+    if (overriddenTables.length === 0 || !table) return undefined;
+    let tableName: string;
+    try {
+      tableName = getTableName(table as Parameters<typeof getTableName>[0]);
+    } catch {
+      return undefined;
+    }
+    return tableRowOverrides[tableName];
+  };
+  const rowsForSelection = async (selection: Record<string, unknown>, table?: unknown) => {
+    const overrideRows = rowsForTable(table);
+    if (overrideRows) return overrideRows;
     const keys = Object.keys(selection);
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
@@ -315,16 +332,16 @@ function createRunContextDb(
     }
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
-  const buildQuery = (selection: Record<string, unknown>) => {
+  const buildQuery = (selection: Record<string, unknown>, table?: unknown) => {
     const whereResult = {
       orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, table)),
       })),
       for: vi.fn(() => ({
-        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, table)),
       })),
-      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, table)),
     };
     const query = {
       innerJoin: vi.fn(() => query),
@@ -335,7 +352,7 @@ function createRunContextDb(
   const dbStub = {
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
-      from: vi.fn(() => buildQuery(selection)),
+      from: vi.fn((table: unknown) => buildQuery(selection, table)),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
   };
@@ -1640,12 +1657,96 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["board", "board"],
     ["a company user", { userId: "board-user" }],
-  ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+  ])("allows an agent to name %s as unblock owner when entering blocked", async (_label, unblockOwner) => {
+    const existing = makeIssue({ status: "in_progress" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+    }));
 
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
       status: "blocked",
       unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      }),
+    );
+  });
+
+  it.each([
+    ["board", "board"],
+    ["a company user", { userId: "board-user" }],
+  ])("allows an agent to change an already-blocked issue owner to %s", async (_label, unblockOwner) => {
+    const existing = makeIssue({ status: "blocked" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+    }));
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      }),
+    );
+  });
+
+  it("allows an agent to name itself as unblock owner", async () => {
+    const existing = makeIssue({ status: "in_progress" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+    }));
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review the blocker" },
+      }),
+    );
+  });
+
+  it("rejects an agent naming a user who is not an active company member", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    const routeDb = createRunContextDb({}, ownerAgentId, ownerRunId, { company_memberships: [] });
+
+    const res = await request(await createApp(ownerActor(), routeDb)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { userId: "outsider-user" }, action: "Review the blocker" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe("Unblock owner user must be an active company member");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent naming another agent as unblock owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+
+    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Review the blocker" },
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
@@ -1653,18 +1754,17 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["board", "board"],
-    ["a company user", { userId: "board-user" }],
-  ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+  it("rejects an agent naming an agent outside the issue company as unblock owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    const routeDb = createRunContextDb({}, ownerAgentId, ownerRunId, { agents: [] });
 
-    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
-      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    const res = await request(await createApp(ownerActor(), routeDb)).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Review the blocker" },
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe("Unblock owner agent must belong to the issue company");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 

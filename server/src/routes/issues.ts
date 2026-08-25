@@ -9693,10 +9693,10 @@ export function issueRoutes(
     }
     const descriptor = updateFields.unblockDescriptor ?? null;
     if (descriptor && typeof descriptor === "object") {
+      // Agents may route a human-only unblock action to the board or to an active
+      // company member; naming another *agent* stays self-only so an agent cannot
+      // park work on a peer.
       const owner = descriptor.owner;
-      if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
-        throw forbidden("Agents may only name themselves as an unblock owner");
-      }
       if (owner !== "board" && "agentId" in owner) {
         const target = await db.select({ id: agents.id }).from(agents).where(and(
           eq(agents.id, owner.agentId),
