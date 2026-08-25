@@ -138,7 +138,14 @@ describe("orphan-reaping probe", () => {
   it("fails closed when the orphan is never adopted by PID 1", () => {
     // A probe whose grandchild is not reparented onto PID 1 proves nothing, so
     // it must error rather than report a pass it did not observe.
-    expect(reapingProbe).toContain('if [ "$ppid" != "1" ]; then');
+    expect(reapingProbe).toContain("the probe proved nothing");
+  });
+
+  it("polls for adoption rather than sampling the ppid once", () => {
+    // Re-parenting lags the leader's exit, so a single sample reads a slow
+    // leader as a failure and flakes the Docker publish workflow.
+    expect(reapingProbe).toContain('if [ "$ppid" = "1" ]; then');
+    expect(reapingProbe).toMatch(/while :; do\n\s+ppid=/);
   });
 
   it("asserts on the reaped pid rather than on PID 1's name alone", () => {
