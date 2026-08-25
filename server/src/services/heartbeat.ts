@@ -14729,22 +14729,56 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const promoted = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "queued",
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, dueRun.id),
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          lte(heartbeatRuns.scheduledRetryAt, now),
-        ),
-      )
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!promoted) return { outcome: "not_promoted", run: null };
+    // TSMC-21661: evaluateScheduledRetryGate above reads live state, but this
+    // promotion previously wrote its "queued" update in a separate,
+    // unlocked statement. A card could be parked blocked or its agent
+    // paused in the window between that read and this write, and the
+    // scheduled/timeout retry would still be promoted — the same failure
+    // class as the enqueueProcessLossRetry/enqueueMissingIssueCommentRetry
+    // race this card's gate exists for. Re-lock and re-check inside the
+    // same transaction as the write, using the shared suppression helper
+    // (agent-then-issue lock order, matching the other two retry paths).
+    let scheduledRetrySuppression: { reason: string; details: Record<string, unknown> } | null = null;
+    const promoted = await db.transaction(async (tx) => {
+      scheduledRetrySuppression = await retrySpawnSuppression(tx, {
+        companyId: dueRun.companyId,
+        agentId: dueRun.agentId,
+        issueId: readNonEmptyString(contextSnapshot.issueId),
+      });
+      if (scheduledRetrySuppression) return null;
+
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          status: "queued",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, dueRun.id),
+            eq(heartbeatRuns.status, "scheduled_retry"),
+            lte(heartbeatRuns.scheduledRetryAt, now),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
+    if (!promoted) {
+      const suppression = scheduledRetrySuppression as { reason: string; details: Record<string, unknown> } | null;
+      if (suppression) {
+        await appendRunEvent(dueRun, await nextRunEventSeq(dueRun.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Scheduled retry suppressed at promotion time because the bound state changed after the gate check",
+          payload: {
+            reason: suppression.reason,
+            ...suppression.details,
+          },
+        });
+      }
+      return { outcome: "not_promoted", run: null };
+    }
 
     await appendRunEvent(promoted, await nextRunEventSeq(promoted.id), {
       eventType: "lifecycle",
