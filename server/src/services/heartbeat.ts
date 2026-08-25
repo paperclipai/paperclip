@@ -236,6 +236,10 @@ import {
   findReusableMetaIssue,
 } from "./meta-issue-dedup.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  buildIssueKeyCompanyResolver,
+  promoteRunWorkProducts,
+} from "./work-product-promotion.js";
 import { assertIssueCloseEvidenceSatisfied } from "./issue-close-evidence.js";
 import { resolveIssueRunForCloseGate } from "./issue-close-run-context.js";
 import { workProductService } from "./work-products.js";
@@ -21932,6 +21936,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // rather than silently leaving dependents stranded behind a missing
         // finalize row.
         await recordWorkspaceFinalize("succeeded");
+        // TSMC-21543: promote what the run just wrote into the durable store,
+        // keyed on each tree's ISSUE prefix, before anything can sweep the
+        // workspace. Deliberately best-effort — a promotion failure must never
+        // fail an otherwise-successful run — and additive, so a durable file
+        // always wins over a stale scratch copy.
+        try {
+          const promotionCompanies = await db
+            .select({ id: companies.id, issuePrefix: companies.issuePrefix })
+            .from(companies);
+          const promotion = await promoteRunWorkProducts({
+            workspaceCwd: executionWorkspace.cwd,
+            sinceMs: (run.startedAt ? new Date(run.startedAt).getTime() : Date.now()) - 60_000,
+            resolveCompanyIdForIssueKey: buildIssueKeyCompanyResolver(promotionCompanies),
+          });
+          if (promotion.promoted.length || promotion.failed.length || promotion.skippedUnknownCompany.length) {
+            logger.info(
+              {
+                runId: run.id,
+                promoted: promotion.promoted.map((p) => p.issueKey),
+                skippedUnknownCompany: promotion.skippedUnknownCompany,
+                failed: promotion.failed,
+              },
+              "promoted run work-products into the durable store",
+            );
+          }
+        } catch (promotionErr) {
+          logger.warn(
+            { err: promotionErr, runId: run.id },
+            "work-product promotion failed; scratch artifacts remain unpromoted",
+          );
+        }
       } catch (adapterErr) {
         // Adapter (or its restore finally) threw — or the finalize record
         // write itself threw. Either way the workspace may be in a partial
