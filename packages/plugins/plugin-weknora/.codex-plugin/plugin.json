@@ -1,0 +1,19 @@
+{
+  "name": "plugin-weknora",
+  "version": "0.1.0",
+  "description": "Paperclip connector for bounded WeKnora retrieval and board-governed wiki maintenance.",
+  "author": {
+    "name": "Paperclip",
+    "email": "noreply@paperclip.ing"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WeKnora",
+    "shortDescription": "Search and browse WeKnora from Paperclip.",
+    "longDescription": "A thin, read-first WeKnora connector with cited retrieval, wiki browsing, health diagnostics, and disabled-by-default board maintenance actions.",
+    "developerName": "Paperclip",
+    "category": "Productivity",
+    "capabilities": ["Read knowledge", "Browse wiki", "Report health"],
+    "defaultPrompt": ["Search WeKnora for this question.", "Browse the WeKnora wiki.", "Check WeKnora health."]
+  }
+}
