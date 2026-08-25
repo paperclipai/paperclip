@@ -34,7 +34,7 @@ import {
   DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL,
   DUPLEX_COUNTER_AGGREGATE_BYTE_RESERVATION_REJECTIONS_TOTAL,
   DUPLEX_GAUGE_AGGREGATE_BYTES_IN_USE,
-} from "./duplex-telemetry.js";
+} from "./duplex-observability.js";
 
 /**
  * The public rejection marker. A retention site that cannot reserve its bytes

@@ -12,7 +12,7 @@
  * never reaches a span attribute, a counter label, or an event field.
  *
  * The module stays free of `@opentelemetry/api` and of the database. The host
- * injects a {@link DuplexTelemetryRecorder}; the default is a no-op recorder, so
+ * injects a {@link DuplexObservabilityRecorder}; the default is a no-op recorder, so
  * the whole surface stays inert until the host binds a real recorder. Every
  * recorder call sits inside an error swallow, so a telemetry failure never breaks
  * the request path.
@@ -59,9 +59,9 @@ export const DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL =
 /**
  * The closed set of aggregate byte ledger metric names. A test pins this exact
  * set, so a new ledger metric name needs an explicit review. Each record uses
- * only closed constant dimensions and no dynamic label. The telemetry contract
- * documents these metrics under "Aggregate byte ledger metrics" in
- * `packages/shared/src/telemetry/README.md`.
+ * only closed constant dimensions and no dynamic label. The Observability
+ * contract documents these metrics under "Aggregate byte ledger metrics" in
+ * `doc/observability.md`.
  */
 export const DUPLEX_AGGREGATE_BYTE_LEDGER_METRIC_NAMES = [
   DUPLEX_GAUGE_AGGREGATE_BYTES_IN_USE,
@@ -182,7 +182,7 @@ export function normalizeDuplexProvider(key: string | null | undefined): DuplexP
  * are present only when the record defines them, so a span or a counter never
  * carries an empty dimension.
  */
-export interface DuplexTelemetryDimensions {
+export interface DuplexObservabilityDimensions {
   provider: DuplexProviderValue;
   transport: DuplexTransportValue;
   outcome?: DuplexOutcomeValue;
@@ -192,23 +192,23 @@ export interface DuplexTelemetryDimensions {
 }
 
 /** One span record the host records. The request span carries a latency. */
-export interface DuplexTelemetrySpanRecord {
+export interface DuplexObservabilitySpanRecord {
   name: string;
-  dimensions: DuplexTelemetryDimensions;
+  dimensions: DuplexObservabilityDimensions;
   /** The request latency in milliseconds. Only the request span sets it. */
   latencyMs?: number;
 }
 
 /** One counter increment the host records. */
-export interface DuplexTelemetryCounterRecord {
+export interface DuplexObservabilityCounterRecord {
   metric: string;
-  dimensions: DuplexTelemetryDimensions;
+  dimensions: DuplexObservabilityDimensions;
 }
 
 /** One event the host emits. */
-export interface DuplexTelemetryEventRecord {
+export interface DuplexObservabilityEventRecord {
   name: string;
-  dimensions: DuplexTelemetryDimensions;
+  dimensions: DuplexObservabilityDimensions;
 }
 
 /**
@@ -218,14 +218,14 @@ export interface DuplexTelemetryEventRecord {
  * The recorder receives only already-mapped dimensions, so the raw provider key
  * never reaches it.
  */
-export interface DuplexTelemetryRecorder {
-  recordSpan(record: DuplexTelemetrySpanRecord): void;
-  incrementCounter(record: DuplexTelemetryCounterRecord): void;
-  emitEvent(record: DuplexTelemetryEventRecord): void;
+export interface DuplexObservabilityRecorder {
+  recordSpan(record: DuplexObservabilitySpanRecord): void;
+  incrementCounter(record: DuplexObservabilityCounterRecord): void;
+  emitEvent(record: DuplexObservabilityEventRecord): void;
 }
 
 /** A no-op recorder. Every method does nothing, so the surface stays inert. */
-export const NOOP_DUPLEX_TELEMETRY_RECORDER: DuplexTelemetryRecorder = {
+export const NOOP_DUPLEX_OBSERVABILITY_RECORDER: DuplexObservabilityRecorder = {
   recordSpan() {},
   incrementCounter() {},
   emitEvent() {},
@@ -252,7 +252,7 @@ export interface DuplexChannelOpenAttempt {
  * provider, so a call site never passes a raw key. It maps each semantic event to
  * the fixed names and dimensions, then calls the recorder inside an error swallow.
  */
-export interface DuplexTelemetry {
+export interface DuplexObservability {
   /** Begin a channel-open attempt. The caller reports `ready` or `fallback`. */
   startChannelOpen(): DuplexChannelOpenAttempt;
   /**
@@ -272,10 +272,10 @@ export interface DuplexTelemetry {
   recordSessionLeak(): void;
 }
 
-/** The options for {@link createDuplexTelemetry}. */
-export interface DuplexTelemetryOptions {
+/** The options for {@link createDuplexObservability}. */
+export interface DuplexObservabilityOptions {
   /** The injected recorder. The default is the no-op recorder. */
-  recorder?: DuplexTelemetryRecorder | null;
+  recorder?: DuplexObservabilityRecorder | null;
   /** The raw provider key. The facade maps it through the allowlist one time. */
   providerKey?: string | null;
 }
@@ -286,25 +286,25 @@ export interface DuplexTelemetryOptions {
  * inside a `try/catch`, so a throwing recorder never breaks the request path. A
  * missing recorder yields a facade whose methods do nothing.
  */
-export function createDuplexTelemetry(options: DuplexTelemetryOptions = {}): DuplexTelemetry {
-  const recorder = options.recorder ?? NOOP_DUPLEX_TELEMETRY_RECORDER;
+export function createDuplexObservability(options: DuplexObservabilityOptions = {}): DuplexObservability {
+  const recorder = options.recorder ?? NOOP_DUPLEX_OBSERVABILITY_RECORDER;
   const provider = normalizeDuplexProvider(options.providerKey);
 
-  const safeSpan = (record: DuplexTelemetrySpanRecord): void => {
+  const safeSpan = (record: DuplexObservabilitySpanRecord): void => {
     try {
       recorder.recordSpan(record);
     } catch {
       // Observability must not break the request path.
     }
   };
-  const safeCounter = (record: DuplexTelemetryCounterRecord): void => {
+  const safeCounter = (record: DuplexObservabilityCounterRecord): void => {
     try {
       recorder.incrementCounter(record);
     } catch {
       // Observability must not break the request path.
     }
   };
-  const safeEvent = (record: DuplexTelemetryEventRecord): void => {
+  const safeEvent = (record: DuplexObservabilityEventRecord): void => {
     try {
       recorder.emitEvent(record);
     } catch {
@@ -313,7 +313,7 @@ export function createDuplexTelemetry(options: DuplexTelemetryOptions = {}): Dup
   };
 
   const recordFallback = (reason: DuplexFallbackReason): void => {
-    const dimensions: DuplexTelemetryDimensions = {
+    const dimensions: DuplexObservabilityDimensions = {
       provider,
       transport: "file",
       outcome: "error",
@@ -330,7 +330,7 @@ export function createDuplexTelemetry(options: DuplexTelemetryOptions = {}): Dup
         ready(): void {
           if (settled) return;
           settled = true;
-          const dimensions: DuplexTelemetryDimensions = {
+          const dimensions: DuplexObservabilityDimensions = {
             provider,
             transport: "duplex",
             outcome: "ok",
@@ -364,7 +364,7 @@ export function createDuplexTelemetry(options: DuplexTelemetryOptions = {}): Dup
       });
     },
     recordLoss(lossClass: DuplexLossClass, lossReason: DuplexLossReason): void {
-      const dimensions: DuplexTelemetryDimensions = {
+      const dimensions: DuplexObservabilityDimensions = {
         provider,
         transport: "duplex",
         outcome: "error",

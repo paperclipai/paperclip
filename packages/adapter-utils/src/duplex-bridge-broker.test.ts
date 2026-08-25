@@ -16,13 +16,13 @@ import {
 } from "./duplex-frame-codec.js";
 import { splitBodyIntoChunkFrames } from "./duplex-body-spool.js";
 import {
-  createDuplexTelemetry,
+  createDuplexObservability,
   DUPLEX_COUNTER_LOSS_TOTAL,
   DUPLEX_SPAN_REQUEST,
-  type DuplexTelemetryCounterRecord,
-  type DuplexTelemetryEventRecord,
-  type DuplexTelemetrySpanRecord,
-} from "./duplex-telemetry.js";
+  type DuplexObservabilityCounterRecord,
+  type DuplexObservabilityEventRecord,
+  type DuplexObservabilitySpanRecord,
+} from "./duplex-observability.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 
 /**
@@ -199,15 +199,15 @@ async function flush(): Promise<void> {
 
 /** The telemetry sink capture. It proves the broker records nothing for a refusal. */
 interface TelemetryCapture {
-  spans: DuplexTelemetrySpanRecord[];
-  counters: DuplexTelemetryCounterRecord[];
-  events: DuplexTelemetryEventRecord[];
+  spans: DuplexObservabilitySpanRecord[];
+  counters: DuplexObservabilityCounterRecord[];
+  events: DuplexObservabilityEventRecord[];
 }
 
 /** Build the real telemetry facade over a capturing recorder. */
-function createTelemetryCapture(): { telemetry: ReturnType<typeof createDuplexTelemetry>; capture: TelemetryCapture } {
+function createTelemetryCapture(): { telemetry: ReturnType<typeof createDuplexObservability>; capture: TelemetryCapture } {
   const capture: TelemetryCapture = { spans: [], counters: [], events: [] };
-  const telemetry = createDuplexTelemetry({
+  const telemetry = createDuplexObservability({
     providerKey: "daytona",
     recorder: {
       recordSpan: (record) => capture.spans.push(record),
