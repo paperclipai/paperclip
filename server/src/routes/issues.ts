@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   approvals,
   companyMemberships,
   documents,
@@ -6858,7 +6859,8 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const postCommitActivityPublications: ActivityPublication[] = [];
-    const result = await db.transaction(async (tx) => {
+    let requiresReviewParticipantDispatch = false;
+    let result = await db.transaction(async (tx) => {
       const lockedIssue = await tx
         .select()
         .from(issueRows)
@@ -7001,6 +7003,14 @@ export function issueRoutes(
             ? "owner_completed"
             : outcome;
 
+      requiresReviewParticipantDispatch =
+        outcome === "restored" &&
+        sourceIssueStatus === "in_review" &&
+        activeRecoveryAction.cause === "execution_review_participant_recovery";
+      if (requiresReviewParticipantDispatch) {
+        return { issue, recoveryAction: activeRecoveryAction };
+      }
+
       const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
         {
           companyId: existing.companyId,
@@ -7017,6 +7027,66 @@ export function issueRoutes(
       return { issue, recoveryAction };
     });
     for (const publication of postCommitActivityPublications) publishActivity(publication);
+
+    if (requiresReviewParticipantDispatch) {
+      const executionStageWakeup = buildExecutionStageWakeup({
+        issueId: result.issue.id,
+        previousState: null,
+        nextState: parseIssueExecutionState(result.issue.executionState),
+        interruptedRunId: null,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+      if (!executionStageWakeup) {
+        throw conflict("Restored review recovery has no dispatchable execution participant", {
+          code: "recovery_review_participant_not_dispatchable",
+          issueId: result.issue.id,
+          recoveryActionId: result.recoveryAction.id,
+        });
+      }
+
+      const idempotencyKey = `recovery-action:${result.recoveryAction.id}:execution-participant`;
+      const existingLiveWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, result.issue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (!existingLiveWake) {
+        const queuedRun = await enqueueRecoveryActionWakeup(executionStageWakeup.agentId, {
+          ...executionStageWakeup.wakeup,
+          idempotencyKey,
+          payload: {
+            ...executionStageWakeup.wakeup.payload,
+            recoveryActionId: result.recoveryAction.id,
+            mutation: "recovery_action_resolution",
+          },
+        });
+        if (!queuedRun) {
+          throw conflict("Review participant dispatch was not queued; recovery action remains active", {
+            code: "recovery_review_participant_dispatch_not_queued",
+            issueId: result.issue.id,
+            recoveryActionId: result.recoveryAction.id,
+          });
+        }
+      }
+
+      const resolvedRecoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: existing.companyId,
+        sourceIssueId: existing.id,
+        actionId: result.recoveryAction.id,
+        status: actionStatus,
+        outcome,
+        resolutionNote: resolutionNote ?? null,
+      });
+      if (!resolvedRecoveryAction) throw notFound("Active recovery action not found");
+      result = { ...result, recoveryAction: resolvedRecoveryAction };
+    }
 
     await routinesSvc.syncRunStatusForIssue(result.issue.id);
 

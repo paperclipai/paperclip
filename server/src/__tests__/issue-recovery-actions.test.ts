@@ -1683,6 +1683,133 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("queues the current review participant before clearing review recovery", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "blocked",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "execution_review_participant_recovery",
+      fingerprint: "review-participant:restore",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Restore the pending review participant.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const enqueueRecoveryActionWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+
+    const resolved = await request(createApp(undefined, {
+      recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup,
+    }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Review participant can run again.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "in_review",
+      activeRecoveryAction: null,
+      executionState: {
+        status: "pending",
+        currentParticipant: { type: "agent", agentId: managerId },
+      },
+    });
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({
+        reason: "execution_review_requested",
+        idempotencyKey: `recovery-action:${action.id}:execution-participant`,
+        payload: expect.objectContaining({ issueId: sourceIssueId, recoveryActionId: action.id }),
+      }),
+    );
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
+  it("keeps review recovery visible when participant dispatch is not queued", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "blocked",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "execution_review_participant_recovery",
+      fingerprint: "review-participant:not-queued",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Retry the pending review participant.",
+      wakePolicy: { type: "wake_owner" },
+    });
+
+    const rejected = await request(createApp(undefined, {
+      recoveryActionEnqueueWakeup: vi.fn(async () => null),
+    }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Attempt participant recovery.",
+      })
+      .expect(409);
+
+    expect(rejected.body.details).toMatchObject({
+      code: "recovery_review_participant_dispatch_not_queued",
+      recoveryActionId: action.id,
+    });
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "active",
+    });
+    const [restoredIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(restoredIssue).toMatchObject({
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentParticipant: { type: "agent", agentId: managerId },
+      },
+    });
+  });
+
   it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db
