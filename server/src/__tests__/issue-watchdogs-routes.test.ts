@@ -597,6 +597,107 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     });
   });
 
+  it.each(["live", "already_reviewed", "not_applicable"] as const)(
+    "keeps refresh deny-by-default when the watched subtree is %s",
+    async (state) => {
+      const companyId = await seedCompany();
+      const watchdogAgentId = await seedAgent(companyId, { name: `Deny ${state} watchdog` });
+      const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
+      const watchdogIssueId = await seedIssue(companyId, {
+        title: "Watchdog review",
+        parentId: watchedRootId,
+        assigneeAgentId: watchdogAgentId,
+        originKind: "task_watchdog",
+        originId: watchedRootId,
+      });
+      const runId = await seedWatchdogRun({
+        companyId,
+        watchdogAgentId,
+        watchedIssueId: watchedRootId,
+        watchdogIssueId,
+      });
+      const [runBeforeRefresh] = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      const originalFingerprint = (runBeforeRefresh?.contextSnapshot as {
+        taskWatchdog?: { stopFingerprint?: string };
+      })?.taskWatchdog?.stopFingerprint;
+
+      if (state === "live") {
+        await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: watchdogAgentId,
+          status: "running",
+          contextSnapshot: { issueId: watchedRootId },
+        });
+      } else if (state === "already_reviewed") {
+        await db
+          .update(issueWatchdogs)
+          .set({ lastReviewedFingerprint: originalFingerprint })
+          .where(and(
+            eq(issueWatchdogs.companyId, companyId),
+            eq(issueWatchdogs.issueId, watchedRootId),
+          ));
+      } else {
+        await db
+          .update(issues)
+          .set({ originKind: "task_watchdog", updatedAt: new Date() })
+          .where(eq(issues.id, watchedRootId));
+      }
+
+      const app = createApp(companyId, {
+        type: "agent",
+        agentId: watchdogAgentId,
+        companyId,
+        runId,
+        source: "agent_jwt",
+      });
+      const refreshed = await request(app).post(`/api/issues/${watchedRootId}/watchdog/refresh`);
+      expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(409);
+      expect(refreshed.body.details.currentState).toBe(state);
+
+      const [runAfterRefresh] = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect((runAfterRefresh?.contextSnapshot as {
+        taskWatchdog?: { stopFingerprint?: string };
+      })?.taskWatchdog?.stopFingerprint).toBe(originalFingerprint);
+    },
+  );
+
+  it("rejects a refresh from a watchdog run that is no longer in flight", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Terminal watchdog" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Watchdog review",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    const refreshed = await request(app).post(`/api/issues/${watchedRootId}/watchdog/refresh`);
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(409);
+    expect(refreshed.body.error).toContain("no longer in flight");
+  });
+
   it("routes watchdog-discovered product bugs outside the watched source tree with evidence links", async () => {
     const companyId = await seedCompany();
     const watchdogAgentId = await seedAgent(companyId, { name: "Product Bug Watchdog" });

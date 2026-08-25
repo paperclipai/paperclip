@@ -420,6 +420,24 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         pendingInteractionsByIssueId: {},
       },
     }),
+    refreshMutationScope: async () => ({
+      allowed: true,
+      changed: false,
+      classification: {
+        state: "stopped",
+        reason: "Task watchdog service unavailable in this route context.",
+        includedIssueIds: [],
+        stopFingerprint: "task_watchdog_stop:unavailable",
+        stoppedLeaves: [],
+        stopSnapshot: {
+          version: 2,
+          fingerprint: "task_watchdog_stop:unavailable",
+          materialLeaves: [],
+          waitsByIssueId: {},
+        },
+        pendingInteractionsByIssueId: {},
+      },
+    }),
   };
 }
 
@@ -6790,6 +6808,11 @@ export function issueRoutes(
       res.status(403).json({ error: "Only an in-flight task-watchdog run can refresh its mutation scope." });
       return;
     }
+    const agentId = req.actor.agentId;
+    if (!agentId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
     const runId = requireAgentRunId(req, res);
     if (!runId) return;
     const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
@@ -6809,7 +6832,7 @@ export function issueRoutes(
     const refreshed = await taskWatchdogsSvc.refreshMutationScope({
       ...scope,
       runId,
-      agentId: req.actor.agentId,
+      agentId,
     });
     if (!refreshed.allowed) {
       res.status(409).json({

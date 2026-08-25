@@ -1666,6 +1666,25 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     runId: string;
     agentId: string;
   }) {
+    // A completed run must not be able to regain its mutation grant by
+    // refreshing its historical context snapshot.
+    const activeRun = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, scope.runId),
+        eq(heartbeatRuns.companyId, scope.companyId),
+        eq(heartbeatRuns.agentId, scope.agentId),
+        eq(heartbeatRuns.status, "running"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!activeRun) {
+      return {
+        allowed: false as const,
+        reason: "Task-watchdog run is no longer in flight and cannot refresh its mutation scope.",
+      };
+    }
+
     const revalidated = await revalidateMutationScope(scope);
     if (revalidated.allowed) {
       return {
@@ -1731,6 +1750,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         eq(heartbeatRuns.id, scope.runId),
         eq(heartbeatRuns.companyId, scope.companyId),
         eq(heartbeatRuns.agentId, scope.agentId),
+        eq(heartbeatRuns.status, "running"),
       ))
       .returning({ id: heartbeatRuns.id });
     if (!run) {
