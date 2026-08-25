@@ -73,7 +73,7 @@
   },
   "devDependencies": {
     "@storybook/addon-a11y": "10.5.10",
-    "@storybook/addon-docs": "10.5.8",
+    "@storybook/addon-docs": "10.5.10",
     "@storybook/react-vite": "10.5.10",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.0.0",
