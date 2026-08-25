@@ -51,6 +51,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
+import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
 import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessSandboxExtraPaths,
@@ -506,6 +507,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
     }
+  }
+  // Tell the model what the company library actually holds. Without this, an
+  // installed-but-not-enabled skill is indistinguishable from a nonexistent
+  // one from inside the sandbox, and agents tell users freshly installed
+  // skills "are not installed". Deterministic text appended to the
+  // instructions, so it participates in the prompt-bundle cache key and only
+  // busts the cache when the library really changes.
+  const skillLibraryManifest = buildSkillLibraryManifestMarkdown({
+    entries: claudeSkillEntries,
+    desiredSkillKeys: desiredSkillNames,
+  });
+  if (skillLibraryManifest) {
+    combinedInstructionsContents = combinedInstructionsContents
+      ? `${combinedInstructionsContents}\n\n${skillLibraryManifest}`
+      : skillLibraryManifest;
   }
   // Missing-source entries must never reach the bundle: their path does not
   // exist, so the bundle hasher would throw and fail the whole run over one
