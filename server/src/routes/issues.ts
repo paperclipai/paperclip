@@ -2082,7 +2082,14 @@ async function logInteractionCreatorHandoff(db: Db, input: {
     assigneeAgentId?: string | null;
     assigneeUserId?: string | null;
   };
-  continuationIssue: { status: string; assigneeAgentId?: string | null; assigneeUserId?: string | null };
+  continuationIssue: {
+    status: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    // Reported by the handoff write, not by the route's earlier read of the issue:
+    // the two can disagree, and only the write knows what it actually displaced.
+    previous: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null };
+  };
   interaction: { id: string; kind: string; status: string };
   actor: ReturnType<typeof getActorInfo>;
 }) {
@@ -2103,11 +2110,7 @@ async function logInteractionCreatorHandoff(db: Db, input: {
       assigneeUserId: input.continuationIssue.assigneeUserId ?? null,
       source: creatorHandoffActivitySource(input.interaction.kind, input.interaction.status),
       interactionId: input.interaction.id,
-      _previous: {
-        status: input.issue.status,
-        assigneeAgentId: input.issue.assigneeAgentId ?? null,
-        assigneeUserId: input.issue.assigneeUserId ?? null,
-      },
+      _previous: input.continuationIssue.previous,
     },
   });
 }

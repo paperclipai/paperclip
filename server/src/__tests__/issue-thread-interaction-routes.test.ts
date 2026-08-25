@@ -1654,6 +1654,7 @@ describe.sequential("issue thread interaction routes", () => {
         assigneeAgentId: CREATED_AGENT_ID,
         assigneeUserId: null,
         status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       },
     });
     const app = await createApp();
@@ -1732,6 +1733,7 @@ describe.sequential("issue thread interaction routes", () => {
         assigneeAgentId: CREATED_AGENT_ID,
         assigneeUserId: null,
         status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       },
     });
     const app = await createApp();
@@ -1808,6 +1810,7 @@ describe.sequential("issue thread interaction routes", () => {
         assigneeAgentId: CREATED_AGENT_ID,
         assigneeUserId: null,
         status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       },
     });
     const app = await createApp();
@@ -2051,6 +2054,7 @@ describe.sequential("issue thread interaction routes", () => {
         assigneeAgentId: CREATED_AGENT_ID,
         assigneeUserId: null,
         status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       },
     });
     const app = await createApp();
@@ -2088,6 +2092,62 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("audits the state the handoff displaced, not the state the route read earlier", async () => {
+    // The route reads the issue before the resolution; the handoff re-reads it
+    // inside its transaction and swaps against *that* read. When the two disagree
+    // — another request moved the issue in between — the handoff still succeeds,
+    // and an audit entry built from the route's snapshot would name a former owner
+    // and status the write never displaced. The ownership history would be wrong
+    // in exactly the case it matters most.
+    //
+    // Here the route's snapshot is deliberately divergent: a different user and a
+    // different status from what the handoff reports having replaced.
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_progress",
+      assigneeAgentId: null,
+      assigneeUserId: "stale-user",
+    }));
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-stale-previous",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-stale-previous",
+        payload: { version: 1, prompt: "Approve this plan?" },
+        result: { version: 1, outcome: "rejected", reason: "Not yet" },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      continuationIssue: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: CREATED_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user-b" },
+      },
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-stale-previous/reject")
+      .send({ reason: "Not yet" });
+
+    expect(res.status).toBe(200);
+    const handoffEntry = mockLogActivity.mock.calls
+      .map(([, entry]) => entry)
+      .find((entry) => entry?.action === "issue.updated");
+    expect(handoffEntry?.details?._previous).toEqual({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user-b",
+    });
   });
 
   it("wakes the returned agent when cancelling agent-authored questions from a board user assignee", async () => {
@@ -2132,6 +2192,7 @@ describe.sequential("issue thread interaction routes", () => {
         assigneeAgentId: CREATED_AGENT_ID,
         assigneeUserId: null,
         status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       },
     });
     const app = await createApp();

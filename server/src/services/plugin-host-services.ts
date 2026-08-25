@@ -2526,6 +2526,7 @@ export function buildHostServices(
           assigneeAgentId?: string | null;
           assigneeUserId?: string | null;
           status: string;
+          previous: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null };
         } | null = null;
         if (params.action === "accept") {
           const result = await interactions.acceptInteraction(
@@ -2602,11 +2603,7 @@ export function buildHostServices(
               assigneeUserId: handoffIssue.assigneeUserId ?? null,
               source: creatorHandoffActivitySource(resolved.kind, resolved.status),
               interactionId: resolved.id,
-              _previous: {
-                status: issue.status,
-                assigneeAgentId: issue.assigneeAgentId ?? null,
-                assigneeUserId: issue.assigneeUserId ?? null,
-              },
+              _previous: handoffIssue.previous,
             },
           });
         }

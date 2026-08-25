@@ -235,10 +235,29 @@ type IssueWakeTarget = {
   status: string;
 };
 
+/**
+ * A creator-agent handoff, carrying the state its guarded swap actually replaced.
+ *
+ * Callers read the issue before entering the resolution, and the handoff re-reads
+ * it inside the transaction. Those two reads can disagree, and the compare-and-swap
+ * is judged against the *inner* one — so the handoff can succeed while the caller's
+ * snapshot is already stale. An audit entry built from that snapshot would name the
+ * wrong former status or assignee for an ownership change, which is exactly the
+ * history the entry exists to provide. `previous` is therefore reported by the write
+ * itself rather than reconstructed by the caller.
+ */
+type IssueCreatorHandoff = IssueWakeTarget & {
+  previous: {
+    status: string;
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+  };
+};
+
 type ResolvedInteractionResult = {
   interaction: IssueThreadInteraction;
   createdIssues: IssueWakeTarget[];
-  continuationIssue?: IssueWakeTarget | null;
+  continuationIssue?: IssueCreatorHandoff | null;
 };
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
@@ -1616,7 +1635,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
        */
       resolvedStatus: string;
     },
-  ): Promise<IssueWakeTarget | null> {
+  ): Promise<IssueCreatorHandoff | null> {
     const issueContext = await tx
       .select({
         id: issues.id,
@@ -1711,6 +1730,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
       assigneeUserId: returnedIssue.assigneeUserId ?? null,
       status: returnedIssue.status,
+      // Sourced from the in-transaction read the swap was judged against, so an
+      // audit entry cannot report a former state the write never displaced.
+      previous: {
+        status: issueContext.status,
+        assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        assigneeUserId: issueContext.assigneeUserId ?? null,
+      },
     };
   }
 
@@ -1785,7 +1811,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     actor: InteractionActor;
   }): Promise<{
     interaction: IssueThreadInteraction;
-    continuationIssue: IssueWakeTarget | null;
+    continuationIssue: IssueCreatorHandoff | null;
   }> {
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
@@ -1934,7 +1960,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     actor: InteractionActor;
   }): Promise<{
     interaction: IssueThreadInteraction;
-    continuationIssue: IssueWakeTarget | null;
+    continuationIssue: IssueCreatorHandoff | null;
   }> {
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
@@ -2816,7 +2842,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
       const createdWakeTargets: IssueWakeTarget[] = [];
-      let continuationIssue: IssueWakeTarget | null = null;
+      let continuationIssue: IssueCreatorHandoff | null = null;
 
       await db.transaction(async (tx) => {
         const resolvedAt = new Date();

@@ -2375,6 +2375,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       assigneeAgentId: agentId,
       assigneeUserId: null,
       status: "todo",
+      previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
     });
 
     const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
@@ -2423,6 +2424,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       assigneeAgentId: agentId,
       assigneeUserId: null,
       status: "todo",
+      previous: { status: "in_review", assigneeAgentId: agentId, assigneeUserId: null },
     });
 
     const resumedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
@@ -2593,6 +2595,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         assigneeAgentId: creatorAgentId,
         assigneeUserId: null,
         status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       });
 
       const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
@@ -2712,6 +2715,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         assigneeAgentId: creatorAgentId,
         assigneeUserId: null,
         status: "todo",
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       });
 
       const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
@@ -2829,6 +2833,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           assigneeAgentId: creatorAgentId,
           assigneeUserId: null,
           status: "todo",
+          previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
         });
 
         const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
@@ -2960,6 +2965,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           assigneeAgentId: owningAgentId,
           assigneeUserId: null,
           status: "todo",
+          previous: { status: "in_review", assigneeAgentId: owningAgentId, assigneeUserId: null },
         });
 
         const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
@@ -2988,6 +2994,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           assigneeAgentId: creatorAgentId,
           assigneeUserId: null,
           status: "todo",
+          previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
         });
 
         const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
@@ -3046,6 +3053,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           assigneeAgentId: creatorAgentId,
           assigneeUserId: null,
           status: "todo",
+          previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
         });
 
         const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);

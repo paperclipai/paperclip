@@ -105,6 +105,7 @@ function createFakeDb(args: {
               return {
                 returning: async () => args.handoffUpdateRows ?? [{
                   id: issueRow?.id,
+                  companyId: issueRow?.companyId,
                   status: values.status,
                   assigneeAgentId: values.assigneeAgentId,
                   assigneeUserId: values.assigneeUserId,
@@ -509,9 +510,13 @@ describe("issueThreadInteractionService", () => {
 
       expect(result.continuationIssue).toEqual({
         id: issueId,
+        companyId: "company-1",
         assigneeAgentId: "agent-asking",
         assigneeUserId: null,
         status: "todo",
+        // Read inside the transaction the swap was judged against — not handed in
+        // by the caller, whose snapshot can already be stale here.
+        previous: { status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" },
       });
       // The guard re-asserts every mutable precondition rather than updating by id.
       expect(state.handoffUpdates).toHaveLength(1);
