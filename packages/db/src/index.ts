@@ -39,3 +39,10 @@ export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecy
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
+
+// Query operators, re-exported so repo-root scripts can build a where-clause.
+// Node resolves bare specifiers from the importing FILE's directory, and
+// drizzle-orm is a dependency of this package and of server/ — never of the
+// repo root — so `import { eq } from "drizzle-orm"` inside scripts/ fails at
+// runtime no matter how it is invoked (TSMC-21711).
+export { and, eq, inArray, isNull, sql } from "drizzle-orm";

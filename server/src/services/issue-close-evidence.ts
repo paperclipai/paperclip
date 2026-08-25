@@ -37,6 +37,34 @@ const GENERATION_MEASUREMENT_TITLE_RE =
 const EXPLICIT_ACCEPTANCE_EVIDENCE_RE =
   /\b(?:acceptance\s+evidence|attach(?:\s+(?:the|all|supporting))?\s+evidence|close\s+with\s+evidence)\b/i;
 
+// TSMC-21711: the same demand, stated as a deliverable instead of as "evidence".
+//
+// EXPLICIT_ACCEPTANCE_EVIDENCE_RE only fires on the word "evidence", so a brief
+// that says "produce a compliant demo video" armed nothing at all. DP-4627 was
+// closed `done` five times with zero attachments because its contract was null
+// and this gate therefore returned not_applicable — the guard never had an
+// opinion about the card. Fleet-wide at the time: 54 of 56,836 issues carried a
+// closeContract (0.10%), and 1,863 of the 1,884 issues closed in the preceding
+// week were never gated at all.
+//
+// Kept deliberately high-precision: a false positive BLOCKS a close, so the
+// verb forms require a determiner ("record a video", not "generate video ideas")
+// and only the unambiguous noun phrases match on their own.
+const ARTIFACT_DELIVERABLE_RE =
+  /\b(?:demo\s+video|screen[- ]recording|screencast|walkthrough\s+video|attachment[-\s]?or[-\s]?fail)\b|\b(?:produce|record|deliver|render|export|attach)\s+(?:a|an|the|one)\s+(?:[\w-]+\s+){0,2}(?:as\s+(?:a|an)\s+)?(?:video|recording|screencast|mp4|pdf|deck|screenshot)\b/i;
+
+/** Name the artifact class from the prose that demanded it (artifactKind is a quality floor, not a count unit). */
+function artifactKindForDeliverable(text: string): string {
+  if (/\b(?:demo\s+video|screen[- ]recording|screencast|walkthrough\s+video)\b/i.test(text)) {
+    return "screen_recording_video";
+  }
+  if (/\b(?:video|mp4|recording)\b/i.test(text)) return "rendered_video";
+  if (/\bpdf\b/i.test(text)) return "rendered_pdf";
+  if (/\bdeck\b/i.test(text)) return "rendered_deck";
+  if (/\bscreenshot\b/i.test(text)) return "captured_screenshot";
+  return "delivered_artifact";
+}
+
 export type CloseEvidenceMeasurement = {
   closeContract: IssueCloseEvidenceContract;
   measuredCount: number;
@@ -236,6 +264,11 @@ export function inferDefaultCloseContractForIssueCreate(input: {
     return {
       mode: "evidence",
       evidenceTarget: 1,
+      // TSMC-21711: without a portable target, loose files under the workspace
+      // work-products dir satisfy the contract on their own. DP-4627 measured
+      // localFiles:3 — three markdown self-reports — which would have cleared a
+      // bare evidenceTarget:1 while the actual deliverable did not exist.
+      portableEvidenceTarget: 1,
       evidencePath: input.identifier,
       artifactKind: "generated_media",
     };
@@ -247,6 +280,16 @@ export function inferDefaultCloseContractForIssueCreate(input: {
       portableEvidenceTarget: 1,
       evidencePath: input.identifier,
       artifactKind: "acceptance_evidence",
+    };
+  }
+  const deliverableText = `${input.title ?? ""}\n${input.description ?? ""}`;
+  if (ARTIFACT_DELIVERABLE_RE.test(deliverableText)) {
+    return {
+      mode: "evidence",
+      evidenceTarget: 1,
+      portableEvidenceTarget: 1,
+      evidencePath: input.identifier,
+      artifactKind: artifactKindForDeliverable(deliverableText),
     };
   }
   return null;
