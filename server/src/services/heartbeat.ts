@@ -238,6 +238,45 @@ import {
   findReusableMetaIssue,
 } from "./meta-issue-dedup.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+
+// TSMC-21480. `completion_continuation` re-offers the same card to the same
+// agent immediately after a productive run. Two states make that offer pure
+// burn, and neither was checked — the only gate was TSMC-21372's chain cap,
+// which bounds the loop at 3 but does not stop it starting:
+//
+//  1. The agent already STATED it was not continuing (done / cancelled /
+//     in_review / blocked). Re-offering asks it to restate the same thing. This
+//     matters more since TSMC-21479: a stated `done` refused by the
+//     close-evidence gate leaves the issue `in_progress`, which is exactly the
+//     shape that looks continuable and is not.
+//  2. The issue is waiting on a HUMAN — a pending operator-ask interaction.
+//     No agent run can advance it, so every continuation is wasted.
+const STATED_NON_CONTINUATION_DISPOSITIONS = new Set(["done", "cancelled", "in_review", "blocked"]);
+
+// Same kinds the Operator Console derives a board ask from; a pending one of
+// these means the card is parked on a person.
+const OPERATOR_ASK_INTERACTION_KINDS = [
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "ask_user_questions",
+  "request_item_verdicts",
+] as const;
+
+/** Read the disposition status an adapter stated on a run, if any. */
+export function readStatedDispositionStatus(resultJson: unknown): string | null {
+  const disposition = (parseObject(resultJson) as {
+    disposition?: { status?: unknown } | null;
+  }).disposition ?? null;
+  return disposition && typeof disposition.status === "string" && disposition.status.trim()
+    ? disposition.status.trim()
+    : null;
+}
+
+/** True when the agent's own stated disposition says it is not continuing. */
+export function statedDispositionBlocksContinuation(resultJson: unknown): boolean {
+  const status = readStatedDispositionStatus(resultJson);
+  return status !== null && STATED_NON_CONTINUATION_DISPOSITIONS.has(status);
+}
 import {
   buildIssueKeyCompanyResolver,
   promoteRunWorkProducts,
@@ -16918,7 +16957,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // (progress resets the no-progress streak), and unproductive runs
           // still fall through to the spaced paths, so churn protection stands.
           const lastRun = await db
-            .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+            // TSMC-21480: resultJson carries the stated disposition.
+            .select({
+              id: heartbeatRuns.id,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
+              resultJson: heartbeatRuns.resultJson,
+            })
             .from(heartbeatRuns)
             .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "succeeded")))
             .orderBy(desc(heartbeatRuns.finishedAt))
@@ -16932,7 +16976,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .where(and(eq(issues.id, lastIssueId), inArray(issues.status, ["todo", "in_progress"])))
               .limit(1)
               .then((rows) => rows[0] ?? null);
-            if (stillOpen) {
+            // TSMC-21480: do not re-offer a card the agent said it was done with,
+            // or one that is parked on a person. Checked BEFORE the progress
+            // query so a parked card costs nothing.
+            const statedNoContinue = statedDispositionBlocksContinuation(lastRun.resultJson);
+            const pendingOperatorAsk = stillOpen
+              ? await db
+                  .select({ id: issueThreadInteractions.id })
+                  .from(issueThreadInteractions)
+                  .where(and(
+                    eq(issueThreadInteractions.issueId, lastIssueId),
+                    eq(issueThreadInteractions.status, "pending"),
+                    inArray(issueThreadInteractions.kind, [...OPERATOR_ASK_INTERACTION_KINDS]),
+                  ))
+                  .limit(1)
+                  .then((rows) => rows.length > 0)
+              : false;
+            if (stillOpen && (statedNoContinue || pendingOperatorAsk)) {
+              logger.debug(
+                {
+                  agentId,
+                  issueId: lastIssueId,
+                  continuedFromRunId: lastRun.id,
+                  reason: statedNoContinue ? "stated_disposition" : "pending_operator_ask",
+                  statedStatus: readStatedDispositionStatus(lastRun.resultJson),
+                },
+                "skipped completion_continuation: the card is finished or parked on a person",
+              );
+            } else if (stillOpen) {
               const progressed = await db
                 .select({ id: activityLog.id })
                 .from(activityLog)
