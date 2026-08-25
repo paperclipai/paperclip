@@ -2332,6 +2332,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/watchdog/refresh",
+  tags: ["issues"],
+  summary: "Refresh an in-flight task-watchdog run's stopped-subtree mutation scope",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
   method: "delete",
   path: "/api/issues/{id}/watchdog",
   tags: ["issues"],

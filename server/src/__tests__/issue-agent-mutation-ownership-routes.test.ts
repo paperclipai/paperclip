@@ -100,6 +100,11 @@ const mockTaskWatchdogService = vi.hoisted(() => ({
     allowed: true,
     classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
   })),
+  refreshMutationScope: vi.fn(async () => ({
+    allowed: true,
+    changed: false,
+    classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
+  })),
   reconcileForIssueAndAncestors: vi.fn(async () => ({
     checked: 0,
     triggered: 0,

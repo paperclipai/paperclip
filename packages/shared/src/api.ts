@@ -23,6 +23,7 @@ export const API = {
   issues: `${API_PREFIX}/issues`,
   stalledReviewDecision: `${API_PREFIX}/issues/:issueId/stalled-review-decision`,
   issueWatchdog: `${API_PREFIX}/issues/:issueId/watchdog`,
+  issueWatchdogRefresh: `${API_PREFIX}/issues/:issueId/watchdog/refresh`,
   issueTreeControl: `${API_PREFIX}/issues/:issueId/tree-control`,
   issueTreeHolds: `${API_PREFIX}/issues/:issueId/tree-holds`,
   summarySlot: `${API_PREFIX}/companies/:companyId/summary-slots/:scopeKind/:slotKey`,

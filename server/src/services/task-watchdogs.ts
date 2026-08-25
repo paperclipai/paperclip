@@ -1657,6 +1657,96 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     };
   }
 
+  async function refreshMutationScope(scope: {
+    kind: "watchdog";
+    watchdogId: string;
+    companyId: string;
+    watchedIssueId: string;
+    stopFingerprint: string | null;
+    runId: string;
+    agentId: string;
+  }) {
+    const revalidated = await revalidateMutationScope(scope);
+    if (revalidated.allowed) {
+      return {
+        allowed: true as const,
+        changed: false as const,
+        classification: revalidated.classification,
+      };
+    }
+
+    const watchdog = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(and(
+        eq(issueWatchdogs.id, scope.watchdogId),
+        eq(issueWatchdogs.companyId, scope.companyId),
+        eq(issueWatchdogs.issueId, scope.watchedIssueId),
+        eq(issueWatchdogs.watchdogAgentId, scope.agentId),
+        eq(issueWatchdogs.status, "active"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!watchdog) {
+      return {
+        allowed: false as const,
+        reason: "Task-watchdog run context is not backed by an active persisted watchdog.",
+      };
+    }
+
+    const input = await collectClassifierInput(watchdog.companyId, watchdog);
+    const classification = classifyTaskWatchdogSubtree(input);
+    if (classification.state !== "stopped") {
+      return {
+        allowed: false as const,
+        reason: "Task-watchdog review cannot refresh because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path.",
+        classification,
+      };
+    }
+
+    const [run] = await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: sql`
+          case
+            when jsonb_typeof(${heartbeatRuns.contextSnapshot}->'taskWatchdog') = 'object'
+              then jsonb_set(
+                ${heartbeatRuns.contextSnapshot},
+                '{taskWatchdog,stopFingerprint}',
+                to_jsonb(${classification.stopFingerprint}::text),
+                true
+              )
+            else jsonb_set(
+              coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb),
+              '{taskWatchdog}',
+              jsonb_build_object(
+                'watchedIssueId', ${scope.watchedIssueId},
+                'stopFingerprint', ${classification.stopFingerprint}
+              ),
+              true
+            )
+          end
+        `,
+      })
+      .where(and(
+        eq(heartbeatRuns.id, scope.runId),
+        eq(heartbeatRuns.companyId, scope.companyId),
+        eq(heartbeatRuns.agentId, scope.agentId),
+      ))
+      .returning({ id: heartbeatRuns.id });
+    if (!run) {
+      return {
+        allowed: false as const,
+        reason: "Task-watchdog run context is no longer available to refresh.",
+      };
+    }
+
+    return {
+      allowed: true as const,
+      changed: scope.stopFingerprint !== classification.stopFingerprint,
+      classification,
+    };
+  }
+
   return {
     getActiveForIssue: async (companyId: string, issueId: string): Promise<IssueWatchdog | null> => {
       const row = await db
@@ -1811,5 +1901,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     },
 
     revalidateMutationScope,
+    refreshMutationScope,
   };
 }

@@ -518,6 +518,85 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     expect(allowedChild.body.parentId).toBe(watchedChildId);
   });
 
+  it("lets a watchdog refresh a stale stopped fingerprint before recording its finding", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Refreshing Watchdog" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root", identifier: "WDOG-REFRESH" });
+    const replacementAssigneeId = await seedAgent(companyId, { name: "Replacement assignee" });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Watchdog review",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const [runBeforeRefresh] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    const originalFingerprint = (runBeforeRefresh?.contextSnapshot as {
+      taskWatchdog?: { stopFingerprint?: string };
+    })?.taskWatchdog?.stopFingerprint;
+    expect(originalFingerprint).toMatch(/^task_watchdog_stop:/);
+
+    // This is a material stopped-subtree change, but it does not restore a
+    // live path. The run must explicitly re-read and re-pin before mutating.
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: replacementAssigneeId, updatedAt: new Date() })
+      .where(eq(issues.id, watchedRootId));
+
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    const staleComment = await request(app)
+      .post(`/api/issues/${watchedRootId}/comments`)
+      .send({ body: "Finding before refresh" });
+    expect(staleComment.status, JSON.stringify(staleComment.body)).toBe(409);
+
+    const refreshed = await request(app).post(`/api/issues/${watchedRootId}/watchdog/refresh`);
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+    expect(refreshed.body).toMatchObject({ changed: true, stopFingerprint: expect.any(String) });
+    expect(refreshed.body.stopFingerprint).not.toBe(originalFingerprint);
+
+    const [runAfterRefresh] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect((runAfterRefresh?.contextSnapshot as {
+      taskWatchdog?: { stopFingerprint?: string };
+    })?.taskWatchdog?.stopFingerprint).toBe(refreshed.body.stopFingerprint);
+
+    const freshComment = await request(app)
+      .post(`/api/issues/${watchedRootId}/comments`)
+      .send({ body: "Finding after refresh" });
+    expect(freshComment.status, JSON.stringify(freshComment.body)).toBe(201);
+
+    const refreshActivity = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.entityId, watchedRootId),
+        eq(activityLog.action, "issue.task_watchdog_scope_refreshed"),
+      ));
+    expect(refreshActivity).toHaveLength(1);
+    expect(refreshActivity[0]?.details).toMatchObject({
+      previousStopFingerprint: originalFingerprint,
+      stopFingerprint: refreshed.body.stopFingerprint,
+      changed: true,
+    });
+  });
+
   it("routes watchdog-discovered product bugs outside the watched source tree with evidence links", async () => {
     const companyId = await seedCompany();
     const watchdogAgentId = await seedAgent(companyId, { name: "Product Bug Watchdog" });

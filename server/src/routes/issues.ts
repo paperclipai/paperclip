@@ -6781,6 +6781,76 @@ export function issueRoutes(
     res.json(watchdog);
   });
 
+  router.post("/issues/:id/watchdog/refresh", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Only an in-flight task-watchdog run can refresh its mutation scope." });
+      return;
+    }
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return;
+    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (scope.kind !== "watchdog") {
+      res.status(403).json({
+        error: scope.kind === "invalid"
+          ? scope.detail
+          : "This agent run does not have a task-watchdog mutation scope to refresh.",
+      });
+      return;
+    }
+    if (scope.watchedIssueId !== issue.id) {
+      res.status(403).json({ error: "Task-watchdog runs can only refresh the watched source issue scope." });
+      return;
+    }
+
+    const refreshed = await taskWatchdogsSvc.refreshMutationScope({
+      ...scope,
+      runId,
+      agentId: req.actor.agentId,
+    });
+    if (!refreshed.allowed) {
+      res.status(409).json({
+        error: refreshed.reason,
+        details: {
+          watchedIssueId: scope.watchedIssueId,
+          watchdogId: scope.watchdogId,
+          runStopFingerprint: scope.stopFingerprint,
+          currentState: refreshed.classification?.state ?? null,
+          currentStopFingerprint: refreshed.classification && "stopFingerprint" in refreshed.classification
+            ? refreshed.classification.stopFingerprint
+            : null,
+        },
+      });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.task_watchdog_scope_refreshed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        watchdogId: scope.watchdogId,
+        previousStopFingerprint: scope.stopFingerprint,
+        stopFingerprint: refreshed.classification.stopFingerprint,
+        changed: refreshed.changed,
+      },
+    });
+    res.json({
+      stopFingerprint: refreshed.classification.stopFingerprint,
+      changed: refreshed.changed,
+    });
+  });
+
   router.delete("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
