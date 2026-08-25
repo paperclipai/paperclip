@@ -1673,7 +1673,7 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
     }
   });
 
-  it("keeps a repeated pre-bind exit at its original arrival position with its latest exit code, against a filled output queue", async () => {
+  it("keeps a repeated pre-bind exit at its original arrival position with its first exit code, against a filled output queue", async () => {
     const handle = makeLoginPtyHandle({
       loginPtyLimits: { maxPreBindFrames: 50 },
     });
@@ -1682,10 +1682,10 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
       // Fill the pre-bind output queue with 40 records ahead of the first
       // exit, then repeat the exit for the same worker session id after more
       // output arrives. The host indexes the retained exit record by worker
-      // session id, so the repeat updates the SAME record in place instead
-      // of scanning the held queue for it, and the record keeps its
-      // ORIGINAL arrival position — right after the filler outputs, not at
-      // the later position of the repeat.
+      // session id, so the repeat check is an O(1) lookup, not a scan of the
+      // held queue. The FIRST retained exit wins: the repeat drops there and
+      // the record keeps its ORIGINAL arrival position — right after the
+      // filler outputs, not at the later position of the repeat.
       const fillerOutputs = Array.from({ length: 40 }, (_, index) => ({
         type: "output" as const,
         chunk: `filler-${index}`,
@@ -1705,12 +1705,12 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
       );
       const chunks: string[] = [];
       session.onData((chunk) => chunks.push(chunk));
-      // The wait settles with the LATEST exit code, proving the repeat
-      // updated the held record instead of adding a second one. The exit
-      // still terminal-cuts every output that arrived behind its original
+      // The wait settles with the FIRST exit code, proving the repeat
+      // dropped instead of overwriting the held record. The exit still
+      // terminal-cuts every output that arrived behind its original
       // position, so neither "between-exits" nor "after-repeat" reaches the
       // listener — proving the repeat did not move the record's position.
-      await expect(session.wait()).resolves.toEqual({ exitCode: 2 });
+      await expect(session.wait()).resolves.toEqual({ exitCode: 1 });
       expect(chunks).toEqual(fillerOutputs.map((entry) => entry.chunk));
       await session.close();
     } finally {

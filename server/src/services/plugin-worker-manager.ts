@@ -1479,14 +1479,15 @@ export function createPluginWorkerHandle(
     // budget, so it cannot crowd out a held output record.
     preBindOutputFrames: number;
     // The retained exit records, indexed by worker session identifier for an
-    // O(1) repeat-exit lookup, bounded by MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS.
-    // Each value is the exact same object the queue holds in `preBind`, so
-    // an update through this index mutates the `preBind` entry in place, at
-    // its original arrival position — a repeat never rescans or reorders the
-    // queue. The host cannot yet check an exit record's worker session
-    // identifier against the bound value, so it keeps every distinct-session
-    // record instead of only the last one — a later mismatched record can
-    // never displace an earlier record that later verifies.
+    // O(1) repeat-exit check, bounded by MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS.
+    // A repeat exit for a session this index already holds drops there — the
+    // host never rescans `preBind` to find it and never mutates the held
+    // record, so the FIRST retained exit for a session keeps its exit code
+    // and its original arrival position. The host cannot yet check an exit
+    // record's worker session identifier against the bound value, so it
+    // keeps every distinct-session record instead of only the last one — a
+    // later mismatched record can never displace an earlier record that
+    // later verifies.
     preBindExitRecordsBySessionId: Map<string, LoginPtyPreBindExitRecord>;
   }
   // At most one active credential pseudo-terminal per worker. A non-null route
@@ -1650,15 +1651,16 @@ export function createPluginWorkerHandle(
   // a genuine exit from a mismatched one at this point: it keeps one record
   // per distinct worker session identifier, up to
   // MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS, so a later mismatched exit never
-  // displaces an earlier record the bind can still verify. A second exit for
-  // the same worker session identifier looks up the held record by an O(1)
-  // map index and updates its exit code in place, at its original arrival
-  // position — it never rescans the held queue, so an unbounded repeat count
-  // from one worker session costs constant work per repeat, not work
-  // proportional to the queue length. This keeps memory constant against a
-  // repeat from one real session. A distinct-session exit past the bound
-  // fails the route closed, the same fail-closed choice the output queue
-  // makes past its own bound.
+  // displaces an earlier record the bind can still verify.
+  // `route.preBindExitRecordsBySessionId` is an O(1) index of the retained
+  // exit records by worker session identifier, so a repeat check never
+  // rescans the held queue. The FIRST retained exit for a session wins: a
+  // repeat exit for a session the index already holds drops here, and the
+  // host never updates the held record's exit code. This matches the live
+  // route, where the first valid exit closes the route and every later exit
+  // fails the `state !== "open"` guard — the replay path must settle the
+  // same way. A distinct-session exit past the bound fails the route closed,
+  // the same fail-closed choice the output queue makes past its own bound.
   function queuePreBindLoginPtyExit(
     route: LoginPtyRoute,
     notification: JsonRpcNotification,
@@ -1666,12 +1668,8 @@ export function createPluginWorkerHandle(
     const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId) return;
+    if (route.preBindExitRecordsBySessionId.has(workerSessionId)) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
-    const existing = route.preBindExitRecordsBySessionId.get(workerSessionId);
-    if (existing) {
-      existing.exitCode = exitCode;
-      return;
-    }
     if (route.preBindExitRecordsBySessionId.size + 1 > MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS) {
       log.warn(
         { pluginId },
