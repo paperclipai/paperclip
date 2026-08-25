@@ -1,0 +1,56 @@
+{
+  "name": "@paperclipai/plugin-weknora",
+  "version": "0.1.0",
+  "description": "Paperclip connector for read-only WeKnora retrieval, wiki browsing, health, and board-governed maintenance.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/plugins/plugin-weknora"
+  },
+  "type": "module",
+  "files": [
+    ".codex-plugin",
+    "agents",
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "keywords": [
+    "paperclip",
+    "plugin",
+    "weknora",
+    "knowledge"
+  ],
+  "author": "Paperclip",
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "esbuild": "^0.28.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}
