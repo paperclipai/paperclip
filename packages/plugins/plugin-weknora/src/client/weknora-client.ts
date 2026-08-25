@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { normalizeConfig, type WeKnoraConfig } from "../config.js";
-import { asWeknoraError, mapHttpError, WeknoraPluginError } from "../errors.js";
+import { asWeknoraError, isHealthFatal, mapHttpError, WeknoraPluginError } from "../errors.js";
 import {
   decodeChunks,
   decodeDiagnostics,
@@ -9,12 +9,13 @@ import {
   decodeEnvelope,
   decodeIngest,
   decodeKnowledgeBaseList,
+  decodeKnowledgeBaseDetail,
   decodeSearch,
   decodeWikiPage,
   decodeWikiPages,
   decodeWikiSearch,
 } from "./response-codecs.js";
-import type { DocumentSummary, IngestResult, KnowledgeBase, SearchResult, WikiDiagnostics, WikiPage, WikiPageSummary, WikiSearchResult } from "./types.js";
+import type { DocumentSummary, IngestResult, KnowledgeBase, KnowledgeBaseDetail, SearchResult, WikiDiagnostics, WikiPage, WikiPageSummary, WikiSearchResult } from "./types.js";
 
 type Sleep = (milliseconds: number) => Promise<void>;
 
@@ -57,6 +58,16 @@ export class WeKnoraClient {
     return normalizeConfig(await this.ctx.config.get(this.companyId));
   }
 
+  private async secret(config: WeKnoraConfig): Promise<string> {
+    try {
+      const secret = await this.ctx.secrets.resolve(config.apiKeyRef, { companyId: this.companyId, configPath: "apiKeyRef" });
+      if (typeof secret !== "string" || secret.trim().length === 0) throw new Error("empty secret");
+      return secret;
+    } catch {
+      throw new WeknoraPluginError("auth", "WeKnora API key secret could not be resolved", false, 401);
+    }
+  }
+
   private async request<T>(
     path: string,
     init: { method: "GET" | "POST"; body?: unknown },
@@ -64,7 +75,7 @@ export class WeKnoraClient {
     idempotent: boolean,
   ): Promise<T> {
     const config = await this.config();
-    const secret = await this.ctx.secrets.resolve(config.apiKeyRef, { companyId: this.companyId, configPath: "apiKeyRef" });
+    const secret = await this.secret(config);
     const requestId = randomUUID();
     const url = `${config.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
     const maxRetries = idempotent ? 2 : 0;
@@ -133,7 +144,7 @@ export class WeKnoraClient {
     return Number.isFinite(date) ? Math.min(5000, Math.max(0, date - Date.now())) : 0;
   }
 
-  async listKnowledgeBases(): Promise<{ knowledgeBases: KnowledgeBase[] }> {
+  async listKnowledgeBases(): Promise<{ knowledgeBases: KnowledgeBase[]; total?: number }> {
     return this.request("/knowledge-bases", { method: "GET" }, (payload) => decodeEnvelope(payload, "knowledge base list", decodeKnowledgeBaseList), true);
   }
 
@@ -170,8 +181,8 @@ export class WeKnoraClient {
     return this.request(`/knowledgebase/${encodeURIComponent(knowledgeBaseId)}/wiki/search${queryString({ query, limit })}`, { method: "GET" }, (payload) => decodeEnvelope(payload, "wiki search", decodeWikiSearch), true);
   }
 
-  async knowledgeBaseDetail(knowledgeBaseId: string): Promise<Record<string, unknown>> {
-    return this.request(`/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, { method: "GET" }, (payload) => decodeEnvelope(payload, "knowledge base detail", (data) => data as Record<string, unknown>), true);
+  async knowledgeBaseDetail(knowledgeBaseId: string): Promise<KnowledgeBaseDetail> {
+    return this.request(`/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, { method: "GET" }, (payload) => decodeEnvelope(payload, "knowledge base detail", decodeKnowledgeBaseDetail), true);
   }
 
   async wikiDiagnostics(knowledgeBaseId: string): Promise<WikiDiagnostics> {
@@ -181,6 +192,8 @@ export class WeKnoraClient {
       this.request(`/knowledgebase/${encodeURIComponent(knowledgeBaseId)}/wiki/issues`, { method: "GET" }, (payload) => decodeEnvelope(payload, "wiki issues", decodeDiagnostics), true),
     ]);
     const [stats, lint, issues] = results;
+    const fatal = results.find((result) => result.status === "rejected" && isHealthFatal(result.reason));
+    if (fatal?.status === "rejected") throw asWeknoraError(fatal.reason);
     const warnings = results.flatMap((result, index) => result.status === "rejected"
       ? [`${["Wiki stats", "Wiki lint", "Wiki issues"][index]} unavailable: ${asWeknoraError(result.reason).message}`]
       : []);

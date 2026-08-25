@@ -1,16 +1,28 @@
 import type { WeKnoraConfig } from "../config.js";
-import { asWeknoraError, WeknoraPluginError } from "../errors.js";
+import { asWeknoraError, isHealthFatal, WeknoraPluginError } from "../errors.js";
 import type { WeKnoraClient } from "../client/weknora-client.js";
+import type { KnowledgeBaseDetail, WikiIssue, WikiStats } from "../client/types.js";
 
 export type HealthResult = {
   status: "ok" | "degraded" | "unavailable";
   checkedAt: string;
-  knowledgeBase?: Record<string, unknown> | null;
-  wikiStats?: Record<string, unknown>;
+  knowledgeBase?: KnowledgeBaseDetail | null;
+  wikiStats?: WikiStats;
   lintCounts?: Record<string, number>;
-  issues?: Array<Record<string, unknown>>;
+  issues?: WikiIssue[];
   warnings: string[];
+  error?: ReturnType<WeknoraPluginError["toJSON"]>;
 };
+
+export function unavailableHealth(checkedAt: string, error: unknown): HealthResult {
+  const normalized = asWeknoraError(error);
+  return {
+    status: "unavailable",
+    checkedAt,
+    warnings: [normalized.message],
+    error: normalized.toJSON(),
+  };
+}
 
 export function createHealthService(client: WeKnoraClient, config: WeKnoraConfig) {
   return {
@@ -18,15 +30,14 @@ export function createHealthService(client: WeKnoraClient, config: WeKnoraConfig
       const checkedAt = new Date().toISOString();
       let target = knowledgeBaseId ?? config.defaultWikiKnowledgeBaseId ?? config.defaultKnowledgeBaseIds[0];
       const warnings: string[] = [];
-      let knowledgeBase: Record<string, unknown> | null | undefined;
+      let knowledgeBase: KnowledgeBaseDetail | null | undefined;
       if (!target) {
         try {
           const bases = await client.listKnowledgeBases();
           target = bases.knowledgeBases[0]?.id;
           if (!target) return { status: "ok", checkedAt, knowledgeBase: null, warnings: ["No visible WeKnora knowledge bases are configured"] };
         } catch (error) {
-          const normalized = asWeknoraError(error);
-          return { status: "unavailable", checkedAt, warnings: [normalized.message] };
+          return unavailableHealth(checkedAt, error);
         }
       }
 
@@ -34,7 +45,11 @@ export function createHealthService(client: WeKnoraClient, config: WeKnoraConfig
       const wikiPromise = client.wikiDiagnostics(target);
       const [baseResult, wikiResult] = await Promise.allSettled([basePromise, wikiPromise]);
       if (baseResult.status === "fulfilled") knowledgeBase = baseResult.value;
-      else warnings.push(`Knowledge-base detail unavailable: ${asWeknoraError(baseResult.reason).message}`);
+      else {
+        const baseError = asWeknoraError(baseResult.reason);
+        if (isHealthFatal(baseError)) return unavailableHealth(checkedAt, baseError);
+        warnings.push(`Knowledge-base detail unavailable: ${baseError.message}`);
+      }
       if (wikiResult.status === "fulfilled") {
         const diagnostics = wikiResult.value;
         warnings.push(...(diagnostics.warnings ?? []));
@@ -48,7 +63,9 @@ export function createHealthService(client: WeKnoraClient, config: WeKnoraConfig
           warnings,
         };
       }
-      warnings.push(`Wiki diagnostics unavailable: ${asWeknoraError(wikiResult.reason).message}`);
+      const wikiError = asWeknoraError(wikiResult.reason);
+      if (isHealthFatal(wikiError)) return unavailableHealth(checkedAt, wikiError);
+      warnings.push(`Wiki diagnostics unavailable: ${wikiError.message}`);
       return { status: knowledgeBase ? "degraded" : "unavailable", checkedAt, knowledgeBase, warnings };
     },
   };

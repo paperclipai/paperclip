@@ -4,11 +4,14 @@ import type {
   DocumentSummary,
   IngestResult,
   KnowledgeBase,
+  KnowledgeBaseDetail,
   SearchResult,
   UpstreamEnvelope,
   WikiPage,
+  WikiIssue,
   WikiPageSummary,
   WikiSearchResult,
+  WikiStats,
 } from "./types.js";
 
 type RecordValue = Record<string, unknown>;
@@ -43,6 +46,34 @@ function field(value: RecordValue, ...names: string[]): unknown {
   return undefined;
 }
 
+const SECRET_PATTERN = /(authorization|api[-_ ]?key|bearer|secret|token|password)\s*[:=]?\s*[^\s,;]+/gi;
+const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/;
+
+function safeText(value: unknown, maxLength = 200): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value
+    .replace(/<[^>]*>/g, " ")
+    .replace(SECRET_PATTERN, "$1: [redacted]")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+  return text || undefined;
+}
+
+function safeToken(value: unknown): string | undefined {
+  const text = safeText(value, 128);
+  return text && SAFE_TOKEN_PATTERN.test(text) ? text : undefined;
+}
+
+function safeCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1_000_000_000_000 ? value : undefined;
+}
+
+function safeTimestamp(value: unknown): string | undefined {
+  const text = safeText(value, 64);
+  return text && !Number.isNaN(Date.parse(text)) ? text : undefined;
+}
+
 export function decodeEnvelope<T>(payload: unknown, label: string, decode: (data: unknown) => T): T {
   const envelope = record(payload, label) as UpstreamEnvelope<unknown>;
   if (typeof envelope.success !== "boolean") {
@@ -68,10 +99,34 @@ function decodeKnowledgeBase(value: unknown): KnowledgeBase {
   };
 }
 
-export function decodeKnowledgeBaseList(data: unknown): { knowledgeBases: KnowledgeBase[] } {
+export function decodeKnowledgeBaseList(data: unknown): { knowledgeBases: KnowledgeBase[]; total?: number } {
   const source = Array.isArray(data) ? data : record(data, "knowledge base list");
   const items = Array.isArray(source) ? source : array(field(source, "knowledge_bases", "knowledgeBases", "items", "results"));
-  return { knowledgeBases: items.map((item) => decodeKnowledgeBase(item)) };
+  const total = !Array.isArray(source) ? safeCount(field(source, "total", "total_count", "count")) : undefined;
+  return { knowledgeBases: items.map((item) => decodeKnowledgeBase(item)), ...(total == null ? {} : { total }) };
+}
+
+export function decodeKnowledgeBaseDetail(data: unknown): KnowledgeBaseDetail {
+  const source = record(data, "knowledge base detail");
+  const item = record(field(source, "knowledge_base", "knowledgeBase", "item") ?? source, "knowledge base detail");
+  const detail: KnowledgeBaseDetail = {
+    id: string(field(item, "id", "knowledge_base_id"), "knowledge base id"),
+  };
+  const name = safeText(field(item, "name", "title"));
+  const type = safeToken(field(item, "type", "knowledge_base_type"));
+  const status = safeToken(field(item, "status", "processing_status"));
+  const updatedAt = safeTimestamp(field(item, "updated_at", "updatedAt"));
+  const knowledgeCount = safeCount(field(item, "knowledge_count", "knowledgeCount", "knowledge_num"));
+  const chunkCount = safeCount(field(item, "chunk_count", "chunkCount", "chunk_num"));
+  const processingCount = safeCount(field(item, "processing_count", "processingCount", "processing_num"));
+  if (name != null) detail.name = name;
+  if (type != null) detail.type = type;
+  if (status != null) detail.status = status;
+  if (updatedAt != null) detail.updatedAt = updatedAt;
+  if (knowledgeCount != null) detail.knowledgeCount = knowledgeCount;
+  if (chunkCount != null) detail.chunkCount = chunkCount;
+  if (processingCount != null) detail.processingCount = processingCount;
+  return detail;
 }
 
 function decodeSearchResult(value: unknown): SearchResult {
@@ -202,16 +257,61 @@ export function decodeIngest(data: unknown): IngestResult {
   };
 }
 
-export function decodeDiagnostics(data: unknown): { stats?: Record<string, unknown>; lintCounts?: Record<string, number>; issues?: Array<Record<string, unknown>> } {
+function decodeWikiStats(value: unknown): WikiStats | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const source = value as RecordValue;
+  const stats: WikiStats = {};
+  const fields: Array<[Exclude<keyof WikiStats, "updatedAt">, string[]]> = [
+    ["pages", ["pages", "page_count", "pageCount"]],
+    ["published", ["published", "published_pages", "publishedPages"]],
+    ["documents", ["documents", "document_count", "documentCount"]],
+    ["chunks", ["chunks", "chunk_count", "chunkCount"]],
+    ["links", ["links", "link_count", "linkCount"]],
+    ["brokenLinks", ["broken_links", "brokenLinks"]],
+  ];
+  for (const [output, names] of fields) {
+    const count = safeCount(field(source, ...names));
+    if (count != null) stats[output] = count;
+  }
+  const updatedAt = safeTimestamp(field(source, "updated_at", "updatedAt"));
+  if (updatedAt != null) stats.updatedAt = updatedAt;
+  return Object.keys(stats).length > 0 ? stats : undefined;
+}
+
+function decodeWikiIssue(value: unknown): WikiIssue | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const source = value as RecordValue;
+  const code = safeToken(field(source, "code", "rule", "type"));
+  if (!code) return undefined;
+  const slug = safeToken(field(source, "slug", "path", "page_slug"));
+  const severityValue = safeToken(field(source, "severity", "level"));
+  const severity = severityValue === "info" || severityValue === "warning" || severityValue === "error" ? severityValue : undefined;
+  const line = safeCount(field(source, "line", "line_number", "lineNumber"));
+  return {
+    code,
+    ...(slug == null ? {} : { slug }),
+    ...(severity == null ? {} : { severity }),
+    ...(line == null ? {} : { line }),
+  };
+}
+
+export function decodeDiagnostics(data: unknown): { stats?: WikiStats; lintCounts?: Record<string, number>; issues?: WikiIssue[] } {
   const source = record(data, "diagnostics");
+  const statsValue = field(source, "stats", "wiki_stats");
+  const stats = decodeWikiStats(statsValue ?? source);
   const lint = field(source, "lint_counts", "lintCounts", "counts");
   const lintCounts = typeof lint === "object" && lint !== null && !Array.isArray(lint)
-    ? Object.fromEntries(Object.entries(lint as Record<string, unknown>).filter(([, value]) => typeof value === "number")) as Record<string, number>
+    ? Object.fromEntries(Object.entries(lint as RecordValue).flatMap(([key, value]) => {
+      const safeKey = safeToken(key);
+      const count = safeCount(value);
+      return safeKey != null && count != null ? [[safeKey, count]] : [];
+    })) as Record<string, number>
     : undefined;
   const issuesValue = field(source, "issues", "findings");
+  const issues = Array.isArray(issuesValue) ? issuesValue.map(decodeWikiIssue).filter((value): value is WikiIssue => value != null) : undefined;
   return {
-    stats: typeof field(source, "stats", "wiki_stats") === "object" && field(source, "stats", "wiki_stats") !== null ? field(source, "stats", "wiki_stats") as Record<string, unknown> : undefined,
+    ...(stats == null ? {} : { stats }),
     lintCounts,
-    issues: Array.isArray(issuesValue) ? issuesValue.filter((value): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)) : undefined,
+    issues,
   };
 }

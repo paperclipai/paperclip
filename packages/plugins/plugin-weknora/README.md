@@ -12,7 +12,9 @@ Install the package through the Paperclip plugin manager. Configure a company in
 - `resourceUrls: "handle"` (fixed in V1), result/character limits, and request timeout.
 - `enableWriteActions: false` unless the board explicitly wants manual or URL ingest and wiki maintenance actions.
 
-The plugin sends `X-API-Key`, optional `X-Tenant-ID`, and a generated `X-Request-ID`. It refuses redirects, caps result/page sizes, clips oversized content, and retries only idempotent reads (at most two retries). Ingest, rebuild-links, and auto-fix writes are never retried.
+The plugin sends `X-API-Key`, optional `X-Tenant-ID`, and a generated `X-Request-ID`. It refuses redirects, caps result/page sizes, clips oversized content, and retries only idempotent reads (at most two retries). Knowledge-base listings are bounded by `maxResults` and report known `total`/`truncated` state. Manual and URL ingest requests have a 1 MB serialized JSON body limit. Ingest, rebuild-links, and auto-fix writes are never retried.
+
+Health output uses allowlisted counters, identifiers, and timestamps. Unknown upstream fields, headers, markup, secret-like values, and free-form issue messages are not passed to agent tools or the UI. Authentication and configuration failures make the complete health result unavailable; unrelated wiki endpoint failures produce a degraded partial result.
 
 ## Operator smoke prerequisites
 

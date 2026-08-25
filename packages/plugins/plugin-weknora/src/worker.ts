@@ -11,7 +11,7 @@ import { normalizeConfig, type WeKnoraConfig } from "./config.js";
 import { asWeknoraError, WeknoraPluginError } from "./errors.js";
 import { PLUGIN_ID, ROUTE_KEYS, TOOL_NAMES } from "./manifest.js";
 import { createWeKnoraClient } from "./client/weknora-client.js";
-import { createHealthService } from "./services/health.js";
+import { createHealthService, unavailableHealth } from "./services/health.js";
 import { createIngestionService } from "./services/ingestion.js";
 import { createRetrievalService } from "./services/retrieval.js";
 import { createWikiService } from "./services/wiki.js";
@@ -63,6 +63,14 @@ async function servicesFor(ctx: PluginContext, companyId: string) {
     health: createHealthService(client, config),
     ingestion: createIngestionService(client, config),
   };
+}
+
+async function healthResultFor(ctx: PluginContext, companyId: string, knowledgeBaseId?: string) {
+  try {
+    return await (await servicesFor(ctx, companyId)).health.check(knowledgeBaseId);
+  } catch (error) {
+    return unavailableHealth(new Date().toISOString(), error);
+  }
 }
 
 function toolDeclaration(ctx: PluginContext, name: string) {
@@ -143,7 +151,7 @@ async function registerReadTools(ctx: PluginContext): Promise<void> {
 
   ctx.tools.register(TOOL_NAMES.health, toolDeclaration(ctx, TOOL_NAMES.health), async (params, runCtx) => {
     const input = toolParams(params, runCtx);
-    const result = await (await servicesFor(ctx, runCtx.companyId)).health.check(optionalString(input.knowledgeBaseId));
+    const result = await healthResultFor(ctx, runCtx.companyId, optionalString(input.knowledgeBaseId));
     return toolResult(result);
   });
 }
@@ -180,6 +188,9 @@ function apiResponseError(error: unknown): { status: number; body: { error: Retu
 
 async function handleReadRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<unknown> {
   const companyId = input.companyId;
+  if (input.routeKey === ROUTE_KEYS.health) {
+    return healthResultFor(ctx, companyId, optionalString(firstQueryValue(input.query.knowledgeBaseId)));
+  }
   const services = await servicesFor(ctx, companyId);
   const query = input.query;
   const params = input.params;
@@ -231,8 +242,6 @@ async function handleReadRoute(ctx: PluginContext, input: PluginApiRequestInput)
         query: requiredString(firstQueryValue(query.query), "query"),
         limit: Number(firstQueryValue(query.limit)) || undefined,
       });
-    case ROUTE_KEYS.health:
-      return services.health.check(optionalString(firstQueryValue(query.knowledgeBaseId)));
     default:
       throw new WeknoraPluginError("not_found", "Unknown WeKnora route", false, 404);
   }
@@ -294,7 +303,7 @@ const plugin = definePlugin({
     ctx.data.register("wiki-pages", async (params) => (await servicesFor(ctx, companyIdFromParams(params))).wiki.listPages({ knowledgeBaseId: requiredString(params.knowledgeBaseId, "knowledgeBaseId"), page: typeof params.page === "number" ? params.page : undefined, pageSize: typeof params.pageSize === "number" ? params.pageSize : undefined }));
     ctx.data.register("wiki-page", async (params) => (await servicesFor(ctx, companyIdFromParams(params))).wiki.readPage({ knowledgeBaseId: requiredString(params.knowledgeBaseId, "knowledgeBaseId"), slug: requiredString(params.slug, "slug") }));
     ctx.data.register("wiki-search", async (params) => (await servicesFor(ctx, companyIdFromParams(params))).wiki.search({ knowledgeBaseId: requiredString(params.knowledgeBaseId, "knowledgeBaseId"), query: requiredString(params.query, "query"), limit: typeof params.limit === "number" ? params.limit : undefined }));
-    ctx.data.register("health", async (params) => (await servicesFor(ctx, companyIdFromParams(params))).health.check(optionalString(params.knowledgeBaseId)));
+    ctx.data.register("health", async (params) => healthResultFor(ctx, companyIdFromParams(params), optionalString(params.knowledgeBaseId)));
 
     ctx.actions.register("ingest-manual", async (params, context) => {
       const companyId = actionCompanyId(params, context);

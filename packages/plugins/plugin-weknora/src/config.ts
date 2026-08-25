@@ -83,8 +83,9 @@ export function normalizeBaseUrl(value: unknown): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
-export function normalizeConfig(raw: Record<string, unknown>): WeKnoraConfig {
-  const defaultKnowledgeBaseIdsValue = raw.defaultKnowledgeBaseIds;
+export function normalizeConfig(raw: Record<string, unknown> | null | undefined): WeKnoraConfig {
+  const source = isRecord(raw) ? raw : {};
+  const defaultKnowledgeBaseIdsValue = source.defaultKnowledgeBaseIds;
   const defaultKnowledgeBaseIds = defaultKnowledgeBaseIdsValue == null
     ? []
     : Array.isArray(defaultKnowledgeBaseIdsValue)
@@ -94,25 +95,25 @@ export function normalizeConfig(raw: Record<string, unknown>): WeKnoraConfig {
     throw new WeknoraPluginError("invalid_config", "defaultKnowledgeBaseIds must contain at most 50 ids", false);
   }
 
-  const resourceUrls = raw.resourceUrls == null ? DEFAULT_CONFIG.resourceUrls : raw.resourceUrls;
+  const resourceUrls = source.resourceUrls == null ? DEFAULT_CONFIG.resourceUrls : source.resourceUrls;
   if (resourceUrls !== "handle") {
     throw new WeknoraPluginError("invalid_config", "resourceUrls must be handle", false);
   }
 
-  if (raw.enableWriteActions != null && typeof raw.enableWriteActions !== "boolean") {
+  if (source.enableWriteActions != null && typeof source.enableWriteActions !== "boolean") {
     throw new WeknoraPluginError("invalid_config", "enableWriteActions must be a boolean", false);
   }
 
   return {
-    baseUrl: normalizeBaseUrl(raw.baseUrl),
-    apiKeyRef: secretRef(raw.apiKeyRef),
-    tenantId: optionalString(raw.tenantId, "tenantId"),
+    baseUrl: normalizeBaseUrl(source.baseUrl),
+    apiKeyRef: secretRef(source.apiKeyRef),
+    tenantId: optionalString(source.tenantId, "tenantId"),
     defaultKnowledgeBaseIds,
-    defaultWikiKnowledgeBaseId: optionalString(raw.defaultWikiKnowledgeBaseId, "defaultWikiKnowledgeBaseId"),
-    maxResults: numericOption(raw.maxResults, "maxResults", DEFAULT_CONFIG.maxResults, 1, 50),
-    maxChunkChars: numericOption(raw.maxChunkChars, "maxChunkChars", DEFAULT_CONFIG.maxChunkChars, 200, 10000),
-    requestTimeoutMs: numericOption(raw.requestTimeoutMs, "requestTimeoutMs", DEFAULT_CONFIG.requestTimeoutMs, 1000, 120000),
+    defaultWikiKnowledgeBaseId: optionalString(source.defaultWikiKnowledgeBaseId, "defaultWikiKnowledgeBaseId"),
+    maxResults: numericOption(source.maxResults, "maxResults", DEFAULT_CONFIG.maxResults, 1, 50),
+    maxChunkChars: numericOption(source.maxChunkChars, "maxChunkChars", DEFAULT_CONFIG.maxChunkChars, 200, 10000),
+    requestTimeoutMs: numericOption(source.requestTimeoutMs, "requestTimeoutMs", DEFAULT_CONFIG.requestTimeoutMs, 1000, 120000),
     resourceUrls: "handle",
-    enableWriteActions: raw.enableWriteActions == null ? DEFAULT_CONFIG.enableWriteActions : raw.enableWriteActions,
+    enableWriteActions: source.enableWriteActions == null ? DEFAULT_CONFIG.enableWriteActions : source.enableWriteActions,
   };
 }
