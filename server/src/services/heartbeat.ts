@@ -9733,19 +9733,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  // Sanctioned external-owner waits and board/operator gates are deliberate
+  // waiting states, not a transient failure for the assignee to probe.
+  function isSanctionedExternalBlock(candidate: {
+    unblockDescriptor: unknown;
+    executionPolicy: unknown;
+  }): boolean {
+    const policy = normalizeIssueExecutionPolicy(candidate.executionPolicy);
+    const descriptor = parseObject(candidate.unblockDescriptor);
+    const descriptorOwner = descriptor.owner;
+    return Boolean(
+      policy?.externalWait || descriptorOwner === "board" || "userId" in parseObject(descriptorOwner),
+    );
+  }
+
+  type BlockedRevalidationRow = {
+    id: string;
+    companyId: string;
+    assigneeAgentId: string | null;
+    unblockDescriptor: unknown;
+    executionPolicy: unknown;
+    blockedTransitionAt: Date | null;
+    monitorLastTriggeredAt: Date | null;
+  };
+
+  const blockedRevalidationColumns = {
+    id: issues.id,
+    companyId: issues.companyId,
+    assigneeAgentId: issues.assigneeAgentId,
+    unblockDescriptor: issues.unblockDescriptor,
+    executionPolicy: issues.executionPolicy,
+    blockedTransitionAt: issues.blockedTransitionAt,
+    monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+  };
+
+  // Claims a due candidate under the shared 7-day cooldown so the weekly
+  // central beat and the per-agent sprint-open hook never double-fire on the
+  // same card in the same window.
+  async function claimBlockedRevalidationCandidate(
+    candidate: BlockedRevalidationRow,
+    now: Date,
+    cooldownBefore: Date,
+  ): Promise<boolean> {
+    const claimed = await db.update(issues).set({
+      monitorLastTriggeredAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(issues.id, candidate.id),
+      eq(issues.status, "blocked"),
+      or(isNull(issues.monitorLastTriggeredAt), lt(issues.monitorLastTriggeredAt, cooldownBefore)),
+    )).returning({ id: issues.id }).then((rows) => rows[0] ?? null);
+    return Boolean(claimed);
+  }
+
   async function tickBlockedCardRevalidations(now = new Date()) {
     const staleBefore = new Date(now.getTime() - BLOCKED_CARD_REVALIDATION_DELAY_MS);
     const cooldownBefore = new Date(now.getTime() - BLOCKED_CARD_REVALIDATION_COOLDOWN_MS);
     const candidates = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        assigneeAgentId: issues.assigneeAgentId,
-        unblockDescriptor: issues.unblockDescriptor,
-        executionPolicy: issues.executionPolicy,
-        blockedTransitionAt: issues.blockedTransitionAt,
-        monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
-      })
+      .select(blockedRevalidationColumns)
       .from(issues)
       .where(and(
         eq(issues.status, "blocked"),
@@ -9759,24 +9804,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     let enqueued = 0;
     for (const candidate of candidates) {
-      const policy = normalizeIssueExecutionPolicy(candidate.executionPolicy);
-      const descriptor = parseObject(candidate.unblockDescriptor);
-      const descriptorOwner = descriptor.owner;
-      // External-owner waits and board/operator gates are deliberate waiting
-      // states, not a transient failure for the assignee to probe.
-      if (policy?.externalWait || descriptorOwner === "board" || "userId" in parseObject(descriptorOwner)) continue;
+      if (isSanctionedExternalBlock(candidate)) continue;
       if (!candidate.blockedTransitionAt || candidate.blockedTransitionAt > staleBefore) continue;
       if (candidate.monitorLastTriggeredAt && candidate.monitorLastTriggeredAt > cooldownBefore) continue;
-
-      const claimed = await db.update(issues).set({
-        monitorLastTriggeredAt: now,
-        updatedAt: now,
-      }).where(and(
-        eq(issues.id, candidate.id),
-        eq(issues.status, "blocked"),
-        or(isNull(issues.monitorLastTriggeredAt), lt(issues.monitorLastTriggeredAt, cooldownBefore)),
-      )).returning({ id: issues.id }).then((rows) => rows[0] ?? null);
-      if (!claimed || !candidate.assigneeAgentId) continue;
+      if (!candidate.assigneeAgentId) continue;
+      if (!(await claimBlockedRevalidationCandidate(candidate, now, cooldownBefore))) continue;
 
       await enqueueWakeup(candidate.assigneeAgentId, {
         source: "automation",
@@ -9800,6 +9832,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enqueued += 1;
     }
     return { checked: candidates.length, enqueued };
+  }
+
+  // TSMC-20876 operator addition (2): each agent's first heartbeat since its
+  // company's activity window opened re-verifies ITS OWN stale (>72h) blocked
+  // cards, riding along on that already-scheduled wake instead of enqueuing a
+  // second one ("zero extra wake cost"). Claims candidates under the same
+  // 7-day cooldown as the central weekly beat so the two never double-fire.
+  async function claimSprintOpenBlockedRevalidations(agentId: string, now = new Date()) {
+    const staleBefore = new Date(now.getTime() - BLOCKED_CARD_REVALIDATION_DELAY_MS);
+    const cooldownBefore = new Date(now.getTime() - BLOCKED_CARD_REVALIDATION_COOLDOWN_MS);
+    const candidates = await db
+      .select(blockedRevalidationColumns)
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.hiddenAt),
+        eq(issues.assigneeAgentId, agentId),
+        isNull(issues.monitorNextCheckAt),
+      ))
+      .orderBy(asc(issues.blockedTransitionAt), asc(issues.updatedAt))
+      .limit(BLOCKED_CARD_REVALIDATION_BATCH_LIMIT);
+
+    const claimedIssueIds: string[] = [];
+    for (const candidate of candidates) {
+      if (isSanctionedExternalBlock(candidate)) continue;
+      if (!candidate.blockedTransitionAt || candidate.blockedTransitionAt > staleBefore) continue;
+      if (candidate.monitorLastTriggeredAt && candidate.monitorLastTriggeredAt > cooldownBefore) continue;
+      if (!(await claimBlockedRevalidationCandidate(candidate, now, cooldownBefore))) continue;
+      claimedIssueIds.push(candidate.id);
+    }
+    return claimedIssueIds;
   }
 
   async function tickDueIssueMonitors(now = new Date()) {
@@ -27558,6 +27621,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // activity window (unless the agent is window-exempt). Leaves due-time
         // untouched so the agent re-enqueues normally once the window opens.
         const company = agent.companyId ? companyWindowById.get(agent.companyId) : undefined;
+        let sprintOpenBlockedRevalidationIssueIds: string[] | undefined;
         if (company) {
           const skip = getActivityWindowScheduleSkip({
             activityWindow: company.activityWindow,
@@ -27569,6 +27633,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (skip) {
             windowSkipped += 1;
             continue;
+          }
+
+          const window = parseCompanyActivityWindow(company.activityWindow);
+          const windowState = window ? getActivityWindowState(window, now) : null;
+          const sinceLastHeartbeat = agent.lastHeartbeatAt ? new Date(agent.lastHeartbeatAt) : null;
+          const isFirstBeatSinceWindowOpen =
+            windowState?.open &&
+            windowState.lastChangeAt !== null &&
+            (!sinceLastHeartbeat || sinceLastHeartbeat < windowState.lastChangeAt);
+          if (isFirstBeatSinceWindowOpen) {
+            const claimed = await claimSprintOpenBlockedRevalidations(agent.id, now);
+            if (claimed.length > 0) sprintOpenBlockedRevalidationIssueIds = claimed;
           }
         }
 
@@ -27583,6 +27659,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             reason: "interval_elapsed",
             now: now.toISOString(),
             timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
+            ...(sprintOpenBlockedRevalidationIssueIds
+              ? {
+                  sprintOpenBlockedRevalidation: {
+                    issueIds: sprintOpenBlockedRevalidationIssueIds,
+                    modelProfile: "cheap",
+                    revalidation: { maxTurns: 5, maxFreshTokens: 10_000, check: "mechanical_blocker" },
+                  },
+                }
+              : {}),
           },
         });
         if (run) enqueued += 1;
