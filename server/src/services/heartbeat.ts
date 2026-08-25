@@ -462,6 +462,20 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+// After a host-sleep/offline gap every timer heartbeat in the fleet is overdue
+// at once; enqueuing them all in a single tick stampedes ACP session creation
+// (KEN-7183). Capping enqueues per tick staggers the backlog across the 30s
+// scheduler cadence — unclaimed agents stay due and drain on subsequent ticks.
+export const DEFAULT_HEARTBEAT_TIMER_MAX_WAKEUPS_PER_TICK = 8;
+export function resolveHeartbeatTimerMaxWakeupsPerTick(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = Number(env.HEARTBEAT_TIMER_MAX_WAKEUPS_PER_TICK);
+  if (!Number.isFinite(raw)) return DEFAULT_HEARTBEAT_TIMER_MAX_WAKEUPS_PER_TICK;
+  // Explicit non-positive value opts out of staggering entirely.
+  if (raw <= 0) return Number.POSITIVE_INFINITY;
+  return Math.floor(raw);
+}
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
@@ -19643,9 +19657,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           checked: 0,
           enqueued: 0,
           skipped: 0,
+          deferred: 0,
         };
       }
       const cutoff = await getWorktreeExecutionCutoff();
+      const maxWakeupsPerTick = resolveHeartbeatTimerMaxWakeupsPerTick();
 
       const allAgents = await db
         .select({ ...getTableColumns(agents) })
@@ -19656,6 +19672,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let deferred = 0;
 
       for (const agent of allAgents) {
         const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
@@ -19682,6 +19699,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        // Leave the agent unclaimed (lastHeartbeatAt untouched) so it stays due
+        // and drains on a later tick instead of joining a same-tick stampede.
+        if (enqueued >= maxWakeupsPerTick) {
+          deferred += 1;
+          continue;
+        }
         const timerClaim = await claimDueTimerHeartbeat(agent, now, policy.intervalSec);
         if (!timerClaim) continue;
 
@@ -19702,12 +19725,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         else skipped += 1;
       }
 
+      if (deferred > 0) {
+        logger.warn(
+          {
+            deferred,
+            enqueued,
+            maxWakeupsPerTick,
+            now: now.toISOString(),
+          },
+          "heartbeat timer tick hit the per-tick wakeup cap; deferring overdue agents to later ticks (host-resume stagger)",
+        );
+      }
+
       const issueMonitors = await tickDueIssueMonitors(now);
 
       return {
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        deferred,
       };
     },
 

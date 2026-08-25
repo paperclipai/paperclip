@@ -243,7 +243,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await heartbeat.resumeQueuedRuns();
     const tick = await heartbeat.tickTimers(new Date("2026-07-07T00:10:00Z"));
 
-    expect(tick).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(tick).toEqual({ checked: 0, enqueued: 0, skipped: 0, deferred: 0 });
 
     const [copiedRun] = await db
       .select({ status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
