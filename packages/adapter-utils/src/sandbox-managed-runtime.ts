@@ -212,6 +212,23 @@ export function referencedSourceIgnoreExcludeEntries(resolution: ReferencedSourc
  * are otherwise not comparable. The caller treats `null` as a resolution
  * failure (fail closed), never as "nothing to exclude".
  */
+/**
+ * Physical (symlink-resolved) form of a path, falling back to the plain
+ * resolved form when realpath fails (e.g. the path vanished mid-run — the
+ * downstream descendant check then fails closed on the string form).
+ * Git prints physical toplevels, so both sides of the descendant comparison
+ * must be physical too; comparing a logical path against a physical one makes
+ * any symlinked project or temp directory (macOS `/var` → `/private/var`)
+ * fail resolution spuriously.
+ */
+async function physicalPath(input: string): Promise<string> {
+  try {
+    return await fs.realpath(input);
+  } catch {
+    return path.resolve(input);
+  }
+}
+
 function relativizeUnderGitToplevel(input: { toplevel: string; localPath: string }): string | null {
   const toplevel = path.resolve(input.toplevel);
   const localPath = path.resolve(input.localPath);
@@ -263,7 +280,10 @@ export async function resolveReferencedSourceIgnore(localPath: string): Promise<
   if (!scan) {
     return { kind: "other" };
   }
-  const offset = relativizeUnderGitToplevel({ toplevel: scan.toplevel, localPath });
+  const offset = relativizeUnderGitToplevel({
+    toplevel: await physicalPath(scan.toplevel),
+    localPath: await physicalPath(localPath),
+  });
   if (offset === null) {
     return {
       kind: "failed",
