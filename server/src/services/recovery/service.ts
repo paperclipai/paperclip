@@ -394,7 +394,7 @@ const CONFIGURATION_INCOMPLETE_ERROR_RE =
 // Matches the canonical OpenClaw gateway wait timeout message.
 // These timeouts are ambiguous: the run may have completed on the remote side.
 // Fail closed — do not auto-retry.
-const OPENCLAW_GATEWAY_WAIT_TIMEOUT_RE = /OpenClaw gateway run timed out after \d+ms/i;
+const OPENCLAW_GATEWAY_WAIT_TIMEOUT_RE = /^OpenClaw gateway run timed out after \d+ms$/i;
 
 function isOpenClawGatewayWaitTimeout(latestRun: LatestIssueRun): boolean {
   if (!latestRun || latestRun.status !== "timed_out" || latestRun.errorCode !== "timeout") return false;

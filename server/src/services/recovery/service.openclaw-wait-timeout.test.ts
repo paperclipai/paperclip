@@ -70,6 +70,26 @@ describe("OpenClaw gateway wait timeout: fail-closed guard", () => {
     expect(c.kind).toBe("non_retryable");
   });
 
+  it("does not suppress retry when error message is prefixed before canonical text", () => {
+    const c = classifyContinuationFailure(run({
+      errorCode: "timeout",
+      status: "timed_out",
+      error: `Error: ${OPENCLAW_TIMEOUT_ERROR}`,
+    }));
+    expect(c.kind).toBe("transient_infra");
+    expect(c.maxAttempts).toBeGreaterThan(0);
+  });
+
+  it("does not suppress retry when error message has a suffix after canonical text", () => {
+    const c = classifyContinuationFailure(run({
+      errorCode: "timeout",
+      status: "timed_out",
+      error: `${OPENCLAW_TIMEOUT_ERROR}. Please retry.`,
+    }));
+    expect(c.kind).toBe("transient_infra");
+    expect(c.maxAttempts).toBeGreaterThan(0);
+  });
+
   it("does not suppress retry for a generic timeout (no OpenClaw message)", () => {
     const c = classifyContinuationFailure(run({
       errorCode: "timeout",
@@ -109,7 +129,7 @@ describe("OpenClaw gateway wait timeout: fail-closed guard", () => {
     expect(c.kind).toBe("transient_infra");
   });
 
-  it("returns null errorCode in the classification for OpenClaw timeout", () => {
+  it("preserves errorCode: timeout in the classification for OpenClaw timeout", () => {
     const c = classifyContinuationFailure(run({
       errorCode: "timeout",
       status: "timed_out",
