@@ -862,7 +862,8 @@ async function resolveBuiltInAgentCommand(input: {
     return { command: binName, shellCommand: binName };
   }
   const resolved = (await findAncestorBin(packageRootDir, binName)) ?? binName;
-  return { command: resolved, shellCommand: shellQuote(resolved) };
+  const quoted = resolved === binName ? resolved : shellQuote(resolved);
+  return { command: quoted, shellCommand: shellQuote(resolved) };
 }
 
 const execFileAsync = promisify(execFile);
