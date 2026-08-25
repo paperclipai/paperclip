@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -18,6 +18,7 @@ import {
   issueThreadInteractions,
   issues,
   principalPermissionGrants,
+  plugins,
   secretAccessEvents,
   toolAccessAuditEvents,
   toolActionRequests,
@@ -428,6 +429,33 @@ describeEmbeddedPostgres("tool access service", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  beforeEach(async () => {
+    await db.insert(plugins).values({
+      pluginKey: "paperclipai.paperclip-ee",
+      packageName: "@paperclipai/paperclip-ee",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: ["ui"],
+      manifestJson: {
+        id: "paperclipai.paperclip-ee",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Paperclip EE",
+        description: "Enterprise availability provider.",
+        author: "Paperclip",
+        categories: ["ui"],
+        capabilities: ["ui.page.register"],
+        entrypoints: { worker: "./dist/worker.js" },
+        hostFeatures: {
+          schemaVersion: 1,
+          features: ["apps.named_mcp_gateways", "apps.access_profiles"],
+        },
+      },
+      status: "ready",
+      installOrder: 1,
+    });
+  });
+
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
@@ -459,10 +487,77 @@ describeEmbeddedPostgres("tool access service", () => {
     await db.delete(companyMemberships);
     await db.delete(companies);
     await db.delete(authUsers);
+    await db.delete(plugins);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("preserves profile data while disabled or uninstalled and restores it on re-enable", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const profile = await service.createProfile(company.id, {
+      profileKey: `preserved-profile-${randomUUID()}`,
+      name: "Preserved profile",
+      defaultAction: "deny",
+    });
+    const entry = await service.addProfileEntry(profile.id, {
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "read_notes",
+    });
+    await db
+      .update(plugins)
+      .set({ status: "disabled" })
+      .where(eq(plugins.pluginKey, "paperclipai.paperclip-ee"));
+
+    const app = createRouteApp(db);
+    const listWhileDisabled = await request(app).get(`/api/companies/${company.id}/tools/profiles`);
+    expect(listWhileDisabled.status).toBe(200);
+    expect(listWhileDisabled.body.profiles).toContainEqual(
+      expect.objectContaining({ id: profile.id, name: "Preserved profile" }),
+    );
+
+    const gatedResponses = [
+      await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`),
+      await request(app).post(`/api/companies/${company.id}/tools/profiles`).send({}),
+      await request(app).patch(`/api/tool-profiles/${profile.id}`).send({}),
+      await request(app).post(`/api/tool-profiles/${profile.id}/duplicate`).send({}),
+      await request(app).delete(`/api/tool-profiles/${profile.id}`).send({}),
+      await request(app).post(`/api/tool-profiles/${profile.id}/new-tools/review`).send({}),
+      await request(app).post(`/api/tool-profiles/${profile.id}/entries`).send({}),
+      await request(app).patch(`/api/tool-profile-entries/${entry.id}`).send({}),
+      await request(app).delete(`/api/tool-profile-entries/${entry.id}`),
+      await request(app).post(`/api/companies/${company.id}/tools/profiles/${profile.id}/bind`).send({}),
+      await request(app).post(`/api/companies/${company.id}/tools/profiles/${profile.id}/unbind`).send({}),
+    ];
+    for (const response of gatedResponses) {
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({
+        error: "Feature unavailable",
+        code: "feature_unavailable",
+        feature: "apps.access_profiles",
+      });
+    }
+
+    await db
+      .update(plugins)
+      .set({ status: "uninstalled" })
+      .where(eq(plugins.pluginKey, "paperclipai.paperclip-ee"));
+    const listWhileUninstalled = await request(app).get(`/api/companies/${company.id}/tools/profiles`);
+    expect(listWhileUninstalled.status).toBe(200);
+    expect(listWhileUninstalled.body.profiles).toContainEqual(expect.objectContaining({ id: profile.id }));
+
+    await db
+      .update(plugins)
+      .set({ status: "ready" })
+      .where(eq(plugins.pluginKey, "paperclipai.paperclip-ee"));
+    const restored = await request(app)
+      .patch(`/api/tool-profiles/${profile.id}`)
+      .send({ name: "Restored profile" });
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({ id: profile.id, name: "Restored profile" });
   });
 
   it("mints generic exchange connection tokens through the agent route and stores only hashes", async () => {

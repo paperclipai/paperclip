@@ -4,6 +4,7 @@ import { Link, Navigate, useParams } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useRuntimeFeatures } from "@/context/RuntimeFeaturesContext";
 import { ProfilesIndex } from "./profiles/ProfilesIndex";
 import { PoliciesTab } from "./PoliciesTab";
 import { RuntimeTab } from "./RuntimeTab";
@@ -46,6 +47,7 @@ export function ToolsAccess() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ tab?: string }>();
+  const { hasFeature } = useRuntimeFeatures();
   const activeTab = (TOOL_TABS.find((t) => t.key === params.tab)?.key ?? "run-your-own") as ToolTabKey;
   const advanced = isAdvancedSetupTab(activeTab);
   const tabLabel = TOOL_TABS.find((t) => t.key === activeTab)?.label;
@@ -66,6 +68,13 @@ export function ToolsAccess() {
 
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to open advanced setup.</div>;
+  }
+
+  if (
+    (activeTab === "profiles" && !hasFeature("apps.access_profiles"))
+    || (activeTab === "gateways" && !hasFeature("apps.named_mcp_gateways"))
+  ) {
+    return <Navigate to="/apps/connections" replace />;
   }
 
   // Retired developer tabs (PAP-10915/PAP-10928) — keep old links working.
@@ -122,7 +131,10 @@ export function ToolsAccess() {
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Wrench className="h-3.5 w-3.5" />
           Looking for the developer surface?{" "}
-          <Link to={advancedTabHref("profiles")} className="font-medium text-primary hover:underline">
+          <Link
+            to={hasFeature("apps.access_profiles") ? advancedTabHref("profiles") : advancedTabHref("policies")}
+            className="font-medium text-primary hover:underline"
+          >
             Open developer tools
           </Link>
         </p>

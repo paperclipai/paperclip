@@ -11,6 +11,7 @@ import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimenta
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
 import { useHiddenSettings } from "./hooks/useHiddenSettings";
+import { HostFeatureGate } from "./components/HostFeatureGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
@@ -90,6 +91,7 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { useCompany } from "./context/CompanyContext";
+import { useRuntimeFeatures } from "./context/RuntimeFeaturesContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
@@ -142,13 +144,17 @@ function boardRoutes() {
         <Route path="apps/review" element={<AppsReview />} />
         {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
         <Route path="apps/attention" element={<Navigate to="/apps/connections" replace />} />
-        <Route path="apps/gateways" element={<GatewaysList />} />
-        <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
-        <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
+        <Route element={<HostFeatureGate feature="apps.named_mcp_gateways" />}>
+          <Route path="apps/gateways" element={<GatewaysList />} />
+          <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
+          <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
+        </Route>
         <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
-        <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
-        <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
-        <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
+        <Route element={<HostFeatureGate feature="apps.access_profiles" />}>
+          <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
+          <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
+          <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
+        </Route>
         <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
         <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
         <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
@@ -408,19 +414,26 @@ function LegacySettingsRedirect() {
 
 function LegacyToolsSettingsRedirect() {
   const { tab } = useParams<{ tab?: string }>();
-  return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
+  const { hasFeature } = useRuntimeFeatures();
+  return <Navigate to={legacyToolsRedirectTarget(tab, hasFeature)} replace />;
 }
 
 // The developer "Tools" surface moved under the Apps "Advanced setup" door
 // (PAP-10862). `/tools` and `/tools/:tab` redirect to their new home.
 function LegacyToolsRedirect() {
   const { tab } = useParams<{ tab?: string }>();
-  return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
+  const { hasFeature } = useRuntimeFeatures();
+  return <Navigate to={legacyToolsRedirectTarget(tab, hasFeature)} replace />;
 }
 
-function legacyToolsRedirectTarget(tab?: string) {
-  if (!tab) return "/apps/advanced/profiles";
+export function legacyToolsRedirectTarget(
+  tab: string | undefined,
+  hasFeature: ReturnType<typeof useRuntimeFeatures>["hasFeature"],
+) {
+  if (!tab) return hasFeature("apps.access_profiles") ? "/apps/advanced/profiles" : "/apps/connections";
   if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps/connections";
+  if (tab === "profiles" && !hasFeature("apps.access_profiles")) return "/apps/connections";
+  if (tab === "gateways" && !hasFeature("apps.named_mcp_gateways")) return "/apps/connections";
   return `/apps/advanced/${tab}`;
 }
 

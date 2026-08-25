@@ -15,12 +15,15 @@ import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { RuntimeFeaturesProvider } from "./context/RuntimeFeaturesContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
+import { queryKeys } from "./lib/queryKeys";
+import { readRuntimeFeaturesBootstrap } from "./lib/runtime-features";
 
 initPluginBridge(React, ReactDOM);
 
@@ -47,6 +50,9 @@ const queryClient = new QueryClient({
     },
   },
 });
+queryClient.setQueryData(queryKeys.runtimeFeatures, readRuntimeFeaturesBootstrap(), {
+  updatedAt: Date.now(),
+});
 
 function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
   const { selectedCompany } = useCompany();
@@ -57,31 +63,33 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <BrowserRouter>
-            <CompanyProvider>
-              <EditorAutocompleteProvider>
-                <ToastProvider>
-                  <LiveUpdatesProvider>
-                    <TooltipProvider>
-                      <CompanyAwareBreadcrumbProvider>
-                        <SidebarProvider>
-                          <PanelProvider>
-                            <PluginLauncherProvider>
-                              <DialogProvider>
-                                <App />
-                              </DialogProvider>
-                            </PluginLauncherProvider>
-                          </PanelProvider>
-                        </SidebarProvider>
-                      </CompanyAwareBreadcrumbProvider>
-                    </TooltipProvider>
-                  </LiveUpdatesProvider>
-                </ToastProvider>
-              </EditorAutocompleteProvider>
-            </CompanyProvider>
-          </BrowserRouter>
-        </ThemeProvider>
+        <RuntimeFeaturesProvider>
+          <ThemeProvider>
+            <BrowserRouter>
+              <CompanyProvider>
+                <EditorAutocompleteProvider>
+                  <ToastProvider>
+                    <LiveUpdatesProvider>
+                      <TooltipProvider>
+                        <CompanyAwareBreadcrumbProvider>
+                          <SidebarProvider>
+                            <PanelProvider>
+                              <PluginLauncherProvider>
+                                <DialogProvider>
+                                  <App />
+                                </DialogProvider>
+                              </PluginLauncherProvider>
+                            </PanelProvider>
+                          </SidebarProvider>
+                        </CompanyAwareBreadcrumbProvider>
+                      </TooltipProvider>
+                    </LiveUpdatesProvider>
+                  </ToastProvider>
+                </EditorAutocompleteProvider>
+              </CompanyProvider>
+            </BrowserRouter>
+          </ThemeProvider>
+        </RuntimeFeaturesProvider>
       </QueryClientProvider>
     </AppErrorBoundary>
   </StrictMode>

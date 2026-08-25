@@ -1,4 +1,4 @@
-import express, { Router, type Request as ExpressRequest } from "express";
+import express, { Router, type Request as ExpressRequest, type RequestHandler } from "express";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
@@ -70,6 +70,7 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { runtimeFeatureRoutes } from "./routes/runtime-features.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -109,6 +110,8 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+import { resolveHostFeatures } from "./services/host-features.js";
+import { injectRuntimeFeaturesHtml } from "./runtime-features-html.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
@@ -539,6 +542,7 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(runtimeFeatureRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -571,7 +575,7 @@ export async function createApp(
     pluginWorkerManager: workerManager,
     approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
   }));
-  app.use(mcpGatewayProtocolRoutes(toolGateway));
+  app.use(mcpGatewayProtocolRoutes(db, toolGateway));
   api.use(toolAccessRoutes(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -671,6 +675,17 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
+      const serveStaticIndex: RequestHandler = async (_req, res, next) => {
+        try {
+          res
+            .status(200)
+            .set("Content-Type", "text/html")
+            .set("Cache-Control", "no-cache")
+            .end(readBrandedStaticIndexHtml(uiDist, await resolveHostFeatures(db)));
+        } catch (error) {
+          next(error);
+        }
+      };
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
       app.use(
@@ -680,19 +695,15 @@ export async function createApp(
           immutable: true,
         }),
       );
+      // Always render index.html through the host-feature injector. Mount this
+      // before express.static so an explicit /index.html cannot bypass it.
+      app.get(["/", "/index.html"], serveStaticIndex);
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
-      // short cache so operators who swap them out see the new version
-      // reasonably fast. Override for `index.html` specifically — it is
-      // served by this middleware for `/` and `/index.html`, and it must
-      // never outlive the asset hashes it points at.
+      // short cache so operators who swap them out see the new version.
       app.use(
         express.static(uiDist, {
+          index: false,
           maxAge: "1h",
-          setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
-              res.set("Cache-Control", "no-cache");
-            }
-          },
         }),
       );
       // SPA fallback. Only for non-asset routes — if the browser asks for
@@ -701,16 +712,12 @@ export async function createApp(
       // with a MIME-type error, and cache that broken response. Return 404
       // instead. The index.html response itself is no-cache so a subsequent
       // deploy's updated asset hashes are picked up on next load.
-      app.get(/.*/, (req, res) => {
+      app.get(/.*/, async (req, res, next) => {
         if (req.path.startsWith("/assets/")) {
           res.status(404).end();
           return;
         }
-        res
-          .status(200)
-          .set("Content-Type", "text/html")
-          .set("Cache-Control", "no-cache")
-          .end(readBrandedStaticIndexHtml(uiDist));
+        await serveStaticIndex(req, res, next);
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
@@ -759,6 +766,7 @@ export async function createApp(
       vite,
       uiRoot,
       brandHtml: applyUiBranding,
+      injectHtml: async (html) => injectRuntimeFeaturesHtml(html, await resolveHostFeatures(db)),
     });
     const renderViteHtml = viteHtmlRenderer;
 

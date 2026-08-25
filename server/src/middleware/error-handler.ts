@@ -91,6 +91,7 @@ export function errorHandler(
       : null;
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
     const workspaceRepairPreconditionFailure = details?.code === "workspace_repair_precondition_failed";
+    const featureUnavailable = details?.code === "feature_unavailable";
     const structuredConnectionError = new Set([
       "user_authorization_required",
       "grant_revoked",
@@ -113,6 +114,7 @@ export function errorHandler(
     res.status(err.status).json({
       error: err.message,
       ...(typeof details?.code === "string" ? { code: details.code } : {}),
+      ...(featureUnavailable && typeof details?.feature === "string" ? { feature: details.feature } : {}),
       ...(redactedSkillPolicyDenial && typeof details?.reason === "string" ? { reason: details.reason } : {}),
       ...(workspaceRepairPreconditionFailure && typeof details?.reason === "string" ? { reason: details.reason } : {}),
       ...(workspaceRepairPreconditionFailure && typeof details?.repairPhase === "string"
@@ -124,7 +126,7 @@ export function errorHandler(
       ...(structuredConnectionError && details?.connection ? { connection: details.connection } : {}),
       ...(structuredConnectionError && details?.subject ? { subject: details.subject } : {}),
       ...(structuredConnectionError && typeof details?.grantId === "string" ? { grantId: details.grantId } : {}),
-      ...(!redactedSkillPolicyDenial && !workspaceRepairPreconditionFailure && err.details
+      ...(!redactedSkillPolicyDenial && !workspaceRepairPreconditionFailure && !featureUnavailable && err.details
         ? { details: err.details }
         : {}),
     });

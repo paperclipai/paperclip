@@ -6867,6 +6867,20 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get",
+  path: "/api/runtime-features",
+  tags: ["runtime"],
+  summary: "Get the effective host feature snapshot",
+  responses: {
+    200: r.ok(z.object({
+      schemaVersion: z.literal(1),
+      hostFeatures: z.array(z.enum(["apps.named_mcp_gateways", "apps.access_profiles"])),
+    }).strict()),
+    401: r.unauthorized,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
   path: "/api/issues/{id}/accepted-plan-decompositions",
   tags: ["issues"],
   summary: "List accepted plan decompositions",

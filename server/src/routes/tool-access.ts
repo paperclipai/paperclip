@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
@@ -45,6 +45,7 @@ import { getActorInfo, assertBoard, assertCompanyAccess, getAccessibleResource, 
 import { badRequest, forbidden, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { requireHostFeature } from "../services/host-features.js";
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
@@ -114,6 +115,14 @@ export function toolAccessRoutes(
     return new URL("/api/tools/oauth/callback", configured).toString();
   }
   const access = accessService(db);
+  const profileAdministrationGate: RequestHandler = async (_req, _res, next) => {
+    try {
+      await requireHostFeature(db, "apps.access_profiles");
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
     assertBoard(req);
@@ -879,14 +888,14 @@ export function toolAccessRoutes(
     res.json({ profiles: await svc.listProfiles(companyId) });
   });
 
-  router.get("/tool-profiles/:profileId/new-tools", async (req, res) => {
+  router.get("/tool-profiles/:profileId/new-tools", profileAdministrationGate, async (req, res) => {
     assertBoard(req);
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     res.json(await svc.listProfileNewTools(existing.id, existing.companyId));
   });
 
-  router.post("/companies/:companyId/tools/profiles", validate(createToolProfileWithEntriesSchema), async (req, res) => {
+  router.post("/companies/:companyId/tools/profiles", profileAdministrationGate, validate(createToolProfileWithEntriesSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
@@ -913,7 +922,7 @@ export function toolAccessRoutes(
     res.json(await svc.getEffectiveProfilesForAgent(companyId, req.params.agentId as string));
   });
 
-  router.patch("/tool-profiles/:profileId", validate(updateToolProfileWithEntriesSchema), async (req, res) => {
+  router.patch("/tool-profiles/:profileId", profileAdministrationGate, validate(updateToolProfileWithEntriesSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
@@ -934,7 +943,7 @@ export function toolAccessRoutes(
     }
   });
 
-  router.post("/tool-profiles/:profileId/duplicate", validate(duplicateToolProfileSchema), async (req, res) => {
+  router.post("/tool-profiles/:profileId/duplicate", profileAdministrationGate, validate(duplicateToolProfileSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
@@ -960,7 +969,7 @@ export function toolAccessRoutes(
     }
   });
 
-  router.delete("/tool-profiles/:profileId", validate(deleteToolProfileSchema), async (req, res) => {
+  router.delete("/tool-profiles/:profileId", profileAdministrationGate, validate(deleteToolProfileSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
@@ -982,7 +991,7 @@ export function toolAccessRoutes(
     res.json(result);
   });
 
-  router.post("/tool-profiles/:profileId/new-tools/review", validate(reviewToolProfileNewToolsSchema), async (req, res) => {
+  router.post("/tool-profiles/:profileId/new-tools/review", profileAdministrationGate, validate(reviewToolProfileNewToolsSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
@@ -1003,7 +1012,7 @@ export function toolAccessRoutes(
     res.json(result);
   });
 
-  router.post("/tool-profiles/:profileId/entries", validate(createToolProfileEntryForProfileSchema), async (req, res) => {
+  router.post("/tool-profiles/:profileId/entries", profileAdministrationGate, validate(createToolProfileEntryForProfileSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
@@ -1020,7 +1029,7 @@ export function toolAccessRoutes(
     res.status(201).json(entry);
   });
 
-  router.patch("/tool-profile-entries/:entryId", validate(updateToolProfileEntrySchema), async (req, res) => {
+  router.patch("/tool-profile-entries/:entryId", profileAdministrationGate, validate(updateToolProfileEntrySchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfileEntry(req.params.entryId as string), "Tool profile entry not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
@@ -1037,7 +1046,7 @@ export function toolAccessRoutes(
     res.json(entry);
   });
 
-  router.delete("/tool-profile-entries/:entryId", async (req, res) => {
+  router.delete("/tool-profile-entries/:entryId", profileAdministrationGate, async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getProfileEntry(req.params.entryId as string), "Tool profile entry not found");
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
@@ -1056,6 +1065,7 @@ export function toolAccessRoutes(
 
   router.post(
     "/companies/:companyId/tools/profiles/:profileId/bind",
+    profileAdministrationGate,
     validate(createToolProfileBindingForProfileSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
@@ -1081,6 +1091,7 @@ export function toolAccessRoutes(
 
   router.post(
     "/companies/:companyId/tools/profiles/:profileId/unbind",
+    profileAdministrationGate,
     validate(unbindToolProfileBindingSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;

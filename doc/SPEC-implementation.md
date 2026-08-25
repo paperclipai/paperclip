@@ -645,6 +645,14 @@ The approved term set is:
 | Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; explicit cross-user access requires saved target-user opt-in or `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
 | Escalation | Escalate from agent to manager to board; board approval/budget gates remain authoritative | Escalation routing and SLA windows |
 
+### 9.6.1 Server-authoritative host features
+
+Core owns the closed, versioned host-feature keys `apps.named_mcp_gateways` and `apps.access_profiles`. Only the canonical `paperclipai.paperclip-ee` plugin may declare them in `PaperclipPluginManifestV1.hostFeatures`, and only a stored plugin record in `ready` state enables its valid declaration. Missing, installed, disabled, error, upgrade-pending, uninstalled, malformed, or non-canonical providers resolve to an empty feature set.
+
+The server injects the non-sensitive effective feature snapshot into both static and Vite-served HTML before React starts, and exposes the same snapshot through an authenticated API for lifecycle revalidation. UI visibility is advisory; server routes remain authoritative. Named-gateway management, token, metadata, public, and ID-based MCP routes require `apps.named_mcp_gateways`. Profile administration routes require `apps.access_profiles`. Unavailable management routes return `404` with the flat body `{ "error": "Feature unavailable", "code": "feature_unavailable", "feature": "<host-feature-key>" }`.
+
+Core profile list/effective reads, internal tool-gateway sessions, and runtime policy enforcement stay available in all editions. Feature disable and plugin uninstall do not delete gateway, profile, binding, entry, token, or policy rows; returning the canonical provider to `ready` restores the management surfaces over the existing data.
+
 ## 9.7 Recommended first-slice implementation order
 
 1. Lock route-level checks for existing company boundaries, actor extraction, and approval/budget gates.

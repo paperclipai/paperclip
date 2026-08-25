@@ -33,6 +33,56 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  const canonicalEeManifest = {
+    id: "paperclipai.paperclip-ee",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Paperclip EE",
+    description: "Enterprise availability provider.",
+    author: "Paperclip",
+    categories: ["ui"],
+    capabilities: ["ui.page.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    hostFeatures: {
+      schemaVersion: 1,
+      features: ["apps.named_mcp_gateways", "apps.access_profiles"],
+    },
+  } as const;
+
+  it("accepts the canonical Paperclip EE host-feature declaration", () => {
+    const parsed = pluginManifestV1Schema.parse(canonicalEeManifest);
+
+    expect(parsed.hostFeatures).toEqual(canonicalEeManifest.hostFeatures);
+  });
+
+  it("rejects unknown and duplicate host-feature keys", () => {
+    const unknown = pluginManifestV1Schema.safeParse({
+      ...canonicalEeManifest,
+      hostFeatures: { schemaVersion: 1, features: ["apps.unknown"] },
+    });
+    const duplicate = pluginManifestV1Schema.safeParse({
+      ...canonicalEeManifest,
+      hostFeatures: {
+        schemaVersion: 1,
+        features: ["apps.access_profiles", "apps.access_profiles"],
+      },
+    });
+
+    expect(unknown.success).toBe(false);
+    expect(duplicate.success).toBe(false);
+  });
+
+  it("rejects host features from any non-canonical plugin", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...canonicalEeManifest,
+      id: "acme.claimed-ee",
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues).toContainEqual(expect.objectContaining({ path: ["hostFeatures"] }));
+  });
+
   it("accepts existing-style plugins that do not request access or authorization capabilities", () => {
     const parsed = pluginManifestV1Schema.parse({
       id: "paperclip.compat-dashboard",

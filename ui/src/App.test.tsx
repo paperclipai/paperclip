@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { legacyToolsRedirectTarget } from "./App";
 import appSource from "./App.tsx?raw";
 
 const mockHealthApi = vi.hoisted(() => ({
@@ -251,6 +252,17 @@ describe("Apps routes", () => {
     expect(appSource).toContain('<Route path="apps/connections" element={<Connections />} />');
     expect(appSource).toContain('<Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />');
     expect(appSource).toContain('<Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />');
+  });
+
+  it("fails closed for legacy Gateways and Profiles links", () => {
+    const disabled = () => false;
+    const enabled = () => true;
+
+    expect(legacyToolsRedirectTarget(undefined, disabled)).toBe("/apps/connections");
+    expect(legacyToolsRedirectTarget("profiles", disabled)).toBe("/apps/connections");
+    expect(legacyToolsRedirectTarget("gateways", disabled)).toBe("/apps/connections");
+    expect(legacyToolsRedirectTarget("profiles", enabled)).toBe("/apps/advanced/profiles");
+    expect(legacyToolsRedirectTarget("gateways", enabled)).toBe("/apps/advanced/gateways");
   });
 });
 

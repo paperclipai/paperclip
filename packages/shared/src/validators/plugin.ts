@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  HOST_FEATURE_KEYS,
+  PAPERCLIP_EE_PLUGIN_ID,
   PLUGIN_STATUSES,
   PLUGIN_CATEGORIES,
   PLUGIN_CAPABILITIES,
@@ -721,6 +723,26 @@ export type PluginObjectReferenceProviderDeclarationInput = z.infer<
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
 
+export const pluginHostFeaturesDeclarationV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  features: z.array(z.enum(HOST_FEATURE_KEYS)).min(1),
+}).strict().superRefine((declaration, ctx) => {
+  const duplicateFeatures = declaration.features.filter(
+    (feature, index) => declaration.features.indexOf(feature) !== index,
+  );
+  if (duplicateFeatures.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Duplicate host features: ${[...new Set(duplicateFeatures)].join(", ")}`,
+      path: ["features"],
+    });
+  }
+});
+
+export type PluginHostFeaturesDeclarationV1Input = z.infer<
+  typeof pluginHostFeaturesDeclarationV1Schema
+>;
+
 /**
  * Zod schema for {@link PaperclipPluginManifestV1} — the complete runtime
  * validator for plugin manifests read at install time.
@@ -780,6 +802,7 @@ export const pluginManifestV1Schema = z.object({
     "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
+  hostFeatures: pluginHostFeaturesDeclarationV1Schema.optional(),
   entrypoints: z.object({
     worker: z.string().min(1),
     ui: z.string().min(1).optional(),
@@ -803,6 +826,14 @@ export const pluginManifestV1Schema = z.object({
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
 }).superRefine((manifest, ctx) => {
+  if (manifest.hostFeatures && manifest.id !== PAPERCLIP_EE_PLUGIN_ID) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Host features may only be declared by '${PAPERCLIP_EE_PLUGIN_ID}'`,
+      path: ["hostFeatures"],
+    });
+  }
+
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the
   // host knows where to load the bundle from (PLUGIN_SPEC.md §10.1).

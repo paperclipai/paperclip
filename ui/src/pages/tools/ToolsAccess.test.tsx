@@ -7,6 +7,11 @@ import { ToolsAccess } from "./ToolsAccess";
 
 const mockParams = vi.hoisted(() => ({ tab: undefined as string | undefined }));
 const navigateMock = vi.hoisted(() => vi.fn(({ to }: { to: string }) => <div data-navigate={to} />));
+const enabledFeatures = vi.hoisted(() => new Set<string>());
+
+vi.mock("@/context/RuntimeFeaturesContext", () => ({
+  useRuntimeFeatures: () => ({ hasFeature: (feature: string) => enabledFeatures.has(feature) }),
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -74,6 +79,8 @@ describe("ToolsAccess", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     mockParams.tab = undefined;
+    enabledFeatures.add("apps.named_mcp_gateways");
+    enabledFeatures.add("apps.access_profiles");
   });
 
   afterEach(() => {
@@ -81,6 +88,7 @@ describe("ToolsAccess", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    enabledFeatures.clear();
   });
 
   async function render() {
@@ -112,5 +120,18 @@ describe("ToolsAccess", () => {
 
     expect(container.textContent).toContain("Developer tools");
     expect(container.textContent).toContain("Tool profiles");
+  });
+
+  it.each([
+    ["profiles", "apps.access_profiles"],
+    ["gateways", "apps.named_mcp_gateways"],
+  ])("redirects the %s direct tab when its host feature is unavailable", async (tab, feature) => {
+    enabledFeatures.delete(feature);
+    mockParams.tab = tab;
+    await render();
+
+    expect(navigateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/connections", replace: true }),
+    );
   });
 });

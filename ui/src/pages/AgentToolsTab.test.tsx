@@ -22,6 +22,10 @@ const mockToolsApi = vi.hoisted(() => ({
 
 vi.mock("../api/tools", () => ({ toolsApi: mockToolsApi }));
 
+vi.mock("../context/RuntimeFeaturesContext", () => ({
+  useRuntimeFeatures: () => ({ hasFeature: () => true }),
+}));
+
 // Render the company-aware Link as a plain anchor so we don't need a Router.
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...rest }: { to: string; children: unknown }) =>

@@ -1,4 +1,5 @@
 export const queryKeys = {
+  runtimeFeatures: ["runtime-features"] as const,
   companies: {
     /**
      * Prefix for everything company-shaped. Matches the list, details and stats

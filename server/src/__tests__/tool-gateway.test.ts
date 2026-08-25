@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import express from "express";
 import { and, eq } from "drizzle-orm";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -17,6 +17,7 @@ import {
   issueThreadInteractions,
   issues,
   principalPermissionGrants,
+  plugins,
   projects,
   toolAccessAuditEvents,
   toolActionRequests,
@@ -410,7 +411,7 @@ function createGatewayRouteApp(
       next();
     });
   }
-  app.use(mcpGatewayProtocolRoutes(gateway));
+  app.use(mcpGatewayProtocolRoutes(db, gateway));
   app.use("/api", toolGatewayRoutes(db, gateway));
   return app;
 }
@@ -488,6 +489,33 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  beforeEach(async () => {
+    await db.insert(plugins).values({
+      pluginKey: "paperclipai.paperclip-ee",
+      packageName: "@paperclipai/paperclip-ee",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: ["ui"],
+      manifestJson: {
+        id: "paperclipai.paperclip-ee",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Paperclip EE",
+        description: "Enterprise availability provider.",
+        author: "Paperclip",
+        categories: ["ui"],
+        capabilities: ["ui.page.register"],
+        entrypoints: { worker: "./dist/worker.js" },
+        hostFeatures: {
+          schemaVersion: 1,
+          features: ["apps.named_mcp_gateways", "apps.access_profiles"],
+        },
+      },
+      status: "ready",
+      installOrder: 1,
+    });
+  });
+
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(toolCallEvents);
@@ -517,10 +545,57 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(plugins);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("fails closed for every named-gateway surface while internal sessions remain available", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await db
+      .update(plugins)
+      .set({ status: "disabled" })
+      .where(eq(plugins.pluginKey, "paperclipai.paperclip-ee"));
+
+    const app = createGatewayRouteApp(db, createTestToolGatewayService(db), {
+      type: "board",
+      userId: "board-user",
+      userName: "Board User",
+      userEmail: null,
+      isInstanceAdmin: true,
+      source: "local_implicit",
+    });
+    const id = randomUUID();
+    const responses = [
+      await request(app).get(`/api/companies/${company.id}/tools/gateways`),
+      await request(app).post(`/api/companies/${company.id}/tools/gateways`).send({}),
+      await request(app).patch(`/api/tool-gateway/gateways/${id}`).send({ companyId: company.id }),
+      await request(app).post(`/api/tool-gateway/gateways/${id}/tokens`).send({ companyId: company.id }),
+      await request(app).post(`/api/tool-gateway/gateway-tokens/${id}/revoke`).send({ companyId: company.id }),
+      await request(app).get(`/api/tool-gateway/gateways/${id}/mcp`),
+      await request(app).post(`/api/tool-gateway/gateways/${id}/mcp`).send({}),
+      await request(app).get(`/mcp/gateways/public-${id}`),
+      await request(app).post(`/mcp/gateways/public-${id}`).send({}),
+    ];
+
+    for (const response of responses) {
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({
+        error: "Feature unavailable",
+        code: "feature_unavailable",
+        feature: "apps.named_mcp_gateways",
+      });
+    }
+
+    const internalSession = await request(app)
+      .post("/api/tool-gateway/sessions")
+      .send({ companyId: company.id, agentId: agent.id, runId: run.id });
+    expect(internalSession.status).toBe(201);
+    expect(internalSession.body).toMatchObject({ sessionId: expect.any(String), token: expect.any(String) });
   });
 
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {

@@ -27,6 +27,7 @@ import type {
   RoutineConcurrencyPolicy,
   RoutineStatus,
   IssueSurfaceVisibility,
+  HostFeatureKey,
 } from "../constants.js";
 import type { Agent } from "./agent.js";
 import type { CompanySkill } from "./company-skill.js";
@@ -64,6 +65,7 @@ export type {
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
+  HostFeatureKey,
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
@@ -648,6 +650,21 @@ export interface PluginObjectReferenceProviderDeclaration {
 // ---------------------------------------------------------------------------
 
 /**
+ * Versioned declaration of dormant core product surfaces supplied by a host
+ * feature provider. Version 1 is intentionally closed to known keys.
+ */
+export interface PluginHostFeaturesDeclarationV1 {
+  schemaVersion: 1;
+  features: HostFeatureKey[];
+}
+
+/** Non-sensitive, instance-level feature snapshot returned to the board UI. */
+export interface HostFeaturesSnapshotV1 {
+  schemaVersion: 1;
+  hostFeatures: HostFeatureKey[];
+}
+
+/**
  * The manifest shape every plugin package must export.
  * See PLUGIN_SPEC.md §10.1 for the normative definition.
  */
@@ -678,6 +695,8 @@ export interface PaperclipPluginManifestV1 {
   minimumPaperclipVersion?: PluginMinimumHostVersion;
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
+  /** Dormant core product surfaces enabled while this provider is ready. */
+  hostFeatures?: PluginHostFeaturesDeclarationV1;
   /** Entrypoint paths relative to the package root. */
   entrypoints: {
     /** Path to the worker entrypoint (required). */

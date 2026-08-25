@@ -12,6 +12,7 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } fr
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
+import { requireHostFeature } from "../services/host-features.js";
 
 const TOOL_GATEWAY_ACTIONS = [
   "tool_gateway.session_created",
@@ -58,10 +59,12 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
+  db: Db,
   toolGateway: ToolGatewayService,
   locator: { gatewayId?: string | null; gatewayPublicId?: string | null },
 ) {
   try {
+    await requireHostFeature(db, "apps.named_mcp_gateways");
     const token = bearerToken(req);
     if (!token) {
       res.status(401).json({ error: "Bearer token is required" });
@@ -158,17 +161,22 @@ async function handleMcpGatewayProtocol(
   }
 }
 
-export function mcpGatewayProtocolRoutes(toolGateway: ToolGatewayService) {
+export function mcpGatewayProtocolRoutes(db: Db, toolGateway: ToolGatewayService) {
   const router = Router();
   router.get("/mcp/gateways/:gatewayPublicId", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
-      authentication: "bearer",
-    });
+    try {
+      await requireHostFeature(db, "apps.named_mcp_gateways");
+      res.json({
+        transport: "streamable_http",
+        endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
+        authentication: "bearer",
+      });
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
   });
   router.post("/mcp/gateways/:gatewayPublicId", async (req, res) => {
-    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayPublicId: req.params.gatewayPublicId });
+    await handleMcpGatewayProtocol(req, res, db, toolGateway, { gatewayPublicId: req.params.gatewayPublicId });
   });
   return router;
 }
@@ -283,6 +291,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.get("/companies/:companyId/tools/gateways", async (req, res) => {
     try {
+      await requireHostFeature(db, "apps.named_mcp_gateways");
       await assertBoardPermission(req, req.params.companyId, "tools:admin");
       res.json({ gateways: await toolGateway.listNamedGateways(req.params.companyId) });
     } catch (err) {
@@ -292,6 +301,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/companies/:companyId/tools/gateways", async (req, res) => {
     try {
+      await requireHostFeature(db, "apps.named_mcp_gateways");
       await assertBoardPermission(req, req.params.companyId, "tools:admin");
       const parsed = createToolMcpGatewaySchema.safeParse(req.body ?? {});
       if (!parsed.success) {
@@ -312,6 +322,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.patch("/tool-gateway/gateways/:gatewayId", async (req, res) => {
     try {
+      await requireHostFeature(db, "apps.named_mcp_gateways");
       assertBoard(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
@@ -333,6 +344,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/tool-gateway/gateways/:gatewayId/tokens", async (req, res) => {
     try {
+      await requireHostFeature(db, "apps.named_mcp_gateways");
       assertBoard(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
@@ -359,6 +371,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/tool-gateway/gateway-tokens/:tokenId/revoke", async (req, res) => {
     try {
+      await requireHostFeature(db, "apps.named_mcp_gateways");
       assertBoard(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
@@ -373,15 +386,20 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   });
 
   router.get("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/api/tool-gateway/gateways/${req.params.gatewayId}/mcp`,
-      authentication: "bearer",
-    });
+    try {
+      await requireHostFeature(db, "apps.named_mcp_gateways");
+      res.json({
+        transport: "streamable_http",
+        endpoint: `/api/tool-gateway/gateways/${req.params.gatewayId}/mcp`,
+        authentication: "bearer",
+      });
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
   });
 
   router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayId: req.params.gatewayId });
+    await handleMcpGatewayProtocol(req, res, db, toolGateway, { gatewayId: req.params.gatewayId });
   });
 
   router.post("/tool-gateway/sessions", async (req, res) => {

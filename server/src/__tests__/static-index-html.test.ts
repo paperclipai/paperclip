@@ -20,13 +20,19 @@ describe("static SPA fallback HTML", () => {
     tempDirs.push(tempDir);
     const indexPath = path.join(tempDir, "index.html");
     const app = express();
-    app.get(/.*/, (_req, res) => {
+    const serveIndex = (_req: express.Request, res: express.Response) => {
       res
         .status(200)
         .set("Content-Type", "text/html")
         .set("Cache-Control", "no-cache")
-        .end(readBrandedStaticIndexHtml(tempDir));
-    });
+        .end(readBrandedStaticIndexHtml(tempDir, {
+          schemaVersion: 1,
+          hostFeatures: ["apps.access_profiles"],
+        }));
+    };
+    app.get(["/", "/index.html"], serveIndex);
+    app.use(express.static(tempDir, { index: false }));
+    app.get(/.*/, serveIndex);
 
     fs.writeFileSync(
       indexPath,
@@ -45,5 +51,12 @@ describe("static SPA fallback HTML", () => {
     const res = await request(app).get("/PAP/issues/PAP-9939");
     expect(res.text).toContain("/assets/index-new.js");
     expect(res.text).not.toContain("/assets/index-old.js");
+    expect(res.text).toContain('id="paperclip-runtime-features"');
+    expect(res.text).toContain('"hostFeatures":["apps.access_profiles"]');
+
+    const root = await request(app).get("/");
+    const explicitIndex = await request(app).get("/index.html");
+    expect(root.text).toContain('id="paperclip-runtime-features"');
+    expect(explicitIndex.text).toContain('id="paperclip-runtime-features"');
   });
 });

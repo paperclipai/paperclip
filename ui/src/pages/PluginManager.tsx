@@ -79,8 +79,8 @@ function ExperimentalBadge() {
  *
  * Data flow:
  * - Reads from `GET /api/plugins` via `pluginsApi.list()`.
- * - Mutations (install / uninstall / enable / disable) invalidate
- *   `queryKeys.plugins.all` so the list refreshes automatically.
+ * - Mutations (install / uninstall / enable / disable) invalidate plugin data
+ *   and the host-feature snapshot so feature routes revalidate immediately.
  *
  * @see PluginSettings — linked from the Settings icon on each plugin row.
  * @see doc/plugins/PLUGIN_SPEC.md §3 — Plugin Lifecycle for status semantics.
@@ -119,6 +119,7 @@ export function PluginManager() {
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.examples });
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.uiContributions });
+    queryClient.invalidateQueries({ queryKey: queryKeys.runtimeFeatures });
   };
 
   const installMutation = useMutation({

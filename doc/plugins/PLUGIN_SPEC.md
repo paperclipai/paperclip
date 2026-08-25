@@ -346,6 +346,10 @@ export interface PaperclipPluginManifestV1 {
   routines?: PluginManagedRoutineDeclaration[];
   skills?: PluginManagedSkillDeclaration[];
   localFolders?: PluginLocalFolderDeclaration[];
+  hostFeatures?: {
+    schemaVersion: 1;
+    features: Array<"apps.named_mcp_gateways" | "apps.access_profiles">;
+  };
   /** Legacy top-level launcher declarations. Prefer `ui.launchers` for new manifests. */
   launchers?: PluginLauncherDeclaration[];
   ui?: {
@@ -387,6 +391,12 @@ Rules:
 - `minimumHostVersion` is preferred, with `minimumPaperclipVersion` retained for
   backwards compatibility
 - `capabilities` must be static and install-time visible
+- `hostFeatures` is a closed host-product contract, not a general extension
+  mechanism. Only the canonical `paperclipai.paperclip-ee` manifest may declare
+  it. Unknown keys, duplicates, unsupported schema versions, and declarations
+  from any other plugin are rejected. The host enables a valid declaration only
+  while that plugin's stored lifecycle status is `ready`; every other state
+  fails closed.
 - config schema must be JSON Schema compatible
 - `entrypoints.ui` points to the directory containing the built UI bundle
 - `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle

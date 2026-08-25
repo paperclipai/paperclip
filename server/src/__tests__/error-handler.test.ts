@@ -112,6 +112,25 @@ describe("errorHandler", () => {
     expect(res.__errorContext).toBeUndefined();
   });
 
+  it("flattens feature-unavailable metadata into the stable response shape", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new HttpError(404, "Feature unavailable", {
+      code: "feature_unavailable",
+      feature: "apps.access_profiles",
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Feature unavailable",
+      code: "feature_unavailable",
+      feature: "apps.access_profiles",
+    });
+  });
+
   it("records responsible-user denial codes on the active agent run", () => {
     const db = { marker: "db" };
     const req = {

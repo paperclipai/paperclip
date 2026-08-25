@@ -11,6 +11,11 @@ const mockToolsApi = vi.hoisted(() => ({
   listRuntimeSlots: vi.fn(),
   listActionRequests: vi.fn(),
 }));
+const enabledFeatures = vi.hoisted(() => new Set<string>());
+
+vi.mock("@/context/RuntimeFeaturesContext", () => ({
+  useRuntimeFeatures: () => ({ hasFeature: (feature: string) => enabledFeatures.has(feature) }),
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -96,12 +101,15 @@ describe("AppsSidebar", () => {
       ],
     });
     mockToolsApi.listActionRequests.mockResolvedValue({ actionRequests: [] });
+    enabledFeatures.add("apps.named_mcp_gateways");
+    enabledFeatures.add("apps.access_profiles");
   });
 
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    enabledFeatures.clear();
   });
 
   it("renders Apps and Developer sections in one sidebar", async () => {
@@ -164,5 +172,27 @@ describe("AppsSidebar", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("fails closed for Gateways and Profiles while leaving core developer tabs visible", async () => {
+    enabledFeatures.clear();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AppsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Gateways" }));
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Profiles" }));
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ label: "Rules" }));
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ label: "Health" }));
+
+    await act(async () => root.unmount());
   });
 });

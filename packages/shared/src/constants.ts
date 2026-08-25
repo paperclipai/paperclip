@@ -1267,6 +1267,26 @@ export type ToolAccessActivityAction = (typeof TOOL_ACCESS_ACTIVITY_ACTIONS)[num
 export const PLUGIN_API_VERSION = 1 as const;
 
 /**
+ * The only plugin identity allowed to declare Paperclip EE host features.
+ * Host features expose dormant core product surfaces; they are not plugin
+ * capabilities and never grant the plugin access to host APIs.
+ */
+export const PAPERCLIP_EE_PLUGIN_ID = "paperclipai.paperclip-ee" as const;
+
+/** Current schema version for the closed host-feature manifest declaration. */
+export const HOST_FEATURE_DECLARATION_SCHEMA_VERSION = 1 as const;
+
+/**
+ * Host product surfaces that a ready canonical Paperclip EE plugin can enable.
+ * Keep this list closed so a misspelled or unsupported key fails installation.
+ */
+export const HOST_FEATURE_KEYS = [
+  "apps.named_mcp_gateways",
+  "apps.access_profiles",
+] as const;
+export type HostFeatureKey = (typeof HOST_FEATURE_KEYS)[number];
+
+/**
  * Lifecycle statuses for an installed plugin.
  *
  * State machine: installed → ready | error, ready → disabled | error | upgrade_pending | uninstalled,

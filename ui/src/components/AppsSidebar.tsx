@@ -8,6 +8,7 @@ import { toolsApi } from "@/api/tools";
 import { DEVELOPER_TABS, advancedTabHref, isExperimentalToolTab } from "@/pages/tools/tool-tabs";
 import { useSmokeLabEnabled } from "@/hooks/useSmokeLabEnabled";
 import { useReviewCount } from "@/pages/apps/useReviewCount";
+import { useRuntimeFeatures } from "@/context/RuntimeFeaturesContext";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 /**
@@ -33,8 +34,12 @@ export function AppsSidebar() {
 
   const reviewCount = useReviewCount();
   const { enabled: smokeLabEnabled } = useSmokeLabEnabled();
+  const { hasFeature } = useRuntimeFeatures();
   const developerTabs = DEVELOPER_TABS.filter(
-    (tab) => !isExperimentalToolTab(tab.key) || smokeLabEnabled,
+    (tab) =>
+      (!isExperimentalToolTab(tab.key) || smokeLabEnabled)
+      && (tab.key !== "gateways" || hasFeature("apps.named_mcp_gateways"))
+      && (tab.key !== "profiles" || hasFeature("apps.access_profiles")),
   );
 
   const runtimeSlots = useQuery({

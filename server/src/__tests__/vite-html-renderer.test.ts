@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCachedViteHtmlRenderer, type ViteWatcherHost } from "../vite-html-renderer.js";
+import { injectRuntimeFeaturesHtml } from "../runtime-features-html.js";
 
 function createWatcher() {
   const listeners = new Map<string, Set<(file: string) => void>>();
@@ -93,5 +94,33 @@ describe("createCachedViteHtmlRenderer", () => {
     const html = await renderer.render("/");
     expect(html.match(/\/@vite\/client/g)?.length).toBe(1);
     expect(html.match(/\/@react-refresh/g)?.length).toBe(1);
+  });
+
+  it("injects a fresh runtime feature snapshot into the cached dev shell", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vite-html-"));
+    tempDirs.push(tempDir);
+    fs.writeFileSync(
+      path.join(tempDir, "index.html"),
+      '<html><head><!-- PAPERCLIP_RUNTIME_FEATURES --></head><body><script type="module" src="/src/main.tsx"></script></body></html>',
+      "utf8",
+    );
+
+    let enabled = false;
+    const renderer = createCachedViteHtmlRenderer({
+      vite: { watcher: createWatcher() },
+      uiRoot: tempDir,
+      injectHtml: (html) => injectRuntimeFeaturesHtml(html, {
+        schemaVersion: 1,
+        hostFeatures: enabled ? ["apps.named_mcp_gateways"] : [],
+      }),
+    });
+
+    const disabledHtml = await renderer.render("/");
+    enabled = true;
+    const enabledHtml = await renderer.render("/");
+
+    expect(disabledHtml).toContain('"hostFeatures":[]');
+    expect(enabledHtml).toContain('"hostFeatures":["apps.named_mcp_gateways"]');
+    expect(enabledHtml.match(/paperclip-runtime-features/g)?.length).toBe(1);
   });
 });

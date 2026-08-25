@@ -22,6 +22,7 @@ import {
 import { cn } from "../lib/utils";
 import { brandChipBadge } from "../lib/status-colors";
 import { installPayload, installStateFrom, isAgentInstalled, INSTALLED_HINT } from "../lib/tool-installs";
+import { useRuntimeFeatures } from "../context/RuntimeFeaturesContext";
 
 /** Normalize a selector value (string or string[]) into a flat string list. */
 function selectorStringList(value: unknown): string[] {
@@ -228,6 +229,8 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  */
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
   const queryClient = useQueryClient();
+  const { hasFeature } = useRuntimeFeatures();
+  const profileAdministrationEnabled = hasFeature("apps.access_profiles");
   const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
   const lastSavedInstallRef = useRef<Record<string, boolean>>({});
   const skipNextInstallAutosaveRef = useRef(true);
@@ -525,12 +528,14 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                 <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
                   Access profiles
                 </div>
-                <Link
-                  to={`${profilesHref}?check=1`}
-                  className="text-(length:--text-micro) font-medium text-primary hover:underline"
-                >
-                  Check access
-                </Link>
+                {profileAdministrationEnabled ? (
+                  <Link
+                    to={`${profilesHref}?check=1`}
+                    className="text-(length:--text-micro) font-medium text-primary hover:underline"
+                  >
+                    Check access
+                  </Link>
+                ) : null}
               </div>
               {profiles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
@@ -540,12 +545,16 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                 profiles.map((profile) => {
                   return (
                     <div key={profile.id} className="rounded-md border border-border/70 px-2.5 py-2">
-                      <Link
-                        to={`${profilesHref}/${profile.id}`}
-                        className="text-xs font-medium text-primary hover:underline"
-                      >
-                        {profile.name}
-                      </Link>
+                      {profileAdministrationEnabled ? (
+                        <Link
+                          to={`${profilesHref}/${profile.id}`}
+                          className="text-xs font-medium text-primary hover:underline"
+                        >
+                          {profile.name}
+                        </Link>
+                      ) : (
+                        <span className="text-xs font-medium text-foreground">{profile.name}</span>
+                      )}
                       {profile.summary.isCompanyDefault ? (
                         <div className="mt-1">
                           <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">

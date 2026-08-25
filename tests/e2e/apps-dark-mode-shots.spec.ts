@@ -159,9 +159,9 @@ test.describe.serial("dark-mode Apps surfaces", () => {
 
   test("developer tabs share the merged Apps sidebar", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps/advanced/profiles`);
+    await page.goto(`/${seed.prefix}/apps/advanced/runtime`);
     await expect(page.getByRole("heading", { name: "Developer tools" })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole("heading", { name: "Access profiles" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Health" })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('a[href$="/apps/advanced/runtime"]', { hasText: "Health" })).toBeVisible();
     await expect(page.locator('a[href$="/apps/advanced/audit"]', { hasText: "Activity" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);

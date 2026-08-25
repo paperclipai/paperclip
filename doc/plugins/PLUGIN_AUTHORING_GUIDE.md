@@ -6,6 +6,8 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 
 > **New to plugins?** Start with the short [Local Plugin Development guide](./LOCAL_PLUGIN_DEVELOPMENT.md) — it walks the CLI happy path (`plugin init` → `pnpm dev` → `plugin install <path>`) end to end. Come back here for the full manifest surface, worker capabilities, and UI components.
 
+> **Host features are reserved.** The optional versioned `hostFeatures` manifest field is not an extension point for third-party plugins. Core accepts its closed Gateways and Profiles keys only from the canonical `paperclipai.paperclip-ee` plugin, and enables them only while that plugin is ready. Other plugins must use capabilities, API routes, tools, and UI slots for their integrations.
+
 ## Current reality
 
 - Treat plugin workers and plugin UI as trusted code.
