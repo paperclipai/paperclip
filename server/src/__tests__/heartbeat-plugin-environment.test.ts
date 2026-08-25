@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentTaskSessions,
   companies,
   createDb,
   environments,
@@ -669,6 +671,19 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       const latest = await heartbeat.getRun(run!.id);
       expect(latest?.status).toBe("succeeded");
     }, { timeout: 5_000 });
+
+    // TSMC-21787: assignment-created task sessions must carry the effective
+    // configuration fingerprint, otherwise every later assignment sees the
+    // row as legacy and forces a cold start.
+    const persistedTaskSession = await db
+      .select({ sessionParamsJson: agentTaskSessions.sessionParamsJson })
+      .from(agentTaskSessions)
+      .where(eq(agentTaskSessions.taskKey, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(persistedTaskSession?.sessionParamsJson).toEqual(expect.objectContaining({
+      sessionId: "session-1",
+      __paperclipConfigFingerprint: expect.stringMatching(/^v1:sha256:/),
+    }));
 
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentAcquireLease", {
       driverKey: "sandbox",

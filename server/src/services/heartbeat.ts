@@ -10596,11 +10596,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agentId: string;
     adapterType: string;
     taskKey: string;
-    sessionParamsJson: Record<string, unknown> | null;
+    sessionParams: Record<string, unknown> | null;
     sessionDisplayId: string | null;
     lastRunId: string | null;
     lastError: string | null;
+    configuredModel: string | null;
+    configMetadata?: EffectiveRunSessionConfigMetadata | null;
+    workspaceSource?: string | null;
   }) {
+    // This is the sole persistence sink for normal heartbeat task sessions.
+    // Stamping here, rather than relying on each dispatch/finalization leg to
+    // remember it, keeps assignment-created sessions eligible for reuse.
+    const sessionParamsJson = attachPaperclipSessionMetadataToSessionParams(
+      input.sessionParams,
+      input.configuredModel,
+      input.configMetadata,
+      input.workspaceSource,
+    );
     const existing = await getTaskSession(
       input.companyId,
       input.agentId,
@@ -10611,7 +10623,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return db
         .update(agentTaskSessions)
         .set({
-          sessionParamsJson: input.sessionParamsJson,
+          sessionParamsJson,
           sessionDisplayId: input.sessionDisplayId,
           lastRunId: input.lastRunId,
           lastError: input.lastError,
@@ -10629,7 +10641,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agentId: input.agentId,
         adapterType: input.adapterType,
         taskKey: input.taskKey,
-        sessionParamsJson: input.sessionParamsJson,
+        sessionParamsJson,
         sessionDisplayId: input.sessionDisplayId,
         lastRunId: input.lastRunId,
         lastError: input.lastError,
@@ -22931,15 +22943,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
-                nextSessionState.params,
-                configuredModel,
-                sessionConfigMetadata,
-                executionWorkspace.source,
-              ),
+              sessionParams: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: runErrorMessage,
+              configuredModel,
+              configMetadata: sessionConfigMetadata,
+              workspaceSource: executionWorkspace.source,
             });
           }
         }
@@ -23095,15 +23105,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
-              previousSessionParams,
-              configuredModel,
-              sessionConfigMetadata,
-              previousSessionWorkspaceSource,
-            ),
+            sessionParams: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
+            configuredModel,
+            configMetadata: sessionConfigMetadata,
+            workspaceSource: previousSessionWorkspaceSource,
           });
         }
       }
