@@ -27286,6 +27286,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         source,
         triggerDetail,
         contextSnapshot,
+        // `invoke` callers supply a wake reason in their context. Preserve it
+        // at the dispatch boundary as well: enqueueWakeup's no-input throttle
+        // deliberately treats a missing reason as a polling wake. In
+        // particular, a bounded board-exception recovery must not be mistaken
+        // for an unqualified re-poll merely because it entered through invoke.
+        reason: readNonEmptyString(contextSnapshot.wakeReason) ?? undefined,
         requestedByActorType: actor?.actorType,
         requestedByActorId: actor?.actorId ?? null,
       }),

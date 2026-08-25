@@ -317,7 +317,7 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
     executeAdapter.mockClear();
     const target = await seedScopedTarget(4);
     // The TSM-6044 shape: raw aggregate far past 1M, but almost all cache.
-    // 40K fresh + 6M cached * 0.1 = 640,000 weighted — must dispatch.
+    // 40K fresh + 6M cached * 0.02 = 160,000 weighted — must dispatch.
     await db.insert(costEvents).values({
       companyId: target.companyId,
       agentId: target.agentId,
