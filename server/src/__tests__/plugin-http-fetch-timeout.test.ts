@@ -77,4 +77,25 @@ describe("plugin host HTTP fetch timeout", () => {
       services.dispose();
     }
   });
+
+  it("applies the requested timeout while DNS resolution is pending", async () => {
+    dnsLookupMock.mockImplementation(() => new Promise(() => undefined));
+
+    const services = buildHostServices(
+      {} as never,
+      "plugin-record-id",
+      "paperclip.plugin-weknora",
+      createEventBusStub(),
+    );
+
+    try {
+      await expect(services.http.fetch({
+        url: "https://weknora.example/api/v1/knowledge-bases",
+        timeoutMs: 25,
+      })).rejects.toThrow("Plugin fetch timed out after 25ms");
+      expect(httpRequestMock).not.toHaveBeenCalled();
+    } finally {
+      services.dispose();
+    }
+  });
 });

@@ -112,7 +112,7 @@ export function normalizeConfig(raw: Record<string, unknown> | null | undefined)
     defaultWikiKnowledgeBaseId: optionalString(source.defaultWikiKnowledgeBaseId, "defaultWikiKnowledgeBaseId"),
     maxResults: numericOption(source.maxResults, "maxResults", DEFAULT_CONFIG.maxResults, 1, 50),
     maxChunkChars: numericOption(source.maxChunkChars, "maxChunkChars", DEFAULT_CONFIG.maxChunkChars, 200, 10000),
-    requestTimeoutMs: numericOption(source.requestTimeoutMs, "requestTimeoutMs", DEFAULT_CONFIG.requestTimeoutMs, 1000, 120000),
+    requestTimeoutMs: numericOption(source.requestTimeoutMs, "requestTimeoutMs", DEFAULT_CONFIG.requestTimeoutMs, 1000, 30000),
     resourceUrls: "handle",
     enableWriteActions: source.enableWriteActions == null ? DEFAULT_CONFIG.enableWriteActions : source.enableWriteActions,
   };

@@ -99,6 +99,27 @@ function resolvePluginFetchTimeoutMs(value: unknown): number {
   return Math.min(Math.max(Math.trunc(value), 1), PLUGIN_FETCH_TIMEOUT_MS);
 }
 
+function racePluginFetchDeadline<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error(`Plugin fetch timed out after ${timeoutMs}ms`));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /** Maximum time (ms) to wait for a DNS lookup before aborting. */
 const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
@@ -1586,14 +1607,18 @@ export function buildHostServices(
 
     http: {
       async fetch(params) {
+        const timeoutMs = resolvePluginFetchTimeoutMs(params.timeoutMs);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const target = await validateAndResolveFetchUrl(params.url);
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), resolvePluginFetchTimeoutMs(params.timeoutMs));
-
         try {
+          const target = await racePluginFetchDeadline(
+            validateAndResolveFetchUrl(params.url),
+            controller.signal,
+            timeoutMs,
+          );
           const init = params.init as RequestInit | undefined;
           return await executePinnedHttpRequest(target, init, controller.signal);
         } finally {
