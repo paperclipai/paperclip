@@ -255,6 +255,55 @@ import {
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 
+type CommittedIssueCreateWarning = { code: string; message: string };
+
+async function runCommittedIssueCreateSideEffect<T>(input: {
+  issueId: string;
+  companyId: string;
+  code: string;
+  message: string;
+  warnings: CommittedIssueCreateWarning[];
+  operation: () => Promise<T>;
+  fallback: T;
+}): Promise<T> {
+  try {
+    return await input.operation();
+  } catch (err) {
+    logger.warn(
+      {
+        err,
+        issueId: input.issueId,
+        companyId: input.companyId,
+        postCommitWarningCode: input.code,
+      },
+      "committed issue create side effect failed",
+    );
+    if (!input.warnings.some((warning) => warning.code === input.code)) {
+      input.warnings.push({ code: input.code, message: input.message });
+    }
+    return input.fallback;
+  }
+}
+
+async function publishCommittedIssueCreateActivities(input: {
+  issueId: string;
+  companyId: string;
+  publications: ActivityPublication[];
+  warnings: CommittedIssueCreateWarning[];
+}) {
+  for (const publication of input.publications) {
+    await runCommittedIssueCreateSideEffect({
+      issueId: input.issueId,
+      companyId: input.companyId,
+      code: "issue_activity_publication_failed",
+      message: "The issue was created and its activity was recorded, but a live update could not be published.",
+      warnings: input.warnings,
+      operation: async () => publishActivity(publication),
+      fallback: undefined,
+    });
+  }
+}
+
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
@@ -8632,6 +8681,9 @@ export function issueRoutes(
       executionPolicy,
     }, actor);
     let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    const postCommitWarnings: CommittedIssueCreateWarning[] = [];
+    const postCommitActivityPublications: ActivityPublication[] = [];
+    let referenceSummary = issueReferencesSvc.emptySummary();
     const createInput = {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
@@ -8648,6 +8700,91 @@ export function issueRoutes(
       onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
         deduplicationReason = reason;
       },
+      activityInputFactory: async (createdIssue: typeof issueRows.$inferSelect, dbOrTx: Db) => {
+        await issueReferencesSvc.syncIssue(createdIssue.id, dbOrTx);
+        referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(createdIssue.id, dbOrTx);
+        const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+          issueReferencesSvc.emptySummary(),
+          referenceSummary,
+        );
+        const activityInputs: Parameters<typeof logActivity>[1][] = [{
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.created",
+          entityType: "issue",
+          entityId: createdIssue.id,
+          details: {
+            title: createdIssue.title,
+            identifier: createdIssue.identifier,
+            ...(watchdogProductBugFollowUp
+              ? {
+                watchdogDiscovery: {
+                  kind: watchdogProductBugFollowUp.discovery.kind,
+                  sourceIssueId: watchdogProductBugFollowUp.sourceIssue.id,
+                  sourceIssueIdentifier: watchdogProductBugFollowUp.sourceIssue.identifier,
+                  watchdogIssueId: watchdogProductBugFollowUp.watchdogIssue?.id ?? null,
+                  watchdogIssueIdentifier: watchdogProductBugFollowUp.watchdogIssue?.identifier ?? null,
+                  stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
+                },
+              }
+              : {}),
+            ...buildCreateIssueActivityStatusDetails(createdIssue, res),
+            ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+            ...summarizeIssueReferenceActivityDetails({
+              addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+              removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+              currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+            }),
+          },
+        }];
+        if (executionPolicy?.monitor) {
+          activityInputs.push({
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: createdIssue.id,
+            details: {
+              identifier: createdIssue.identifier,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+        if (createBody.watchdog) {
+          activityInputs.push({
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.watchdog_created",
+            entityType: "issue",
+            entityId: createdIssue.id,
+            details: {
+              identifier: createdIssue.identifier,
+              watchdogAgentId: createBody.watchdog.agentId,
+              source: "issue.create",
+            },
+          });
+        }
+        return activityInputs;
+      },
+      postCommitActivityPublications,
     };
     let issue: Awaited<ReturnType<typeof svc.create>>;
     try {
@@ -8662,104 +8799,45 @@ export function issueRoutes(
       const { originKind: _onboardingOriginKind, ...ordinaryCreateInput } = createInput;
       issue = await svc.create(companyId, ordinaryCreateInput);
     }
+    await publishCommittedIssueCreateActivities({
+      issueId: issue.id,
+      companyId,
+      publications: postCommitActivityPublications,
+      warnings: postCommitWarnings,
+    });
     if (deduplicationReason) {
-      const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const referenceSummary = await runCommittedIssueCreateSideEffect({
+        issueId: issue.id,
+        companyId,
+        code: "issue_reference_summary_failed",
+        message: "The existing issue was returned, but related-work references may be incomplete.",
+        warnings: postCommitWarnings,
+        operation: () => issueReferencesSvc.listIssueReferenceSummary(issue.id),
+        fallback: issueReferencesSvc.emptySummary(),
+      });
       res.status(200).json({
         ...issue,
         deduplicated: true,
         deduplicationReason,
         relatedWork: referenceSummary,
         referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+        ...(postCommitWarnings.length > 0 ? { postCommitWarnings } : {}),
       });
       return;
     }
-    await issueReferencesSvc.syncIssue(issue.id);
+    const runPostCommit = <T>(input: {
+      code: string;
+      message: string;
+      operation: () => Promise<T>;
+      fallback: T;
+    }) =>
+      runCommittedIssueCreateSideEffect({
+        issueId: issue.id,
+        companyId,
+        warnings: postCommitWarnings,
+        ...input,
+      });
     await externalObjectsSvc.syncIssueSafely(issue.id);
-    const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-    const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
-      issueReferencesSvc.emptySummary(),
-      referenceSummary,
-    );
-
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        title: issue.title,
-        identifier: issue.identifier,
-        ...(watchdogProductBugFollowUp
-          ? {
-            watchdogDiscovery: {
-              kind: watchdogProductBugFollowUp.discovery.kind,
-              sourceIssueId: watchdogProductBugFollowUp.sourceIssue.id,
-              sourceIssueIdentifier: watchdogProductBugFollowUp.sourceIssue.identifier,
-              watchdogIssueId: watchdogProductBugFollowUp.watchdogIssue?.id ?? null,
-              watchdogIssueIdentifier: watchdogProductBugFollowUp.watchdogIssue?.identifier ?? null,
-              stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
-            },
-          }
-          : {}),
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...summarizeIssueReferenceActivityDetails({
-          addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-          removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-          currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-        }),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
-      });
-    }
-
-    if (issue.watchdog) {
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.watchdog_created",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          watchdogId: issue.watchdog.id,
-          watchdogAgentId: issue.watchdog.watchdogAgentId,
-          source: "issue.create",
-        },
-      });
-    }
-
     // Seed the onboarding first-task greeting as an agent-authored comment so the
     // user lands on a waiting greeting (instead of a right-aligned "user" bubble
     // showing the seeded description). Deterministic template — no LLM call — and
@@ -8808,6 +8886,7 @@ export function issueRoutes(
       ...issue,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      ...(postCommitWarnings.length > 0 ? { postCommitWarnings } : {}),
     });
   });
 
@@ -8868,7 +8947,9 @@ export function issueRoutes(
       projectId: createBody.projectId ?? parent.projectId ?? null,
       executionPolicy,
     }, actor);
-    const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
+    const postCommitWarnings: CommittedIssueCreateWarning[] = [];
+    const postCommitActivityPublications: ActivityPublication[] = [];
+    const { issue } = await svc.createChild(parent.id, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
@@ -8888,81 +8969,99 @@ export function issueRoutes(
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
-    });
-    await externalObjectsSvc.syncIssueSafely(issue.id);
-
-    await logActivity(db, {
-      companyId: parent.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.child_created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        parentId: parent.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        inheritedExecutionWorkspaceFromIssueId: parent.id,
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
-        ...(serializationContext
-          ? {
-            watchdogFollowUpsSerialized: true,
-            serializedBehindIssueId: currentSerializedChild?.id ?? null,
-          }
-          : {}),
+      activityInputFactory: (createdIssue: typeof issueRows.$inferSelect) => {
+        const activityInputs: Parameters<typeof logActivity>[1][] = [{
+          companyId: parent.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.child_created",
+          entityType: "issue",
+          entityId: createdIssue.id,
+          details: {
+            parentId: parent.id,
+            identifier: createdIssue.identifier,
+            title: createdIssue.title,
+            ...buildCreateIssueActivityStatusDetails(createdIssue, res),
+            inheritedExecutionWorkspaceFromIssueId: parent.id,
+            ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+            ...(createBody.blockParentUntilDone ? { parentBlockerAdded: true } : {}),
+            ...(serializationContext
+              ? {
+                watchdogFollowUpsSerialized: true,
+                serializedBehindIssueId: currentSerializedChild?.id ?? null,
+              }
+              : {}),
+          },
+        }];
+        if (executionPolicy?.monitor) {
+          activityInputs.push({
+            companyId: parent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: createdIssue.id,
+            details: {
+              identifier: createdIssue.identifier,
+              parentId: parent.id,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+        if (createBody.watchdog) {
+          activityInputs.push({
+            companyId: parent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.watchdog_created",
+            entityType: "issue",
+            entityId: createdIssue.id,
+            details: {
+              identifier: createdIssue.identifier,
+              watchdogAgentId: createBody.watchdog.agentId,
+              source: "issue.child_create",
+              parentId: parent.id,
+            },
+          });
+        }
+        return activityInputs;
       },
+      postCommitActivityPublications,
     });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
+    await publishCommittedIssueCreateActivities({
+      issueId: issue.id,
+      companyId: parent.companyId,
+      publications: postCommitActivityPublications,
+      warnings: postCommitWarnings,
+    });
+    const runPostCommit = <T>(input: {
+      code: string;
+      message: string;
+      operation: () => Promise<T>;
+      fallback: T;
+    }) =>
+      runCommittedIssueCreateSideEffect({
+        issueId: issue.id,
         companyId: parent.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          parentId: parent.id,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
+        warnings: postCommitWarnings,
+        ...input,
       });
-    }
-
-    if (issue.watchdog) {
-      await logActivity(db, {
-        companyId: parent.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.watchdog_created",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          watchdogId: issue.watchdog.id,
-          watchdogAgentId: issue.watchdog.watchdogAgentId,
-          source: "issue.child_create",
-          parentId: parent.id,
-        },
-      });
-    }
+    await externalObjectsSvc.syncIssueSafely(issue.id);
 
     if (!serializationContext || !currentSerializedChild) {
       void queueIssueAssignmentWakeup({
@@ -8975,14 +9074,24 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     }
-    await blockWatchdogParentOnCurrentChild({
-      actor,
-      watchdogParentIssueId: serializationContext?.watchdogParentIssueId,
-      currentChildIssueId: currentSerializedChild?.id ?? issue.id,
+    await runPostCommit({
+      code: "issue_child_serialization_failed",
+      message: "The child issue was created, but watchdog follow-up serialization could not be completed.",
+      operation: async () => {
+        await blockWatchdogParentOnCurrentChild({
+          actor,
+          watchdogParentIssueId: serializationContext?.watchdogParentIssueId,
+          currentChildIssueId: currentSerializedChild?.id ?? issue.id,
+        });
+      },
+      fallback: undefined,
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
-    res.status(201).json(issue);
+    res.status(201).json({
+      ...issue,
+      ...(postCommitWarnings.length > 0 ? { postCommitWarnings } : {}),
+    });
   });
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {

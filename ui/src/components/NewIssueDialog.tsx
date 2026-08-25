@@ -79,6 +79,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
+import { issuePostCommitWarningBody } from "../lib/issue-post-commit-warnings";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 
 const DRAFT_KEY = "paperclip:issue-draft";
@@ -667,12 +668,18 @@ export function NewIssueDialog() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
-      if (failures.length > 0) {
+      const postCommitWarning = issuePostCommitWarningBody(issue);
+      if (failures.length > 0 || postCommitWarning) {
         const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
         const issueRef = issue.identifier ?? issue.id;
         pushToast({
-          title: `Created ${issueRef} with upload warnings`,
-          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          title: `Created ${issueRef} with warnings`,
+          body: [
+            postCommitWarning,
+            failures.length > 0
+              ? `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`
+              : null,
+          ].filter(Boolean).join(" "),
           tone: "warn",
           action: prefix
             ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
