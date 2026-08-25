@@ -1646,46 +1646,16 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
     }
   });
 
-  it("terminalizes the route when a third distinct pre-bind exit session passes the exit-slot bound", async () => {
-    const handle = makeLoginPtyHandle();
-    try {
-      await handle.start();
-      // The worker batches exits for three distinct worker session ids before
-      // the bind. The host holds one exit record per distinct session, up to
-      // its fixed exit-slot bound of two, so the third distinct session
-      // passes the bound and the host terminalizes the route before the bind
-      // can complete.
-      await expect(
-        handle.openLoginPtySession(
-          ptyOpenInput({
-            batchWithOpenReply: true,
-            workerSessionId: "ws-A",
-            exitCode: 0,
-            extraExits: [
-              { exitCode: 1, sid: "ws-B" },
-              { exitCode: 2, sid: "ws-C" },
-            ],
-          }),
-        ),
-      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
-    } finally {
-      await handle.stop().catch(() => undefined);
-    }
-  });
-
-  it("keeps a repeated pre-bind exit at its original arrival position with its first exit code, against a filled output queue", async () => {
+  it("settles with the first exit code against a repeated pre-bind exit for the same session, behind a filled output queue", async () => {
     const handle = makeLoginPtyHandle({
       loginPtyLimits: { maxPreBindFrames: 50 },
     });
     try {
       await handle.start();
-      // Fill the pre-bind output queue with 40 records ahead of the first
-      // exit, then repeat the exit for the same worker session id after more
-      // output arrives. The host indexes the retained exit record by worker
-      // session id, so the repeat check is an O(1) lookup, not a scan of the
-      // held queue. The FIRST retained exit wins: the repeat drops there and
-      // the record keeps its ORIGINAL arrival position — right after the
-      // filler outputs, not at the later position of the repeat.
+      // Fill the pre-bind queue with 40 output records, then repeat the exit
+      // for the same worker session id after more output arrives. The first
+      // exit settles the route during the replay, so the repeat exit and the
+      // output around it never reach the listener.
       const fillerOutputs = Array.from({ length: 40 }, (_, index) => ({
         type: "output" as const,
         chunk: `filler-${index}`,
@@ -1705,13 +1675,38 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
       );
       const chunks: string[] = [];
       session.onData((chunk) => chunks.push(chunk));
-      // The wait settles with the FIRST exit code, proving the repeat
-      // dropped instead of overwriting the held record. The exit still
-      // terminal-cuts every output that arrived behind its original
-      // position, so neither "between-exits" nor "after-repeat" reaches the
-      // listener — proving the repeat did not move the record's position.
+      // The wait settles with the FIRST exit code, and the exit drops every
+      // output that arrived behind it, so neither "between-exits" nor
+      // "after-repeat" reaches the listener.
       await expect(session.wait()).resolves.toEqual({ exitCode: 1 });
       expect(chunks).toEqual(fillerOutputs.map((entry) => entry.chunk));
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles with the first exit code against N repeated pre-bind exits for the same session", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker sends five repeat exits for the same session before the
+      // bind. The first exit settles the route during the replay, so every
+      // repeat drops there and the wait still settles with the first code.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 1,
+          extraExits: [
+            { exitCode: 2 },
+            { exitCode: 3 },
+            { exitCode: 4 },
+            { exitCode: 5 },
+          ],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: 1 });
       await session.close();
     } finally {
       await handle.stop().catch(() => undefined);
