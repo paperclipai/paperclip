@@ -188,11 +188,12 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-hires$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/approvals$/ },
 
-  // Approvals (request, read, comment)
+  // Approvals (request, read, comment, and requester-bound withdrawal)
   { method: "GET", path: /^\/api\/approvals\/[^/]+$/ },
   { method: "GET", path: /^\/api\/approvals\/[^/]+\/issues$/ },
   { method: "GET", path: /^\/api\/approvals\/[^/]+\/comments$/ },
   { method: "POST", path: /^\/api\/approvals\/[^/]+\/comments$/ },
+  { method: "POST", path: /^\/api\/approvals\/[^/]+\/withdraw$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/approvals$/ },
 
   // Execution workspaces and runtime services (start/stop/restart dev servers)

@@ -606,11 +606,13 @@ export {
 export {
   createApprovalSchema,
   resolveApprovalSchema,
+  withdrawApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   type CreateApproval,
   type ResolveApproval,
+  type WithdrawApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,

@@ -699,6 +699,7 @@ export const APPROVAL_STATUSES = [
   "approved",
   "rejected",
   "cancelled",
+  "withdrawn",
 ] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
@@ -1012,6 +1013,7 @@ export const PERMISSION_KEYS = [
   "audit:view_agent_actions",
   "tools:use",
   "tools:manage_runtime",
+  "approval.withdraw:any",
   "inbox:manage",
   "users:invite",
   "users:manage_permissions",

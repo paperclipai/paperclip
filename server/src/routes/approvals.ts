@@ -7,6 +7,7 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  withdrawApprovalSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -15,13 +16,13 @@ import {
   accessService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -81,7 +82,8 @@ export function approvalRoutes(
     linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
     lostIssueIds: Set<string>;
     alreadyWoken?: { agentId: string; issueId: string } | null;
-    requestedByUserId: string;
+    requestedByActorType: "agent" | "user";
+    requestedByActorId: string;
   }) {
     for (const issue of input.linkedIssues) {
       if (!input.lostIssueIds.has(issue.id) || !issue.assigneeAgentId) continue;
@@ -103,8 +105,8 @@ export function approvalRoutes(
             issueId: issue.id,
             ...approvalReviewPathContext(input.approvalId),
           },
-          requestedByActorType: "user",
-          requestedByActorId: input.requestedByUserId,
+          requestedByActorType: input.requestedByActorType,
+          requestedByActorId: input.requestedByActorId,
           contextSnapshot: {
             source: `approval.${input.approvalStatus}`,
             approvalId: input.approvalId,
@@ -118,8 +120,8 @@ export function approvalRoutes(
 
         await logActivity(db, {
           companyId: input.companyId,
-          actorType: "user",
-          actorId: input.requestedByUserId,
+          actorType: input.requestedByActorType,
+          actorId: input.requestedByActorId,
           action: "approval.review_path_wakeup_queued",
           entityType: "approval",
           entityId: input.approvalId,
@@ -137,8 +139,8 @@ export function approvalRoutes(
         );
         await logActivity(db, {
           companyId: input.companyId,
-          actorType: "user",
-          actorId: input.requestedByUserId,
+          actorType: input.requestedByActorType,
+          actorId: input.requestedByActorId,
           action: "approval.review_path_wakeup_failed",
           entityType: "approval",
           entityId: input.approvalId,
@@ -247,7 +249,7 @@ export function approvalRoutes(
       payload: normalizedPayload,
       requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
       requestedByAgentId:
-        approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
+        actor.actorType === "agent" ? actor.actorId : approvalInput.requestedByAgentId ?? null,
       status: "pending",
       decisionNote: null,
       decidedByUserId: null,
@@ -283,6 +285,82 @@ export function approvalRoutes(
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
     const issues = await issueApprovalsSvc.listIssuesForApproval(id);
     res.json(issues);
+  });
+
+  router.post("/approvals/:id/withdraw", validate(withdrawApprovalSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
+    if (!existing) return;
+    // Route the requester branch through the same company_scope:read boundary the GET/create
+    // approval routes already enforce. company_scope:read is a company-wide action that
+    // decideTaskBridgeAccess / decideSkillTestAccess (and decideLowTrustAccess) deny, so this
+    // fences task_bridge / skill_test tokens acting AS their parent agent from satisfying the
+    // bare requester identity check and withdrawing the parent's own pending cards. Full-privilege
+    // agents already pass company_scope:read on the sibling routes, so legitimate requesters are
+    // unaffected. (FAI-9589 — scope-fence bypass hardening.)
+    if (!(await assertApprovalAccessAllowed(req, res, existing.companyId))) return;
+    if (!(await assertApprovalMutationAllowedByRunContext(req, res, existing.companyId))) return;
+
+    let authorizationMode: "requester" | "scoped_cleanup";
+    if (req.actor.type === "agent" && req.actor.agentId === existing.requestedByAgentId) {
+      authorizationMode = "requester";
+    } else {
+      const decision = await access.decide({
+        actor: req.actor,
+        action: "approval.withdraw:any",
+        resource: { type: "company", companyId: existing.companyId },
+      });
+      if (!decision.allowed) {
+        res.status(403).json({ error: "Only the requester or a principal with approval.withdraw:any can withdraw this approval" });
+        return;
+      }
+      authorizationMode = "scoped_cleanup";
+    }
+
+    const actor = getActorInfo(req);
+    const { approval, applied } = await svc.withdraw(
+      id,
+      {
+        agentId: actor.actorType === "agent" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+      req.body.reason,
+    );
+
+    if (applied) {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.withdrawn",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          type: approval.type,
+          requestedByAgentId: approval.requestedByAgentId,
+          authorizationMode,
+          withdrawnByAgentId: approval.withdrawnByAgentId,
+          withdrawnByUserId: approval.withdrawnByUserId,
+          reason: approval.decisionNote,
+          linkedIssueIds,
+        },
+      });
+      await queueAdditionalApprovalReviewPathWakes({
+        approvalId: approval.id,
+        approvalStatus: approval.status,
+        companyId: approval.companyId,
+        linkedIssues,
+        lostIssueIds: lostReviewIssueIds,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+
+    res.json(redactApprovalPayload(approval));
   });
 
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
@@ -394,7 +472,8 @@ export function approvalRoutes(
         alreadyWoken: primaryReviewPathWakeCovered && approval.requestedByAgentId && primaryIssueId
           ? { agentId: approval.requestedByAgentId, issueId: primaryIssueId }
           : null,
-        requestedByUserId: req.actor.userId ?? "board",
+        requestedByActorType: "user",
+        requestedByActorId: req.actor.userId ?? "board",
       });
     }
 
@@ -429,7 +508,8 @@ export function approvalRoutes(
         companyId: approval.companyId,
         linkedIssues,
         lostIssueIds: lostReviewIssueIds,
-        requestedByUserId: req.actor.userId ?? "board",
+        requestedByActorType: "user",
+        requestedByActorId: req.actor.userId ?? "board",
       });
     }
 

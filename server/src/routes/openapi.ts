@@ -88,6 +88,7 @@ import {
   // Approval
   createApprovalSchema,
   resolveApprovalSchema,
+  withdrawApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -3268,6 +3269,18 @@ registry.registerPath({
   summary: "List issues linked to an approval",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/withdraw",
+  tags: ["approvals"],
+  summary: "Withdraw a pending approval",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(withdrawApprovalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

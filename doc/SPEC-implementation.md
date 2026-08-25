@@ -312,11 +312,14 @@ Invariant: each event must attach to agent and company; rollups are aggregation,
 - `type` enum: `hire_agent | approve_ceo_strategy | budget_override_required | request_board_approval`
 - `requested_by_agent_id` uuid fk `agents.id` null
 - `requested_by_user_id` uuid fk `users.id` null
-- `status` enum: `pending | revision_requested | approved | rejected | cancelled`
+- `status` enum: `pending | revision_requested | approved | rejected | cancelled | withdrawn`
 - `payload` jsonb not null
 - `decision_note` text null
 - `decided_by_user_id` uuid fk `users.id` null
 - `decided_at` timestamptz null
+- `withdrawn_by_agent_id` uuid fk `agents.id` null
+- `withdrawn_by_user_id` uuid/text fk `users.id` null
+- `withdrawn_at` timestamptz null
 
 ## 7.11 `activity_log`
 
@@ -526,7 +529,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 
 ## 8.3 Approval Status
 
-- `pending -> approved | rejected | cancelled`
+- `pending -> approved | rejected | cancelled | withdrawn`
 - terminal after decision
 
 ## 9. Auth and Permissions
@@ -1074,6 +1077,7 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 - `POST /companies/:companyId/approvals`
 - `POST /approvals/:approvalId/approve`
 - `POST /approvals/:approvalId/reject`
+- `POST /approvals/:approvalId/withdraw`
 
 ## 10.8 Cost and Budgets
 
