@@ -1748,6 +1748,79 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
   });
 
+  it("treats concurrent review recovery retries as one idempotent dispatch", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "blocked",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "execution_review_participant_recovery",
+      fingerprint: "review-participant:concurrent",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Restore the pending review participant.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    let dispatchesStarted = 0;
+    let releaseDispatches: () => void = () => {};
+    const bothDispatchesStarted = new Promise<void>((resolve) => {
+      releaseDispatches = resolve;
+    });
+    const enqueueRecoveryActionWakeup = vi.fn(async (agentId: string, options: { idempotencyKey?: string }) => {
+      dispatchesStarted += 1;
+      if (dispatchesStarted === 2) releaseDispatches();
+      await bothDispatchesStarted;
+      const [wake] = await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        reason: "execution_review_requested",
+        status: "queued",
+        idempotencyKey: options.idempotencyKey,
+      }).returning();
+      return { id: wake.id } as never;
+    });
+    const app = createApp(undefined, { recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup });
+    const payload = {
+      actionId: action.id,
+      outcome: "restored",
+      sourceIssueStatus: "in_review",
+      resolutionNote: "Review participant can run again.",
+    };
+
+    const [first, second] = await Promise.all([
+      request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(payload),
+      request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(payload),
+    ]);
+
+    expect([first.status, second.status]).toEqual([200, 200]);
+    expect(first.body.issue.activeRecoveryAction).toBeNull();
+    expect(second.body.issue.activeRecoveryAction).toBeNull();
+    const matchingWakes = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.idempotencyKey, `recovery-action:${action.id}:execution-participant`),
+    ));
+    expect(matchingWakes).toHaveLength(1);
+  });
+
   it("keeps review recovery visible when participant dispatch is not queued", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();

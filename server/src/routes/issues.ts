@@ -7046,7 +7046,7 @@ export function issueRoutes(
       }
 
       const idempotencyKey = `recovery-action:${result.recoveryAction.id}:execution-participant`;
-      const existingLiveWake = await db
+      const findLiveWake = () => db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
         .where(and(
@@ -7056,27 +7056,43 @@ export function issueRoutes(
         ))
         .limit(1)
         .then((rows) => rows[0] ?? null);
+      let liveWake = await findLiveWake();
+      let dispatchConfirmed = Boolean(liveWake);
 
-      if (!existingLiveWake) {
-        const queuedRun = await enqueueRecoveryActionWakeup(executionStageWakeup.agentId, {
-          ...executionStageWakeup.wakeup,
-          idempotencyKey,
-          payload: {
-            ...executionStageWakeup.wakeup.payload,
-            recoveryActionId: result.recoveryAction.id,
-            mutation: "recovery_action_resolution",
-          },
-        });
-        if (!queuedRun) {
-          throw conflict("Review participant dispatch was not queued; recovery action remains active", {
-            code: "recovery_review_participant_dispatch_not_queued",
-            issueId: result.issue.id,
-            recoveryActionId: result.recoveryAction.id,
+      if (!dispatchConfirmed) {
+        try {
+          const queuedRun = await enqueueRecoveryActionWakeup(executionStageWakeup.agentId, {
+            ...executionStageWakeup.wakeup,
+            idempotencyKey,
+            payload: {
+              ...executionStageWakeup.wakeup.payload,
+              recoveryActionId: result.recoveryAction.id,
+              mutation: "recovery_action_resolution",
+            },
           });
+          dispatchConfirmed = Boolean(queuedRun);
+        } catch (error) {
+          if (!isUniqueViolation(error, "agent_wakeup_requests_recovery_action_dispatch_idempotency_uq")) {
+            throw error;
+          }
+          // A concurrent retry won the DB-enforced dispatch race. Re-read its
+          // wake before resolving the shared recovery action.
+        }
+        if (!dispatchConfirmed) {
+          liveWake = await findLiveWake();
+          dispatchConfirmed = Boolean(liveWake);
         }
       }
 
-      const resolvedRecoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+      if (!dispatchConfirmed) {
+        throw conflict("Review participant dispatch was not queued; recovery action remains active", {
+          code: "recovery_review_participant_dispatch_not_queued",
+          issueId: result.issue.id,
+          recoveryActionId: result.recoveryAction.id,
+        });
+      }
+
+      let resolvedRecoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
         companyId: existing.companyId,
         sourceIssueId: existing.id,
         actionId: result.recoveryAction.id,
@@ -7084,7 +7100,25 @@ export function issueRoutes(
         outcome,
         resolutionNote: resolutionNote ?? null,
       });
-      if (!resolvedRecoveryAction) throw notFound("Active recovery action not found");
+      if (!resolvedRecoveryAction) {
+        const concurrentlyResolvedAction = await recoveryActionsSvc.getForIssue(
+          existing.companyId,
+          existing.id,
+          result.recoveryAction.id,
+        );
+        if (
+          !concurrentlyResolvedAction ||
+          !["resolved", "cancelled"].includes(concurrentlyResolvedAction.status) ||
+          !(await findLiveWake())
+        ) {
+          throw conflict("Review participant dispatch was not queued; recovery action remains active", {
+            code: "recovery_review_participant_dispatch_not_queued",
+            issueId: result.issue.id,
+            recoveryActionId: result.recoveryAction.id,
+          });
+        }
+        resolvedRecoveryAction = concurrentlyResolvedAction;
+      }
       result = { ...result, recoveryAction: resolvedRecoveryAction };
     }
 
