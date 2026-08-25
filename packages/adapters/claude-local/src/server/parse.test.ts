@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
+  createClaudeSessionObservedStdoutTracker,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -553,5 +554,61 @@ describe("parseClaudeStreamJson usage extraction", () => {
       cachedInputTokens: 20,
     });
     expect(parsed.usageBasis).toBe("per_run");
+  });
+});
+
+describe("createClaudeSessionObservedStdoutTracker", () => {
+  it("calls onSessionObserved exactly once with the session id from the init event", async () => {
+    const observed: string[] = [];
+    const tracker = createClaudeSessionObservedStdoutTracker(async (meta) => {
+      observed.push(meta.sessionId);
+    });
+
+    await tracker.feed(
+      `{"type":"system","subtype":"init","session_id":"abc123"}\n`,
+    );
+
+    expect(observed).toEqual(["abc123"]);
+  });
+
+  it("does not re-call onSessionObserved for a second session_id line", async () => {
+    const observed: string[] = [];
+    const tracker = createClaudeSessionObservedStdoutTracker(async (meta) => {
+      observed.push(meta.sessionId);
+    });
+
+    await tracker.feed(`{"type":"system","subtype":"init","session_id":"abc123"}\n`);
+    await tracker.feed(`{"type":"system","subtype":"init","session_id":"def456"}\n`);
+    await tracker.feed(`{"type":"assistant","session_id":"ghi789"}\n`);
+
+    expect(observed).toEqual(["abc123"]);
+  });
+
+  it("buffers a session_id line split across multiple stdout chunks", async () => {
+    const observed: string[] = [];
+    const tracker = createClaudeSessionObservedStdoutTracker(async (meta) => {
+      observed.push(meta.sessionId);
+    });
+
+    const line = `{"type":"system","subtype":"init","session_id":"split-session"}\n`;
+    const mid = Math.floor(line.length / 2);
+    await tracker.feed(line.slice(0, mid));
+    await tracker.feed(line.slice(mid));
+
+    expect(observed).toEqual(["split-session"]);
+  });
+
+  it("ignores non-init system events and non-JSON lines", async () => {
+    const observed: string[] = [];
+    const tracker = createClaudeSessionObservedStdoutTracker(async (meta) => {
+      observed.push(meta.sessionId);
+    });
+
+    await tracker.feed("not json\n");
+    await tracker.feed(`{"type":"system","subtype":"hook_started","session_id":"nope"}\n`);
+    expect(observed).toEqual([]);
+
+    await tracker.feed(`{"type":"system","subtype":"init","session_id":"real-session"}\n`);
+    expect(observed).toEqual(["real-session"]);
   });
 });

@@ -9,6 +9,7 @@ import {
   activityLog,
   agents,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   authUsers,
   budgetPolicies,
@@ -415,6 +416,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(activityLog);
       await db.delete(heartbeatRunEvents);
+      // agent_task_sessions.last_run_id FK-references heartbeat_runs; clear it
+      // first so a mid-run session persisted by the process-lost mid-run
+      // session-observed wiring never blocks the heartbeat_runs teardown below.
+      await db.delete(agentTaskSessions);
       try {
         await db.delete(heartbeatRuns);
         break;
@@ -1332,6 +1337,123 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("persists a mid-run observed session id so a process-lost retry resumes instead of restarting from zero", async () => {
+    // Regression test: previously `upsertTaskSession` was only
+    // reachable after the adapter returned a result (see the terminal write
+    // in heartbeat.ts), so a process killed mid-run (SIGKILL/OOM/cgroup
+    // sweep) never persisted a task-session row, and the automatic
+    // process_lost retry always resumed with `sessionIdBefore: null` —
+    // losing all accumulated context. This test must fail on unmodified
+    // master (no `onSessionObserved` wiring) because the task-session row
+    // and the retry's `sessionIdBefore` would both be absent/null.
+    const observedSessionId = "claude-session-mid-run-observed";
+    let releaseAdapter: (() => void) | null = null;
+    const adapterObservedSession = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+        const input = rawInput as {
+          onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+          onSessionObserved?: (meta: { sessionId: string }) => Promise<void>;
+        };
+        const child = spawnAliveProcess();
+        childProcesses.add(child);
+        if (!child.pid) throw new Error("Test child did not expose a pid");
+        await input.onSpawn?.({
+          pid: child.pid,
+          processGroupId: null,
+          startedAt: new Date("2026-03-19T00:00:00.000Z").toISOString(),
+        });
+        // The adapter observes its session id early in the run, well before
+        // it would ever return an AdapterExecutionResult.
+        await input.onSessionObserved?.({ sessionId: observedSessionId });
+        resolve();
+        // Simulate the run staying alive (mid-turn) until it is killed from
+        // outside this test, exactly like the real SIGKILL/OOM scenario: the
+        // adapter's returned promise never settles here.
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "unreachable in this test — the process is reaped before this would resolve",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await Promise.race([
+      adapterObservedSession,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Timed out waiting for adapter to observe a session id")), 3_000);
+      }),
+    ]);
+
+    // The mid-run write must already be visible while the run is still
+    // "running" — before any retry/kill machinery ever runs.
+    const taskSession = await waitForValue(async () =>
+      db
+        .select()
+        .from(agentTaskSessions)
+        .where(
+          and(
+            eq(agentTaskSessions.companyId, companyId),
+            eq(agentTaskSessions.agentId, agentId),
+            eq(agentTaskSessions.taskKey, issueId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    );
+    expect(taskSession).toMatchObject({ sessionDisplayId: observedSessionId });
+    expect(taskSession?.sessionParamsJson).toMatchObject({ sessionId: observedSessionId });
+
+    const runBeforeLoss = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(runBeforeLoss?.status).toBe("running");
+
+    // Simulate the process being lost mid-run: this drains the still-"running"
+    // run and hands it to the same process-loss retry path
+    // (`enqueueProcessLossRetry`) that `reapOrphanedRuns` uses at startup
+    // reconciliation, exercising `resolveSessionBeforeForWakeup` against the
+    // row the mid-run write above just created.
+    const drain = await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:05:00.000Z"),
+    );
+    expect(drain.interruptedRunIds).toEqual([runId]);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows[0] ?? null);
+
+    expect(retryRun).toBeTruthy();
+    expect(retryRun?.contextSnapshot).toMatchObject({ retryReason: "process_lost" });
+    // The crux of the fix: without the mid-run `onSessionObserved` write above,
+    // `sessionIdBefore` would be null here and the retry would start from zero.
+    expect(retryRun?.sessionIdBefore).toBe(observedSessionId);
+
+    if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
+    releaseAdapter();
+    await waitForRunToSettle(heartbeat, runId, 5_000).catch(() => null);
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {

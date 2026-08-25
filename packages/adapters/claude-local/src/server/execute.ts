@@ -60,6 +60,7 @@ import {
 import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
+  createClaudeSessionObservedStdoutTracker,
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -412,6 +413,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  // Build a fresh mid-run session-observed tracker for each attempt (not once
+  // for the whole run): a poisoned-session retry starts a brand new Claude
+  // session with its own `init` event, and a tracker shared across attempts
+  // would have already latched onto the first (now-discarded) session and
+  // ignore the replacement's init event, leaving recovery pointed at the
+  // poisoned session if the retry process is then lost. Each attempt's own
+  // tracker still fires `onSessionObserved` at most once for that attempt.
+  const createOnProcessLog = () => {
+    const sessionObservedTracker = ctx.onSessionObserved
+      ? createClaudeSessionObservedStdoutTracker(ctx.onSessionObserved)
+      : null;
+    return sessionObservedTracker
+      ? async (stream: "stdout" | "stderr", chunk: string) => {
+          if (stream === "stdout") await sessionObservedTracker.feed(chunk);
+          await onLog(stream, chunk);
+        }
+      : onLog;
+  };
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -886,6 +905,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const onProcessLog = createOnProcessLog();
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
     const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
     const commandNotes: string[] = [];
@@ -929,7 +949,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
-      onLog,
+      onLog: onProcessLog,
       runLogTail: paperclipBridge?.runLogTail,
       settleRunDisposition: paperclipBridge?.settleRunDisposition,
       terminalResultCleanup: {
