@@ -3075,8 +3075,12 @@ describe("sandbox callback bridge", () => {
 
     const newlineIndex = firstBytes.indexOf(0x0a);
     expect(newlineIndex).toBeGreaterThan(0);
+    // Assert the exact UTF-8 bytes, not a parsed-and-matched object.
+    // `JSON.stringify` writes keys in the object-literal insertion order, so a
+    // reordered or reformatted call site at the gateway's one `writeFrame` call
+    // would change the bytes on the wire without failing a looser assertion.
     const readyLine = firstBytes.subarray(0, newlineIndex).toString("utf8");
-    expect(JSON.parse(readyLine)).toMatchObject({ type: "ready", nonce });
+    expect(readyLine).toBe(`{"version":2,"type":"ready","nonce":"${nonce}"}`);
     const afterReady = firstBytes.subarray(newlineIndex + 1, newlineIndex + 1 + preface.length);
     expect(afterReady).toEqual(preface);
   }, 15_000);

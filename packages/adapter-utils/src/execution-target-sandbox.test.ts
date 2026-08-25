@@ -6,7 +6,6 @@ import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -45,7 +44,6 @@ import {
 } from "./acpx-engine/startup-timing.js";
 import {
   DuplexAggregateByteLedger,
-  DUPLEX_AGGREGATE_TOKEN_OWNERS,
   DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
 } from "./duplex-aggregate-byte-ledger.js";
 import { createSandboxRunLogTailFactory, type SandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
@@ -54,11 +52,9 @@ import { shellQuote } from "./ssh.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 import {
   DEFAULT_MAX_DUPLEX_FRAME_BYTES,
-  DuplexFrameDecoder,
   DUPLEX_FRAME_VERSION,
   decodeDuplexLine,
   encodeDuplexFrame,
-  type DuplexResponseFrame,
 } from "./duplex-frame-codec.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "./bridge-transport-contract.js";
 import {
@@ -3064,7 +3060,6 @@ describe("sandbox adapter execution targets", () => {
   // what the broker wrote back through it.
   interface DuplexSelectionControl {
     openCount: number;
-    written: DuplexResponseFrame[];
     writtenTypes: string[];
     stopCount: number;
     closeCount: number;
@@ -3095,7 +3090,6 @@ describe("sandbox adapter execution targets", () => {
     const base = createLocalSandboxRunner();
     const control: DuplexSelectionControl = {
       openCount: 0,
-      written: [],
       writtenTypes: [],
       stopCount: 0,
       closeCount: 0,
@@ -3115,7 +3109,6 @@ describe("sandbox adapter execution targets", () => {
           const decoded = decodeDuplexLine(Buffer.from(data).toString("utf8").replace(/\n$/, ""));
           if (decoded.ok) {
             control.writtenTypes.push(decoded.frame.type);
-            if (decoded.frame.type === "response") control.written.push(decoded.frame);
           }
         },
         onData(listener: (chunk: Uint8Array) => void): void {
@@ -5797,6 +5790,46 @@ describe("sandbox adapter execution targets", () => {
     expect(mode).toBe("http2_v1");
   }, 20000);
 
+  // Case 5: a version-2 line that once decoded as a `request` envelope frame
+  // now decodes as `unknown_type`, because the codec no longer validates that
+  // frame type. The gate treats it the same as any other non-READY line: skip
+  // it and keep scanning. This holds for both a bare line (the frame starts at
+  // offset 0, so the leading-prefix retry never runs) and a line where noise
+  // comes before the frame on the same line (the retry runs, decodes the frame
+  // part, and still does not find a READY type). Either way the valid READY
+  // line that follows still authenticates.
+  it("PTY replay: accepts READY after a bare and a prefixed former-frame line", async () => {
+    const { mode } = await runReadinessReplay((ctx) => {
+      const formerFrame =
+        '{"version":2,"type":"request","id":"r-1","method":"GET","path":"/","query":"","headers":{},"bodyByteCount":0}';
+      ctx.emitRaw(`${formerFrame}\n`);
+      // No newline between the prompt prefix and the former-frame line: same line.
+      ctx.emitRaw(`prompt$ ${formerFrame}\n`);
+      ctx.emitRaw('{"version":2,"type":"ready","nonce":"' + ctx.nonce + '"}\n');
+      ctx.connectHttp2();
+    });
+    expect(mode).toBe("http2_v1");
+  }, 20000);
+
+  // Case 6: three lines the gate must reject without ending the handshake — a
+  // wrong-version READY-shaped line, a READY line with a smuggled extra field,
+  // and a same-line second-frame smuggling attempt (no newline between the two
+  // JSON values, so the whole line fails to parse as one JSON value). Each one
+  // fails the strict decode and the gate skips it, the same as any other
+  // pre-READY noise; the valid READY line that follows still authenticates.
+  it("PTY replay: accepts READY after a wrong-version, an extra-field, and a same-line smuggling attempt", async () => {
+    const { mode } = await runReadinessReplay((ctx) => {
+      ctx.emitRaw(`{"version":1,"type":"ready","nonce":"${ctx.nonce}"}\n`);
+      ctx.emitRaw(`{"version":2,"type":"ready","nonce":"${ctx.nonce}","address":"http://127.0.0.1:1"}\n`);
+      ctx.emitRaw(
+        `{"version":2,"type":"ready","nonce":"${ctx.nonce}"}{"version":2,"type":"ready","nonce":"${ctx.nonce}"}\n`,
+      );
+      ctx.emitRaw(`{"version":2,"type":"ready","nonce":"${ctx.nonce}"}\n`);
+      ctx.connectHttp2();
+    });
+    expect(mode).toBe("http2_v1");
+  }, 20000);
+
   it("test_the_session_starts_at_the_client_preface_after_the_ready_line", async () => {
     // The gate retains every byte after the accepted READY line, and the host
     // starts the HTTP/2 session at the client preface offset inside that
@@ -5922,223 +5955,37 @@ describe("sandbox adapter execution targets", () => {
 
 });
 
-// One decode result from the embedded codec. The shape mirrors the host codec:
-// a valid frame or a protocol error with a code.
-interface EmbeddedDecodeResult {
-  ok: boolean;
-  frame?: unknown;
-  error?: { code: string; message: string };
-}
-
 // The names the embedded codec source declares. A test wraps the source and
-// reads these names back.
-type EmbeddedEncodeResult =
-  | { ok: true; line: string }
-  | { ok: false; error: { code: string; message: string } };
-
+// reads these names back. The generated gateway never decodes, so the embedded
+// copy declares only the frame version and the encode function.
 interface EmbeddedCodec {
   encodeDuplexFrame: (frame: unknown) => string;
-  encodeDuplexFrameChecked: (frame: unknown, maxFrameBytes?: number) => EmbeddedEncodeResult;
-  decodeDuplexLine: (line: string | Buffer) => EmbeddedDecodeResult;
-  DuplexFrameDecoder: new (options?: { maxFrameBytes?: number; maxAggregateBytes?: number }) => {
-    push: (chunk: Buffer) => EmbeddedDecodeResult[];
-    scope: string;
-    bytesInUse: number;
-    aggregateRejections: number;
-  };
   DUPLEX_FRAME_VERSION: number;
-  DEFAULT_MAX_DUPLEX_FRAME_BYTES: number;
-  DUPLEX_DECODER_SCOPE: string;
-  DEFAULT_MAX_DUPLEX_DECODER_BYTES: number;
-}
-
-type ExpectedVectorResult = { frame: unknown } | { error: string };
-
-interface DuplexFrameVector {
-  name: string;
-  category: string;
-  bytes: string;
-  splitByteOffsets?: number[];
-  maxFrameBytes?: number;
-  roundTrip?: boolean;
-  expected: ExpectedVectorResult[];
-}
-
-interface DuplexEncodeVector {
-  name: string;
-  maxFrameBytes: number;
-  frame: unknown;
-  expected: { ok: true } | { ok: false; error: string };
-}
-
-interface DuplexFrameFixture {
-  frameVersion: number;
-  defaultMaxFrameBytes: number;
-  vectors: DuplexFrameVector[];
-  encodeVectors: DuplexEncodeVector[];
 }
 
 // This describe block covers the zero-dependency codec every generated
-// gateway embeds (`DUPLEX_GATEWAY_CODEC_SOURCE`), and the sandbox-process
-// decoder byte cap. The `http2_v1` gateway embeds the same codec source to
-// send its one READY line, so this coverage stays live for the active
-// transport.
+// gateway embeds (`DUPLEX_GATEWAY_CODEC_SOURCE`). The `http2_v1` gateway
+// embeds this same codec source to send its one READY line, so this coverage
+// stays live for the active transport.
 describe("embedded sandbox gateway codec", () => {
-  it("embedded gateway codec passes every vector in the shared fixture", async () => {
+  it("encodes the READY frame to the exact byte-for-byte wire format", () => {
+    // `JSON.stringify` writes object keys in insertion order, so this pins the
+    // exact key order the gateway writes: version, then type, then nonce. A
+    // reordered or reformatted call site would change the bytes on the wire
+    // without failing a looser, parse-then-compare assertion.
     const codecFactory = new Function(
-      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, encodeDuplexFrameChecked, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES, DUPLEX_DECODER_SCOPE, DEFAULT_MAX_DUPLEX_DECODER_BYTES };`,
+      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, DUPLEX_FRAME_VERSION };`,
     ) as unknown as () => EmbeddedCodec;
     const codec = codecFactory();
 
-    const fixturePath = fileURLToPath(new URL("./duplex-frame-vectors.json", import.meta.url));
-    const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as DuplexFrameFixture;
+    expect(codec.DUPLEX_FRAME_VERSION).toBe(DUPLEX_FRAME_VERSION);
+    const nonce = "fixed-test-nonce";
+    const encoded = codec.encodeDuplexFrame({ version: codec.DUPLEX_FRAME_VERSION, type: "ready", nonce });
+    expect(encoded).toBe(`{"version":2,"type":"ready","nonce":"${nonce}"}\n`);
 
-    expect(fixture.frameVersion).toBe(codec.DUPLEX_FRAME_VERSION);
-    expect(fixture.defaultMaxFrameBytes).toBe(codec.DEFAULT_MAX_DUPLEX_FRAME_BYTES);
-    expect(fixture.vectors.length).toBeGreaterThanOrEqual(22);
-
-    const failures: string[] = [];
-    for (const vector of fixture.vectors) {
-      const decoder = new codec.DuplexFrameDecoder(
-        vector.maxFrameBytes ? { maxFrameBytes: vector.maxFrameBytes } : undefined,
-      );
-      const buffer = Buffer.from(vector.bytes, "utf8");
-      const offsets = vector.splitByteOffsets;
-      const bounds =
-        offsets && offsets.length > 0 ? [0, ...offsets, buffer.length] : [0, buffer.length];
-      const results: EmbeddedDecodeResult[] = [];
-      for (let index = 0; index < bounds.length - 1; index += 1) {
-        results.push(...decoder.push(buffer.subarray(bounds[index], bounds[index + 1])));
-      }
-
-      if (results.length !== vector.expected.length) {
-        failures.push(`${vector.name}: got ${results.length} results, want ${vector.expected.length}`);
-        continue;
-      }
-      vector.expected.forEach((want, index) => {
-        const got = results[index];
-        if ("frame" in want) {
-          if (!got.ok) {
-            failures.push(`${vector.name}[${index}]: expected a frame, got an error`);
-            return;
-          }
-          try {
-            expect(got.frame).toEqual(want.frame);
-          } catch {
-            failures.push(`${vector.name}[${index}]: frame does not match`);
-          }
-        } else {
-          if (got.ok) {
-            failures.push(`${vector.name}[${index}]: expected an error, got a frame`);
-            return;
-          }
-          if (got.error?.code !== want.error) {
-            failures.push(`${vector.name}[${index}]: error ${got.error?.code} != ${want.error}`);
-          }
-        }
-      });
-    }
-    expect(failures).toEqual([]);
-
-    // The encode side stays wire compatible too: one line, one newline, and the
-    // same frame after a decode round trip.
-    for (const vector of fixture.vectors.filter((entry) => entry.roundTrip)) {
-      const want = vector.expected[0];
-      if (!("frame" in want)) continue;
-      const encoded = codec.encodeDuplexFrame(want.frame);
-      expect(encoded.endsWith("\n")).toBe(true);
-      expect(encoded.slice(0, -1)).not.toContain("\n");
-      const decoded = codec.decodeDuplexLine(encoded.slice(0, -1));
-      expect(decoded.ok).toBe(true);
-      expect(decoded.frame).toEqual(want.frame);
-    }
-
-    // The embedded copy enforces the same encode bound as the host copy. It runs
-    // every shared encode vector and matches the expected result, so both copies
-    // reject the same oversized frame with the same `frame_too_large` code.
-    expect(fixture.encodeVectors.length).toBeGreaterThanOrEqual(3);
-    const encodeFailures: string[] = [];
-    for (const vector of fixture.encodeVectors) {
-      const result = codec.encodeDuplexFrameChecked(vector.frame, vector.maxFrameBytes);
-      if (result.ok !== vector.expected.ok) {
-        encodeFailures.push(`${vector.name}: ok=${result.ok}, want ${vector.expected.ok}`);
-        continue;
-      }
-      if (result.ok) {
-        if (!result.line.endsWith("\n") || result.line.slice(0, -1).includes("\n")) {
-          encodeFailures.push(`${vector.name}: line is not exactly one frame line`);
-          continue;
-        }
-        const decoded = codec.decodeDuplexLine(result.line.slice(0, -1));
-        if (!decoded.ok) {
-          encodeFailures.push(`${vector.name}: an ok encode did not decode back`);
-          continue;
-        }
-        try {
-          expect(decoded.frame).toEqual(vector.frame);
-        } catch {
-          encodeFailures.push(`${vector.name}: decoded frame does not match`);
-        }
-      } else if (!vector.expected.ok && result.error.code !== vector.expected.error) {
-        encodeFailures.push(`${vector.name}: error ${result.error.code} != ${vector.expected.error}`);
-      }
-    }
-    expect(encodeFailures).toEqual([]);
-  });
-
-  it("bounds the sandbox decoder with a separate sandbox_process scope, distinct from the host ledger scope", () => {
-    // The generated gateway runs in a separate operating-system process, so its
-    // decoder cannot share the host aggregate byte ledger. It enforces a separate
-    // local cap under the `sandbox_process` scope. This test wraps the embedded
-    // source and the host decoder, then proves the two scopes never overlap and the
-    // sandbox cap fails closed.
-    const codecFactory = new Function(
-      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES, DUPLEX_DECODER_SCOPE, DEFAULT_MAX_DUPLEX_DECODER_BYTES };`,
-    ) as unknown as () => EmbeddedCodec;
-    const codec = codecFactory();
-
-    // The sandbox scope is the fixed `sandbox_process` label.
-    expect(codec.DUPLEX_DECODER_SCOPE).toBe("sandbox_process");
-    expect(codec.DEFAULT_MAX_DUPLEX_DECODER_BYTES).toBeGreaterThan(codec.DEFAULT_MAX_DUPLEX_FRAME_BYTES);
-    // The two scopes are distinct: the host owner set never carries the sandbox
-    // scope, so the sandbox counter can never map to a host aggregate token.
-    expect((DUPLEX_AGGREGATE_TOKEN_OWNERS as readonly string[]).includes("sandbox_process")).toBe(false);
-
-    // The sandbox decoder tracks its own `sandbox_process` counter. A frame under
-    // the cap charges the local counter, and the counter returns to zero once the
-    // frame drains.
-    const sandboxDecoder = new codec.DuplexFrameDecoder({ maxAggregateBytes: 64 });
-    expect(sandboxDecoder.scope).toBe("sandbox_process");
-    const partial = sandboxDecoder.push(Buffer.from('{"version":1,', "utf8"));
-    expect(partial).toEqual([]);
-    expect(sandboxDecoder.bytesInUse).toBe(Buffer.byteLength('{"version":1,', "utf8"));
-    sandboxDecoder.push(Buffer.from('"type":"heartbeat"}\n', "utf8"));
-    expect(sandboxDecoder.bytesInUse).toBe(0);
-
-    // A chunk over the local cap fails closed. The decoder retains nothing, reports
-    // the aggregate rejection, and increments only its local `sandbox_process`
-    // counter.
-    const cappedDecoder = new codec.DuplexFrameDecoder({ maxAggregateBytes: 8 });
-    const overCap = cappedDecoder.push(Buffer.from("x".repeat(64), "utf8"));
-    expect(overCap.length).toBe(1);
-    const rejection = overCap[0];
-    expect(rejection.ok).toBe(false);
-    expect(rejection.error?.code).toBe("aggregate_bytes_exceeded");
-    expect(cappedDecoder.bytesInUse).toBe(0);
-    expect(cappedDecoder.aggregateRejections).toBe(1);
-
-    // The host decoder charges the host aggregate byte ledger under the
-    // `decoder_buffer` owner. It never uses the sandbox scope. This proves the two
-    // implementations use distinct scopes: the host uses the injected ledger; the
-    // sandbox uses its local counter.
-    const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 1024 });
-    const hostDecoder = new DuplexFrameDecoder({ aggregateByteLedger: ledger });
-    hostDecoder.push(Buffer.from('{"version":1,', "utf8"));
-    expect(ledger.bytesInUse).toBe(Buffer.byteLength('{"version":1,', "utf8"));
-    expect(ledger.liveTokenCount).toBeGreaterThan(0);
-    hostDecoder.dispose();
-    expect(ledger.bytesInUse).toBe(0);
-    expect(ledger.liveTokenCount).toBe(0);
+    // The host encode side produces the same bytes for the same frame, so the
+    // two copies stay wire compatible on the one frame the gateway still sends.
+    expect(encoded).toBe(encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "ready", nonce }));
   });
 });
 
