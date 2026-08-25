@@ -1,10 +1,20 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { createContext, useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { ChevronDown, GripHorizontal, Maximize2, Minimize2, X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+
+export type PropertiesPanelHost = "mobile" | "desktop";
+
+/**
+ * The responsive panel renders both hosts and relies on CSS to show the
+ * appropriate one. Content that has host-specific layout (such as the task
+ * properties tab strip) needs to know which host it is rendering in so a
+ * hidden mobile copy cannot portal into the visible desktop header.
+ */
+export const PropertiesPanelHostContext = createContext<PropertiesPanelHost | null>(null);
 
 // ------------------------------------------------------------------
 // Mobile bottom-sheet heights (as percentages of viewport height)
@@ -161,7 +171,11 @@ function MobilePropertiesSheet() {
 
         {/* Content */}
         <ScrollArea className="flex-1 overflow-hidden" style={{ height: "calc(100% - 80px)" }}>
-          <div className="p-4">{panelContent}</div>
+          <div className="p-4">
+            <PropertiesPanelHostContext.Provider value="mobile">
+              {panelContent}
+            </PropertiesPanelHostContext.Provider>
+          </div>
         </ScrollArea>
       </div>
     </>
@@ -191,7 +205,11 @@ function DesktopPropertiesPane() {
             </Button>
           </div>
           <ScrollArea className="flex-1">
-            <div className="p-4">{panelContent}</div>
+            <div className="p-4">
+              <PropertiesPanelHostContext.Provider value="desktop">
+                {panelContent}
+              </PropertiesPanelHostContext.Provider>
+            </div>
           </ScrollArea>
         </div>
       </aside>
@@ -553,7 +571,9 @@ function ResizablePropertiesPanel({
               className={cn("p-4", maximized && "mx-auto w-full px-9")}
               style={maximized ? { maxWidth: MAXIMIZED_CONTENT_MAX_WIDTH } : undefined}
             >
-              {panelContent}
+              <PropertiesPanelHostContext.Provider value="desktop">
+                {panelContent}
+              </PropertiesPanelHostContext.Provider>
             </div>
           </ScrollArea>
           <div id={PROPERTIES_PANE_FOOTER_SLOT_ID} className="shrink-0" />

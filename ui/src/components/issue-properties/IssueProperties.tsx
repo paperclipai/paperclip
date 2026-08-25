@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal } from "react-dom";
-import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
+import { PROPERTIES_PANE_HEADER_SLOT_ID, PropertiesPanelHostContext } from "../PropertiesPanel";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -157,7 +157,7 @@ export function IssueProperties({
   childIssues = [],
   onAddSubIssue,
   onUpdate,
-  inline,
+  inline: inlineProp,
   hasActiveRun = false,
   externalObjects,
   externalObjectsLoading,
@@ -166,6 +166,8 @@ export function IssueProperties({
   onCheckMonitorNow,
   checkingMonitorNow = false,
 }: IssuePropertiesProps) {
+  const propertiesPanelHost = useContext(PropertiesPanelHostContext);
+  const inline = inlineProp ?? propertiesPanelHost === "mobile";
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();

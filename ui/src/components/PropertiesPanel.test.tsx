@@ -2,9 +2,10 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { useContext, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PropertiesPanel } from "./PropertiesPanel";
+import { PropertiesPanel, PropertiesPanelHostContext } from "./PropertiesPanel";
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
@@ -30,6 +31,11 @@ vi.mock("../context/PanelContext", () => ({
   }),
 }));
 
+function PanelHostProbe() {
+  const host = useContext(PropertiesPanelHostContext);
+  return <div data-panel-host={host ?? "none"} />;
+}
+
 async function flushReact() {
   for (let index = 0; index < 5; index += 1) {
     await Promise.resolve();
@@ -42,8 +48,11 @@ describe("PropertiesPanel", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
 
-  async function renderPanel({ panelVisible = true }: { panelVisible?: boolean } = {}) {
-    mockPanelState.panelContent = <div data-testid="panel-content">content</div>;
+  async function renderPanel({
+    panelVisible = true,
+    panelContent = <div data-testid="panel-content">content</div>,
+  }: { panelVisible?: boolean; panelContent?: ReactNode } = {}) {
+    mockPanelState.panelContent = panelContent;
     mockPanelState.panelVisible = panelVisible;
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -159,6 +168,13 @@ describe("PropertiesPanel", () => {
       expect(aside!.style.opacity).toBe("0");
       // No grip while hidden.
       expect(aside!.querySelector('[role="separator"]')).toBeNull();
+    });
+
+    it("marks responsive content with the host that owns it", async () => {
+      await renderPanel({ panelContent: <PanelHostProbe /> });
+
+      expect(container.querySelectorAll('[data-panel-host="mobile"]')).toHaveLength(1);
+      expect(container.querySelectorAll('[data-panel-host="desktop"]')).toHaveLength(1);
     });
   });
 });

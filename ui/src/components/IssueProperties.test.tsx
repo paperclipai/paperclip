@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
+import { PROPERTIES_PANE_HEADER_SLOT_ID, PropertiesPanelHostContext } from "./PropertiesPanel";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -538,6 +539,45 @@ describe("IssueProperties", () => {
     });
 
     act(() => root.unmount());
+  });
+
+  it("does not duplicate the desktop tab strip when both responsive panel hosts mount", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableClassicTaskInterface: false,
+    });
+    const headerSlot = document.createElement("div");
+    headerSlot.id = PROPERTIES_PANE_HEADER_SLOT_ID;
+    document.body.appendChild(headerSlot);
+
+    const root = createRoot(container);
+    const panelProps = {
+      issue: createIssue({ workMode: "planning" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    } satisfies ComponentProps<typeof IssueProperties>;
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <PropertiesPanelHostContext.Provider value="mobile">
+            <IssueProperties {...panelProps} />
+          </PropertiesPanelHostContext.Provider>
+          <PropertiesPanelHostContext.Provider value="desktop">
+            <IssueProperties {...panelProps} />
+          </PropertiesPanelHostContext.Provider>
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      const propertiesTriggers = Array.from(headerSlot.querySelectorAll("button"))
+        .filter((button) => button.textContent?.trim() === "Properties");
+      expect(propertiesTriggers).toHaveLength(1);
+    });
+
+    act(() => root.unmount());
+    headerSlot.remove();
   });
 
   it("hides the Priority property row while priority UI is off (PAP-411)", async () => {
