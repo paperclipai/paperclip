@@ -3805,6 +3805,14 @@ const BLOCKED_INBOX_SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
 ] as const;
 const BOARD_ACTION_REQUIRED_TITLE_PREFIX = "BOARD ACTION REQUIRED";
 const BOARD_ACTION_REQUIRED_TITLE_PREFIX_TOKEN = "BOARD ACTION REQUIRED:";
+// TSMC-21543: the operator identity a minted board ask falls back to when no
+// owner is supplied. Matches the seeded local board user in server/src/index.ts.
+const BOARD_ASK_DEFAULT_OWNER_USER_ID = "local-board";
+
+export function isBoardActionRequiredTitle(title: unknown): boolean {
+  return typeof title === "string" &&
+    title.trim().toUpperCase().startsWith(BOARD_ACTION_REQUIRED_TITLE_PREFIX);
+}
 
 type BoardActionRequirement = {
   source: "interaction" | "approval";
@@ -8136,6 +8144,30 @@ export function issueService(db: Db) {
       }
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
+      }
+      // TSMC-21543: a board ask with NO owner is invisible to the operator.
+      //
+      // The Console surfaces an ask from a pending interaction, an approval, or
+      // (since 2026-08-24) a `blocked` issue whose unblock_descriptor is
+      // board-owned. A card merely TITLED "BOARD ACTION REQUIRED", sitting in
+      // `todo` with assigneeAgentId AND assigneeUserId both null, matches none
+      // of them — so it is asked of nobody and seen by nobody, while its
+      // dependents sit correctly `blocked` behind it and look healthy.
+      //
+      // Measured 2026-08-25: 4 such cards, blocking 8 dependents, one of them
+      // (TSMC-21443) blocking 5 on its own.
+      //
+      // Enforced HERE, at the single write path, rather than at the ~5 mint
+      // sites (recovery/service.ts, heartbeat.ts x2, routines.ts,
+      // recovery/successful-run-handoff.ts). Fixing a mint site fixes one
+      // caller; fixing the invariant fixes every caller that exists and every
+      // one added later. An explicit owner of either kind is always respected.
+      if (
+        !data.assigneeAgentId &&
+        !data.assigneeUserId &&
+        isBoardActionRequiredTitle(issueData.title)
+      ) {
+        issueData.assigneeUserId = BOARD_ASK_DEFAULT_OWNER_USER_ID;
       }
       if (data.assigneeAgentId) {
         await assertAssignableAgent(db, companyId, data.assigneeAgentId, { kind: "work" });
