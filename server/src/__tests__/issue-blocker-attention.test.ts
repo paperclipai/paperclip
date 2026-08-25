@@ -862,6 +862,43 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not treat a cancelled blocker's pending approval as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBCA");
+    const parentId = await insertIssue({ companyId, identifier: "PBCA-1", title: "Parent", status: "blocked" });
+    // Cancelling an issue does not cancel an approval already linked to it, so the
+    // approval row stays `pending` and remains resolvable by the board. Resolving it
+    // still cannot move this blocker to `done`, so the parent's edge stays dead and a
+    // human has to clear it — which is what needs_attention means. This matches the
+    // guard master already applies one branch below, where even a human assignee does
+    // not cover a cancelled node (`node.assigneeUserId && node.status !== "cancelled"`).
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBCA-2",
+      title: "Cancelled blocker with a pending approval",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Approve the cancelled blocker's work" },
+    });
+    await db.insert(issueApprovals).values([{ companyId, issueId: blockerId, approvalId }]);
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBCA-2",
+    });
+  });
+
   it("keeps a blocked issue without any blocker at needs_attention", async () => {
     const { companyId } = await createCompany("PBNB");
     const parentId = await insertIssue({ companyId, identifier: "PBNB-1", title: "Blocked with no blocker", status: "blocked" });
