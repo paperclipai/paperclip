@@ -116,28 +116,56 @@ def main() -> int:
         raise SystemExit(f"Unexpected HTTP status output: {result.stdout!r}") from exc
 
     raw = response_path.read_bytes()
+
+    # The endpoint returns the audio bytes DIRECTLY (content-type: audio/mpeg).
+    # It used to return JSON carrying base64 in an "audio" field, and this path
+    # assumed that forever after. The failure was silent and total:
+    # `raw.decode("utf-8")` on a binary body raises UnicodeDecodeError, which is
+    # a SIBLING of JSONDecodeError under ValueError -- not a subclass -- so the
+    # `except json.JSONDecodeError` below never caught it, and every TTS call on
+    # the platform died uncaught (found on TSM-6997, 2026-08-25). Detect the
+    # response shape instead of assuming it; keep the JSON path for error bodies.
+    header_blob = ""
     try:
-        data = json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"xAI TTS returned non-JSON body with status {http_status}: {exc}") from exc
+        header_blob = headers_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    header_says_audio = "content-type: audio/" in header_blob.lower()
+    # ID3 tag, or an MPEG frame sync (11 set bits).
+    magic_says_audio = raw[:3] == b"ID3" or (
+        len(raw) > 1 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0
+    )
 
-    if http_status != 200 or "audio" not in data:
-        raise SystemExit(
-            json.dumps(
-                {
-                    "http_status": http_status,
-                    "error": data.get("error", data),
-                    "response_json": str(response_path),
-                    "headers_path": str(headers_path),
-                },
-                indent=2,
-            ),
-        )
+    if http_status == 200 and (header_says_audio or magic_says_audio):
+        data = {}
+        content_type = "audio/mpeg"
+        args.out.write_bytes(raw)
+    else:
+        try:
+            # ValueError, not json.JSONDecodeError: this also catches UnicodeDecodeError.
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError as exc:
+            raise SystemExit(
+                f"xAI TTS returned an unparseable body with status {http_status}: {exc}"
+            ) from exc
 
-    content_type = data.get("content_type", "audio/mpeg")
-    if content_type != "audio/mpeg":
-        raise SystemExit(f"Unexpected content_type {content_type!r}; expected 'audio/mpeg'")
-    args.out.write_bytes(base64.b64decode(data["audio"]))
+        if http_status != 200 or "audio" not in data:
+            raise SystemExit(
+                json.dumps(
+                    {
+                        "http_status": http_status,
+                        "error": data.get("error", data),
+                        "response_json": str(response_path),
+                        "headers_path": str(headers_path),
+                    },
+                    indent=2,
+                ),
+            )
+
+        content_type = data.get("content_type", "audio/mpeg")
+        if content_type != "audio/mpeg":
+            raise SystemExit(f"Unexpected content_type {content_type!r}; expected 'audio/mpeg'")
+        args.out.write_bytes(base64.b64decode(data["audio"]))
 
     duration_seconds = float(data.get("duration") or 0.0)
     if duration_seconds <= 0:
