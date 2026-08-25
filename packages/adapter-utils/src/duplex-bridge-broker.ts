@@ -699,7 +699,10 @@ export async function createDuplexBridgeBroker(
 
   const writeLine = (line: string): boolean => {
     try {
-      channel.write(line);
+      // The channel carries raw bytes (see `ChannelBytesWireValue` in the plugin
+      // SDK's protocol.ts). Encode the frame's UTF-8 text to bytes at this one
+      // write seam.
+      channel.write(Buffer.from(line, "utf8"));
       return true;
     } catch (error) {
       recordLoss("stream_failure", errorMessage(error));
@@ -1337,7 +1340,7 @@ export async function createDuplexBridgeBroker(
     }
   };
 
-  const onData = (chunk: string): void => {
+  const onData = (chunk: Uint8Array): void => {
     if (stopped) return;
     const results = decoder.push(chunk);
     for (const result of results) {
@@ -1364,7 +1367,7 @@ export async function createDuplexBridgeBroker(
   const sendHeartbeat = (): void => {
     if (state !== "open") return;
     try {
-      channel.write(encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" }));
+      channel.write(Buffer.from(encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" }), "utf8"));
     } catch (error) {
       recordLoss("heartbeat_write_failure", errorMessage(error));
     }
@@ -1387,7 +1390,7 @@ export async function createDuplexBridgeBroker(
       // Send an orderly close frame. Ignore a write failure here; the broker is
       // already closing, so a dead channel needs no loss record.
       try {
-        channel.write(encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "close" }));
+        channel.write(Buffer.from(encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "close" }), "utf8"));
       } catch (error) {
         options.logger?.(`Duplex broker could not send the close frame: ${errorMessage(error)}`);
       }

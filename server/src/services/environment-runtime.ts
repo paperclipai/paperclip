@@ -14,7 +14,7 @@ import type {
   SandboxProviderCapabilities,
 } from "@paperclipai/shared";
 import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
-import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import type {
   CommandManagedDuplexChannel,
 } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -259,7 +259,7 @@ export function classifyEnvironmentCapabilities(input: {
   declared?: Partial<SandboxProviderCapabilities> | null;
   narrowing?: Partial<Record<SandboxCapabilityKey, boolean>> | null;
   supportedCapabilities?: ReadonlySet<SandboxCapabilityKey> | null;
-}): EffectiveSandboxCapabilities {
+}): EffectiveExecutionCapabilities {
   const verifiedMethods = new Set(input.verifiedMethods ?? []);
   const declared = input.declared ?? {};
   const narrowing = input.narrowing ?? {};
@@ -577,6 +577,8 @@ export interface EnvironmentRuntimeDriver {
    * driver whose lease grants the `duplexCommandStream` capability. The driver
    * opens the host-owned duplex route on the plugin worker and adapts it to the
    * cross-layer {@link CommandManagedDuplexChannel}. Other drivers omit it.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
    */
   openDuplexChannel?(
     input: EnvironmentDriverOpenDuplexChannelInput,
@@ -606,7 +608,7 @@ export interface EnvironmentRuntimeDriver {
    * "this driver has no capability model" apart from "this driver is not
    * registered" reads {@link ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT} directly.
    */
-  resolveCapabilities(input: EnvironmentDriverLeaseInput): Promise<EffectiveSandboxCapabilities>;
+  resolveCapabilities(input: EnvironmentDriverLeaseInput): Promise<EffectiveExecutionCapabilities>;
   /**
    * Retry the provider teardown for an orphan sandbox that an earlier acquire
    * provisioned but could not tear down. The pending-cleanup lease row carries
@@ -1137,10 +1139,10 @@ function adaptDuplexChannelHostSession(
   session: DuplexChannelHostSession,
 ): CommandManagedDuplexChannel {
   return {
-    write(data: string): void {
+    write(data: Uint8Array): void {
       session.write(data);
     },
-    onData(listener: (chunk: string) => void): void {
+    onData(listener: (chunk: Uint8Array) => void): void {
       session.onData(listener);
     },
     onExit(listener: (exit: { exitCode: number | null; transportClosed?: boolean }) => void): void {
@@ -2592,7 +2594,7 @@ function createSandboxEnvironmentDriver(
    */
   async function resolveSandboxCapabilitiesForLease(
     input: EnvironmentDriverLeaseInput,
-  ): Promise<EffectiveSandboxCapabilities> {
+  ): Promise<EffectiveExecutionCapabilities> {
     const metadata = input.lease.metadata ?? {};
     const providerKey =
       readString(metadata.provider) ??
@@ -3719,7 +3721,7 @@ export function environmentRuntimeService(
      */
     async resolveCapabilities(
       input: EnvironmentDriverLeaseInput,
-    ): Promise<EffectiveSandboxCapabilities | null> {
+    ): Promise<EffectiveExecutionCapabilities | null> {
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
       if (!driver) return null;
       return await driver.resolveCapabilities(input);

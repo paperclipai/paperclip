@@ -111,7 +111,7 @@ function createFakeChannelHarness(): FakeChannelHarness {
     string,
     { frame: DuplexResponseFrame; received: number; chunks: Buffer[] }
   >();
-  let dataListener: ((chunk: string) => void) | null = null;
+  let dataListener: ((chunk: Uint8Array) => void) | null = null;
 
   const channel: CommandManagedDuplexChannel = {
     write: (data) => {
@@ -152,14 +152,14 @@ function createFakeChannelHarness(): FakeChannelHarness {
     channel,
     feed: ({ frame, bodyText }) => {
       if (!dataListener) throw new Error("The broker did not bind the data listener.");
-      dataListener(encodeDuplexFrame(frame));
+      dataListener(Buffer.from(encodeDuplexFrame(frame), "utf8"));
       if (bodyText.length > 0) {
         const chunks = splitBodyIntoChunkFrames(
           frame.id,
           Buffer.from(bodyText, "utf8"),
           DUPLEX_FRAME_VERSION,
         );
-        for (const chunk of chunks) dataListener(encodeDuplexFrame(chunk));
+        for (const chunk of chunks) dataListener(Buffer.from(encodeDuplexFrame(chunk), "utf8"));
       }
     },
     responses,

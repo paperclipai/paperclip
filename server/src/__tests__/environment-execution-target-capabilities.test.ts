@@ -8,11 +8,11 @@ vi.mock("../services/environment-config.js", () => ({
   resolveEnvironmentDriverConfigForRuntime: mockResolveEnvironmentDriverConfigForRuntime,
 }));
 
-import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 
-const SNAPSHOT: EffectiveSandboxCapabilities = {
+const SNAPSHOT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: false,
@@ -27,7 +27,7 @@ const SNAPSHOT: EffectiveSandboxCapabilities = {
 
 // A snapshot that grants every capability. A test overrides one flag to prove
 // that the removed capability alone changes the runtime decision.
-const FULL_GRANT: EffectiveSandboxCapabilities = {
+const FULL_GRANT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: true,
@@ -42,7 +42,7 @@ const FULL_GRANT: EffectiveSandboxCapabilities = {
 // `supportsSync` result. The helper returns the sandbox target so a test reads
 // the runner and the streaming flag the snapshot gates.
 async function buildSandboxTarget(input: {
-  snapshot: EffectiveSandboxCapabilities | null;
+  snapshot: EffectiveExecutionCapabilities | null;
   supportsSync: boolean;
   config?: Record<string, unknown>;
   // Reject the capability resolution to exercise the fail-closed error path.
@@ -128,7 +128,7 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
 
     // The snapshot is read-only: it is frozen, so a write does not change it.
     expect(Object.isFrozen(target.effectiveCapabilities)).toBe(true);
-    const snapshot = target.effectiveCapabilities as EffectiveSandboxCapabilities;
+    const snapshot = target.effectiveCapabilities as EffectiveExecutionCapabilities;
     try {
       (snapshot as { reusableLeases: boolean }).reusableLeases = false;
     } catch {

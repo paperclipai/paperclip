@@ -36,7 +36,7 @@
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
     "build": "tsc && mkdir -p dist/onboarding-assets dist/built-ins dist/services/scripts && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/ && cp -R src/services/scripts/. dist/services/scripts/ && node scripts/write-build-stamp.mjs",
-    "prepack": "pnpm run prepare:ui-dist",
+    "prepack": "pnpm run prepare:ui-dist && pnpm run build",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",

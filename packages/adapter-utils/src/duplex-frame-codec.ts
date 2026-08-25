@@ -15,6 +15,13 @@
  * The decoder never throws on the read path. A malformed, oversized, or
  * version-mismatch frame becomes a protocol-error result, not an exception. This
  * keeps one bad frame from crashing the read loop.
+ *
+ * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+ * The `http2_v1` host readiness gate imports {@link decodeDuplexLine} from this
+ * file to read the one READY line every gateway sends, so this file's READY
+ * frame path stays live for both transports. `duplex-bridge-broker.ts` and
+ * `duplex-body-spool.ts` still import the request, response, and body-chunk
+ * frame types from this file, so this phase keeps every frame type here.
  */
 
 import {

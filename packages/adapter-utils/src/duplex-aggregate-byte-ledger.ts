@@ -80,6 +80,17 @@ export const MIN_HOST_PROCESS_MEMORY_BYTES_FOR_DUPLEX = 2 * 1024 * 1024 * 1024;
  *     frame decoder charges its own retention. This is a separate retention from
  *     `readiness_buffer`: the gate drops the whole pre-READY buffer on READY, then
  *     charges only the retained suffix and each later pre-bind chunk under this owner.
+ *   - `http2_preface_scan`: the raw untrusted bytes the `http2_v1` preface scan
+ *     retains while it searches for the client connection preface, from the
+ *     readiness-replay handoff until the preface match or the scan cap. This
+ *     is a separate retention from `readiness_replay`: it starts only after
+ *     the readiness gate hands its own retained suffix to the preface scan.
+ *   - `http2_preface_replay`: the bytes the `http2_v1` preface scan holds after the
+ *     client connection preface, from the preface match until the HTTP/2 server
+ *     binds its downstream listener. This is a separate retention from
+ *     `http2_preface_scan`: the scan drops its own buffer on the preface match,
+ *     then charges only the retained suffix and each later pre-bind chunk under
+ *     this owner.
  *   - `pending_write`: the raw host-to-worker write payload a pending duplex write
  *     RPC retains, from the enqueue seam until the RPC settles.
  *   - `stdin_write`: the serialized host-to-worker frame the child-stdin transport
@@ -99,6 +110,8 @@ export const DUPLEX_AGGREGATE_TOKEN_OWNERS = [
   "decoder_buffer",
   "readiness_buffer",
   "readiness_replay",
+  "http2_preface_scan",
+  "http2_preface_replay",
   "pending_write",
   "stdin_write",
 ] as const;

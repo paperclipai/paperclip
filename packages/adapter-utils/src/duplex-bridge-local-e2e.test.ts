@@ -5,7 +5,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { StringDecoder } from "node:string_decoder";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -145,20 +144,15 @@ interface ChildDuplexChannel {
  * writes to the child stdin, reads the child stdout, and learns of the child
  * exit through this channel.
  *
- * The host end reads a byte stream from the stdout pipe. A pipe read can split
- * one multi-byte UTF-8 character across two chunks. The `StringDecoder` holds
- * the bytes of an incomplete character until the next chunk, so the broker only
- * ever reads whole characters. The channel keeps a second decoder for
- * observation only; it lets the harness assert the READY frame and the request
- * frames the child produced, and it never feeds the broker.
+ * The host end forwards each raw stdout chunk unchanged; the channel carries
+ * bytes, so no decode step sits between the pipe and the broker.
  */
 function attachChildDuplexChannel(child: ChildProcessWithoutNullStreams): ChildDuplexChannel {
   const observed = new DuplexFrameDecoder();
   const observedFrames: DuplexFrame[] = [];
-  const stdoutDecoder = new StringDecoder("utf8");
-  let dataListener: ((chunk: string) => void) | null = null;
+  let dataListener: ((chunk: Uint8Array) => void) | null = null;
   let exitListener: ((exit: { exitCode: number | null }) => void) | null = null;
-  let pendingText = "";
+  let pendingBytes: Buffer = Buffer.alloc(0);
   let pendingExit: { exitCode: number | null } | null = null;
   let stderrText = "";
 
@@ -166,10 +160,9 @@ function attachChildDuplexChannel(child: ChildProcessWithoutNullStreams): ChildD
     for (const result of observed.push(buffer)) {
       if (result.ok) observedFrames.push(result.frame);
     }
-    const text = stdoutDecoder.write(buffer);
-    if (text.length === 0) return;
-    if (dataListener) dataListener(text);
-    else pendingText += text;
+    if (buffer.length === 0) return;
+    if (dataListener) dataListener(buffer);
+    else pendingBytes = pendingBytes.length === 0 ? buffer : Buffer.concat([pendingBytes, buffer]);
   });
   child.stderr.on("data", (buffer: Buffer) => {
     stderrText += buffer.toString("utf8");
@@ -189,9 +182,9 @@ function attachChildDuplexChannel(child: ChildProcessWithoutNullStreams): ChildD
     },
     onData: (listener) => {
       dataListener = listener;
-      if (pendingText.length > 0) {
-        const replay = pendingText;
-        pendingText = "";
+      if (pendingBytes.length > 0) {
+        const replay = pendingBytes;
+        pendingBytes = Buffer.alloc(0);
         listener(replay);
       }
     },

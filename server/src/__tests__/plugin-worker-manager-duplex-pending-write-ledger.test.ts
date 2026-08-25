@@ -133,9 +133,10 @@ describe("plugin worker manager duplex pending-write byte ledger", () => {
       const route = await handle.openDuplexChannel(
         duplexOpenInput({ workerSessionId: "ws-a", mode: "no-write-reply" }),
       );
-      route.write(writeData);
-      route.write(writeData);
-      route.write(writeData);
+      const writeBytesEncoded = new TextEncoder().encode(writeData);
+      route.write(writeBytesEncoded);
+      route.write(writeBytesEncoded);
+      route.write(writeBytesEncoded);
       // The worker reads its stdin, so each transport token flushes and releases.
       // Only the three held raw payloads remain, so the gauge settles at three
       // times the payload byte count with three live tokens.
@@ -168,7 +169,7 @@ describe("plugin worker manager duplex pending-write byte ledger", () => {
         duplexOpenInput({ workerSessionId: "ws-d", writeReplyDelayMs: 150 }),
       );
       const writeBytes = 1000;
-      route.write("x".repeat(writeBytes));
+      route.write(new TextEncoder().encode("x".repeat(writeBytes)));
       // The transport token flushes at once, so one raw-payload token stays held for
       // the full write byte count while the RPC is in flight.
       await vi.waitFor(() => {
@@ -201,7 +202,7 @@ describe("plugin worker manager duplex pending-write byte ledger", () => {
       const data = "a€";
       expect(data.length).toBe(2);
       expect(Buffer.byteLength(data, "utf8")).toBe(4);
-      route.write(data);
+      route.write(new TextEncoder().encode(data));
       // The transport token flushes, so one raw-payload token of four bytes remains.
       await vi.waitFor(() => {
         expect(ledger.liveTokenCount).toBe(1);
@@ -232,7 +233,7 @@ describe("plugin worker manager duplex pending-write byte ledger", () => {
       // The single write is larger than the ceiling. The raw-payload reservation
       // fails, so the manager ends the route with the aggregate marker, never the
       // route-busy marker, and never writes the frame.
-      route.write("x".repeat(200));
+      route.write(new TextEncoder().encode("x".repeat(200)));
       expect(telemetry.rejections).toBeGreaterThanOrEqual(1);
       expect(ledger.bytesInUse).toBe(0);
       expect(telemetry.peak).toBeLessThanOrEqual(ledger.ceilingBytes);

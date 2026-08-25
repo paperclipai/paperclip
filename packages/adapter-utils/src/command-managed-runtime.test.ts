@@ -8,10 +8,33 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createCommandManagedRuntimeClient,
   prepareCommandManagedRuntime,
+  type CommandManagedDuplexChannel,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
 import type { SandboxSyncOperation } from "./sandbox-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
+
+/**
+ * An in-memory fake `CommandManagedDuplexChannel`. It holds no real process; a
+ * write echoes straight to the one registered data listener, so a test proves
+ * the channel contract carries a `Uint8Array` chunk with no string coercion in
+ * between. The fake never exits on its own; a test calls the listener it
+ * registers with `onExit` only when it needs one.
+ */
+function createFakeEchoDuplexChannel(): CommandManagedDuplexChannel {
+  let dataListener: ((chunk: Uint8Array) => void) | null = null;
+  return {
+    write(data: Uint8Array): void {
+      dataListener?.(data);
+    },
+    onData(listener: (chunk: Uint8Array) => void): void {
+      dataListener = listener;
+    },
+    onExit(): void {},
+    stop(): void {},
+    close: async (): Promise<void> => {},
+  };
+}
 
 const execFile = promisify(execFileCallback);
 
@@ -1056,5 +1079,23 @@ describe("command managed runtime", () => {
     await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 })).rejects.toThrow(
       /stdout: tar: workspace-download\.tar: Cannot open: Permission denied/,
     );
+  });
+
+  it("test_channel_round_trips_all_byte_values", () => {
+    const channel = createFakeEchoDuplexChannel();
+    const allByteValues = Uint8Array.from({ length: 256 }, (_, value) => value);
+    const received: Uint8Array[] = [];
+    channel.onData((chunk) => {
+      received.push(chunk);
+    });
+
+    channel.write(allByteValues);
+
+    expect(received).toHaveLength(1);
+    // A byte value of zero must survive. A UTF-8 string channel loses it: a
+    // JavaScript string can hold the code point U+0000, but a C-style consumer
+    // downstream of a string channel often treats it as a terminator.
+    expect(received[0]).toEqual(allByteValues);
+    expect(Array.from(received[0] ?? [])).toEqual(Array.from({ length: 256 }, (_, value) => value));
   });
 });

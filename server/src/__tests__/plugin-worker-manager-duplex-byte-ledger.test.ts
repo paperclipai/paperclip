@@ -104,7 +104,10 @@ describe("plugin worker manager duplex aggregate byte ledger", () => {
       });
       // A late listener drains the terminal buffered record and releases its token.
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session now streams raw `Uint8Array` chunks. Decode each one back
+      // to text, so the assertion below still compares the plain-text payload
+      // the fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       await vi.waitFor(() => {
         expect(chunks).toEqual(["ok"]);
         expect(ledger.bytesInUse).toBe(0);
@@ -142,7 +145,10 @@ describe("plugin worker manager duplex aggregate byte ledger", () => {
         expect(ledger.liveTokenCount).toBe(2);
       });
       const chunks: string[] = [];
-      session.onData((chunk) => chunks.push(chunk));
+      // The session now streams raw `Uint8Array` chunks. Decode each one back
+      // to text, so the assertion below still compares the plain-text payload
+      // the fixture directive scripted.
+      session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
       await vi.waitFor(() => {
         expect(chunks).toEqual(["aa", "bb"]);
         expect(ledger.bytesInUse).toBe(0);

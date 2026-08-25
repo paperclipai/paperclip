@@ -2940,4 +2940,79 @@ describe("sandbox callback bridge", () => {
     expect(stderr).toContain("[paperclip-bridge] server error");
     expect(stderr).toContain("EADDRINUSE");
   }, 15_000);
+
+  it("test_http2_gateway_writes_no_frame_between_ready_and_the_preface", async () => {
+    // Spawn the real generated gateway in http2_v1 mode and read its raw
+    // stdout bytes. The only frame-codec write on this path is the READY
+    // line; the very next bytes must be the HTTP/2 client connection preface
+    // with nothing in between, because the gateway hands stdout to the
+    // HTTP/2 client immediately after it writes READY and starts no
+    // heartbeat timer and writes no envelope frame on this path.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-http2-gateway-"));
+    cleanupDirs.push(rootDir);
+    const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
+    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+
+    const probe = createServer();
+    const assignedPort = await new Promise<number>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        if (!address || typeof address === "string") {
+          reject(new Error("Could not reserve a loopback port for the test."));
+          return;
+        }
+        probe.close(() => resolve(address.port));
+      });
+    });
+
+    const nonce = "test-nonce-http2";
+    const child = spawn(process.execPath, [entrypoint], {
+      env: {
+        ...process.env,
+        PAPERCLIP_API_BRIDGE_MODE: "http2_v1",
+        PAPERCLIP_BRIDGE_TOKEN: "test-token",
+        PAPERCLIP_BRIDGE_PORT: String(assignedPort),
+        PAPERCLIP_BRIDGE_NONCE: nonce,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    cleanupFns.push(async () => {
+      child.kill();
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    const chunks: Buffer[] = [];
+    const preface = Buffer.from("505249202a20485454502f322e300d0a0d0a534d0d0a0d0a", "hex");
+    const firstBytes = await new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Timed out waiting for the http2 gateway stdout. stderr: " + stderr)),
+        5000,
+      );
+      child.stdout.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+        const total = Buffer.concat(chunks);
+        const newlineIndex = total.indexOf(0x0a);
+        if (newlineIndex !== -1 && total.length >= newlineIndex + 1 + preface.length) {
+          clearTimeout(timer);
+          resolve(total);
+        }
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        reject(new Error("The http2 gateway exited early with code " + String(code) + ". stderr: " + stderr));
+      });
+    });
+
+    const newlineIndex = firstBytes.indexOf(0x0a);
+    expect(newlineIndex).toBeGreaterThan(0);
+    const readyLine = firstBytes.subarray(0, newlineIndex).toString("utf8");
+    expect(JSON.parse(readyLine)).toMatchObject({ type: "ready", nonce });
+    const afterReady = firstBytes.subarray(newlineIndex + 1, newlineIndex + 1 + preface.length);
+    expect(afterReady).toEqual(preface);
+  }, 15_000);
 });

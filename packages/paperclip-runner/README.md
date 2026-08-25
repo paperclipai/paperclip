@@ -22,8 +22,16 @@ undiscoverable because no production application binding or server authority
 has landed. Catalog membership alone does not grant authority. See
 [`SEMANTIC_ACTIONS.md`](SEMANTIC_ACTIONS.md) for the catalog boundary.
 
-The root export is intentionally narrow. The `./testing` entry point and package
-release boundary will arrive with the later package-boundary change.
+The package has two initial public surfaces:
+
+- `@paperclipai/paperclip-runner` contains runtime contracts, validation,
+  replay/reducer logic, the semantic catalog, and the authorization dispatcher.
+- `@paperclipai/paperclip-runner/testing` adds Node-only fixture loading and a
+  provider-neutral semantic conformance kit for deterministic test adapters.
+
+No SDK, browser, React, eval, live-console, lab, or provider-experiment entry
+point is exported. The package remains private in this wave, and no production
+adapter starts it yet.
 
 Run the complete contract gate with:
 
@@ -37,9 +45,11 @@ Run the Rust runner gate with:
 pnpm --filter @paperclipai/paperclip-runner check:runner
 ```
 
-This command checks Rust formatting, builds and tests the minimal workspace,
-verifies bounded process cleanup, exercises the fake local runner, and compares
-the Rust conformance and replay summaries with the shared fixtures.
+This command checks Rust formatting, builds and tests the minimal workspace in
+release mode, verifies bounded process cleanup, launches the real
+`paperclip-runnerd` binary through the fake harness, and compares the Rust
+conformance and replay summaries with the shared fixtures. The checked-in Cargo
+lock and pinned Rust toolchain keep this verification reproducible.
 
 Durability and failure semantics are documented in
 [`runner/DURABLE_TRANSPORT.md`](runner/DURABLE_TRANSPORT.md). The fault suite
