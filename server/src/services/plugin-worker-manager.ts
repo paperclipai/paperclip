@@ -1434,16 +1434,26 @@ export function createPluginWorkerHandle(
   // One login pseudo-terminal output record that arrived before the route
   // bound, normalized to a narrow scalar shape. The host retains only these
   // bounded fields, never the raw notification object.
-  type LoginPtyPreBindRecord = { workerSessionId: string; chunk: string };
+  interface LoginPtyPreBindOutputRecord {
+    kind: "output";
+    workerSessionId: string;
+    chunk: string;
+  }
 
   // One login pseudo-terminal exit record that arrived before the route
-  // bound. The host holds it in the `preBindExits` slot, never in the
-  // ordered output queue, so a queued exit can never jump ahead of output
-  // the host already queued.
+  // bound, normalized the same way.
   interface LoginPtyPreBindExitRecord {
+    kind: "exit";
     workerSessionId: string;
     exitCode: number | null;
   }
+
+  // One pre-bind login pseudo-terminal record, output or exit. The host
+  // holds every pre-bind record in one arrival-ordered queue and replays
+  // each record through the same live router the open route uses, in the
+  // exact order the host received it. The queue never groups a record by
+  // kind.
+  type LoginPtyPreBindRecord = LoginPtyPreBindOutputRecord | LoginPtyPreBindExitRecord;
 
   interface LoginPtyRoute {
     hostRouteId: string;
@@ -1454,23 +1464,30 @@ export function createPluginWorkerHandle(
     deliveredChars: number;
     terminalized: boolean;
     settleWait: (value: { exitCode: number | null }) => void;
-    // The bounded output records that arrived before the bind, held in
-    // order. The bind replays them through the live router, so an early
-    // record is never lost and a forged worker session identifier still fails
-    // the exact-match gate at replay.
+    // The bounded records — output and exit alike — that arrived before the
+    // bind, held in one arrival-ordered queue. The bind replays them through
+    // the live router in this exact order, so an early record is never
+    // lost, a forged worker session identifier still fails the exact-match
+    // gate, and a record that arrived behind a valid exit still replays
+    // behind it and finds a route the exit already settled.
     preBind: LoginPtyPreBindRecord[];
-    // The cumulative output characters the pre-bind queue retains.
+    // The cumulative output characters the queue retains. An exit record
+    // adds zero characters to this count.
     preBindChars: number;
-    // The exit records that arrived before the bind, held apart from the
-    // output queue, one per distinct worker session identifier and bounded
-    // by MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS. The host cannot yet check a
-    // record's worker session identifier against the bound value, so it
-    // keeps every distinct-session record instead of only the last one — a
-    // later mismatched record can never displace an earlier record that
-    // later verifies. The bind replays every held output record first, then
-    // every held exit last, so a queued exit never settles the session wait
-    // ahead of output the host already queued.
-    preBindExits: LoginPtyPreBindExitRecord[];
+    // The count of output records the queue retains, counted apart from the
+    // exit records the same queue holds. An exit record never consumes this
+    // budget, so it cannot crowd out a held output record.
+    preBindOutputFrames: number;
+    // The distinct worker session identifiers among the exit records the
+    // queue retains, bounded by MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS. The
+    // host cannot yet check an exit record's worker session identifier
+    // against the bound value, so it keeps every distinct-session record
+    // instead of only the last one — a later mismatched record can never
+    // displace an earlier record that later verifies. A second exit for a
+    // session already in this set updates the held record's exit code in
+    // place, at its original arrival position, which keeps memory constant
+    // against a repeat from one real session.
+    preBindExitSessions: Set<string>;
   }
   // At most one active credential pseudo-terminal per worker. A non-null route
   // blocks a second open until the manager confirms the first route's close.
@@ -1503,11 +1520,12 @@ export function createPluginWorkerHandle(
     route.state = "closed";
     route.listener = null;
     route.buffered = [];
-    // Clear the pre-bind output queue and the held exits. A terminalized route
-    // never replays a held record.
+    // Clear the pre-bind queue. A terminalized route never replays a held
+    // record.
     route.preBind = [];
     route.preBindChars = 0;
-    route.preBindExits = [];
+    route.preBindOutputFrames = 0;
+    route.preBindExitSessions.clear();
     // A terminalized route reports a null exit code, which the runner treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
@@ -1564,7 +1582,12 @@ export function createPluginWorkerHandle(
   // Route one login pseudo-terminal exit notification to the login wait. Resolve
   // only while the route is `open` and the notification carries the exact bound
   // worker session identifier. Queue the notification while the route is still
-  // `opening`, in the same order as a batched output notification.
+  // `opening`, in the same order as a batched output notification. A resolved
+  // exit ends the route: move the state off `open`, so a later record — a live
+  // notification or a record replayed from the pre-bind queue — finds a route
+  // that is no longer `open` and drops there. A real worker process cannot emit
+  // output after it exits, so this only guards a forged or a queued record that
+  // still arrives behind a valid exit.
   function routeLoginPtyExit(notification: JsonRpcNotification): void {
     const route = loginPtyRoute;
     if (!route) return;
@@ -1577,15 +1600,17 @@ export function createPluginWorkerHandle(
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
+    route.state = "closed";
     settleRouteWait(route, { exitCode });
   }
 
   // Queue one login pseudo-terminal output notification that arrived before the
-  // bind, in order. Require a non-empty worker session identifier, a non-empty
-  // string chunk, and the existing per-chunk cap before the host retains the
-  // record, so the queue never grows on a malformed record. Terminalize the
-  // route fail-closed when the queue would pass the frame count or the
-  // character bound. Never log the raw chunk.
+  // bind, in arrival order. Require a non-empty worker session identifier, a
+  // non-empty string chunk, and the existing per-chunk cap before the host
+  // retains the record, so the queue never grows on a malformed record.
+  // Terminalize the route fail-closed when the queue would pass the
+  // output-frame count or the output-character bound. Never log the raw
+  // chunk.
   function queuePreBindLoginPtyOutput(
     route: LoginPtyRoute,
     notification: JsonRpcNotification,
@@ -1602,7 +1627,7 @@ export function createPluginWorkerHandle(
       return;
     }
     if (
-      route.preBind.length + 1 > maxLoginPtyPreBindFrames ||
+      route.preBindOutputFrames + 1 > maxLoginPtyPreBindFrames ||
       route.preBindChars + chunk.length > maxLoginPtyPreBindChars
     ) {
       log.warn(
@@ -1612,22 +1637,25 @@ export function createPluginWorkerHandle(
       void terminalizeLoginPtyRoute(route);
       return;
     }
-    route.preBind.push({ workerSessionId, chunk });
+    route.preBind.push({ kind: "output", workerSessionId, chunk });
+    route.preBindOutputFrames += 1;
     route.preBindChars += chunk.length;
   }
 
   // Queue one login pseudo-terminal exit notification that arrived before the
-  // bind. The exit holds a small fixed-size slot apart from the output queue,
-  // so it never crowds out a queued output record. The host cannot check the
+  // bind, in arrival order in the same queue the output records use. An exit
+  // record never consumes the output-frame or output-character budget, so it
+  // can never crowd out a held output record. The host cannot check the
   // worker session identifier against the bound value yet, so it cannot tell
   // a genuine exit from a mismatched one at this point: it keeps one record
   // per distinct worker session identifier, up to
   // MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS, so a later mismatched exit never
   // displaces an earlier record the bind can still verify. A second exit for
-  // the same worker session identifier updates the held exit code in place,
-  // which keeps memory constant against a repeat from one real session. A
-  // distinct-session exit past the bound fails the route closed, the same
-  // fail-closed choice the output queue makes past its own bound.
+  // the same worker session identifier updates the held record's exit code
+  // in place, at its original arrival position, which keeps memory constant
+  // against a repeat from one real session. A distinct-session exit past the
+  // bound fails the route closed, the same fail-closed choice the output
+  // queue makes past its own bound.
   function queuePreBindLoginPtyExit(
     route: LoginPtyRoute,
     notification: JsonRpcNotification,
@@ -1636,14 +1664,15 @@ export function createPluginWorkerHandle(
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
-    const existing = route.preBindExits.find(
-      (record) => record.workerSessionId === workerSessionId,
+    const existing = route.preBind.find(
+      (record): record is LoginPtyPreBindExitRecord =>
+        record.kind === "exit" && record.workerSessionId === workerSessionId,
     );
     if (existing) {
       existing.exitCode = exitCode;
       return;
     }
-    if (route.preBindExits.length + 1 > MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS) {
+    if (route.preBindExitSessions.size + 1 > MAX_LOGIN_PTY_PRE_BIND_EXIT_RECORDS) {
       log.warn(
         { pluginId },
         "login pseudo-terminal pre-bind exit slot exceeded a bound; terminalizing route",
@@ -1651,48 +1680,50 @@ export function createPluginWorkerHandle(
       void terminalizeLoginPtyRoute(route);
       return;
     }
-    route.preBindExits.push({ workerSessionId, exitCode });
+    route.preBindExitSessions.add(workerSessionId);
+    route.preBind.push({ kind: "exit", workerSessionId, exitCode });
   }
 
-  // Replay the records a route held before it bound. Remove the queue from
-  // the route first, so a terminalize mid-replay clears no record twice.
-  // Replay every held output record first, in order, then every held exit
-  // last, so an exit can never settle the session wait ahead of output the
-  // host already queued — this matches a real worker's order, where the
-  // process cannot emit output after it exits. Reconstruct one transient
-  // notification per record and send it through the same live router the
-  // open route uses (`routeLoginPtyOutput`, `routeLoginPtyExit`), so a forged
+  // Replay the records a route held before it bound, in the exact order the
+  // host received them. Remove the queue from the route first, so a
+  // terminalize mid-replay clears no record twice. Send each record through
+  // the same live router the open route uses (`routeLoginPtyOutput` for an
+  // output record, `routeLoginPtyExit` for an exit record), so a forged
   // worker session identifier still fails the exact-match gate and the
   // cumulative `maxLoginPtyTotalChars` gate still applies before delivery.
   // Never call `route.listener` directly and never reset
-  // `route.deliveredChars`. A record that ends the route terminalizes it, and
-  // every later record in the replay is a no-op, because the routing
-  // functions drop a record for a route that is not `open`. The held exits
-  // replay in arrival order too: at most one of them carries the worker
-  // session identifier the bind just verified, so the exact-match gate
-  // settles the session wait from that one record and drops every other held
-  // exit, regardless of which order they arrived in before the bind.
+  // `route.deliveredChars`. The replay never groups the records by kind: a
+  // real worker process cannot emit output after it exits, so the arrival
+  // order already carries that guarantee, and grouping the replay by kind
+  // would only reorder around it and let a later record win over an earlier
+  // one. A replayed exit that carries the bound worker session identifier
+  // settles the route and moves its state off `open`, so every later record
+  // in the replay is a no-op — the routers drop a record for a route that is
+  // not `open`. This drops output that arrived behind a valid exit, the same
+  // way the live path drops it. A replayed exit for a different worker
+  // session identifier fails the exact-match gate and changes nothing, so
+  // the replay continues to the next record.
   function replayPreBindLoginPtyRecords(route: LoginPtyRoute): void {
     const held = route.preBind;
     route.preBind = [];
     route.preBindChars = 0;
+    route.preBindOutputFrames = 0;
+    route.preBindExitSessions.clear();
     for (const record of held) {
       if (route.terminalized) return;
-      routeLoginPtyOutput({
-        jsonrpc: "2.0",
-        method: LOGIN_PTY_OUTPUT_NOTIFICATION,
-        params: { workerSessionId: record.workerSessionId, chunk: record.chunk },
-      });
-    }
-    const heldExits = route.preBindExits;
-    route.preBindExits = [];
-    for (const heldExit of heldExits) {
-      if (route.terminalized) return;
-      routeLoginPtyExit({
-        jsonrpc: "2.0",
-        method: LOGIN_PTY_EXIT_NOTIFICATION,
-        params: { workerSessionId: heldExit.workerSessionId, exitCode: heldExit.exitCode },
-      });
+      if (record.kind === "output") {
+        routeLoginPtyOutput({
+          jsonrpc: "2.0",
+          method: LOGIN_PTY_OUTPUT_NOTIFICATION,
+          params: { workerSessionId: record.workerSessionId, chunk: record.chunk },
+        });
+      } else {
+        routeLoginPtyExit({
+          jsonrpc: "2.0",
+          method: LOGIN_PTY_EXIT_NOTIFICATION,
+          params: { workerSessionId: record.workerSessionId, exitCode: record.exitCode },
+        });
+      }
     }
   }
 
@@ -1709,7 +1740,8 @@ export function createPluginWorkerHandle(
     route.buffered = [];
     route.preBind = [];
     route.preBindChars = 0;
-    route.preBindExits = [];
+    route.preBindOutputFrames = 0;
+    route.preBindExitSessions.clear();
     settleRouteWait(route, { exitCode: null });
   }
 
@@ -1752,7 +1784,8 @@ export function createPluginWorkerHandle(
       settleWait,
       preBind: [],
       preBindChars: 0,
-      preBindExits: [],
+      preBindOutputFrames: 0,
+      preBindExitSessions: new Set<string>(),
     };
     loginPtyRoute = route;
 

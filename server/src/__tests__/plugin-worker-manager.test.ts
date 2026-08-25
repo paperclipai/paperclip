@@ -1374,10 +1374,13 @@ describe("plugin worker manager setup-token pty route gate", () => {
 // exit notification with the open reply floods the host before the bind. The
 // tests below prove the host queues these pre-bind records and replays them
 // through the live router right after the bind, instead of dropping them.
-// The host holds a queued exit apart from the queued output records, and it
-// always replays every held output record before the held exit, so a queued
-// exit never settles the session wait ahead of output the host already
-// queued — even when the worker sent the exit first.
+// The host holds every pre-bind record — output and exit alike — in one
+// arrival-ordered queue, and it replays each record through the live router
+// in that exact order. A replayed exit that carries the bound worker session
+// identifier settles the route, so a record that arrived behind it — a real
+// worker process cannot emit output after it exits, so this only matters for
+// a forged or a queued record — replays into a route that already settled
+// and is dropped.
 
 describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
   it("queues and replays a coalesced output notification that arrives before the bind", async () => {
@@ -1453,7 +1456,35 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
     }
   });
 
-  it("delivers output that arrived behind a coalesced exit before the exit settles the wait", async () => {
+  it("delivers a pre-bind output, then the exit, and drops output that arrives behind the exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches an output, then a valid exit, then a further
+      // output, all before the open reply. The host replays the three held
+      // records in this exact arrival order. The exit settles the route
+      // right after the first output, so the record behind the exit finds a
+      // route that already settled and never reaches the listener.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "before-exit" }],
+          exitCode: 0,
+          outputsAfterExit: [{ chunk: "after-exit" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["before-exit"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops output that arrives behind a valid pre-bind exit", async () => {
     const handle = makeLoginPtyHandle();
     try {
       await handle.start();
@@ -1462,37 +1493,38 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
           batchWithOpenReply: true,
           workerSessionId: "ws-A",
           exitCode: 0,
-          // The worker batched this output behind the exit. The host holds the
-          // exit apart from the output queue and replays every held output
-          // record first, so this record still reaches the listener even
-          // though the worker sent it after the exit.
+          // The worker batched this output behind the exit. The replay sends
+          // the exit first, in arrival order, which settles the route. The
+          // output record behind it then finds a route that is no longer
+          // `open`, the same drop the live path applies to output a real
+          // worker process could never emit after its own exit.
           outputsAfterExit: [{ chunk: "late-output" }],
         }),
       );
       const chunks: string[] = [];
       session.onData((chunk) => chunks.push(chunk));
       await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
-      expect(chunks).toEqual(["late-output"]);
+      expect(chunks).toEqual([]);
       await session.close();
     } finally {
       await handle.stop().catch(() => undefined);
     }
   });
 
-  it("never settles the wait with a stale exit code when output queued behind the exit still terminalizes the route", async () => {
+  it("settles the wait with the valid exit code and drops output behind it, even past the total-chars bound", async () => {
     const handle = makeLoginPtyHandle({
       loginPtyLimits: { maxTotalChars: 10, maxPreBindFrames: 1000, maxPreBindChars: 1000 },
     });
     try {
       await handle.start();
-      // The worker batches an exit with the open reply, then an output record
-      // that would push the cumulative delivered total past the 10-character
-      // bound. The host replays every held output record before the held
-      // exit, so the bound violation terminalizes the route and settles the
-      // wait with the fixed null exit code. Before this fix, the queued exit
-      // replayed first and settled the wait with its own exit code, so the
-      // later terminalize call found the wait already settled and could
-      // never correct it — the runner would have read a false success.
+      // The worker batches a valid exit with the open reply, then an output
+      // record that would push the cumulative delivered total past the
+      // 10-character bound. The replay sends the exit first, in arrival
+      // order. The exit settles the route, so the replay drops the output
+      // record behind it before the total-chars check ever runs — the
+      // bound violation the check exists to catch never reaches it, because
+      // a real worker process could never emit that output in the first
+      // place.
       const session = await handle.openLoginPtySession(
         ptyOpenInput({
           batchWithOpenReply: true,
@@ -1503,8 +1535,40 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
       );
       const chunks: string[] = [];
       session.onData((chunk) => chunks.push(chunk));
-      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
       expect(chunks).toEqual([]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers output that arrived behind a mismatched pre-bind exit and settles with the later valid exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches a mismatched exit, then a genuine output, then
+      // the valid exit, all before the open reply. The mismatched exit
+      // arrives first, but the exact-match gate fails it, so it changes no
+      // state and the replay continues. The output that follows it still
+      // reaches the listener, and the valid exit that follows the output
+      // settles the wait.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          sequence: [
+            { type: "exit", exitCode: 1, sid: "ws-EVIL" },
+            { type: "output", chunk: "genuine-output" },
+            { type: "exit", exitCode: 0 },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["genuine-output"]);
+      await session.close();
     } finally {
       await handle.stop().catch(() => undefined);
     }

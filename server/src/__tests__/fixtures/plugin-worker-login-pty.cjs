@@ -20,7 +20,13 @@
 //     that sends a valid exit, then a mismatched exit, before the bind.
 //   - `outputsAfterExit`: an array of `{ chunk, sid? }`, same shape as `outputs`.
 //     The fixture emits these after the exit notification, so a test proves the
-//     host never delivers output that arrives behind a queued exit.
+//     host drops output that arrives behind a queued exit.
+//   - `sequence`: an array of `{ type: "output", chunk, sid? }` or
+//     `{ type: "exit", exitCode, sid? }` entries. When set, the fixture emits
+//     exactly this sequence, in order, instead of the fixed
+//     outputs/exitCode/extraExits/outputsAfterExit composition. A test uses
+//     this to script an arrival order the fixed composition cannot express,
+//     for example a mismatched exit that arrives before a valid one.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
@@ -65,10 +71,22 @@ function exitLine(workerSessionId, exitCode) {
 }
 
 // Serialize the scripted output and exit notifications as newline-delimited
-// lines, in this fixed order: the pre-exit outputs, then the main exit, then
-// every extra exit, then the post-exit outputs. The batch mode writes these
-// together with the open reply in one stdout write.
+// lines. The `sequence` directive, when set, emits exactly that order. The
+// fixed composition otherwise emits, in order: the pre-exit outputs, then
+// the main exit, then every extra exit, then the post-exit outputs. The
+// batch mode writes these together with the open reply in one stdout write.
 function scriptedOutputLines(directive, workerSessionId) {
+  if (Array.isArray(directive.sequence)) {
+    let lines = "";
+    for (const entry of directive.sequence) {
+      if (entry.type === "output") {
+        lines += outputLines([{ chunk: entry.chunk, sid: entry.sid }], workerSessionId);
+      } else if (entry.type === "exit") {
+        lines += exitLine(entry.sid ?? workerSessionId, entry.exitCode);
+      }
+    }
+    return lines;
+  }
   const outputs = Array.isArray(directive.outputs) ? directive.outputs : [];
   const outputsAfterExit = Array.isArray(directive.outputsAfterExit)
     ? directive.outputsAfterExit
