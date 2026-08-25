@@ -33,23 +33,37 @@ export type WikiPageSummary = {
   slug: string;
   title: string;
   summary?: string;
+  summaryTruncated?: boolean;
   pageType?: string;
   status?: string;
   updatedAt?: string;
 };
 
+export type WikiSourceReference = string | {
+  id?: string;
+  title?: string;
+  slug?: string;
+  url?: string;
+};
+
 export type WikiPage = WikiPageSummary & {
   content: string;
-  sourceRefs?: Array<string | Record<string, unknown>>;
+  truncated?: boolean;
+  sourceRefs?: WikiSourceReference[];
+  sourceRefsTruncated?: boolean;
   inLinks?: string[];
+  inLinksTruncated?: boolean;
   outLinks?: string[];
+  outLinksTruncated?: boolean;
 };
 
 export type WikiSearchResult = {
   slug: string;
   title: string;
   summary?: string;
+  summaryTruncated?: boolean;
   excerpt?: string;
+  excerptTruncated?: boolean;
   score?: number;
 };
 
