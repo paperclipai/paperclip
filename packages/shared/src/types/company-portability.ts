@@ -230,6 +230,11 @@ export interface CompanyPortabilityAgentManifestEntry {
   permissionGrants: Array<{
     permissionKey: PermissionKey;
     scope: Record<string, unknown> | null;
+    /**
+     * Carried across export/import so a clone cannot silently widen a grant the
+     * source company had time-boxed (FAI-10144). Null means no expiry.
+     */
+    expiresAt: string | null;
   }>;
   budgetMonthlyCents: number;
   metadata: Record<string, unknown> | null;

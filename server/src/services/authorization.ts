@@ -8,6 +8,7 @@ import {
   instanceUserRoles,
   issueComments,
   issues,
+  principalGrantIsActive,
   principalPermissionGrants,
   projects,
   userInboxAgentPolicies,
@@ -20,7 +21,15 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS,
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX,
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  grantScopePrefixedValues,
+  grantScopeValueList,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -121,6 +130,7 @@ export type AuthorizationDecision = {
     | "deny_company_boundary"
     | "deny_missing_membership"
     | "deny_missing_grant"
+    | "deny_expired_grant"
     | "deny_missing_consent"
     | "deny_no_grant"
     | "deny_policy_restricted"
@@ -132,8 +142,21 @@ export type AuthorizationDecision = {
     principalId: string;
     permissionKey: PermissionKey;
     scope: Record<string, unknown> | null;
+    /** Null means the grant has no expiry. Only set by grant-row lookups. */
+    expiresAt?: string | null;
   };
 };
+
+/**
+ * "There is nothing here to authorize from" — no row, or a row that has lapsed.
+ * The two are separate `reason`s so the audit trail can tell an expiry apart
+ * from a permission that was never granted (FAI-10144), but a caller deciding
+ * whether to fall through to a second permission key must treat them the same:
+ * an expired broad grant is not a reason to withhold a live scoped one.
+ */
+function grantIsAbsent(reason: AuthorizationDecision["reason"]): boolean {
+  return reason === "deny_missing_grant" || reason === "deny_expired_grant";
+}
 
 type PrincipalGrantDecision = AuthorizationDecision & {
   grant?: NonNullable<AuthorizationDecision["grant"]>;
@@ -172,20 +195,10 @@ function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
 }
 
-function scopeValueList(value: unknown): string[] {
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    .map((entry) => entry.trim());
-}
-
-function prefixedScopeValues(grantScope: Record<string, unknown>, prefix: string) {
-  return scopeValueList(grantScope.allow)
-    .filter((rule) => rule.startsWith(prefix))
-    .map((rule) => rule.slice(prefix.length))
-    .filter((value) => value.length > 0);
-}
+// Shared with the `issues:cross-write` save-time scope check so the two cannot
+// disagree about what a scope constrains on — see `cross-issue-write-grant-scope.ts`.
+const scopeValueList = grantScopeValueList;
+const prefixedScopeValues = grantScopePrefixedValues;
 
 function scopeValuesForKeys(grantScope: Record<string, unknown>, keys: string[]) {
   return keys.flatMap((key) => scopeValueList(grantScope[key]));
@@ -365,12 +378,18 @@ async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, 
   );
 }
 
-async function scopeAllows(
+/**
+ * Exported so the cross-issue write basis resolver scores an
+ * `issues:cross-write` grant with the same scope vocabulary every other grant
+ * uses — `project:`/`agent:` prefixes, id lists, manager subtrees. A second
+ * hand-rolled matcher would drift from this one and quietly widen a grant.
+ */
+export async function scopeAllows(
   db: Db,
   companyId: string,
   grantScope: Record<string, unknown> | null,
   requestedScope: Record<string, unknown> | null | undefined,
-  options: { requireStructuredScope?: boolean } = {},
+  options: { requireStructuredScope?: boolean; requireRecognizedConstraint?: boolean } = {},
 ) {
   if (!grantScope || Object.keys(grantScope).length === 0) return !options.requireStructuredScope;
   if (!requestedScope) return false;
@@ -417,18 +436,12 @@ async function scopeAllows(
     if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
   }
 
+  // Shared with the cross-issue write fence, which has to know when a scope is
+  // answered by a `reportsTo` walk so it can lock that hierarchy first. Two
+  // copies of this list would let the fence miss a selector the evaluator honours.
   const subtreeRootAgentIds = [
-    ...scopeValuesForKeys(grantScope, [
-      "managerAgentId",
-      "managerAgentIds",
-      "managedSubtreeAgentId",
-      "managedSubtreeAgentIds",
-      "subtreeAgentId",
-      "subtreeAgentIds",
-      "subtreeRootAgentId",
-      "subtreeRootAgentIds",
-    ]),
-    ...prefixedScopeValues(grantScope, "subtree:"),
+    ...scopeValuesForKeys(grantScope, [...CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS]),
+    ...prefixedScopeValues(grantScope, CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX),
   ];
   if (subtreeRootAgentIds.length > 0) {
     constrained = true;
@@ -446,7 +459,12 @@ async function scopeAllows(
 
   // Unknown metadata keys do not constrain the grant. Recognized constraints
   // return false above when they fail to match the requested assignment scope.
-  return !constrained ? true : constrained;
+  // For grants whose whole point is that they must be narrow — `issues:cross-write`
+  // — the caller passes `requireRecognizedConstraint` and a scope made only of
+  // keys this evaluator does not understand (`{"note":"scoped"}`) is refused
+  // rather than read as an unconstrained allow.
+  if (!constrained) return !options.requireRecognizedConstraint;
+  return true;
 }
 
 function allow(input: Omit<AuthorizationDecision, "allowed">): AuthorizationDecision {
@@ -652,6 +670,8 @@ export function authorizationService(db: Db) {
     action: AuthorizationAction;
     permissionKey: PermissionKey;
     scope?: Record<string, unknown> | null;
+    /** Overrides the expiry clock. Tests only; production reads the wall clock. */
+    now?: Date;
   }): Promise<PrincipalGrantDecision> {
     const membership = await getActiveMembership(input.companyId, input.principalType, input.principalId);
     if (!membership) {
@@ -671,6 +691,26 @@ export function authorizationService(db: Db) {
       });
     }
 
+    // Expiry is checked before scope so a lapsed grant reports as expired rather
+    // than as out-of-scope, and it is checked here — the one funnel every
+    // permission key flows through — so no key can acquire an unbounded grant by
+    // taking a different path (FAI-10144).
+    if (!principalGrantIsActive(grant, input.now ?? new Date())) {
+      return deny({
+        action: input.action,
+        reason: "deny_expired_grant",
+        explanation:
+          `Permission ${input.permissionKey} expired at ${grant.expiresAt?.toISOString() ?? "an unknown time"}.`,
+        grant: {
+          principalType: input.principalType,
+          principalId: input.principalId,
+          permissionKey: input.permissionKey,
+          scope: grant.scope ?? null,
+          expiresAt: grant.expiresAt?.toISOString() ?? null,
+        },
+      });
+    }
+
     if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
         requireStructuredScope: input.permissionKey === "tasks:assign_scope",
@@ -685,6 +725,7 @@ export function authorizationService(db: Db) {
           principalId: input.principalId,
           permissionKey: input.permissionKey,
           scope: grant.scope ?? null,
+          expiresAt: grant.expiresAt?.toISOString() ?? null,
         },
       });
     }
@@ -698,6 +739,7 @@ export function authorizationService(db: Db) {
         principalId: input.principalId,
         permissionKey: input.permissionKey,
         scope: grant.scope ?? null,
+        expiresAt: grant.expiresAt?.toISOString() ?? null,
       },
     });
   }
@@ -1486,7 +1528,7 @@ export function authorizationService(db: Db) {
         permissionKey: "tasks:assign_scope",
         scope: input.scope,
       });
-      if (scopedDecision.allowed || broadDecision.reason === "deny_missing_grant") return scopedDecision;
+      if (scopedDecision.allowed || grantIsAbsent(broadDecision.reason)) return scopedDecision;
       return broadDecision;
     }
 
@@ -1514,7 +1556,7 @@ export function authorizationService(db: Db) {
         permissionKey: "agents:suggest-changes",
         scope: input.scope,
       });
-      if (suggestDecision.allowed || suggestDecision.reason === "deny_missing_grant") {
+      if (suggestDecision.allowed || grantIsAbsent(suggestDecision.reason)) {
         return suggestDecision;
       }
       return configureDecision;
@@ -1982,20 +2024,22 @@ export function authorizationService(db: Db) {
         // explicit consent for agents selected in the profile control. The
         // implicit default-open policy remains responsible-user-only so an
         // absent row never becomes a company-wide cross-user grant.
-        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
-        if (grant && (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
-          return allow({
-            action: input.action,
-            reason: "allow_explicit_grant",
-            explanation: "Allowed by explicit grant inbox:manage.",
-            inboxPolicyMode: "grant_override",
-            grant: {
-              principalType: "agent",
-              principalId: actorAgentId,
-              permissionKey: "inbox:manage",
-              scope: grant.scope ?? null,
-            },
-          });
+        // Routed through decidePrincipalGrant rather than reading the grant row
+        // directly, because this branch is evaluated *before* the disabled-policy
+        // check below: a direct read would let a lapsed grant keep overriding the
+        // target user's explicit consent forever (FAI-10151). Only an allowed
+        // decision overrides the policy; an expired grant falls through to the
+        // policy exactly as an absent one does.
+        const grantDecision = await decidePrincipalGrant({
+          companyId,
+          principalType: "agent",
+          principalId: actorAgentId,
+          action: input.action,
+          permissionKey: "inbox:manage",
+          scope: { userId: targetUserId },
+        });
+        if (grantDecision.allowed) {
+          return { ...grantDecision, inboxPolicyMode: "grant_override" };
         }
 
         if (policy?.mode === "disabled") {
@@ -2023,18 +2067,12 @@ export function authorizationService(db: Db) {
           });
         }
 
-        if (grant) {
-          return deny({
-            action: input.action,
-            reason: "deny_scope",
-            explanation: "Permission inbox:manage does not cover the requested user.",
-            grant: {
-              principalType: "agent",
-              principalId: actorAgentId,
-              permissionKey: "inbox:manage",
-              scope: grant.scope ?? null,
-            },
-          });
+        // No policy allowed, so the grant decision becomes the audit denial. A row
+        // that exists but is out of scope or lapsed says so — and keeps carrying the
+        // grant — while "no row" and "no membership" stay the single missing-grant
+        // answer this branch has always given.
+        if (grantDecision.reason === "deny_scope" || grantDecision.reason === "deny_expired_grant") {
+          return grantDecision;
         }
         return deny({
           action: input.action,

@@ -28,7 +28,7 @@ import type {
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { pluginOperationIssueOriginKind, portableGrantExpirySchema } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -1306,6 +1306,26 @@ export function buildHostServices(
       };
     }
     return sanitizeRecord(defaults);
+  };
+
+  /**
+   * A grant expiry a plugin asked for, as a `Date` the write path can store.
+   *
+   * Held to `portableGrantExpirySchema` — an ISO instant that names its own
+   * offset — because a zone-free string resolves against whichever machine runs
+   * the host, so the same plugin would confer a different window per
+   * deployment. Unlike the manifest import, which drops an unreadable expiry,
+   * this throws: an RPC caller gets an error it can act on, and silently
+   * granting standing authority where a bound was asked for is the one outcome
+   * that must not happen (FAI-10144).
+   */
+  const pluginGrantExpiry = (value: string | null): Date | null => {
+    if (value === null) return null;
+    const parsed = portableGrantExpirySchema.safeParse(value);
+    if (!parsed.success || typeof parsed.data !== "string") {
+      throw new Error("grant expiresAt must be an ISO 8601 instant with a timezone offset");
+    }
+    return new Date(parsed.data);
   };
 
   const redactGrant = (grant: typeof principalPermissionGrants.$inferSelect) => ({
@@ -3061,6 +3081,14 @@ export function buildHostServices(
           params.grants.map((grant) => ({
             permissionKey: grant.permissionKey as PermissionKey,
             scope: grant.scope ? sanitizeRecord(grant.scope) : null,
+            // Absent stays absent: `setPrincipalGrants` reads that as "keep the
+            // bound this permission already has", so a plugin built before
+            // `expiresAt` existed cannot un-time-box a grant by replacing the
+            // set without it. Explicit null is how a bound is removed
+            // (FAI-10144).
+            ...(grant.expiresAt === undefined
+              ? {}
+              : { expiresAt: pluginGrantExpiry(grant.expiresAt) }),
           })),
           params.grantedByUserId ?? null,
         );

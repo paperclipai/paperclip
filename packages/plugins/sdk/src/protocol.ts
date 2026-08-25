@@ -2123,7 +2123,18 @@ export interface WorkerToHostMethods {
       companyId: string;
       principalType: string;
       principalId: string;
-      grants: Array<{ permissionKey: string; scope?: Record<string, unknown> | null }>;
+      grants: Array<{
+        permissionKey: string;
+        scope?: Record<string, unknown> | null;
+        /**
+         * ISO instant the grant stops conferring anything, and it must name its
+         * own offset. Null removes any bound; absent keeps whatever bound the
+         * permission already carries, so a plugin written before this field
+         * existed cannot un-time-box a grant by replacing the set without it
+         * (FAI-10144).
+         */
+        expiresAt?: string | null;
+      }>;
       grantedByUserId?: string | null;
     },
     result: PrincipalPermissionGrant[],

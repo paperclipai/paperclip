@@ -4,6 +4,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   companySkillPolicies,
   createDb,
   principalPermissionGrants,
@@ -26,6 +27,7 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(companySkillPolicies);
     await db.delete(agents);
     await db.delete(companies);
@@ -35,7 +37,10 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedAgent(role = "engineer") {
+  async function seedAgent(
+    role = "engineer",
+    membershipStatus: "active" | "pending" | "suspended" | "archived" | "none" = "active",
+  ) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     await db.insert(companies).values({
@@ -53,6 +58,20 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
       adapterConfig: {},
       status: "idle",
     });
+    // An agent that holds grants has a membership row in production — every
+    // grant writer goes through `ensureMembershipForGrantWrite`, which creates
+    // an active one when none exists, and the startup backfill seeds one for
+    // every non-terminal agent. Seeding a grant without one made this fixture
+    // the shape the product never produces (FAI-10144).
+    if (membershipStatus !== "none") {
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        status: membershipStatus,
+        membershipRole: "member",
+      });
+    }
     return { companyId, agentId, principal: { type: "agent" as const, id: agentId, role } };
   }
 
@@ -180,6 +199,112 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
       action: "skills.remove",
     })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule" });
   });
+
+  /**
+   * This reader goes to `principal_permission_grants` directly rather than
+   * through `decidePrincipalGrant`, so it is its own place for expiry to be
+   * forgotten — and forgetting it here would be invisible from the
+   * authorization service's tests. A lapsed grant has to confer nothing on
+   * every path that reads one, not only the one that owns the rule
+   * (FAI-10152 round 4).
+   *
+   * The pair matters: the unexpired case proves the bypass still works, so a
+   * reader that simply stopped finding grants could not pass both.
+   */
+  const legacyGrantExpiries: Array<[string, Date | null, boolean]> = [
+    ["no expiry", null, true],
+    ["an expiry in the future", new Date(Date.now() + 60 * 60 * 1000), true],
+    ["an expiry in the past", new Date(Date.now() - 60 * 1000), false],
+  ];
+
+  it.each(legacyGrantExpiries)("honours a legacy grant with %s", async (
+    _label,
+    expiresAt,
+    expected,
+  ) => {
+    const seeded = await seedAgent();
+    const service = companySkillPolicyService(db);
+    await db.insert(companySkillPolicies).values({
+      companyId: seeded.companyId,
+      schemaVersion: 1,
+      revision: 1,
+      defaultEffect: "deny",
+      rules: [],
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: seeded.companyId,
+      principalType: "agent",
+      principalId: seeded.agentId,
+      permissionKey: "skills:create",
+      scope: null,
+      expiresAt,
+    });
+
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.edit",
+    })).resolves.toMatchObject(
+      expected
+        ? { allowed: true, reason: "legacy_compatibility" }
+        : { allowed: false },
+    );
+  });
+
+  /**
+   * The membership half of the same bypass. `decidePrincipalGrant` denies with
+   * `deny_missing_membership` before it reads a grant at all, so this reader
+   * answering `legacy_compatibility` for a principal in any other standing is
+   * the two paths disagreeing about one row. Suspension leaves the grants in
+   * place on purpose, which is exactly why presence is not authority
+   * (FAI-10151 finding 1).
+   *
+   * `active` is the control: without it the denials below would also pass for a
+   * reader that had stopped finding grants entirely.
+   */
+  const legacyGrantMemberships: Array<[
+    "active" | "pending" | "suspended" | "archived" | "none",
+    boolean,
+  ]> = [
+    ["active", true],
+    ["pending", false],
+    ["suspended", false],
+    ["archived", false],
+    ["none", false],
+  ];
+
+  it.each(legacyGrantMemberships)(
+    "honours a legacy grant behind a %s membership: %s",
+    async (membershipStatus, expected) => {
+      const seeded = await seedAgent("engineer", membershipStatus);
+      const service = companySkillPolicyService(db);
+      await db.insert(companySkillPolicies).values({
+        companyId: seeded.companyId,
+        schemaVersion: 1,
+        revision: 1,
+        defaultEffect: "deny",
+        rules: [],
+      });
+      await db.insert(principalPermissionGrants).values({
+        companyId: seeded.companyId,
+        principalType: "agent",
+        principalId: seeded.agentId,
+        permissionKey: "skills:create",
+        scope: null,
+        expiresAt: null,
+      });
+
+      await expect(service.evaluate({
+        companyId: seeded.companyId,
+        principal: seeded.principal,
+        action: "skills.edit",
+      })).resolves.toMatchObject(
+        expected
+          ? { allowed: true, reason: "legacy_compatibility" }
+          : { allowed: false },
+      );
+    },
+  );
 
   it("matches sourceLocator deny rules regardless of GitHub URL casing or .git suffix", async () => {
     const seeded = await seedAgent();

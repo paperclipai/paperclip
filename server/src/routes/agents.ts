@@ -2,7 +2,14 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import {
+  agents as agentsTable,
+  companies,
+  heartbeatRuns,
+  issues as issuesTable,
+  principalGrantIsActive,
+  projects as projectsTable,
+} from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -1032,7 +1039,27 @@ export function agentRoutes(
     const grants = membership
       ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
       : [];
-    const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
+    // A grant reported as authority here has to be one the evaluator would
+    // actually honour, which means both of `decidePrincipalGrant`'s
+    // preconditions and not merely the presence of a row (FAI-10144):
+    //
+    // - it must not have lapsed — an expired `tasks:assign` is denied with
+    //   `deny_expired_grant`;
+    // - it must sit behind an *active* membership — `getMembership` above
+    //   returns the row in any standing, and suspension deliberately leaves the
+    //   grants in place, so the row outlives the authority.
+    //
+    // Either one missing had this surface answering `taskAssignSource:
+    // "explicit_grant"` for an agent the evaluator refuses, and answering it
+    // ahead of the `simple_default` branch below, which has always required
+    // `active`. A detail page that contradicts the decision it describes is how
+    // an operator concludes a suspension did not take.
+    //
+    // The rows themselves are still returned, with their `expiresAt` and the
+    // membership beside them, so a client can show what is on file instead of
+    // inferring authority from it.
+    const hasExplicitTaskAssignGrant = membership?.status === "active"
+      && grants.some((grant) => grant.permissionKey === "tasks:assign" && principalGrantIsActive(grant));
 
     if (agent.role === "ceo") {
       return {
@@ -1162,7 +1189,10 @@ export function agentRoutes(
     agentId: string,
     grantedByUserId: string | null,
   ) {
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    // No `ensureMembership` here: `setPrincipalPermission` does it inside its
+    // own transaction, under the grant lock, and refuses an archived membership
+    // rather than reviving it. Doing it out here first would revive the row a
+    // revoker had just archived and hand the grant straight back (FAI-10144).
     await access.setPrincipalPermission(
       companyId,
       "agent",
@@ -3667,7 +3697,12 @@ export function agentRoutes(
 
     const effectiveCanAssignTasks =
       agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
-    await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+    // No expiry argument on purpose. This endpoint's payload is a boolean
+    // `canAssignTasks` toggle, not a grant editor, so there is no bound for a
+    // caller to express here. Omitting the argument is the safe half of the
+    // contract: `setPrincipalPermission` reads absent as "leave the existing
+    // bound alone", so flipping this toggle cannot un-time-box a grant an
+    // operator bounded through the member-permissions surface (FAI-10144).
     await access.setPrincipalPermission(
       agent.companyId,
       "agent",

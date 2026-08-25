@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { grantExpirySchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -513,17 +513,60 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   function getPrincipalGrants(companyId: string, principalType: PrincipalType, principalId: string) {
     return principalGrants.get(principalGrantsKey(companyId, principalType, principalId)) ?? [];
   }
+  /**
+   * The host's expiry bar, in the harness.
+   *
+   * `new Date(value)` accepts what the host refuses. A zone-free
+   * `"2026-09-06T00:00:00"` resolves against whichever machine runs the
+   * process, and anything unparseable becomes an `Invalid Date` that stores
+   * without complaint — so a plugin whose tests passed here would have its
+   * `grants.set` rejected by the real host, or worse, would be tested against a
+   * window the host would have placed hours away. A `Date` handed in directly
+   * is already an instant and needs no parsing (FAI-10152 round 4).
+   */
+  function fakeGrantExpiry(value: string | Date): Date {
+    if (value instanceof Date) {
+      if (Number.isNaN(value.getTime())) {
+        throw new Error("grant expiresAt must be a valid date");
+      }
+      return value;
+    }
+    const parsed = grantExpirySchema.safeParse(value);
+    if (!parsed.success) {
+      throw new Error("grant expiresAt must be an ISO 8601 instant with a timezone offset");
+    }
+    return new Date(parsed.data);
+  }
+
   function setPrincipalGrants(
     companyId: string,
     principalType: PrincipalType,
     principalId: string,
-    grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>,
+    grants: Array<{
+      permissionKey: PermissionKey;
+      scope?: Record<string, unknown> | null;
+      expiresAt?: string | Date | null;
+    }>,
   ) {
+    // Absent keeps the bound the permission already carried, which is what the
+    // real host does; a fake that dropped the field would let a plugin's tests
+    // pass against behaviour the host does not have (FAI-10144).
+    const existing = new Map(
+      getPrincipalGrants(companyId, principalType, principalId).map(
+        (grant) => [grant.permissionKey, grant.expiresAt ?? null] as const,
+      ),
+    );
     const stamped = grants.map((grant) => ({
       principalType,
       principalId,
       permissionKey: grant.permissionKey,
       scope: grant.scope && typeof grant.scope === "object" ? grant.scope : null,
+      expiresAt:
+        grant.expiresAt === undefined
+          ? existing.get(grant.permissionKey) ?? null
+          : grant.expiresAt === null
+            ? null
+            : fakeGrantExpiry(grant.expiresAt),
     })) as PrincipalPermissionGrant[];
     principalGrants.set(principalGrantsKey(companyId, principalType, principalId), stamped);
     const member = [...accessMembers.values()].find(

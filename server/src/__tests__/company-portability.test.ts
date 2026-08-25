@@ -587,6 +587,11 @@ describe("company portability", () => {
                 principalId: "agent-1",
                 permissionKey: "skills:create",
                 scope: { targetAgentIds: ["agent-1"] },
+                // A deliberately time-boxed grant, so the export is exercised on
+                // the case that can actually be widened by a clone. With every
+                // fixture row unbounded the assertion below passed on the
+                // `expiresAt ? ... : null` fallback and proved nothing.
+                expiresAt: new Date("2026-09-06T12:34:56.789Z"),
               },
             ];
           }),
@@ -608,16 +613,86 @@ describe("company portability", () => {
     expect(extension).toContain("permissionGrants:");
     expect(extension).toContain('permissionKey: "agents:suggest-changes"');
     expect(extension).toContain('permissionKey: "skills:create"');
+    // The exact instant, to the millisecond and in UTC. Anything less than an
+    // exact match is a clone that hands the copied agent more time than the
+    // original had — and the import side parses this same string back
+    // (`portableGrantExpirySchema`), so the two together are the round trip.
+    expect(extension).toContain('expiresAt: "2026-09-06T12:34:56.789Z"');
     expect(exported.manifest.agents.find((agent) => agent.slug === "claudecoder")?.permissionGrants).toEqual([
       {
         permissionKey: "agents:suggest-changes",
         scope: null,
+        // Null is the pre-FAI-10144 shape: no bound, unchanged behaviour.
+        expiresAt: null,
       },
       {
         permissionKey: "skills:create",
         scope: { targetAgentIds: ["agent-1"] },
+        // Carried so a clone cannot widen a time-boxed grant (FAI-10144).
+        expiresAt: "2026-09-06T12:34:56.789Z",
       },
     ]);
+  });
+
+  /**
+   * The export and the import are each asserted on their own above, and each
+   * can be right while the pair is wrong: the export formatter and the import
+   * normalizer are separate hand-rolled code, so a shape one emits and the
+   * other cannot read passes both halves and still widens the clone. This
+   * drives the actual exported bytes back through `importBundle` and checks the
+   * instant reaching the write path is the source's, to the millisecond
+   * (FAI-10144).
+   */
+  it("round-trips a non-null grant expiry from exported bytes back through import", async () => {
+    const bound = new Date("2026-09-06T12:34:56.789Z");
+    const exportDb = {
+      select: vi.fn((selection: Record<string, unknown>) => ({
+        from: vi.fn(() => ({
+          where: vi.fn(async () => {
+            if (!selection.permissionKey) return [];
+            return [
+              {
+                principalId: "agent-1",
+                permissionKey: "skills:create",
+                scope: { targetAgentIds: ["agent-1"] },
+                expiresAt: bound,
+              },
+            ];
+          }),
+        })),
+      })),
+    };
+
+    const exported = await companyPortabilityService(exportDb as any).exportBundle("company-1", {
+      // Skills off on both legs: this is about the grant expiry surviving the
+      // trip, and carrying the skill bundle through would only add mocks.
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+    });
+
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      status: input.status,
+    }));
+
+    await companyPortabilityService({} as any).importBundle({
+      source: { type: "inline", files: exported.files },
+      include: { company: false, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    // Only the expiry argument is asserted; scope identifiers are remapped on
+    // import and that remapping is covered by the import test below.
+    const call = accessSvc.setPrincipalPermission.mock.calls.find(
+      (args: unknown[]) => args[3] === "skills:create",
+    );
+    expect(call).toBeDefined();
+    expect(call?.[7]).toEqual(bound);
   });
 
   it("exports hire approval policy only when approval is required", async () => {
@@ -1848,6 +1923,10 @@ describe("company portability", () => {
       true,
       "user-1",
       null,
+      // Explicit null expiry, not an omitted argument: an import re-materializes
+      // the grant, so "the source had no expiry" must clear one an earlier
+      // import left behind (FAI-10144).
+      null,
     );
     expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
       "company-1",
@@ -1857,7 +1936,100 @@ describe("company portability", () => {
       true,
       "user-1",
       { targetAgentIds: ["agent-imported"] },
+      null,
     );
+  });
+
+  /**
+   * FAI-10144. The import normalizer is hand-rolled and does not run the
+   * manifest's zod schema, so it parses expiries with that schema's own
+   * exported contract. An expiry that does not name an offset is rejected
+   * rather than accepted: `new Date("2026-09-06T00:00:00")` resolves against
+   * the importing machine's local zone, so the same manifest would otherwise
+   * grant a different window depending on where it was imported. A rejected
+   * expiry drops the grant, because importing time-boxed authority *without*
+   * the bound is worse than importing nothing.
+   */
+  it("keeps an offset-bearing grant expiry and drops one with no timezone", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      status: input.status,
+    }));
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/coder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/coder/AGENTS.md": [
+            "---",
+            "name: Coder",
+            "slug: coder",
+            "kind: agent",
+            "---",
+            "",
+            "# Coder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  coder:",
+            "    adapter:",
+            "      type: process",
+            "      config: {}",
+            "    permissionGrants:",
+            "      - permissionKey: agents:suggest-changes",
+            "        expiresAt: \"2026-09-06T00:00:00.000Z\"",
+            "      - permissionKey: skills:create",
+            "        expiresAt: \"2026-09-06T00:00:00\"",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(accessSvc.setPrincipalPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-imported",
+      "agents:suggest-changes",
+      true,
+      "user-1",
+      null,
+      new Date("2026-09-06T00:00:00.000Z"),
+    );
+    // The timezone-free one never reaches the write at all — not with a null
+    // expiry either, which would be the unbounded grant this guards against.
+    const permissionKeysWritten = accessSvc.setPrincipalPermission.mock.calls.map(
+      (call: unknown[]) => call[3],
+    );
+    expect(permissionKeysWritten).toContain("agents:suggest-changes");
+    expect(permissionKeysWritten).not.toContain("skills:create");
   });
 
   it("removes import secrets created before a later import failure", async () => {

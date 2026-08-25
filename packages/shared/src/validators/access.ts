@@ -93,11 +93,38 @@ export const createBoardApiKeySchema = z.object({
 
 export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
 
+/**
+ * The one expiry format a permission grant is accepted in, on every surface
+ * that writes one — the board's member-permissions call, the plugin host, the
+ * invite defaults payload and the portable company manifest.
+ *
+ * `{ offset: true }` is the whole point: it takes `2026-09-06T12:34:56Z` and
+ * `2026-09-06T14:34:56+02:00`, and refuses a zone-free `2026-09-06T12:34:56`.
+ * A zone-free instant resolves against whichever machine happens to read it, so
+ * the same grant would confer a different window in a different deployment —
+ * and "expires at 14:34" is not a bound if that names a different moment on the
+ * server than it did in the operator's browser.
+ *
+ * Defined here because grants are the domain that owns it; the portability
+ * validators re-export this rather than spelling out a second, slightly
+ * different rule. They had already drifted — the board surface took `Z` only
+ * and rejected `+02:00`, so the same timestamp was valid in a manifest and
+ * invalid over the API (FAI-10152 round 4).
+ */
+export const grantExpirySchema = z.string().datetime({ offset: true });
+
 export const updateMemberPermissionsSchema = z.object({
   grants: z.array(
     z.object({
       permissionKey: z.enum(PERMISSION_KEYS),
       scope: z.record(z.string(), z.unknown()).optional().nullable(),
+      /**
+       * When the grant stops conferring anything (FAI-10144). Null removes any
+       * bound. Absent keeps whatever bound the permission already carries — not
+       * "no expiry" — so a client written before this field existed cannot
+       * silently un-time-box a grant by round-tripping the list without it.
+       */
+      expiresAt: grantExpirySchema.optional().nullable(),
     }),
   ),
 });

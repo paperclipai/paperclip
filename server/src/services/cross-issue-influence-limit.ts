@@ -4,12 +4,22 @@ import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  type CrossIssueWriteBasis,
+  type CrossIssueWriteGrantDecision,
+  type CrossIssueWriteOperation,
+  crossIssueWriteGrantLapsedAt,
+  evaluateCrossIssueWriteGrant,
+  resolveCrossIssueWriteBasis,
+} from "./cross-issue-write-basis.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
 export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.000Z");
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
+const CROSS_ISSUE_WRITE_GRANT_DENIED_ACTIVITY = "issue.cross_issue_write_grant_denied";
+const CROSS_ISSUE_WRITE_GRANT_WOULD_DENY_ACTIVITY = "issue.cross_issue_write_grant_would_deny";
 
 /**
  * Every kind shares one per-run counter. `interaction_resolution` covers the
@@ -19,13 +29,68 @@ const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap
  */
 export type CrossIssueInfluenceKind = "comment" | "update" | "interaction_resolution";
 
+/**
+ * A comment adds a message to someone else's thread; a PATCH or an interaction
+ * resolution changes their ticket's state. The second needs a basis that names
+ * authority over the target, not just a relationship to it — see
+ * `CROSS_ISSUE_WRITE_COMMENT_ONLY_BASES`.
+ *
+ * This is the *default* grade for a route, not the last word. `POST /comments`
+ * is not always a pure comment: `resume`/`reopen`, an implicit move-to-todo, a
+ * superseded scheduled retry, and a closed-workspace reopen all mutate the
+ * target. Callers pass an explicit `operation` when the request body says the
+ * write does more than add a message, so authority is graded by effect rather
+ * than by endpoint (FAI-10134 blocking finding 1).
+ */
+export function crossIssueWriteOperationForKind(kind: CrossIssueInfluenceKind): CrossIssueWriteOperation {
+  return kind === "comment" ? "comment" : "mutation";
+}
+
+/**
+ * Everything the persistence-time re-check needs to resolve the same decision
+ * again, under locks, inside the transaction that actually writes. Produced only
+ * when enforcement is armed — in observe mode the re-check could not refuse
+ * anything, so it is not worth the queries.
+ */
+export type CrossIssueWriteFence = {
+  companyId: string;
+  runId: string;
+  agentId: string;
+  responsibleUserId: string | null;
+  sourceIssueId: string;
+  targetIssueId: string;
+  targetIssueIdentifier: string | null;
+  kind: CrossIssueInfluenceKind;
+  /**
+   * The grade the gate resolved against. Carried on the fence so the
+   * persistence-time re-check cannot silently re-resolve a mutating comment as
+   * comment-grade and re-admit the write the gate refused.
+   */
+  operation: CrossIssueWriteOperation;
+  /** The basis that held at cap time, for the drift audit row. */
+  basisAtCheck: CrossIssueWriteGrantDecision["basis"];
+  enforceAt: string | null;
+};
+
 export type CrossIssueInfluenceDecision = {
   allowed: boolean;
   mode: "log_only" | "enforce";
   count: number;
   cap: number;
   enforceAt: string;
+  /**
+   * Present when enforcement is armed. The route must re-assert it inside the
+   * transaction that persists the write — see `assertCrossIssueWriteFence`.
+   */
+  fence?: CrossIssueWriteFence | null;
 };
+
+export function crossIssueWriteGrantError(context: { issueIdentifier?: string | null } = {}) {
+  // A 403 boundary, deliberately not the cap's 429: retrying next heartbeat
+  // will not help, so the copy has to point at the grant instead of the budget.
+  const { body } = issueWriteDenialResponse("cross_issue_write_grant_required", context);
+  return forbidden(body.error, body.details);
+}
 
 export function crossIssueInfluenceRunContextError() {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
@@ -66,6 +131,11 @@ export function evaluateCrossIssueInfluenceLimit(input: {
  * observation is intentionally recorded before the route mutation: once the
  * rollout reaches enforcement, failures cannot be used to race or probe past
  * the fail-closed backstop.
+ *
+ * Authority is resolved *before* the counter (FAI-10132): the 20-per-run cap is
+ * a rate backstop on writes the agent is allowed to make, so spending budget on
+ * a write that has no basis would conflate "out of budget" with "not permitted"
+ * in both the audit trail and the error an agent reads.
  */
 export async function observeCrossIssueInfluence(
   db: Db,
@@ -77,14 +147,26 @@ export async function observeCrossIssueInfluence(
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
     kind: CrossIssueInfluenceKind;
+    /**
+     * Overrides the route's default grade when the request's effects are wider
+     * than its endpoint — a `POST /comments` that also moves the target to
+     * `todo` is a mutation and must be authorized as one.
+     */
+    operation?: CrossIssueWriteOperation;
     now?: Date;
+    enforceGrantAt?: Date | null;
   },
 ): Promise<CrossIssueInfluenceDecision | null> {
   // API-key callers control the run header. Reject malformed UUIDs before the
   // database can turn an untrusted identifier into a PostgreSQL cast error.
   if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
 
-  return db.transaction(async (tx) => {
+  const operation = input.operation ?? crossIssueWriteOperationForKind(input.kind);
+
+  const outcome = await db.transaction(async (tx): Promise<
+    | { grantDenied: CrossIssueWriteGrantDecision; sourceIssueId: string; runResponsibleUserId: string | null }
+    | { decision: CrossIssueInfluenceDecision | null }
+  > => {
     const run = await tx
       .select({
         id: heartbeatRuns.id,
@@ -115,7 +197,77 @@ export async function observeCrossIssueInfluence(
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
     ) {
-      return null;
+      return { decision: null };
+    }
+
+    const grant = evaluateCrossIssueWriteGrant({
+      authority: await resolveCrossIssueWriteBasis(tx, {
+        companyId: input.companyId,
+        actorAgentId: input.agentId,
+        sourceIssueId,
+        targetIssueId: input.targetIssueId,
+        operation,
+      }, { now: input.now }),
+      now: input.now,
+      enforceAt: input.enforceGrantAt,
+    });
+    if (!grant.allowed) {
+      // The audit row is written outside this transaction: the refusal throws,
+      // and a rollback would take the evidence of the refusal with it. The run's
+      // responsible user rides along because the row is written after the
+      // locked run row is out of scope, and a denial must not lose delegated
+      // attribution the allowed rows keep.
+      return { grantDenied: grant, sourceIssueId, runResponsibleUserId: run.responsibleUserId ?? null };
+    }
+    if (grant.basis === null) {
+      // Shadow phase. The write proceeds exactly as it does today; this row is
+      // the only record that enforcement would have stopped it, and it is the
+      // dataset the cutover decision is made from. Best-effort: a failed audit
+      // insert must not turn a currently-legal write into a 500.
+      try {
+        await tx.insert(activityLog).values({
+          companyId: input.companyId,
+          actorType: "agent",
+          actorId: input.agentId,
+          agentId: input.agentId,
+          runId: input.runId,
+          responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
+          action: CROSS_ISSUE_WRITE_GRANT_WOULD_DENY_ACTIVITY,
+          entityType: "issue",
+          entityId: input.targetIssueId,
+          details: {
+            kind: input.kind,
+            operation,
+            sourceIssueId,
+            targetIssueId: input.targetIssueId,
+            targetIssueIdentifier: input.targetIssueIdentifier ?? null,
+            basis: null,
+            commentOnlyBasis: grant.commentOnlyBasis,
+            grantExpiredAt: grant.grantExpiredAt,
+            targetAssigneeUserId: grant.targetAssigneeUserId,
+            grantMode: grant.mode,
+            grantEnforceAt: grant.enforceAt,
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, companyId: input.companyId, agentId: input.agentId, targetIssueId: input.targetIssueId },
+          "Failed to audit a shadow-phase cross-issue write with no grant basis",
+        );
+      }
+      logger.warn({
+        event: "cross_issue_write_grant",
+        companyId: input.companyId,
+        runId: input.runId,
+        agentId: input.agentId,
+        sourceIssueId,
+        targetIssueId: input.targetIssueId,
+        kind: input.kind,
+        basis: null,
+        commentOnlyBasis: grant.commentOnlyBasis,
+        mode: grant.mode,
+        enforceAt: grant.enforceAt,
+      }, "cross-issue write has no grant basis and would be denied under enforcement");
     }
 
     const priorCount = await tx
@@ -143,6 +295,7 @@ export async function observeCrossIssueInfluence(
       entityId: input.targetIssueId,
       details: {
         kind: input.kind,
+        operation,
         sourceIssueId,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
@@ -151,6 +304,8 @@ export async function observeCrossIssueInfluence(
         mode: decision.mode,
         enforceAt: decision.enforceAt,
         allowed: decision.allowed,
+        basis: grant.basis,
+        grantMode: grant.mode,
       },
     });
 
@@ -167,6 +322,7 @@ export async function observeCrossIssueInfluence(
       mode: decision.mode,
       enforceAt: decision.enforceAt,
       allowed: decision.allowed,
+      basis: grant.basis,
     };
     if (decision.allowed) {
       logger.info(logContext, "cross-issue influence observed");
@@ -174,8 +330,263 @@ export async function observeCrossIssueInfluence(
       logger.warn(logContext, "cross-issue influence cap exceeded");
     }
 
-    return decision;
+    // The fence exists only to be re-asserted under locks at persistence time,
+    // and only enforcement can act on it. In observe mode the re-check could
+    // refuse nothing, so it is not worth the extra statements.
+    const fence: CrossIssueWriteFence | null = grant.mode === "enforce"
+      ? {
+        companyId: input.companyId,
+        runId: input.runId,
+        agentId: input.agentId,
+        responsibleUserId: input.responsibleUserId ?? run.responsibleUserId ?? null,
+        sourceIssueId,
+        targetIssueId: input.targetIssueId,
+        targetIssueIdentifier: input.targetIssueIdentifier ?? null,
+        kind: input.kind,
+        operation,
+        basisAtCheck: grant.basis,
+        enforceAt: grant.enforceAt,
+      }
+      : null;
+
+    return { decision: { ...decision, fence } };
   });
+
+  if ("grantDenied" in outcome) {
+    await auditCrossIssueWriteGrantDenied(db, {
+      ...input,
+      operation,
+      responsibleUserId: input.responsibleUserId ?? outcome.runResponsibleUserId,
+    }, outcome.grantDenied, outcome.sourceIssueId);
+    throw crossIssueWriteGrantError({ issueIdentifier: input.targetIssueIdentifier ?? null });
+  }
+  return outcome.decision;
+}
+
+/**
+ * Audit an enforced refusal. Best-effort by design: losing the row is bad, but
+ * turning a clean 403 into a 500 is worse, and the refusal itself already
+ * happened inside the committed transaction's decision.
+ */
+async function auditCrossIssueWriteGrantDenied(
+  db: Db,
+  input: {
+    companyId: string;
+    runId: string;
+    agentId: string;
+    responsibleUserId?: string | null;
+    targetIssueId: string;
+    targetIssueIdentifier?: string | null;
+    kind: CrossIssueInfluenceKind;
+    operation: CrossIssueWriteOperation;
+  },
+  grant: CrossIssueWriteGrantDecision,
+  sourceIssueId: string,
+) {
+  try {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.agentId,
+      agentId: input.agentId,
+      runId: input.runId,
+      responsibleUserId: input.responsibleUserId ?? null,
+      action: CROSS_ISSUE_WRITE_GRANT_DENIED_ACTIVITY,
+      entityType: "issue",
+      entityId: input.targetIssueId,
+      details: {
+        kind: input.kind,
+        operation: input.operation,
+        sourceIssueId,
+        targetIssueId: input.targetIssueId,
+        targetIssueIdentifier: input.targetIssueIdentifier ?? null,
+        basis: null,
+        commentOnlyBasis: grant.commentOnlyBasis,
+        grantExpiredAt: grant.grantExpiredAt,
+        grantMode: grant.mode,
+        grantEnforceAt: grant.enforceAt,
+      },
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId, agentId: input.agentId, targetIssueId: input.targetIssueId },
+      "Failed to audit a denied cross-issue write",
+    );
+  }
+  logger.warn({
+    event: "cross_issue_write_grant",
+    companyId: input.companyId,
+    runId: input.runId,
+    agentId: input.agentId,
+    sourceIssueId,
+    targetIssueId: input.targetIssueId,
+    kind: input.kind,
+    basis: null,
+    mode: grant.mode,
+    enforceAt: grant.enforceAt,
+  }, "cross-issue write denied: no grant basis");
+}
+
+const CROSS_ISSUE_WRITE_GRANT_REVOKED_ACTIVITY = "issue.cross_issue_write_grant_revoked_in_flight";
+const CROSS_ISSUE_WRITE_GRANT_EXPIRED_ACTIVITY = "issue.cross_issue_write_grant_expired_in_flight";
+
+/**
+ * Re-assert the authority the cap gate resolved, inside the transaction that is
+ * about to persist the write, with `FOR SHARE` on every row the decision reads
+ * (FAI-10134 blocking finding 1).
+ *
+ * `tx` must be the persistence transaction: the locks it takes are what makes
+ * this binding. A reassignment, reparent, or grant revocation racing the write
+ * either commits before these locks — in which case the re-resolution sees it,
+ * this throws, and drizzle rolls the mutation back with zero rows written — or
+ * it blocks behind them until the mutation commits. `auditDb` is the pooled
+ * handle, deliberately *not* `tx`, so the evidence row survives that rollback.
+ */
+export async function assertCrossIssueWriteFence(
+  auditDb: Db,
+  tx: Parameters<typeof resolveCrossIssueWriteBasis>[0],
+  fence: CrossIssueWriteFence | null | undefined,
+): Promise<CrossIssueWriteBasis | null> {
+  if (!fence) return null;
+  const authority = await resolveCrossIssueWriteBasis(
+    tx,
+    {
+      companyId: fence.companyId,
+      actorAgentId: fence.agentId,
+      sourceIssueId: fence.sourceIssueId,
+      targetIssueId: fence.targetIssueId,
+      operation: fence.operation,
+    },
+    { lockAuthorityInputs: true },
+  );
+  if (authority.basis !== null) return authority.basis;
+
+  const context = {
+    event: "cross_issue_write_grant",
+    companyId: fence.companyId,
+    runId: fence.runId,
+    agentId: fence.agentId,
+    sourceIssueId: fence.sourceIssueId,
+    targetIssueId: fence.targetIssueId,
+    kind: fence.kind,
+    basisAtCheck: fence.basisAtCheck,
+    basisAtWrite: null,
+    enforceAt: fence.enforceAt,
+  };
+  try {
+    await auditDb.insert(activityLog).values({
+      companyId: fence.companyId,
+      actorType: "agent",
+      actorId: fence.agentId,
+      agentId: fence.agentId,
+      runId: fence.runId,
+      responsibleUserId: fence.responsibleUserId,
+      action: CROSS_ISSUE_WRITE_GRANT_REVOKED_ACTIVITY,
+      entityType: "issue",
+      entityId: fence.targetIssueId,
+      details: {
+        kind: fence.kind,
+        operation: fence.operation,
+        sourceIssueId: fence.sourceIssueId,
+        targetIssueId: fence.targetIssueId,
+        targetIssueIdentifier: fence.targetIssueIdentifier,
+        basisAtCheck: fence.basisAtCheck,
+        basisAtWrite: null,
+        commentOnlyBasis: authority.commentOnlyBasis ?? null,
+        // Non-null when the write was refused because the grant behind it had
+        // lapsed. That is what separates "denied because it expired" from
+        // "denied because it was never granted" after the fact — acceptance
+        // criterion 2 of FAI-10144, which the fence's audit row had collapsed
+        // to a bare `basisAtWrite: null`.
+        grantExpiredAt: authority.grantExpiredAt ?? null,
+        targetAssigneeUserId: authority.targetAssigneeUserId ?? null,
+        grantMode: "enforce",
+        grantEnforceAt: fence.enforceAt,
+      },
+    });
+  } catch (err) {
+    logger.warn({ ...context, err }, "Failed to audit a cross-issue write refused for revoked authority");
+  }
+  logger.warn(context, "cross-issue write refused: authority revoked between the cap gate and the write");
+  throw crossIssueWriteGrantError({ issueIdentifier: fence.targetIssueIdentifier });
+}
+
+/**
+ * Re-assert the *expiry* half of the fence at the last authorized write
+ * boundary — after the mutation statements, immediately before commit.
+ *
+ * `assertCrossIssueWriteFence` locks every row its decision reads, which pins
+ * all of them except the one input that moves on its own. `expires_at` is not
+ * compared against a row, it is compared against the clock, and the clock keeps
+ * running after the lock is taken. So a grant that was active when the fence
+ * ran can lapse while the mutation executes, and the write commits on authority
+ * that no longer holds. No lock closes that, because no lock stops time; the
+ * only fix is to ask again where there is nothing left to happen but COMMIT.
+ *
+ * Runs only when the grant was the basis the fence accepted. A write riding a
+ * structural basis — the actor is the target's assignee, created it, or shares
+ * its parent — has no expiry to cross, and re-reading the grant table for it
+ * would be a query per write for an answer that cannot matter.
+ *
+ * `auditDb` is the pooled handle for the same reason it is in the fence: the
+ * throw rolls `tx` back, and the evidence has to survive that.
+ */
+export async function assertCrossIssueWriteFenceUnexpiredAtCommit(
+  auditDb: Db,
+  tx: Parameters<typeof resolveCrossIssueWriteBasis>[0],
+  fence: CrossIssueWriteFence | null | undefined,
+  basisAtWrite: CrossIssueWriteBasis | null,
+) {
+  if (!fence || basisAtWrite !== "explicit_permission_grant") return;
+  const lapsedAt = await crossIssueWriteGrantLapsedAt(tx, fence.companyId, fence.agentId, new Date());
+  if (!lapsedAt) return;
+
+  const context = {
+    event: "cross_issue_write_grant",
+    companyId: fence.companyId,
+    runId: fence.runId,
+    agentId: fence.agentId,
+    sourceIssueId: fence.sourceIssueId,
+    targetIssueId: fence.targetIssueId,
+    kind: fence.kind,
+    basisAtCheck: fence.basisAtCheck,
+    basisAtWrite,
+    grantExpiredAt: lapsedAt.toISOString(),
+    enforceAt: fence.enforceAt,
+  };
+  try {
+    await auditDb.insert(activityLog).values({
+      companyId: fence.companyId,
+      actorType: "agent",
+      actorId: fence.agentId,
+      agentId: fence.agentId,
+      runId: fence.runId,
+      responsibleUserId: fence.responsibleUserId,
+      action: CROSS_ISSUE_WRITE_GRANT_EXPIRED_ACTIVITY,
+      entityType: "issue",
+      entityId: fence.targetIssueId,
+      details: {
+        kind: fence.kind,
+        operation: fence.operation,
+        sourceIssueId: fence.sourceIssueId,
+        targetIssueId: fence.targetIssueId,
+        targetIssueIdentifier: fence.targetIssueIdentifier,
+        basisAtCheck: fence.basisAtCheck,
+        basisAtWrite,
+        // Distinct from the revoked-in-flight row: the authority was not taken
+        // away mid-write, it ran out mid-write. Both refuse the same way and
+        // both leave zero rows, but an operator reading the trail should not
+        // have to guess which happened.
+        grantExpiredAt: lapsedAt.toISOString(),
+        grantMode: "enforce",
+        grantEnforceAt: fence.enforceAt,
+      },
+    });
+  } catch (err) {
+    logger.warn({ ...context, err }, "Failed to audit a cross-issue write refused for an expired grant");
+  }
+  logger.warn(context, "cross-issue write refused: grant expired between the fence and the commit");
+  throw crossIssueWriteGrantError({ issueIdentifier: fence.targetIssueIdentifier });
 }
 
 export function crossIssueInfluenceLimitError(

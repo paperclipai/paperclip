@@ -924,13 +924,14 @@ describe.sequential("agent permission routes", () => {
       }));
 
     expect([200, 201]).toContain(res.status);
-    expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
-      companyId,
-      "agent",
-      agentId,
-      "member",
-      "active",
-    );
+    // The route no longer ensures the membership itself. That call ran on the
+    // pool before the grant's transaction opened, so a removal committing in
+    // the gap was invisible to the write that followed — and it *activated*
+    // whatever membership it found, so writing a permission quietly re-admitted
+    // a principal an operator had stood down. `setPrincipalPermission` now does
+    // it inside its own transaction, under the grant lock, and refuses an
+    // archived member rather than reviving one (FAI-10152 round 4).
+    expect(mockAccessService.ensureMembership).not.toHaveBeenCalled();
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
       "agent",
@@ -1612,6 +1613,11 @@ describe.sequential("agent permission routes", () => {
         permissionKey: "tasks:assign",
         scope: null,
         grantedByUserId: "board-user",
+        // The column is `not null`-free but always *present* on a real row —
+        // `listPrincipalGrants` does an unprojected `.select()`. Spelling it
+        // here keeps the fixture the shape the route actually receives, which
+        // is what the expiry check below reads (FAI-10144).
+        expiresAt: null,
         createdAt: new Date("2026-03-19T00:00:00.000Z"),
         updatedAt: new Date("2026-03-19T00:00:00.000Z"),
       },
@@ -1630,6 +1636,94 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
+  }, 15_000);
+
+  it("stops reporting a lapsed tasks:assign grant as explicit authority", async () => {
+    // The grant row is still there, so a presence check still sees it — but
+    // `decidePrincipalGrant` denies it with `deny_expired_grant`, and a detail
+    // page that answers `explicit_grant` here contradicts the evaluator it is
+    // describing (FAI-10144). The fallback is whatever authority the agent has
+    // without the grant, not a denial.
+    mockAccessService.listPrincipalGrants.mockResolvedValue([
+      {
+        id: "grant-1",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "tasks:assign",
+        scope: null,
+        grantedByUserId: "board-user",
+        expiresAt: new Date("2026-03-20T00:00:00.000Z"),
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.taskAssignSource).not.toBe("explicit_grant");
+    expect(res.body.access.taskAssignSource).toBe("simple_default");
+  }, 15_000);
+
+  it("stops reporting a live grant as explicit authority once the membership is suspended", async () => {
+    // Same shape as the lapsed-grant case above, on the other precondition.
+    // `getMembership` returns the row in any standing and suspension leaves the
+    // grants in place deliberately, so a presence check kept answering
+    // `explicit_grant` for an agent `decidePrincipalGrant` denies with
+    // `deny_missing_membership` — and answered it *ahead* of the
+    // `simple_default` branch, which has always required `active`. There is no
+    // fallback here: a suspended member has no task-assignment authority at all
+    // (FAI-10151 finding 1).
+    mockAccessService.getMembership.mockResolvedValue({
+      id: "membership-1",
+      companyId,
+      principalType: "agent",
+      principalId: agentId,
+      status: "suspended",
+      membershipRole: "member",
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([
+      {
+        id: "grant-1",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "tasks:assign",
+        scope: null,
+        grantedByUserId: "board-user",
+        expiresAt: null,
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.taskAssignSource).toBe("none");
+    expect(res.body.access.canAssignTasks).toBe(false);
+    // The row is still reported, with its membership beside it: what is on file
+    // is not the same claim as what it confers.
+    expect(res.body.access.grants).toHaveLength(1);
   }, 15_000);
 
   it("reports simple-mode task assignment as enabled for active company agent members", async () => {

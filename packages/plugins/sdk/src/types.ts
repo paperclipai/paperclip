@@ -1883,6 +1883,13 @@ export interface PluginAuthorizationDecisionResult {
     principalId: string;
     permissionKey: PermissionKey;
     scope: Record<string, unknown> | null;
+    /**
+     * The bound on the grant this decision rested on; null when it has none.
+     * A plugin that reads a decision to explain or cache it has to be able to
+     * see that the authority is time-boxed, or it will present an allow that
+     * has an expiry date as one that does not (FAI-10144).
+     */
+    expiresAt?: string | null;
   };
 }
 
@@ -1905,7 +1912,18 @@ export interface PluginAuthorizationClient {
       companyId: string;
       principalType: PrincipalType;
       principalId: string;
-      grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>;
+      grants: Array<{
+        permissionKey: PermissionKey;
+        scope?: Record<string, unknown> | null;
+        /**
+         * ISO instant the grant stops conferring anything, and it must name its
+         * own offset. Null removes any bound; absent keeps whatever bound the
+         * permission already carries, so a plugin written before this field
+         * existed cannot un-time-box a grant by replacing the set without it
+         * (FAI-10144).
+         */
+        expiresAt?: string | null;
+      }>;
       grantedByUserId?: string | null;
     }): Promise<PrincipalPermissionGrant[]>;
   };

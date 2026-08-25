@@ -44,10 +44,9 @@ import {
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
-  PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -82,8 +81,10 @@ import { collectReachableInterfaceHosts } from "../runtime-api.js";
 import {
   accessService,
   agentService,
+  assertGrantScopesAreSaveable,
   boardAuthService,
   deduplicateAgentName,
+  grantRowsPreservingExpiry,
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
@@ -92,7 +93,13 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
-import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
+// Both halves of the invite-defaults parser live in one place now. This file
+// carried a byte-for-byte copy of `grantsFromDefaults`/`agentJoinGrantsFromDefaults`
+// while importing the human half from the service, so the agent-join route ran
+// the *uncovered* copy — `invite-join-grants.test.ts` exercises the service one
+// — and an expiry carried through one copy would have been dropped by the other
+// (FAI-10144).
+import { agentJoinGrantsFromDefaults, humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
@@ -124,6 +131,8 @@ const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
 type MemberGrantPayload = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
+  /** ISO instant the grant lapses. Null removes the bound; absent keeps it. */
+  expiresAt?: string | null;
 };
 
 export function createInviteToken() {
@@ -2201,60 +2210,6 @@ async function resolveAcceptedInviteJoinRequest(
       requestEmailSnapshot: actorEmail,
     },
   );
-}
-
-function grantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined,
-  key: "human" | "agent"
-): Array<{
-  permissionKey: (typeof PERMISSION_KEYS)[number];
-  scope: Record<string, unknown> | null;
-}> {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
-  const scoped = defaultsPayload[key];
-  if (!scoped || typeof scoped !== "object") return [];
-  const grants = (scoped as Record<string, unknown>).grants;
-  if (!Array.isArray(grants)) return [];
-  const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
-  const result: Array<{
-    permissionKey: (typeof PERMISSION_KEYS)[number];
-    scope: Record<string, unknown> | null;
-  }> = [];
-  for (const item of grants) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    if (typeof record.permissionKey !== "string") continue;
-    if (!validPermissionKeys.has(record.permissionKey)) continue;
-    result.push({
-      permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
-      scope:
-        record.scope &&
-        typeof record.scope === "object" &&
-        !Array.isArray(record.scope)
-          ? (record.scope as Record<string, unknown>)
-          : null
-    });
-  }
-  return result;
-}
-
-export function agentJoinGrantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined
-): Array<{
-  permissionKey: (typeof PERMISSION_KEYS)[number];
-  scope: Record<string, unknown> | null;
-}> {
-  const grants = grantsFromDefaults(defaultsPayload, "agent");
-  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
-    return grants;
-  }
-  return [
-    ...grants,
-    {
-      permissionKey: "tasks:assign",
-      scope: null
-    }
-  ];
 }
 
 type JoinRequestManagerCandidate = {
@@ -4592,6 +4547,9 @@ export function accessRoutes(
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      // Refuse an unscoped `issues:cross-write` before the delete-then-insert
+      // below drops the member's existing grants for an unsaveable payload.
+      assertGrantScopesAreSaveable((req.body.grants ?? []) as MemberGrantPayload[]);
 
       const updated = await db.transaction(async (tx) => {
         await tx.execute(sql`
@@ -4657,6 +4615,20 @@ export function accessRoutes(
           .returning()
           .then((rows) => rows[0] ?? existing);
 
+        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
+        // Read the existing bounds *before* the delete: an omitted `expiresAt`
+        // keeps the one already on that permission, so a client that round-trips
+        // the grant list without the field cannot silently un-time-box a grant.
+        // See `grantRowsPreservingExpiry` in services/access.ts.
+        const rows = await grantRowsPreservingExpiry(tx, {
+          companyId,
+          principalType: existing.principalType as PrincipalType,
+          principalId: existing.principalId,
+          grants,
+          grantedByUserId: req.actor.userId ?? null,
+          now,
+        });
+
         await tx
           .delete(principalPermissionGrants)
           .where(
@@ -4667,21 +4639,7 @@ export function accessRoutes(
             ),
           );
 
-        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
-        if (grants.length > 0) {
-          await tx.insert(principalPermissionGrants).values(
-            grants.map((grant) => ({
-              companyId,
-              principalType: existing.principalType,
-              principalId: existing.principalId,
-              permissionKey: grant.permissionKey,
-              scope: grant.scope ?? null,
-              grantedByUserId: req.actor.userId ?? null,
-              createdAt: now,
-              updatedAt: now,
-            })),
-          );
-        }
+        if (rows.length > 0) await tx.insert(principalPermissionGrants).values(rows);
 
         return updatedMember;
       });

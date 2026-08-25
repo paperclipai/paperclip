@@ -62,6 +62,7 @@ import {
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
+  portableGrantExpirySchema,
 } from "@paperclipai/shared";
 import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
 import {
@@ -821,9 +822,19 @@ function normalizePortablePermissionGrants(value: unknown): PortableAgentPermiss
     if (!isPlainRecord(entry)) return [];
     const permissionKey = asString(entry.permissionKey);
     if (!permissionKey || !VALID_PERMISSION_KEYS.has(permissionKey as PermissionKey)) return [];
+    // This path is hand-rolled and does not run the manifest's zod schema, so
+    // it applies that schema's expiry contract directly rather than a second
+    // hand-written one that could drift from it. Anything the contract rejects
+    // -- unparseable, or an instant with no offset, which `new Date` would
+    // resolve against this machine's local zone -- drops the whole grant. The
+    // manifest asked for time-boxed authority, and importing it *without* the
+    // bound is the one outcome worse than importing nothing (FAI-10144).
+    const expiresAt = portableGrantExpirySchema.safeParse(entry.expiresAt ?? null);
+    if (!expiresAt.success) return [];
     return [{
       permissionKey: permissionKey as PermissionKey,
       scope: isPlainRecord(entry.scope) ? entry.scope : null,
+      expiresAt: expiresAt.data,
     }];
   });
 }
@@ -3523,7 +3534,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     grantedByUserId: string | null,
   ) {
     if (permissionGrants.length === 0) return;
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    // Membership is ensured inside `setPrincipalPermission`, atomically with
+    // the grant and refusing an archived member. See FAI-10144.
     for (const grant of permissionGrants) {
       await access.setPrincipalPermission(
         companyId,
@@ -3533,6 +3545,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         true,
         grantedByUserId,
         grant.scope ?? null,
+        // Explicitly null rather than absent: an import re-materializes the
+        // grant wholesale, so "the source had no expiry" must clear any expiry
+        // an earlier import left on the row (FAI-10144).
+        grant.expiresAt ? new Date(grant.expiresAt) : null,
       );
     }
   }
@@ -3886,6 +3902,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           principalId: principalPermissionGrants.principalId,
           permissionKey: principalPermissionGrants.permissionKey,
           scope: principalPermissionGrants.scope,
+          expiresAt: principalPermissionGrants.expiresAt,
         })
         .from(principalPermissionGrants)
         .where(and(
@@ -3901,6 +3918,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       grants.push({
         permissionKey: row.permissionKey as PermissionKey,
         scope: isPlainRecord(row.scope) ? row.scope : null,
+        expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
       });
       permissionGrantsByAgentId.set(row.principalId, grants);
     }

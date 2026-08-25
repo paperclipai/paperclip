@@ -8,6 +8,7 @@ import {
   createDb,
   instanceUserRoles,
   issues,
+  principalGrantLock,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import {
@@ -53,7 +54,7 @@ describeEmbeddedPostgres("access service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-service-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 900_000);
 
   afterEach(async () => {
     await db.delete(issues);
@@ -67,6 +68,186 @@ describeEmbeddedPostgres("access service", () => {
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  /**
+   * Blocks until some other session is queued on an advisory lock. Proving the
+   * waiter exists is the whole assertion in the two revocation tests below: an
+   * unlocked delete commits straight through and there is never a waiter to
+   * find.
+   */
+  async function waitForAdvisoryLockWaiter(timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const rows = await db.execute(sql`
+        SELECT count(*)::int AS waiting
+        FROM pg_locks
+        WHERE NOT granted AND locktype = 'advisory' AND pid <> pg_backend_pid()
+      `);
+      if (Number((Array.isArray(rows) ? rows[0] : null)?.waiting ?? 0) >= 1) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`no session blocked on an advisory lock within ${timeoutMs}ms`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  /**
+   * Holds the principal's grant-writer lock, exactly as an in-flight
+   * replacement does, and hands back the release. The lock has to live inside a
+   * transaction — `_xact_` releases at commit — so the transaction is what is
+   * parked.
+   */
+  function holdGrantWriterLock(input: {
+    companyId: string;
+    principalType: "user" | "agent";
+    principalId: string;
+  }) {
+    let release!: () => void;
+    let taken!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const isTaken = new Promise<void>((resolve) => { taken = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(principalGrantLock(input));
+      taken();
+      await released;
+    });
+    return { holder, isTaken, release };
+  }
+
+  async function seedArchivableMemberWithGrant(company: { id: string }, grantedBy: string) {
+    const member = await db
+      .insert(companyMemberships)
+      .values({
+        companyId: company.id,
+        principalType: "user",
+        principalId: `member-${randomUUID()}`,
+        status: "active",
+        membershipRole: "operator",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+      permissionKey: "tasks:assign",
+      grantedByUserId: grantedBy,
+    });
+    return member;
+  }
+
+  /**
+   * `archiveMember` and `setUserCompanyAccess` drop a principal's grants
+   * directly rather than through `grantRowsPreservingExpiry`, so they were the
+   * two grant writers left outside the serializing lock. Unlocked, a
+   * replacement that read its rows before the delete reinserts them afterwards
+   * and the revocation is silently undone — an archived member keeps the
+   * authority the archive was supposed to take away (Greptile P1 at
+   * `a01bdf67`, FAI-10144).
+   */
+  it("queues an archived member's grant revocation behind an in-flight grant write", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await seedArchivableMemberWithGrant(company, owner.principalId);
+    const access = accessService(db);
+
+    const lock = holdGrantWriterLock({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+    });
+    await lock.isTaken;
+
+    let archiveSettled = false;
+    const archiving = access
+      .archiveMember(company.id, member.id, {})
+      .then(() => { archiveSettled = true; });
+
+    // Without the lock in `archiveMember` this throws: the delete commits while
+    // the writer lock is held and no session ever waits.
+    await waitForAdvisoryLockWaiter();
+    expect(archiveSettled).toBe(false);
+
+    lock.release();
+    await lock.holder;
+    await archiving;
+
+    const remaining = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(remaining).toHaveLength(0);
+  }, 30_000);
+
+  /**
+   * The role-default seeder is the third writer of the table. `ON CONFLICT DO
+   * NOTHING` makes it idempotent against rows that exist when it runs, which is
+   * not the same as safe against a concurrent revocation: unlocked, an
+   * operator's delete commits and this insert lands after it, putting back a
+   * default grant the operator just removed (Greptile P1 at `9ec80cd9c`,
+   * FAI-10144). Same shape of proof as above — an unlocked seeder commits
+   * straight through and no session ever waits.
+   */
+  it("queues a role-default grant re-seed behind an in-flight grant write", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await seedArchivableMemberWithGrant(company, owner.principalId);
+    const access = accessService(db);
+
+    const lock = holdGrantWriterLock({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+    });
+    await lock.isTaken;
+
+    let seedSettled = false;
+    const seeding = access
+      .ensureRoleDefaultGrants(company.id, member.principalId, "operator", owner.principalId)
+      .then(() => { seedSettled = true; });
+
+    await waitForAdvisoryLockWaiter();
+    expect(seedSettled).toBe(false);
+
+    lock.release();
+    await lock.holder;
+    await seeding;
+
+    const seeded = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(seeded.map((grant) => grant.permissionKey).sort()).toContain("tasks:assign");
+  }, 30_000);
+
+  it("queues an instance-level access removal behind an in-flight grant write", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await seedArchivableMemberWithGrant(company, owner.principalId);
+    const access = accessService(db);
+
+    const lock = holdGrantWriterLock({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+    });
+    await lock.isTaken;
+
+    let removalSettled = false;
+    const removing = access
+      .setUserCompanyAccess(member.principalId, [], { actorUserId: owner.principalId })
+      .then(() => { removalSettled = true; });
+
+    await waitForAdvisoryLockWaiter();
+    expect(removalSettled).toBe(false);
+
+    lock.release();
+    await lock.holder;
+    await removing;
+
+    const remaining = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(remaining).toHaveLength(0);
+  }, 30_000);
 
   it("rejects combined access updates that would demote the last active owner", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
@@ -268,6 +449,164 @@ describeEmbeddedPostgres("access service", () => {
     await expect(access.canUser(company.id, admin.principalId, "environments:manage")).resolves.toBe(true);
     await expect(access.canUser(company.id, operator.principalId, "environments:manage")).resolves.toBe(false);
     await expect(access.canUser(company.id, viewer.principalId, "environments:manage")).resolves.toBe(false);
+  });
+
+  /**
+   * FAI-10144. Enforcement is only half the feature: an operator who time-boxes
+   * a grant has to be able to set the expiry and read it back, or the only way
+   * to know a grant is bounded is to wait for it to stop working.
+   */
+  it("round-trips a grant expiry through the write and read paths", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    const twoWeeks = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [
+        { permissionKey: "environments:manage", expiresAt: twoWeeks },
+        // Same call, no expiry: the two must be storable side by side.
+        { permissionKey: "users:manage_permissions" },
+      ],
+      owner.principalId,
+    );
+
+    const grants = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    const byKey = new Map(grants.map((grant) => [grant.permissionKey, grant]));
+    expect(byKey.get("environments:manage")?.expiresAt?.toISOString()).toBe(twoWeeks.toISOString());
+    expect(byKey.get("users:manage_permissions")?.expiresAt).toBeNull();
+
+    // Still inside the window, so the time-boxed permission is live.
+    await expect(access.canUser(company.id, owner.principalId, "environments:manage")).resolves.toBe(true);
+
+    // Omission must never widen. A client written before this field existed
+    // reads the grant list, flips one permission and writes the list back
+    // without `expiresAt`; that must not turn a two-week authority into a
+    // standing one, even though this endpoint replaces the whole grant set.
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [{ permissionKey: "environments:manage" }],
+      owner.principalId,
+    );
+    const rewritten = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    expect(rewritten.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt?.toISOString())
+      .toBe(twoWeeks.toISOString());
+
+    // An explicit null is how a bound is removed.
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [{ permissionKey: "environments:manage", expiresAt: null }],
+      owner.principalId,
+    );
+    const cleared = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    expect(cleared.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt).toBeNull();
+  });
+
+  /**
+   * The carry-forward read is a read-then-write, so it takes `FOR UPDATE`.
+   * Without the lock, the replacement that omits the field can read the old
+   * bound, lose the race to the one that shortens it, and then write the old
+   * longer bound back — silently undoing the shortening.
+   *
+   * The assertion holds for either interleaving, which is what makes this
+   * deterministic: if the shortening commits first, the omitting replacement
+   * carries the shortened bound forward; if it commits second, it overwrites
+   * with the shortened bound. Only a lost update produces the long one.
+   */
+  it("does not let a concurrent replacement undo a shortened expiry", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    const longBound = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    const shortBound = new Date(Date.now() + 60 * 60 * 1000);
+
+    await access.setPrincipalGrants(
+      company.id,
+      "user",
+      owner.principalId,
+      [{ permissionKey: "environments:manage", expiresAt: longBound }],
+      owner.principalId,
+    );
+
+    await Promise.all([
+      // Shortens the bound on purpose.
+      access.setPrincipalGrants(
+        company.id,
+        "user",
+        owner.principalId,
+        [{ permissionKey: "environments:manage", expiresAt: shortBound }],
+        owner.principalId,
+      ),
+      // Touches the same grant set without mentioning the expiry.
+      access.setPrincipalGrants(
+        company.id,
+        "user",
+        owner.principalId,
+        [{ permissionKey: "environments:manage" }],
+        owner.principalId,
+      ),
+    ]);
+
+    const grants = await access.listPrincipalGrants(company.id, "user", owner.principalId);
+    expect(grants.find((grant) => grant.permissionKey === "environments:manage")?.expiresAt?.toISOString())
+      .toBe(shortBound.toISOString());
+  });
+
+  /**
+   * The seeders (built-in agents, company import) call `setPrincipalPermission`
+   * on every ensure with no expiry argument. If absent meant "clear", a re-seed
+   * would silently un-time-box a grant an operator had deliberately bounded.
+   */
+  it("leaves an existing expiry alone when a re-seed passes no expiry", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    // A principal of its own: `setPrincipalPermission` ensures a plain "member"
+    // membership, which would rewrite the owner's role if aimed at them.
+    const principalId = `seeded-${randomUUID()}`;
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await access.setPrincipalPermission(
+      company.id,
+      "user",
+      principalId,
+      "environments:manage",
+      true,
+      owner.principalId,
+      null,
+      expiresAt,
+    );
+    // A seeder re-ensuring the same permission: scope is restated, expiry is not.
+    await access.setPrincipalPermission(
+      company.id,
+      "user",
+      principalId,
+      "environments:manage",
+      true,
+      owner.principalId,
+    );
+
+    const grants = await access.listPrincipalGrants(company.id, "user", principalId);
+    expect(grants.find((row) => row.permissionKey === "environments:manage")?.expiresAt?.toISOString())
+      .toBe(expiresAt.toISOString());
+
+    // An explicit null is how you actually clear it.
+    await access.setPrincipalPermission(
+      company.id,
+      "user",
+      principalId,
+      "environments:manage",
+      true,
+      owner.principalId,
+      null,
+      null,
+    );
+    const cleared = await access.listPrincipalGrants(company.id, "user", principalId);
+    expect(cleared.find((row) => row.permissionKey === "environments:manage")?.expiresAt).toBeNull();
   });
 
   it("backfills pre-upgrade human memberships with missing role grants without replacing custom grants", async () => {

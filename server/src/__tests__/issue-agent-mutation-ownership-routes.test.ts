@@ -146,6 +146,15 @@ const mockExternalObjectService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+const mockAssertCrossIssueWriteFence = vi.hoisted(() => vi.fn(async () => undefined));
+// The commit-boundary half of the fence. The opening assertion answers once and
+// then returns, so a grant can lapse between it and the last protected write —
+// locks serialize rows, not the clock. Leaving it out of this mock is not a
+// cosmetic omission: the routes import it, so the module double had to provide
+// it or every fenced route threw and answered 500 (FAI-10152 security round 4).
+const mockAssertCrossIssueWriteFenceUnexpiredAtCommit = vi.hoisted(() =>
+  vi.fn(async () => undefined),
+);
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -188,6 +197,8 @@ function registerRouteMocks() {
 
   vi.doMock("../services/cross-issue-influence-limit.js", () => ({
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+    assertCrossIssueWriteFence: mockAssertCrossIssueWriteFence,
+    assertCrossIssueWriteFenceUnexpiredAtCommit: mockAssertCrossIssueWriteFenceUnexpiredAtCommit,
     crossIssueInfluenceLimitError: vi.fn(),
     crossIssueInfluenceRunContextError: () => new HttpError(
       403,
@@ -552,6 +563,10 @@ describe("agent issue mutation checkout ownership", () => {
     mockLogActivity.mockClear();
     mockObserveCrossIssueInfluence.mockReset();
     mockObserveCrossIssueInfluence.mockResolvedValue(null);
+    mockAssertCrossIssueWriteFence.mockReset();
+    mockAssertCrossIssueWriteFence.mockResolvedValue(undefined);
+    mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mockReset();
+    mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mockResolvedValue(undefined);
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockExternalObjectService.getIssueSummaries.mockClear();
@@ -1038,6 +1053,176 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(401);
     expect(res.body.error).toBe("Agent run id required");
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The commit-boundary guard ran on the persisting transaction, carrying the
+   * basis the opening fence resolved, and it ran *after* every protected write.
+   *
+   * Position is the whole contract. The opening fence locks its inputs, which
+   * holds every one of them still except the clock, so a grant that was live
+   * when the transaction opened can lapse while the mutation statements run. A
+   * guard that fires before the writes proves nothing that the opening fence
+   * had not already proved; only the last statement before COMMIT can roll them
+   * back (FAI-10152 security round 4).
+   */
+  function expectCommitBoundaryGuardRanLast(tx: unknown) {
+    expect(mockAssertCrossIssueWriteFenceUnexpiredAtCommit).toHaveBeenCalled();
+    for (const call of mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mock.calls) {
+      const args = call as unknown[];
+      expect(args[1]).toBe(tx);
+      expect(args[3]).toBe("explicit_permission_grant");
+    }
+    const guardedAt = Math.min(
+      ...mockAssertCrossIssueWriteFenceUnexpiredAtCommit.mock.invocationCallOrder,
+    );
+    for (const write of [mockIssueService.update, mockIssueService.addComment]) {
+      for (const order of write.mock.invocationCallOrder) {
+        expect(guardedAt).toBeGreaterThan(order);
+      }
+    }
+  }
+
+  // FAI-10132: a fenced PATCH that also carries a comment persists two rows.
+  // Splitting them across two transactions lets an authority revocation landing
+  // between the commits refuse the comment after the field update has already
+  // been written, so the caller reads a 403 for a status change that stuck.
+  // Both rows must therefore commit together.
+  it("commits a fenced field update and its bundled comment in one transaction", async () => {
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      fence: {
+        companyId,
+        runId: ownerRunId,
+        agentId: ownerAgentId,
+        responsibleUserId: null,
+        sourceIssueId: "88888888-8888-4888-8888-888888888888",
+        targetIssueId: issueId,
+        targetIssueIdentifier: "PAP-1649",
+        kind: "update",
+        basisAtCheck: "actor_is_target_assignee",
+        enforceAt: null,
+      },
+    } as never);
+    // A concrete basis, because the closing guard only has work to do when the
+    // authority was an explicit grant — the one basis that can lapse on a clock
+    // rather than on a row. `undefined` here would let the assertions below
+    // pass against a guard that was never reached.
+    mockAssertCrossIssueWriteFence.mockResolvedValue("explicit_permission_grant" as never);
+    const runContextDb = createRunContextDb();
+    const openedTransactions: unknown[] = [];
+    // One fresh handle per transaction, so two writes sharing a handle is proof
+    // they shared a transaction.
+    const db = {
+      ...runContextDb,
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
+        const tx = { ...runContextDb, transaction: runContextDb.transaction };
+        openedTransactions.push(tx);
+        return callback(tx);
+      },
+    };
+
+    const res = await request(await createApp(ownerActor(), db))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Handing over", comment: "over to QA" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    // Third argument of update, fifth of addComment.
+    const updateTx = mockIssueService.update.mock.calls[0][2];
+    const commentTx = mockIssueService.addComment.mock.calls[0][4];
+    expect(openedTransactions).toContain(updateTx);
+    expect(commentTx).toBe(updateTx);
+    // And the fence was re-asserted inside it rather than in a second one.
+    expect(mockAssertCrossIssueWriteFence).toHaveBeenCalled();
+    for (const call of mockAssertCrossIssueWriteFence.mock.calls) {
+      expect((call as unknown[])[1]).toBe(updateTx);
+    }
+    expectCommitBoundaryGuardRanLast(updateTx);
+  });
+
+  // FAI-10134 blocking finding 1: `POST /comments` is not always a pure
+  // comment. `resume`/`reopen` moves the target's status, so the run-cap gate
+  // has to be asked for mutation-grade authority — otherwise a comment-only
+  // basis (a sibling, a shared routine origin, a mention) carries a state change.
+  it("asks for mutation-grade authority when a comment carries resume intent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+
+    const resumed = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Picking this back up.", resume: true });
+
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(201);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "comment", operation: "mutation" }),
+    );
+
+    // A pure comment on the same issue keeps comment grade.
+    mockObserveCrossIssueInfluence.mockClear();
+    await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Context only." })
+      .expect(201);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "comment", operation: "comment" }),
+    );
+  });
+
+  // The atomicity half of the same finding: the status transition a resuming
+  // comment performs and the comment row must commit together, or a revocation
+  // landing between them refuses the comment after the peer issue has already
+  // been reopened.
+  it("commits a fenced resuming comment's status change and comment row in one transaction", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: true,
+      fence: {
+        companyId,
+        runId: ownerRunId,
+        agentId: ownerAgentId,
+        responsibleUserId: null,
+        sourceIssueId: "88888888-8888-4888-8888-888888888888",
+        targetIssueId: issueId,
+        targetIssueIdentifier: "PAP-1649",
+        kind: "comment",
+        operation: "mutation",
+        basisAtCheck: "actor_is_target_assignee",
+        enforceAt: null,
+      },
+    } as never);
+    mockAssertCrossIssueWriteFence.mockResolvedValue("explicit_permission_grant" as never);
+    const runContextDb = createRunContextDb();
+    const openedTransactions: unknown[] = [];
+    const db = {
+      ...runContextDb,
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
+        const tx = { ...runContextDb, transaction: runContextDb.transaction };
+        openedTransactions.push(tx);
+        return callback(tx);
+      },
+    };
+
+    const res = await request(await createApp(ownerActor(), db))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Picking this back up.", resume: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    const updateTx = mockIssueService.update.mock.calls[0][2];
+    const commentTx = mockIssueService.addComment.mock.calls[0][4];
+    expect(openedTransactions).toContain(updateTx);
+    expect(commentTx).toBe(updateTx);
+    expect(mockAssertCrossIssueWriteFence).toHaveBeenCalled();
+    for (const call of mockAssertCrossIssueWriteFence.mock.calls) {
+      expect((call as unknown[])[1]).toBe(updateTx);
+    }
+    expectCommitBoundaryGuardRanLast(updateTx);
   });
 
   it("allows the checked-out owner with the matching run id to patch and update documents", async () => {

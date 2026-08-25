@@ -104,20 +104,25 @@ async function grantAgentPermission(
   agentId: string,
   permissionKey: PermissionKey,
   scope: Record<string, unknown> | null = null,
+  expiresAt: Date | null = null,
 ) {
-  await db.insert(companyMemberships).values({
-    companyId,
-    principalType: "agent",
-    principalId: agentId,
-    status: "active",
-    membershipRole: "member",
-  });
+  await db
+    .insert(companyMemberships)
+    .values({
+      companyId,
+      principalType: "agent",
+      principalId: agentId,
+      status: "active",
+      membershipRole: "member",
+    })
+    .onConflictDoNothing();
   await db.insert(principalPermissionGrants).values({
     companyId,
     principalType: "agent",
     principalId: agentId,
     permissionKey,
     scope,
+    expiresAt,
     grantedByUserId: null,
   });
 }
@@ -170,7 +175,7 @@ describeEmbeddedPostgres("authorization service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-authorization-service-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 900_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -2008,6 +2013,161 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  /**
+   * FAI-10144. `decidePrincipalGrant` is the funnel every permission key flows
+   * through, so expiry is enforced here or nowhere.
+   */
+  describe("grant expiry", () => {
+    it("denies an expired grant, separably from having no grant at all", async () => {
+      const company = await createCompany(db, "ExpiredGrant");
+      const actorAgent = await createAgent(db, company.id);
+      const expiresAt = new Date(Date.now() - 60_000);
+      await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign", null, expiresAt);
+
+      const decision = await authorizationService(db).decidePrincipalGrant({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: actorAgent.id,
+        action: "tasks:assign",
+        permissionKey: "tasks:assign",
+      });
+
+      expect(decision).toMatchObject({
+        allowed: false,
+        // Not `deny_missing_grant`: the audit trail has to show that authority
+        // existed and lapsed, which is the whole point of an expiry.
+        reason: "deny_expired_grant",
+        grant: { permissionKey: "tasks:assign", expiresAt: expiresAt.toISOString() },
+      });
+      expect(decision.explanation).toContain("expired at");
+    });
+
+    it("still allows a grant whose expiry has not been reached", async () => {
+      const company = await createCompany(db, "FutureExpiry");
+      const actorAgent = await createAgent(db, company.id);
+      await grantAgentPermission(
+        db,
+        company.id,
+        actorAgent.id,
+        "tasks:assign",
+        null,
+        new Date(Date.now() + 60_000),
+      );
+
+      const decision = await authorizationService(db).decidePrincipalGrant({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: actorAgent.id,
+        action: "tasks:assign",
+        permissionKey: "tasks:assign",
+      });
+
+      expect(decision).toMatchObject({ allowed: true, reason: "allow_explicit_grant" });
+    });
+
+    /**
+     * The migration adds a nullable column with no backfill, so every grant that
+     * predates FAI-10144 carries null. If null did not mean "never expires",
+     * this change would silently revoke every permission in the product.
+     */
+    it("treats a null expiry as no expiry", async () => {
+      const company = await createCompany(db, "NullExpiry");
+      const actorAgent = await createAgent(db, company.id);
+      await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign", null, null);
+
+      const decision = await authorizationService(db).decidePrincipalGrant({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: actorAgent.id,
+        action: "tasks:assign",
+        permissionKey: "tasks:assign",
+      });
+
+      expect(decision).toMatchObject({ allowed: true, reason: "allow_explicit_grant" });
+    });
+
+    /**
+     * `expiresAt` is when the grant *stops* conferring, so the instant itself is
+     * already expired. Pinned rather than raced, because this is the one case a
+     * wall-clock test cannot hit reliably.
+     */
+    it("treats the expiry instant itself as already expired", async () => {
+      const company = await createCompany(db, "BoundaryExpiry");
+      const actorAgent = await createAgent(db, company.id);
+      const expiresAt = new Date("2026-08-23T00:00:00.000Z");
+      await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign", null, expiresAt);
+
+      const service = authorizationService(db);
+      const atTheInstant = await service.decidePrincipalGrant({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: actorAgent.id,
+        action: "tasks:assign",
+        permissionKey: "tasks:assign",
+        now: expiresAt,
+      });
+      const aMillisecondEarlier = await service.decidePrincipalGrant({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: actorAgent.id,
+        action: "tasks:assign",
+        permissionKey: "tasks:assign",
+        now: new Date(expiresAt.getTime() - 1),
+      });
+
+      expect(atTheInstant).toMatchObject({ allowed: false, reason: "deny_expired_grant" });
+      expect(aMillisecondEarlier).toMatchObject({ allowed: true });
+    });
+
+    /**
+     * `decideWithTaskAssignmentGrants` falls through from the broad key to the
+     * scoped one only when the broad grant is *absent*. An expired broad grant
+     * has to count as absent, or adding expiry would make a lapsed company-wide
+     * grant suppress a live scoped one — a permission the principal still holds.
+     */
+    it("does not let an expired broad grant mask a live scoped grant", async () => {
+      const company = await createCompany(db, "ExpiredBroadLiveScoped");
+      const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+      // A private target makes assignment "restricted", which is what routes
+      // the decision through the broad-then-scoped fall-through at all.
+      const targetAgent = await createAgent(db, company.id, {
+        role: "engineer",
+        permissions: {
+          authorizationPolicy: {
+            agentVisibility: { mode: "private", hiddenFromDefaultDirectory: true },
+            assignmentPolicy: { mode: "company_default", protectedAgentRequiresApproval: false },
+            protectedAgent: { requiresApproval: false },
+            managedBy: "permissions-extension",
+          },
+        },
+      });
+      await grantAgentPermission(
+        db,
+        company.id,
+        actorAgent.id,
+        "tasks:assign",
+        null,
+        new Date(Date.now() - 60_000),
+      );
+      await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign_scope", {
+        assigneeAgentId: targetAgent.id,
+      });
+
+      const decision = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+        action: "tasks:assign",
+        resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+        scope: { assigneeAgentId: targetAgent.id },
+      });
+
+      expect(decision).toMatchObject({
+        allowed: true,
+        reason: "allow_explicit_grant",
+        grant: { permissionKey: "tasks:assign_scope" },
+      });
+    });
+  });
+
   it("allows scoped assignment to agents inside a managed subtree only", async () => {
     const company = await createCompany(db, "SubtreeScope");
     const actorAgent = await createAgent(db, company.id);
@@ -2572,6 +2732,66 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_explicit_grant",
     });
     await expect(decideFor(deniedTargetUserId)).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+  });
+
+  it("treats an expired cross-user inbox grant as no override", async () => {
+    const company = await createCompany(db, "InboxCrossUserExpired");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    const disabledTargetUserId = await createUser(db);
+    const openTargetUserId = await createUser(db);
+    const bareTargetUserId = await createUser(db);
+    await db.insert(companyMemberships).values(
+      [responsibleUserId, disabledTargetUserId, openTargetUserId, bareTargetUserId].map((principalId) => ({
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId,
+        status: "active" as const,
+        membershipRole: "operator" as const,
+      })),
+    );
+    await grantAgentPermission(
+      db,
+      company.id,
+      actorAgent.id,
+      "inbox:manage",
+      { userIds: [disabledTargetUserId, openTargetUserId, bareTargetUserId] },
+      new Date(Date.now() - 60_000),
+    );
+    await db.insert(userInboxAgentPolicies).values([
+      { companyId: company.id, userId: disabledTargetUserId, mode: "disabled" },
+      { companyId: company.id, userId: openTargetUserId, mode: "open" },
+    ]);
+    const decideFor = (userId: string) => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt" as const,
+      },
+      action: "inbox:manage" as const,
+      resource: { type: "company" as const, companyId: company.id },
+      scope: { userId },
+    });
+
+    // The grant covers all three users and would allow every one of them if it
+    // were live. Expired, it must not beat an explicit disable, must not shadow
+    // the target's own live policy, and must still be nameable in the audit
+    // trail as a lapse rather than as a permission never held.
+    await expect(decideFor(disabledTargetUserId)).resolves.toMatchObject({
+      allowed: false,
+      reason: "inbox_management_disabled",
+    });
+    await expect(decideFor(openTargetUserId)).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_user_inbox_policy",
+      inboxPolicyMode: "open",
+    });
+    await expect(decideFor(bareTargetUserId)).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_expired_grant",
+    });
   });
 
   it("denies inbox management when the target user cannot be resolved", async () => {

@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   companySecrets,
   createDb,
   heartbeatRuns,
@@ -46,8 +47,9 @@ async function createAgent(
   db: ReturnType<typeof createDb>,
   companyId: string,
   permissions: Record<string, unknown> = {},
+  membershipStatus: "active" | "pending" | "suspended" | "archived" | "none" = "active",
 ) {
-  return db.insert(agents).values({
+  const agent = await db.insert(agents).values({
     companyId,
     name: `Agent ${randomUUID()}`,
     role: "engineer",
@@ -56,6 +58,23 @@ async function createAgent(
     runtimeConfig: {},
     permissions,
   }).returning().then((rows) => rows[0]!);
+  // An agent holding grants always has a membership row in production: every
+  // grant writer goes through `ensureMembershipForGrantWrite`, which creates an
+  // active one when none exists, the portability import calls
+  // `ensureMembership`, and the startup backfill seeds one for every
+  // non-terminal agent. This fixture used to skip it, which made the explicit
+  // `tools:use` grant below the one shape the product never produces
+  // (FAI-10144).
+  if (membershipStatus !== "none") {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "agent",
+      principalId: agent.id,
+      status: membershipStatus,
+      membershipRole: "member",
+    });
+  }
+  return agent;
 }
 
 async function createRun(
@@ -173,6 +192,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await db.delete(toolApplications);
     await db.delete(companySecrets);
     await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(activityLog);
@@ -481,6 +501,94 @@ describeEmbeddedPostgres("tool access policy service", () => {
       });
     }
   });
+
+  /**
+   * `explicitGrant` reads `principal_permission_grants` directly instead of
+   * going through `decidePrincipalGrant`, so it has to apply that decider's
+   * membership precondition itself. Suspension deliberately does *not* delete
+   * grants — `decidePrincipalGrant` refuses to honour them and the rows stay as
+   * the record — so a reader that asks only "is there a live row" keeps
+   * answering `allow_explicit_grant` for a principal central authorization has
+   * already stopped admitting (FAI-10151 finding 1).
+   *
+   * The `active` row is the control: without it the case below passes for a
+   * reader that has simply stopped finding grants at all.
+   */
+  const membershipStandings: Array<[
+    "active" | "pending" | "suspended" | "archived" | "none",
+    boolean,
+  ]> = [
+    ["active", true],
+    ["pending", false],
+    ["suspended", false],
+    ["archived", false],
+    ["none", false],
+  ];
+
+  it.each(membershipStandings)(
+    "honours an explicit tools:use grant behind a %s membership: %s",
+    async (membershipStatus, allowed) => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id, {}, membershipStatus);
+      const { connection, catalogEntry } = await createTool(db, company.id);
+      await db.insert(principalPermissionGrants).values({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: agent.id,
+        permissionKey: "tools:use",
+        scope: { toolName: "send_email" },
+      });
+
+      await expect(toolAccessPolicyService(db).decide({
+        companyId: company.id,
+        actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+        request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+      })).resolves.toMatchObject(
+        allowed
+          ? { allowed: true, decision: "allow", reasonCode: "allow_explicit_grant" }
+          : { allowed: false, decision: "deny", reasonCode: "deny_default" },
+      );
+    },
+  );
+
+  /**
+   * The same reader serves user principals, and the predicate is correlated on
+   * the grant row's own `principal_type`, so this is the one case that proves
+   * the rule is not agent-shaped. Paired with an active user for the same
+   * reason as above.
+   */
+  it.each([["active", true], ["suspended", false]] as Array<[string, boolean]>)(
+    "honours a user's explicit tools:use grant behind a %s membership: %s",
+    async (membershipStatus, allowed) => {
+      const company = await createCompany(db);
+      const userId = `user-${randomUUID()}`;
+      const { connection, catalogEntry } = await createTool(db, company.id);
+      await db.insert(companyMemberships).values({
+        companyId: company.id,
+        principalType: "user",
+        principalId: userId,
+        status: membershipStatus,
+        membershipRole: "operator",
+      });
+      await db.insert(principalPermissionGrants).values({
+        companyId: company.id,
+        principalType: "user",
+        principalId: userId,
+        permissionKey: "tools:use",
+        scope: { toolName: "send_email" },
+      });
+
+      await expect(toolAccessPolicyService(db).decide({
+        companyId: company.id,
+        actor: { actorType: "user" as const, actorId: userId },
+        request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+      })).resolves.toMatchObject(
+        allowed
+          ? { allowed: true, decision: "allow", reasonCode: "allow_explicit_grant" }
+          : { allowed: false, decision: "deny", reasonCode: "deny_default" },
+      );
+    },
+  );
 
   it("denies calls through disabled applications before explicit grants and allows them after reactivation", async () => {
     const company = await createCompany(db);

@@ -817,7 +817,8 @@ export function builtInAgentService(db: Db) {
 
   async function ensureAgentDefaultGrants(companyId: string, agentId: string, grantKeys: PermissionKey[]) {
     if (grantKeys.length === 0) return 0;
-    await accessSvc.ensureMembership(companyId, "agent", agentId, "member", "active");
+    // Membership is ensured inside `setPrincipalPermission`, atomically with
+    // the grant and refusing an archived member. See FAI-10144.
     let ensured = 0;
     for (const permissionKey of grantKeys) {
       await accessSvc.setPrincipalPermission(companyId, "agent", agentId, permissionKey, true, null);

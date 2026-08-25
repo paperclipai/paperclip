@@ -120,6 +120,28 @@ export type IssueThreadInteractionServiceOptions = {
   wakeup?: InteractionWakeup;
   pullRequestCacheTtlMs?: number;
   now?: () => Date;
+  /**
+   * Runs as the first statement of every transaction this service opens.
+   * The issue routes pass the cross-issue write fence here (FAI-10132): a
+   * resolution reaching a ticket outside the run's own issue re-checks its
+   * authority under `FOR SHARE` locks, and throwing rolls the whole resolution
+   * back rather than leaving a partially applied one. Hanging it on the service
+   * rather than on each resolution entry point is deliberate — a future
+   * resolution path cannot forget to fence itself.
+   */
+  preCommitAuthorityGuard?: (tx: Db) => Promise<void>;
+  /**
+   * Runs as the *last* statement of every transaction this service opens,
+   * after the resolution has written but before it commits.
+   *
+   * `preCommitAuthorityGuard` locks the rows its decision reads, which holds
+   * them still through commit. It cannot hold the clock still, so a grant that
+   * was active when the transaction opened can lapse while the resolution
+   * writes. The routes pass the expiry re-check here so the authorized boundary
+   * is the last one rather than the first (FAI-10144); throwing rolls the whole
+   * resolution back the same way the opening guard does.
+   */
+  postMutationAuthorityGuard?: (tx: Db) => Promise<void>;
 };
 
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
@@ -1376,15 +1398,25 @@ async function assertRequestConfirmationTargetIsCurrent(db: Db | any, args: {
   }
 }
 
+/**
+ * Cheap precondition for the expiry below, so a caller can decide whether the
+ * expiry is worth its own guarded transaction without opening one for every
+ * confirmation that has no document target.
+ */
+function mayExpireStaleRequestConfirmationTarget(row: IssueThreadInteractionRow) {
+  if (!isTargetBoundInteractionKind(row.kind) || row.status !== "pending") return false;
+  const target = (hydrateInteraction(row) as TargetBoundInteraction).payload.target ?? null;
+  return target?.type === "issue_document";
+}
+
 async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
 }): Promise<IssueThreadInteraction | null> {
-  if (!isTargetBoundInteractionKind(args.row.kind) || args.row.status !== "pending") return null;
+  if (!mayExpireStaleRequestConfirmationTarget(args.row)) return null;
   const interaction = hydrateInteraction(args.row) as TargetBoundInteraction;
-  const target = interaction.payload.target ?? null;
+  const target = interaction.payload.target;
   if (!target) return null;
-  if (target.type !== "issue_document") return null;
 
   const snapshot = await getIssueDocumentTargetSnapshot(db, {
     companyId: args.row.companyId,
@@ -1441,6 +1473,21 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
 }
 
 export function issueThreadInteractionService(db: Db, opts: IssueThreadInteractionServiceOptions = {}) {
+  /**
+   * Every transaction in this service goes through here so the authority guard
+   * cannot be skipped by adding a new resolution path. Without a guard
+   * configured this is `db.transaction` verbatim.
+   */
+  const guardedTransaction: Db["transaction"] = ((callback: (tx: Db) => Promise<unknown>, ...rest: unknown[]) =>
+    (db.transaction as unknown as (
+      cb: (tx: Db) => Promise<unknown>,
+      ...args: unknown[]
+    ) => Promise<unknown>)(async (tx: Db) => {
+      await opts.preCommitAuthorityGuard?.(tx);
+      const result = await callback(tx);
+      await opts.postMutationAuthorityGuard?.(tx);
+      return result;
+    }, ...rest)) as unknown as Db["transaction"];
   const pullRequestStateCache = new Map<string, { state: PullRequestMergeState; checkedAt: number }>();
   const now = opts.now ?? (() => new Date());
   const defaultPullRequestStateResolver = opts.resolvePullRequestState
@@ -1572,14 +1619,20 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
   }> {
-    const expired = await expireStaleRequestConfirmationTarget(db, {
-      row: args.current,
-      actor: args.actor,
-    });
+    // The stale-target expiry is itself a write on someone's card, so it goes
+    // through the same authority guard as the resolution it precedes — on the
+    // pooled handle it was the one mutation on this path an actor whose
+    // authority had been revoked could still land (FAI-10134 blocking finding 2).
+    // It commits before the terminal error is thrown, exactly as it did before:
+    // the card really is stale, and the caller has to be told so.
+    const expired = mayExpireStaleRequestConfirmationTarget(args.current)
+      ? await guardedTransaction(async (tx) =>
+        expireStaleRequestConfirmationTarget(tx, { row: args.current, actor: args.actor }))
+      : null;
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
     const now = new Date();
-    const result = await db.transaction(async (tx) => {
+    const result = await guardedTransaction(async (tx) => {
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
       // the verdict write. Terminal issue transitions also lock the issue
@@ -1735,10 +1788,16 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     input: RejectIssueThreadInteraction;
     actor: InteractionActor;
   }): Promise<IssueThreadInteraction> {
-    const expired = await expireStaleRequestConfirmationTarget(db, {
-      row: args.current,
-      actor: args.actor,
-    });
+    // The stale-target expiry is itself a write on someone's card, so it goes
+    // through the same authority guard as the resolution it precedes — on the
+    // pooled handle it was the one mutation on this path an actor whose
+    // authority had been revoked could still land (FAI-10134 blocking finding 2).
+    // It commits before the terminal error is thrown, exactly as it did before:
+    // the card really is stale, and the caller has to be told so.
+    const expired = mayExpireStaleRequestConfirmationTarget(args.current)
+      ? await guardedTransaction(async (tx) =>
+        expireStaleRequestConfirmationTarget(tx, { row: args.current, actor: args.actor }))
+      : null;
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
     const interaction = hydrateInteraction(args.current) as RequestConfirmationLikeInteraction;
@@ -1748,7 +1807,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     }
 
     const now = new Date();
-    const updated = await db.transaction(async (tx) => {
+    const updated = await guardedTransaction(async (tx) => {
       const issueContext = await tx
         .select({
           id: issues.id,
@@ -2020,7 +2079,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       proposalId: string,
       execution: { status: "executed" | "failed"; errorCode?: string | null },
     ) => {
-      const updated = await db.transaction(async (tx) => {
+      const updated = await guardedTransaction(async (tx) => {
         // Verdict and terminal-transition paths lock issue -> proposal ->
         // interaction. Take the same order before recording the receipt so a
         // concurrent rejection or issue close cannot deadlock here.
@@ -2217,7 +2276,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const { row, replacementInteractionId } of supersededRows) {
-        const updated = await db.transaction(async (tx) => {
+        const updated = await guardedTransaction(async (tx) => {
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -2366,7 +2425,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         // transitions and against concurrent confirmations on the same issue.
         // Idempotent reuse above stays allowed so retries of a pre-close
         // create keep returning the (by now expired) original.
-        const result = await db.transaction(async (tx) => {
+        const result = await guardedTransaction(async (tx) => {
           const [issueRow] = await tx
             .select({ status: issues.status })
             .from(issues)
@@ -2506,7 +2565,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           // Accepting suggest_tasks only creates follow-up issues; it does not
           // approve code state or move the source workspace forward, so the
           // workspace_finalize gate (PAPA-440) does not apply here.
-          return issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor);
+          // `opts` must be forwarded: a service built without it has no
+          // `preCommitAuthorityGuard`, so the accept path would persist its
+          // follow-up issues outside the cross-issue write fence the caller
+          // configured (FAI-10134 blocking finding 2).
+          return issueThreadInteractionService(db, opts).acceptSuggestedTasks(issue, interactionId, data, actor);
         case "request_confirmation": {
           await assertIssueWorkspaceFinalizedForAccept({ db, issue, sourceRunId: current.sourceRunId });
           const accepted = await acceptRequestConfirmation({
@@ -2604,7 +2667,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
       const createdWakeTargets: IssueWakeTarget[] = [];
 
-      await db.transaction(async (tx) => {
+      await guardedTransaction(async (tx) => {
         const resolvedAt = new Date();
         const [claimed] = await tx
           .update(issueThreadInteractions)
@@ -2712,7 +2775,14 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       assertInteractionResolutionAllowed(current, actor);
       switch (current.kind) {
         case "suggest_tasks":
-          return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
+          // Same as the accept path above — forward `opts` or the guard is lost.
+          return issueThreadInteractionService(db, opts).rejectSuggestedTasks(
+            issue,
+            interactionId,
+            data,
+            actor,
+            current,
+          );
         case "request_confirmation":
         case "request_checkbox_confirmation":
           return rejectRequestConfirmation({
@@ -2734,7 +2804,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
       assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
-      const submission = await db.transaction(async (tx) => {
+      const submission = await guardedTransaction(async (tx) => {
         const current = await tx
           .select()
           .from(issueThreadInteractions)
@@ -2852,29 +2922,35 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw interactionTerminalError(current);
       }
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "rejected",
-          result: {
-            version: 1,
-            rejectionReason: input.reason?.trim() || null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      // Guarded, not pooled. Forwarding `opts` was only half the fix: this write
+      // never opened a transaction, so there was nothing for the guard to run in
+      // and its locks had nothing to hold through (FAI-10134 blocking finding 2).
+      const updated = await guardedTransaction(async (tx) => {
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "rejected",
+            result: {
+              version: 1,
+              rejectionReason: input.reason?.trim() || null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        if (!row) {
+          throw interactionAlreadyResolvedError();
+        }
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const rejected = hydrateInteraction(updated);
@@ -3184,7 +3260,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         // committed is in flight and cannot be recalled — the card still
         // expires and the execution result lands on it via the gateway's
         // lifecycle reflection.
-        const updated = await db.transaction(async (tx) => {
+        const updated = await guardedTransaction(async (tx) => {
           await resolveLinkedToolActionRequests(tx, row, {
             status: "expired",
             fromStatuses: ["pending", "approved"],
@@ -3255,7 +3331,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       // "approved" is revoked too — the request can be approved from the tool
       // review queue while the card is still pending, and an executable
       // request must not outlive a withdrawn card.
-      const updated = await db.transaction(async (tx) => {
+      const updated = await guardedTransaction(async (tx) => {
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
@@ -3337,30 +3413,33 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         answers: input.answers,
       });
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result: {
-            version: 1,
-            answers: normalizedAnswers,
-            summaryMarkdown: input.summaryMarkdown ?? null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+      // Guarded, not pooled: this resolves someone's card, so the authority
+      // guard has to hold its locks through the commit that answers it
+      // (FAI-10134 blocking finding 2).
+      const updated = await guardedTransaction(async (tx) => {
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "answered",
+            result: {
+              version: 1,
+              answers: normalizedAnswers,
+              summaryMarkdown: input.summaryMarkdown ?? null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const answered = hydrateInteraction(updated);

@@ -3836,4 +3836,181 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       });
     });
   });
+  /**
+   * FAI-10134 blocking finding 2. `preCommitAuthorityGuard` is how a cross-issue
+   * write fence reaches this service: it runs as the first statement of every
+   * transaction the service opens, holds its locks through the commit, and
+   * throws when the authority that let the request in has since been revoked.
+   *
+   * Three resolution paths were reaching a write without ever running it — the
+   * suggested-task accept and reject paths rebuilt the service *without* `opts`
+   * so the guard was dropped on the floor, `answerQuestions` wrote straight to
+   * the pooled handle with no transaction at all, and the stale-target expiry
+   * that runs ahead of a confirmation ran pooled too. Each case below drives one
+   * of those paths through a guard that refuses and asserts the write did not
+   * happen.
+   */
+  describe("cross-issue write authority guard (FAI-10134 finding 2)", () => {
+    class RevokedAuthorityError extends Error {
+      constructor() {
+        super("Cross-issue write authority was revoked mid-request");
+        this.name = "RevokedAuthorityError";
+      }
+    }
+
+    /** The service the routes build when a request carries a pending fence. */
+    function guardedService(calls: { count: number }) {
+      return issueThreadInteractionService(db, {
+        preCommitAuthorityGuard: async () => {
+          calls.count += 1;
+          throw new RevokedAuthorityError();
+        },
+      });
+    }
+
+    async function statusOf(interactionId: string) {
+      const [row] = await db
+        .select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      return row;
+    }
+
+    async function seedSuggestTasks() {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("Guarded suggestions");
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "suggest_tasks",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          tasks: [{ clientKey: "root", title: "Follow-up the guard must not create" }],
+        },
+      }, { userId: "local-board" });
+      return { companyId, goalId, issueId, created };
+    }
+
+    it("refuses a suggested-task accept and creates no follow-up issues", async () => {
+      const { companyId, goalId, issueId, created } = await seedSuggestTasks();
+      const calls = { count: 0 };
+
+      await expect(guardedService(calls).acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { userId: "local-board" },
+      )).rejects.toBeInstanceOf(RevokedAuthorityError);
+
+      expect(calls.count).toBeGreaterThan(0);
+      expect(await statusOf(created.id)).toMatchObject({ status: "pending" });
+      expect(await issuesSvc.list(companyId, { parentId: issueId })).toHaveLength(0);
+    });
+
+    it("refuses a suggested-task reject and leaves the card pending", async () => {
+      const { companyId, goalId, issueId, created } = await seedSuggestTasks();
+      const calls = { count: 0 };
+
+      await expect(guardedService(calls).rejectInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        { reason: "not now" },
+        { userId: "local-board" },
+      )).rejects.toBeInstanceOf(RevokedAuthorityError);
+
+      expect(calls.count).toBeGreaterThan(0);
+      expect(await statusOf(created.id)).toMatchObject({ status: "pending" });
+    });
+
+    it("refuses an ask_user_questions answer and persists no result", async () => {
+      const { companyId, issueId } = await seedConfirmationIssue("Guarded questions");
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Choose the scope",
+            selectionMode: "single",
+            required: true,
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      }, { userId: "local-board" });
+      const calls = { count: 0 };
+
+      await expect(guardedService(calls).answerQuestions(
+        { id: issueId, companyId },
+        created.id,
+        { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+        { userId: "local-board" },
+      )).rejects.toBeInstanceOf(RevokedAuthorityError);
+
+      expect(calls.count).toBe(1);
+      expect(await statusOf(created.id)).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("refuses the stale-target expiry that runs ahead of a confirmation accept", async () => {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("Guarded stale target");
+      const documentId = randomUUID();
+      const revisionId = randomUUID();
+      const nextRevisionId = randomUUID();
+
+      await db.insert(documents).values({
+        id: documentId,
+        companyId,
+        title: "Plan",
+        format: "markdown",
+        latestBody: "v1",
+        latestRevisionId: revisionId,
+        latestRevisionNumber: 1,
+      });
+      await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "plan" });
+      await db.insert(documentRevisions).values({
+        id: revisionId,
+        companyId,
+        documentId,
+        revisionNumber: 1,
+        title: "Plan",
+        format: "markdown",
+        body: "v1",
+      });
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Apply the plan document?",
+          target: { type: "issue_document", issueId, documentId, key: "plan", revisionId, revisionNumber: 1 },
+        },
+      }, { userId: "local-board" });
+
+      // The document moves on, so the card's target is now stale and the accept
+      // path expires it before resolving anything.
+      await db.insert(documentRevisions).values({
+        id: nextRevisionId,
+        companyId,
+        documentId,
+        revisionNumber: 2,
+        title: "Plan",
+        format: "markdown",
+        body: "v2",
+      });
+      await db.update(documents)
+        .set({ latestBody: "v2", latestRevisionId: nextRevisionId, latestRevisionNumber: 2 })
+        .where(eq(documents.id, documentId));
+
+      const calls = { count: 0 };
+      await expect(guardedService(calls).acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { userId: "local-board" },
+      )).rejects.toBeInstanceOf(RevokedAuthorityError);
+
+      // The expiry is a write on someone's card. Refused, it leaves no trace.
+      expect(calls.count).toBe(1);
+      expect(await statusOf(created.id)).toMatchObject({ status: "pending" });
+    });
+  });
 });

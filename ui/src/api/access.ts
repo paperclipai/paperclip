@@ -110,6 +110,8 @@ export type CompanyMemberGrant = {
   principalId: string;
   permissionKey: PermissionKey;
   scope: Record<string, unknown> | null;
+  /** ISO instant the grant lapses; null means it does not expire. */
+  expiresAt: string | null;
   grantedByUserId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -338,6 +340,8 @@ export const accessApi = {
       grants: Array<{
         permissionKey: PermissionKey;
         scope?: Record<string, unknown> | null;
+        /** ISO instant the grant lapses. Null removes the bound; omit keeps it. */
+        expiresAt?: string | null;
       }>;
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}/permissions`, input),
@@ -351,6 +355,8 @@ export const accessApi = {
       grants: Array<{
         permissionKey: PermissionKey;
         scope?: Record<string, unknown> | null;
+        /** ISO instant the grant lapses. Null removes the bound; omit keeps it. */
+        expiresAt?: string | null;
       }>;
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}/role-and-grants`, input),

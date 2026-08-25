@@ -465,6 +465,16 @@ export function companyService(db: Db) {
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
+        // The one grant deletion that does not take `principalGrantLock`, and
+        // the only one that does not need to. Every other revocation removes
+        // some principals' grants and leaves the table live, so a writer racing
+        // it can reinsert behind the delete; this one removes the company row
+        // in the same transaction, and `principal_permission_grants.company_id`
+        // is a foreign key to it. A racing writer does not resurrect anything —
+        // it fails on the constraint. The lock is per `(company, principal)`
+        // anyway, so taking it here would mean one acquisition per member and
+        // would still not cover a member the writer is about to invent
+        // (FAI-10152 round 4).
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
