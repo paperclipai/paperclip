@@ -207,7 +207,7 @@ describe("service runtime shim awareness", () => {
       const runtime = results.find((r) => r.name === "Service runtime");
       expect(runtime?.repairHint).toContain("/custom/bin/paperclipai");
       expect(runtime?.repairHint).toContain("PAPERCLIP_SHIM_PATH");
-      expect(runtime?.repairHint).not.toContain("Run `paperclipai install`");
+      expect(runtime?.repairHint).toContain("`paperclipai install` followed by `paperclipai service install`");
     } finally {
       vi.unstubAllEnvs();
     }

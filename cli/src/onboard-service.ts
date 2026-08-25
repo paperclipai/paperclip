@@ -3,7 +3,11 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { installCommand } from "./commands/install.js";
 import { resolvePaperclipInstanceId } from "./config/home.js";
-import { resolveInstallStorePaths } from "./install-store.js";
+import {
+  readInstallManifest,
+  resolveInstallStorePaths,
+  type InstallManifest,
+} from "./install-store.js";
 import {
   detectServiceManager,
   isExecutableFile,
@@ -18,6 +22,13 @@ export type OnboardServiceOptions = {
 };
 
 type EnsureShimResult = { ok: boolean; installedNow: boolean; reason?: string };
+
+// Source checkouts carry the repository placeholder version; installing
+// that as an npm spec would fetch an ancient release (or nothing) instead
+// of the running code. Only real calendar versions are installable.
+export function isInstallableReleaseVersion(version: string): boolean {
+  return /^\d{4}\.\d{1,4}\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version);
+}
 
 type OnboardServiceDependencies = {
   detect: (instanceId: string) => Promise<ServiceManagerDetection>;
@@ -48,10 +59,28 @@ const defaultDependencies: OnboardServiceDependencies = {
         reason: `no executable exists at ${shimPath} (PAPERCLIP_SHIM_PATH), and it is outside the managed install store`,
       };
     }
+    let manifest: InstallManifest | null = null;
     try {
-      // packageVersion, not cliVersion: a managed executable's cliVersion
-      // carries provenance text that is not an installable npm spec.
-      await installCommand({ version: packageVersion, yes: true });
+      manifest = readInstallManifest();
+    } catch {}
+    try {
+      if (manifest?.source === "git" && manifest.repo) {
+        // A managed git payload must be preserved as-is: reinstall the
+        // exact revision the manifest records, not an npm release.
+        await installCommand({ repo: manifest.repo, ref: manifest.sha ?? manifest.ref, yes: true });
+      } else if (isInstallableReleaseVersion(packageVersion)) {
+        // packageVersion, not cliVersion: a managed executable's cliVersion
+        // carries provenance text that is not an installable npm spec.
+        await installCommand({ version: packageVersion, yes: true });
+      } else {
+        return {
+          ok: false,
+          installedNow: false,
+          reason:
+            `this build reports version ${packageVersion}, which is not an installable release; ` +
+            "run `paperclipai install` (or `paperclipai install --repo <repo> --ref <ref>` for source builds) first",
+        };
+      }
     } catch (error) {
       return {
         ok: false,

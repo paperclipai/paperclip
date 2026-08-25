@@ -101,7 +101,7 @@ export async function serviceHealthChecks(
             repairHint:
               path.resolve(resolveServiceShimPath()) === path.resolve(resolveInstallStorePaths().shimPath)
                 ? "Run `paperclipai install` to restore the managed payload and shim, then `paperclipai service start`"
-                : `Restore the executable at ${resolveServiceShimPath()}, or unset PAPERCLIP_SHIM_PATH and run \`paperclipai service install\``,
+                : `Restore the executable at ${resolveServiceShimPath()}, or unset PAPERCLIP_SHIM_PATH and run \`paperclipai install\` followed by \`paperclipai service install\``,
           }
         : health.ok
           ? {

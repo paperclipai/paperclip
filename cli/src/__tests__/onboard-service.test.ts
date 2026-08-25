@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleOnboardService } from "../onboard-service.js";
+import { handleOnboardService, isInstallableReleaseVersion } from "../onboard-service.js";
 
 function supportedDetection() {
   return {
@@ -127,4 +127,13 @@ describe("onboard service policy", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("paperclipai install"));
   });
 
+});
+
+describe("isInstallableReleaseVersion", () => {
+  it("accepts calendar releases and rejects placeholders", () => {
+    expect(isInstallableReleaseVersion("2026.824.1")).toBe(true);
+    expect(isInstallableReleaseVersion("2026.818.0-beta.1")).toBe(true);
+    expect(isInstallableReleaseVersion("0.3.1")).toBe(false);
+    expect(isInstallableReleaseVersion("not-a-version")).toBe(false);
+  });
 });
