@@ -710,6 +710,11 @@ export function buildStatedDispositionBlockerIssueInput(input: {
     workMode: input.workMode === "plan" || input.workMode === "execute" ? input.workMode : "standard",
     assigneeAgentId: input.assigneeAgentId,
     assigneeUserId: input.assigneeUserId,
+    // 2026-08-25 (TSMC-21750): an unblock child is a child — without parentId the
+    // card floats free of its source's lifecycle: 17 minted in TSMC in one day,
+    // every parent_id NULL, none closed when their parents recovered. parentId
+    // also gives count rollups and the board tree the real containment.
+    parentId: input.sourceId,
     // 2026-08-22: without originId on the CREATED card, the issue-scoped
     // Unblock reuse (one open Unblock per source issue, 6e86af2c1) can never
     // match it — measured live within hours of blocked dispositions being
@@ -9832,6 +9837,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enqueued += 1;
     }
     return { checked: candidates.length, enqueued };
+  }
+
+  /**
+   * TSMC-21750: a stated-blocker unblock child must not outlive its purpose.
+   * The child exists to clear ONE condition on its origin issue; once the origin
+   * has left `blocked` (recovered, or reached a terminal state), an open child
+   * is pure count inflation — 17 were minted in TSMC on 2026-08-25 alone and
+   * none closed themselves. Closes only untouched children (todo/backlog): an
+   * in_progress/in_review child is being worked and is left alone. Bounded.
+   */
+  async function tickStatedBlockerChildHygiene() {
+    const children = await db
+      .select({ id: issues.id, identifier: issues.identifier, originId: issues.originId })
+      .from(issues)
+      .where(and(
+        eq(issues.originKind, "stated_blocker"),
+        inArray(issues.status, ["todo", "backlog"]),
+        isNull(issues.hiddenAt),
+        isNotNull(issues.originId),
+      ))
+      .limit(25);
+    let closed = 0;
+    for (const child of children) {
+      const origin = await db
+        .select({ status: issues.status, identifier: issues.identifier })
+        .from(issues)
+        .where(eq(issues.id, child.originId!))
+        .then((rows) => rows[0]);
+      if (!origin || origin.status === "blocked") continue;
+      await issuesSvc.addComment(child.id, [
+        `Closing automatically: the origin issue ${origin.identifier ?? child.originId} has left`,
+        `\`blocked\` (now \`${origin.status}\`), so the condition this unblock child existed to`,
+        "clear no longer stands. (stated-blocker child hygiene, TSMC-21750)",
+      ].join(" "), {}, { authorType: "system" });
+      await issuesSvc.update(child.id, { status: "done" });
+      closed += 1;
+    }
+    return { checked: children.length, closed };
   }
 
   // TSMC-20876 operator addition (2): each agent's first heartbeat since its
@@ -27675,11 +27718,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const blockedRevalidations = await tickBlockedCardRevalidations(now);
+      const childHygiene = await tickStatedBlockerChildHygiene();
       const issueMonitors = await tickDueIssueMonitors(now);
 
       return {
-        checked: checked + blockedRevalidations.checked + issueMonitors.checked,
-        enqueued: enqueued + blockedRevalidations.enqueued + issueMonitors.triggered,
+        checked: checked + blockedRevalidations.checked + childHygiene.checked + issueMonitors.checked,
+        enqueued: enqueued + blockedRevalidations.enqueued + childHygiene.closed + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
         // Agents left dormant this tick because their company is outside its
         // activity window (not enqueued, due-time untouched, will re-enqueue
