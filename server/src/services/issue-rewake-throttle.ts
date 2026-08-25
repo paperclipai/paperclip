@@ -134,6 +134,11 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "issue.thread_interaction_answered",
   "issue.thread_interaction_item_verdicts_submitted",
   "issue.blockers_resolved_wake_emitted",
+  // TSMC-21555: a board-granted token-ceiling exception is the real recovery
+  // lever for a near-ceiling blocked card. Without this, the blocked-repoll
+  // throttle keeps suppressing the re-wake even after the board grants
+  // headroom, so the card never dispatches under its own exception.
+  "board_token_exception.created",
 ];
 
 export interface IssueRewakeCandidateInput {

@@ -919,6 +919,12 @@ const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+// TSMC-20876: stale blocks are re-offered to their existing owner, never wrapped
+// in another card. The owner performs the cited mechanical check and either
+// refreshes the evidence or restores the issue to todo.
+const BLOCKED_CARD_REVALIDATION_DELAY_MS = 72 * 60 * 60 * 1000;
+const BLOCKED_CARD_REVALIDATION_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+const BLOCKED_CARD_REVALIDATION_BATCH_LIMIT = 25;
 
 /**
  * TSMC-21406: how long a run may sit terminal before the orphaned-wakeup reaper
@@ -9719,6 +9725,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       clearOnClientError: false,
       activitySource: "manual",
     });
+  }
+
+  async function tickBlockedCardRevalidations(now = new Date()) {
+    const staleBefore = new Date(now.getTime() - BLOCKED_CARD_REVALIDATION_DELAY_MS);
+    const cooldownBefore = new Date(now.getTime() - BLOCKED_CARD_REVALIDATION_COOLDOWN_MS);
+    const candidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        unblockDescriptor: issues.unblockDescriptor,
+        executionPolicy: issues.executionPolicy,
+        blockedTransitionAt: issues.blockedTransitionAt,
+        monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.hiddenAt),
+        isNull(issues.assigneeUserId),
+        isNotNull(issues.assigneeAgentId),
+        isNull(issues.monitorNextCheckAt),
+      ))
+      .orderBy(asc(issues.blockedTransitionAt), asc(issues.updatedAt))
+      .limit(BLOCKED_CARD_REVALIDATION_BATCH_LIMIT);
+
+    let enqueued = 0;
+    for (const candidate of candidates) {
+      const policy = normalizeIssueExecutionPolicy(candidate.executionPolicy);
+      const descriptor = parseObject(candidate.unblockDescriptor);
+      const descriptorOwner = descriptor.owner;
+      // External-owner waits and board/operator gates are deliberate waiting
+      // states, not a transient failure for the assignee to probe.
+      if (policy?.externalWait || descriptorOwner === "board" || "userId" in parseObject(descriptorOwner)) continue;
+      if (!candidate.blockedTransitionAt || candidate.blockedTransitionAt > staleBefore) continue;
+      if (candidate.monitorLastTriggeredAt && candidate.monitorLastTriggeredAt > cooldownBefore) continue;
+
+      const claimed = await db.update(issues).set({
+        monitorLastTriggeredAt: now,
+        updatedAt: now,
+      }).where(and(
+        eq(issues.id, candidate.id),
+        eq(issues.status, "blocked"),
+        or(isNull(issues.monitorLastTriggeredAt), lt(issues.monitorLastTriggeredAt, cooldownBefore)),
+      )).returning({ id: issues.id }).then((rows) => rows[0] ?? null);
+      if (!claimed || !candidate.assigneeAgentId) continue;
+
+      await enqueueWakeup(candidate.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "blocked_card_revalidation_due",
+        payload: {
+          issueId: candidate.id,
+          modelProfile: "cheap",
+          revalidation: { maxTurns: 5, maxFreshTokens: 10_000, check: "mechanical_blocker" },
+        },
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat_scheduler",
+        contextSnapshot: {
+          issueId: candidate.id,
+          source: "blocked_card_revalidation",
+          wakeReason: "blocked_card_revalidation_due",
+          modelProfile: "cheap",
+          revalidation: { maxTurns: 5, maxFreshTokens: 10_000, check: "mechanical_blocker" },
+        },
+      });
+      enqueued += 1;
+    }
+    return { checked: candidates.length, enqueued };
   }
 
   async function tickDueIssueMonitors(now = new Date()) {
@@ -19571,6 +19646,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           aggregateInputTokens: issueGenerationAdmission.aggregateInputTokens,
           priorGenerationRuns: issueGenerationAdmission.priorGenerationRuns,
           modelDispatched: false,
+          // TSMC-21555 (Gate C): ceiling state lives in its own structured field
+          // so it never has to overload/overwrite issue.unblockDescriptor, which
+          // may already carry an unrelated (e.g. credential) block reason.
+          generationAdmissionBlock: {
+            reason: issueGenerationAdmission.reason,
+            aggregateInputTokens: issueGenerationAdmission.aggregateInputTokens,
+            priorGenerationRuns: issueGenerationAdmission.priorGenerationRuns,
+          },
         },
       });
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
@@ -25545,7 +25628,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // It sits inside the throttle-candidate branch on purpose: every
           // event-shaped wake (blockers resolved, human comment, interaction,
           // approval) has already bypassed this whole block.
-          if (issue.status === "blocked") {
+          // TSMC-21555: a board-granted board_token_exception is a real,
+          // deliberate operator action — the same class of "new input" as a
+          // resolved blocker or a board comment. A near-ceiling card denied
+          // pre-dispatch is left `blocked` with no fresh activity-log entry
+          // this throttle recognizes by itself, so without this check a valid
+          // exception grant still sits behind the blocked-repoll cooldown and
+          // the card never actually dispatches under its exception.
+          const applicableTokenException = issue.status === "blocked"
+            ? await tx
+              .select({ id: boardTokenExceptions.id })
+              .from(boardTokenExceptions)
+              .where(and(
+                eq(boardTokenExceptions.companyId, agent.companyId),
+                eq(boardTokenExceptions.issueId, issue.id),
+                isNull(boardTokenExceptions.revokedAt),
+                gt(boardTokenExceptions.expiresAt, throttleNow),
+                or(
+                  isNull(boardTokenExceptions.agentId),
+                  eq(boardTokenExceptions.agentId, agentId),
+                ),
+              ))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+            : null;
+          if (issue.status === "blocked" && !applicableTokenException) {
             const blockedSample = await tx
               .select({
                 id: heartbeatRuns.id,
@@ -25678,6 +25785,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 .select({
                   capTokens: boardTokenExceptions.capTokens,
                   expiresAt: boardTokenExceptions.expiresAt,
+                  createdAt: boardTokenExceptions.createdAt,
                 })
                 .from(boardTokenExceptions)
                 .where(and(
@@ -25726,12 +25834,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   ))
                   .limit(1)
                 : [];
+              // TSMC-21555: the exception grant itself is the supervision event
+              // when it lands after the last (denying) run — the board reviewed
+              // this exact issue and raised its cap. Do not additionally demand
+              // a separate comment on top of that deliberate action.
+              const budgetExceptionIsFreshSupervision = Boolean(
+                budgetExceptionRow
+                  && budgetExceptionCap > 0
+                  && (!budgetLastRunFinishedAt || budgetExceptionRow.createdAt.getTime() > budgetLastRunFinishedAt.getTime()),
+              );
               const budgetDecision = evaluateIssueBudgetWakeGovernor({
                 now: throttleNow,
                 weightedAggregateInputTokens,
                 ceilingTokens: budgetCeilingTokens,
                 lastRunFinishedAt: budgetLastRunFinishedAt,
-                hasHumanInputSinceLastRun: !budgetLastRunFinishedAt || budgetHumanInputRows.length > 0,
+                hasHumanInputSinceLastRun:
+                  !budgetLastRunFinishedAt || budgetHumanInputRows.length > 0 || budgetExceptionIsFreshSupervision,
               });
               if (budgetDecision.hold) {
                 const skipReason = budgetDecision.zone === "hard"
@@ -27347,11 +27465,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         else skipped += 1;
       }
 
+      const blockedRevalidations = await tickBlockedCardRevalidations(now);
       const issueMonitors = await tickDueIssueMonitors(now);
 
       return {
-        checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
+        checked: checked + blockedRevalidations.checked + issueMonitors.checked,
+        enqueued: enqueued + blockedRevalidations.enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
         // Agents left dormant this tick because their company is outside its
         // activity window (not enqueued, due-time untouched, will re-enqueue

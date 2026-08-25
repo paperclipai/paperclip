@@ -215,9 +215,10 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
     await db.update(issues)
       .set({ status: "blocked", unblockDescriptor: credentialDescriptor })
       .where(eq(issues.id, target.issueId));
-    // 250K fresh + 7.5M cached * 0.1 = 1,000,000 weighted. Cache reads are
-    // budget-weighted (K36 / TSMC-20864): resident context re-read across
-    // resumes must not exhaust a ceiling that bounds real burn.
+    // 250K fresh + 37.5M cached * 0.02 = 1,000,000 weighted. Cache reads are
+    // budget-weighted (K36 / TSMC-20864, weight lowered to 0.02 by TSMC-21552-A):
+    // resident context re-read across resumes must not exhaust a ceiling that
+    // bounds real burn.
     await db.insert(costEvents).values({
       companyId: target.companyId,
       agentId: target.agentId,
@@ -227,7 +228,7 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
       billingType: "subscription",
       model: "test-model",
       inputTokens: 250_000,
-      cachedInputTokens: 7_500_000,
+      cachedInputTokens: 37_500_000,
       outputTokens: 0,
       costCents: 0,
       occurredAt: new Date(),
