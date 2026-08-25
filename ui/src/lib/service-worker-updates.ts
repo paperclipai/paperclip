@@ -40,10 +40,13 @@ export function startServiceWorkerUpdates(
   const reload = options.reload ?? (() => window.location.reload());
   const updateIntervalMs = options.updateIntervalMs ?? DEFAULT_UPDATE_INTERVAL_MS;
 
-  // Only a page that was already worker-controlled at startup is running
-  // potentially-stale code when the controller changes; reloading a
-  // first-ever install would just re-run the current bundle.
-  const wasControlled = Boolean(container.controller);
+  // Only a page that is already worker-controlled is running
+  // potentially-stale code when the controller changes; a first-ever
+  // install taking control is caching the very bundle the page is running,
+  // so reloading would be a no-op. The flag is promoted on that first
+  // takeover: any later controller change on this (possibly weeks-old) tab
+  // does mean newer code exists.
+  let wasControlled = Boolean(container.controller);
   let reloaded = false;
   let reloadPending = false;
   const applyUpdate = () => {
@@ -52,7 +55,10 @@ export function startServiceWorkerUpdates(
     reload();
   };
   const onControllerChange = () => {
-    if (!wasControlled) return;
+    if (!wasControlled) {
+      wasControlled = true;
+      return;
+    }
     if (documentRef.visibilityState === "hidden") {
       applyUpdate();
     } else {

@@ -96,6 +96,22 @@ describe("startServiceWorkerUpdates", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
+  it("reloads when a later deploy replaces the worker a first-visit tab installed", async () => {
+    const { container, emit } = fakeContainer({ controlled: false });
+    const { doc } = fakeDocument("hidden");
+    const reload = vi.fn();
+    startServiceWorkerUpdates({ container, documentRef: doc, reload });
+
+    // First takeover: the fresh install controls the page, no reload.
+    emit("controllerchange");
+    expect(reload).not.toHaveBeenCalled();
+
+    // A deploy lands while the same tab is still open: now the controller
+    // change means newer code, and the hidden tab reloads onto it.
+    emit("controllerchange");
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
   it("checks for updates when the tab becomes visible", async () => {
     const { container, registration, emit } = fakeContainer({ controlled: true });
     const docState = fakeDocument("hidden");
