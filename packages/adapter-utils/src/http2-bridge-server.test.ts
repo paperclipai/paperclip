@@ -76,7 +76,6 @@ interface TestPairOptions {
   pingIntervalMs?: number;
   pingStallMs?: number;
   requestBodyTimeoutMs?: number;
-  requestBodyMaxLifetimeMs?: number;
   requestBodyLifetimeCeilingMs?: number;
   closeGraceMs?: number;
   onGoaway?: (record: Http2BridgeGoawayRecord) => void;
@@ -102,7 +101,6 @@ function bindTestServer(options: TestPairOptions = {}) {
     pingIntervalMs: options.pingIntervalMs,
     pingStallMs: options.pingStallMs,
     requestBodyTimeoutMs: options.requestBodyTimeoutMs,
-    requestBodyMaxLifetimeMs: options.requestBodyMaxLifetimeMs,
     requestBodyLifetimeCeilingMs: options.requestBodyLifetimeCeilingMs,
     closeGraceMs: options.closeGraceMs,
     onGoaway: options.onGoaway,
@@ -131,6 +129,45 @@ function createTestPair(options: TestPairOptions = {}) {
  * abstraction does not expose. */
 function connectRawClient(clientSide: Duplex): http2.ClientHttp2Session {
   return http2.connect("http://bridge.internal", { createConnection: () => clientSide });
+}
+
+/** Track whether `forwardRequest` ran, so a test can prove a denied or
+ * destroyed stream never reached it. Call `markCalled()` from inside
+ * `forwardRequest`, then assert on `.called`. */
+function createForwarderCallTracker(): { called: boolean; markCalled: () => void } {
+  const tracker = {
+    called: false,
+    markCalled(): void {
+      tracker.called = true;
+    },
+  };
+  return tracker;
+}
+
+/** Send one more request over `rawClient` and wait for it to complete, so a
+ * test can prove the session survived a prior faulted, stalled, or denied
+ * stream. */
+async function expectSessionStillServesARequest(
+  rawClient: http2.ClientHttp2Session,
+  request: { method: string; path: string; token: string },
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = rawClient.request({
+      ":method": request.method,
+      ":path": request.path,
+      authorization: `Bearer ${request.token}`,
+    });
+    let status = 0;
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("response", (headers) => {
+      status = Number(headers[":status"]) || 0;
+    });
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => resolve({ status, body }));
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
@@ -296,22 +333,10 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       await abortedOutcome;
 
       // The session survives: a second request completes normally.
-      const survivingResponse = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-        const req = rawClient.request({
-          ":method": "GET",
-          ":path": "/api/companies/co1",
-          authorization: `Bearer ${bridgeToken}`,
-        });
-        let status = 0;
-        let body = "";
-        req.on("response", (headers) => {
-          status = Number(headers[":status"]) || 0;
-        });
-        req.setEncoding("utf8");
-        req.on("data", (chunk) => (body += chunk));
-        req.on("end", () => resolve({ status, body }));
-        req.on("error", reject);
-        req.end();
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/companies/co1",
+        token: bridgeToken,
       });
       expect(survivingResponse.status).toBe(200);
       expect(JSON.parse(survivingResponse.body)).toEqual({ path: "/api/companies/co1" });
@@ -322,11 +347,11 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   });
 
   it("test_a_stalled_request_body_settles_instead_of_hanging_forever", async () => {
-    let forwarderCalled = false;
+    const forwarderTracker = createForwarderCallTracker();
     const { handle, bridgeToken, clientSide } = bindTestServer({
       requestBodyTimeoutMs: 30,
       forwardRequest: async () => {
-        forwarderCalled = true;
+        forwarderTracker.markCalled();
         return { status: 200 };
       },
     });
@@ -347,24 +372,14 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         req.write("partial-body");
       });
       expect(Date.now() - startMs).toBeLessThan(5_000);
-      expect(forwarderCalled).toBe(false);
+      expect(forwarderTracker.called).toBe(false);
 
       // The session survives the timed-out stream: a second, complete request
       // still succeeds.
-      const survivingResponse = await new Promise<{ status: number }>((resolve, reject) => {
-        const req = rawClient.request({
-          ":method": "POST",
-          ":path": "/api/issues/abc/comments",
-          authorization: `Bearer ${bridgeToken}`,
-        });
-        let status = 0;
-        req.on("response", (headers) => {
-          status = Number(headers[":status"]) || 0;
-        });
-        req.on("data", () => undefined);
-        req.on("end", () => resolve({ status }));
-        req.on("error", reject);
-        req.end();
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "POST",
+        path: "/api/issues/abc/comments",
+        token: bridgeToken,
       });
       expect(survivingResponse.status).toBe(200);
     } finally {
@@ -422,30 +437,28 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
-  it("test_progress_renews_the_lifetime_bound_but_the_hard_ceiling_still_stops_it", async () => {
+  it("test_a_slow_trickle_that_never_ends_stops_at_the_one_shot_ceiling", async () => {
     // The idle bound is generous, so a chunk every 40ms never lets it
-    // expire. The lifetime bound (50ms) is short, but each chunk renews it,
-    // so the read survives past 50ms — proving a slow peer that keeps
-    // making real progress does not lose the stream early. The hard ceiling
-    // (150ms) never renews, so the read still ends once the read's total
-    // age passes it, no matter how the peer paces its chunks. This is the
+    // expire. The ceiling (150ms) arms once, when the read starts, and
+    // never renews on a chunk: this proves a peer that keeps every chunk
+    // gap under the idle bound, but never finishes the body, still loses
+    // the stream once the read's total age passes the ceiling. This is the
     // failure mode an authenticated sandbox could otherwise use to hold one
     // of the concurrent-stream slots open indefinitely: keep sending just
-    // enough to renew the lifetime bound, and never finish the body.
+    // enough to dodge the idle bound, and never finish the body.
     //
-    // Every write below lands well before the current lifetime deadline,
-    // and the test makes no further call on the stream after the last one:
-    // nothing races the server's own reset of it once the ceiling passes,
-    // so this proves the bound from the server's own, deterministic effect
-    // (the forward handler never runs) instead of from a raw client-stream
-    // event whose timing Node does not guarantee here.
-    let forwarderCalled = false;
+    // Every write below lands well before the ceiling, and the test makes
+    // no further call on the stream after the last one: nothing races the
+    // server's own reset of it once the ceiling passes, so this proves the
+    // bound from the server's own, deterministic effect (the forward
+    // handler never runs) instead of from a raw client-stream event whose
+    // timing Node does not guarantee here.
+    const forwarderTracker = createForwarderCallTracker();
     const { handle, bridgeToken, clientSide } = bindTestServer({
       requestBodyTimeoutMs: 5_000,
-      requestBodyMaxLifetimeMs: 50,
       requestBodyLifetimeCeilingMs: 150,
       forwardRequest: async () => {
-        forwarderCalled = true;
+        forwarderTracker.markCalled();
         return { status: 200 };
       },
     });
@@ -457,35 +470,24 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         authorization: `Bearer ${bridgeToken}`,
       });
       req.on("error", () => undefined);
-      // Four chunks, 40ms apart. The total send time, about 120ms, already
-      // passes the 50ms lifetime bound — proving renewal keeps the read
-      // alive past it — but stays under the 150ms hard ceiling. The body
-      // never ends: this request never calls `.end()`.
+      // Four chunks, 40ms apart, well inside the idle bound. The total send
+      // time, about 160ms, passes the 150ms ceiling. The body never ends:
+      // this request never calls `.end()`.
       for (let chunkIndex = 0; chunkIndex < 4; chunkIndex += 1) {
         req.write("chunk");
         await new Promise((resolve) => setTimeout(resolve, 40));
       }
-      // Wait past the hard ceiling with no further write, so the server has
-      // time to destroy the stalled stream on its own.
+      // Wait past the ceiling with no further write, so the server has time
+      // to destroy the stalled stream on its own.
       await new Promise((resolve) => setTimeout(resolve, 150));
-      expect(forwarderCalled).toBe(false);
+      expect(forwarderTracker.called).toBe(false);
 
-      // The session survives the ended stream: a second, complete request
+      // The session survives the stopped stream: a second, complete request
       // still succeeds.
-      const survivingResponse = await new Promise<{ status: number }>((resolve, reject) => {
-        const survivingReq = rawClient.request({
-          ":method": "POST",
-          ":path": "/api/issues/abc/comments",
-          authorization: `Bearer ${bridgeToken}`,
-        });
-        let status = 0;
-        survivingReq.on("response", (headers) => {
-          status = Number(headers[":status"]) || 0;
-        });
-        survivingReq.on("data", () => undefined);
-        survivingReq.on("end", () => resolve({ status }));
-        survivingReq.on("error", reject);
-        survivingReq.end();
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "POST",
+        path: "/api/issues/abc/comments",
+        token: bridgeToken,
       });
       expect(survivingResponse.status).toBe(200);
     } finally {
@@ -495,11 +497,11 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   });
 
   it("test_a_request_body_within_the_lifetime_bound_still_completes", async () => {
-    // A generous lifetime bound must not interfere with an ordinary request
-    // that finishes well inside it.
+    // A generous ceiling must not interfere with an ordinary request that
+    // finishes well inside it.
     const { handle, bridgeToken, clientSide } = bindTestServer({
       requestBodyTimeoutMs: 5_000,
-      requestBodyMaxLifetimeMs: 5_000,
+      requestBodyLifetimeCeilingMs: 5_000,
       forwardRequest: async (request) => ({
         status: 200,
         body: JSON.stringify({ bodyLength: request.body.byteLength }),
@@ -533,19 +535,16 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
-  it("test_a_slow_but_progressing_upload_completes_past_the_base_lifetime_bound", async () => {
-    // The base lifetime bound (50ms) is short, but every chunk below carries
-    // real progress and renews it, and the hard ceiling (5s) is generous.
-    // The total send time, about 200ms, passes the 50ms base bound several
-    // times over, so this proves a slow but genuinely progressing upload now
-    // completes instead of losing its stream mid-upload.
-    let forwarderCalled = false;
+  it("test_a_slow_but_progressing_upload_completes_within_the_ceiling", async () => {
+    // The idle bound and the ceiling are both generous, so a slow but
+    // genuinely progressing upload completes normally, instead of losing
+    // its stream mid-upload.
+    const forwarderTracker = createForwarderCallTracker();
     const { handle, bridgeToken, clientSide } = bindTestServer({
       requestBodyTimeoutMs: 5_000,
-      requestBodyMaxLifetimeMs: 50,
       requestBodyLifetimeCeilingMs: 5_000,
       forwardRequest: async (request) => {
-        forwarderCalled = true;
+        forwarderTracker.markCalled();
         return { status: 200, body: JSON.stringify({ bodyLength: request.body.byteLength }) };
       },
     });
@@ -576,7 +575,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
           req.end();
         })();
       });
-      expect(forwarderCalled).toBe(true);
+      expect(forwarderTracker.called).toBe(true);
       expect(response.status).toBe(200);
       expect(JSON.parse(response.body)).toEqual({ bodyLength: "chunk".length * 6 });
     } finally {
@@ -740,10 +739,10 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   });
 
   it("test_a_stream_without_the_bridge_token_never_reaches_the_forwarder", async () => {
-    let forwarderCalled = false;
+    const forwarderTracker = createForwarderCallTracker();
     const { handle, clientSide } = bindTestServer({
       forwardRequest: async (request) => {
-        forwarderCalled = true;
+        forwarderTracker.markCalled();
         return { status: 200, body: JSON.stringify({ path: request.pathname }) };
       },
     });
@@ -764,7 +763,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         req.end();
       });
       expect(response.status).toBe(401);
-      expect(forwarderCalled).toBe(false);
+      expect(forwarderTracker.called).toBe(false);
     } finally {
       rawClient.close();
       await handle.close();
@@ -778,11 +777,11 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     // authenticated request gets — otherwise, up to
     // `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` denied streams could each retain
     // a slot forever and block every legitimate callback.
-    let forwarderCalled = false;
+    const forwarderTracker = createForwarderCallTracker();
     const { handle, clientSide } = bindTestServer({
       requestBodyTimeoutMs: 30,
       forwardRequest: async () => {
-        forwarderCalled = true;
+        forwarderTracker.markCalled();
         return { status: 200 };
       },
     });
@@ -808,24 +807,14 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       });
       await closed;
       expect(Date.now() - startMs).toBeLessThan(5_000);
-      expect(forwarderCalled).toBe(false);
+      expect(forwarderTracker.called).toBe(false);
 
       // The session survives the freed stream: a second, complete request
       // still succeeds, proving the session itself stayed open and healthy.
-      const survivingResponse = await new Promise<{ status: number }>((resolve, reject) => {
-        const survivingReq = rawClient.request({
-          ":method": "GET",
-          ":path": "/api/agents/me",
-          authorization: `Bearer ${BRIDGE_TOKEN}`,
-        });
-        let status = 0;
-        survivingReq.on("response", (headers) => {
-          status = Number(headers[":status"]) || 0;
-        });
-        survivingReq.on("data", () => undefined);
-        survivingReq.on("end", () => resolve({ status }));
-        survivingReq.on("error", reject);
-        survivingReq.end();
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/agents/me",
+        token: BRIDGE_TOKEN,
       });
       expect(survivingResponse.status).toBe(200);
     } finally {
@@ -835,10 +824,10 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   });
 
   it("rejects a route the allowlist does not carry, before the forwarder runs", async () => {
-    let forwarderCalled = false;
+    const forwarderTracker = createForwarderCallTracker();
     const { gateway, handle } = createTestPair({
       forwardRequest: async () => {
-        forwarderCalled = true;
+        forwarderTracker.markCalled();
         return { status: 200 };
       },
     });
@@ -852,7 +841,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         receivedToken: BRIDGE_TOKEN,
       });
       expect(response.status).toBe(403);
-      expect(forwarderCalled).toBe(false);
+      expect(forwarderTracker.called).toBe(false);
     } finally {
       await gateway.close();
       await handle.close();
@@ -860,10 +849,10 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   });
 
   it("the sandbox gateway keeps its own token check before it opens a stream", async () => {
-    let forwarderCalled = false;
+    const forwarderTracker = createForwarderCallTracker();
     const { gateway, handle } = createTestPair({
       forwardRequest: async () => {
-        forwarderCalled = true;
+        forwarderTracker.markCalled();
         return { status: 200 };
       },
     });
@@ -878,7 +867,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
           receivedToken: "wrong-token",
         }),
       ).rejects.toThrow(/invalid bridge token/i);
-      expect(forwarderCalled).toBe(false);
+      expect(forwarderTracker.called).toBe(false);
     } finally {
       await gateway.close();
       await handle.close();
