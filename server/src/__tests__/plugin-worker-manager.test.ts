@@ -1646,6 +1646,59 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
     }
   });
 
+  it("charges the retained worker session id characters on the pre-bind output path", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      // A 6-character worker session id and one 5-character chunk charge 11
+      // characters against the 10-character bound on the very first record,
+      // even though the chunk alone is under the bound. Without the identifier
+      // charge, this single record would pass.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            workerSessionId: "ABCDEF",
+            outputs: [{ chunk: "aaaaa" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when batched pre-bind exit notifications with a large worker session id pass the character bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            // An exit record carries no chunk, but it still retains the worker
+            // session id. This 5-character id makes 5 + 5 = 10 admit the first
+            // two exits; the third brings the queued total to 15, past the
+            // 10-character bound, so the host terminalizes the route before
+            // the bind can complete.
+            workerSessionId: "AAAAA",
+            sequence: [
+              { type: "exit", exitCode: 1 },
+              { type: "exit", exitCode: 2 },
+              { type: "exit", exitCode: 3 },
+            ],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("settles with the first exit code against a repeated pre-bind exit for the same session, behind a filled output queue", async () => {
     const handle = makeLoginPtyHandle({
       loginPtyLimits: { maxPreBindFrames: 50 },

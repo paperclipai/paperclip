@@ -1429,7 +1429,9 @@ export function createPluginWorkerHandle(
     settleWait: (value: { exitCode: number | null }) => void;
     // Every output and exit record that arrived before the bind, in arrival order.
     preBind: LoginPtyPreBindRecord[];
-    // The cumulative output characters `preBind` holds. An exit record adds zero.
+    // The cumulative characters `preBind` holds. Each record charges its
+    // `workerSessionId` characters, plus the `chunk` characters for an output
+    // record.
     preBindChars: number;
   }
   // At most one active credential pseudo-terminal per worker. A non-null route
@@ -1555,9 +1557,12 @@ export function createPluginWorkerHandle(
     ) {
       return;
     }
+    // Charge the record's full retained size: the worker session identifier
+    // plus the chunk. A record that retains only the identifier still counts.
+    const recordChars = workerSessionId.length + chunk.length;
     if (
       route.preBind.length + 1 > maxLoginPtyPreBindFrames ||
-      route.preBindChars + chunk.length > maxLoginPtyPreBindChars
+      route.preBindChars + recordChars > maxLoginPtyPreBindChars
     ) {
       log.warn(
         { pluginId },
@@ -1567,12 +1572,13 @@ export function createPluginWorkerHandle(
       return;
     }
     route.preBind.push({ kind: "output", workerSessionId, chunk });
-    route.preBindChars += chunk.length;
+    route.preBindChars += recordChars;
   }
 
   // Queue one login pseudo-terminal exit notification that arrived before the
-  // bind, in the same queue the output records use. An exit record counts
-  // against the frame bound but adds zero characters.
+  // bind, in the same queue the output records use. An exit record carries no
+  // chunk, but it still retains a worker session identifier, so it charges
+  // against the character bound too.
   function queuePreBindLoginPtyExit(
     route: LoginPtyRoute,
     notification: JsonRpcNotification,
@@ -1581,7 +1587,11 @@ export function createPluginWorkerHandle(
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
-    if (route.preBind.length + 1 > maxLoginPtyPreBindFrames) {
+    const recordChars = workerSessionId.length;
+    if (
+      route.preBind.length + 1 > maxLoginPtyPreBindFrames ||
+      route.preBindChars + recordChars > maxLoginPtyPreBindChars
+    ) {
       log.warn(
         { pluginId },
         "login pseudo-terminal pre-bind queue exceeded a bound; terminalizing route",
@@ -1590,6 +1600,7 @@ export function createPluginWorkerHandle(
       return;
     }
     route.preBind.push({ kind: "exit", workerSessionId, exitCode });
+    route.preBindChars += recordChars;
   }
 
   // Replay the records a route held before it bound, in arrival order,
