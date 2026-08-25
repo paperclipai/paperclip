@@ -25706,6 +25706,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 .where(and(
                   eq(heartbeatRuns.companyId, agent.companyId),
                   sql`${heartbeatRuns.finishedAt} is not null`,
+                  // Only runs that actually STARTED move the supervision fence.
+                  // Bookkeeping rows (queued -> cancelled by the stranded-queue
+                  // reoffer, never dispatched, zero tokens) carry a finishedAt
+                  // too; measured live on TSMC-21270 they postdated the
+                  // operator's approving comment every few minutes, so the
+                  // hard zone read supervision as perpetually stale and held a
+                  // wake the human had explicitly admitted.
+                  isNotNull(heartbeatRuns.startedAt),
                   sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
                 ))
                 .orderBy(desc(heartbeatRuns.finishedAt))
