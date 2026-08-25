@@ -21,14 +21,6 @@ const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
-// The default cap on the aggregate raw bytes the in-sandbox duplex frame decoder
-// retains between chunks. The generated gateway runs in a separate operating-system
-// process, so it cannot share the host aggregate byte ledger. It enforces this
-// separate cap locally under the `sandbox_process` scope, and the provider memory
-// allocation bounds it. The host passes the value through
-// PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES. The default is well above one maximum
-// frame, so a legitimate single frame never trips it.
-const DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES = 8 * 1024 * 1024;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well
@@ -94,12 +86,6 @@ const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest"
 const CALLBACK_BRIDGE_WORKER_FAILED_SPAN = "sandbox.callbackBridge.workerFailed";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
-
-/**
- * The default cap the host passes through
- * `PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES` in the gateway launch environment.
- */
-export const DEFAULT_SANDBOX_DUPLEX_DECODER_MAX_BYTES = DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES;
 
 export interface SandboxCallbackBridgeRouteRule {
   method: string;

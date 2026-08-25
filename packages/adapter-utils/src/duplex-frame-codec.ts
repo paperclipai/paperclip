@@ -26,17 +26,6 @@ export const DUPLEX_FRAME_VERSION = 2;
  */
 export const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1_000_000;
 
-/** The frame type strings. One value goes in the `type` field of every frame. */
-export const DUPLEX_FRAME_TYPES = {
-  request: "request",
-  response: "response",
-  body_chunk: "body_chunk",
-  ready: "ready",
-  heartbeat: "heartbeat",
-  close: "close",
-  error: "error",
-} as const;
-
 /**
  * The READY control frame. The gateway sends it one time after it binds the
  * host-assigned listener port. READY is a liveness signal, not an address
