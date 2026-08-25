@@ -603,7 +603,7 @@ describe("ACPX engine turn characterization", () => {
     expect(result.summary).toBe("boom");
     expect((result.resultJson as Record<string, unknown>)?.stopReason).toBe("boom");
     // The usage math folds the usage_update event into per-run usage and cost.
-    expect(result.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60 });
+    expect(result.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60, cacheWriteTokens: 0 });
     expect(result.usageBasis).toBe("per_run");
     expect(result.costUsd).toBeCloseTo(0.31);
   });
@@ -617,7 +617,7 @@ describe("ACPX engine turn characterization", () => {
       eventBreakdown: { inputTokens: 40, outputTokens: 700, cachedReadTokens: 60 },
       eventCostUsd: 0.31,
     });
-    expect(summary.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60 });
+    expect(summary.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60, cacheWriteTokens: 0 });
     expect(summary.costUsd).toBeCloseTo(0.31);
   });
 
