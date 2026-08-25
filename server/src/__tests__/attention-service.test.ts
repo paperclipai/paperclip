@@ -944,6 +944,74 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
   });
 
+  it("suppresses a context-less failed run only after a newer context-less run of the same agent", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATN");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATN-1",
+      title: "Unrelated issue",
+      status: "in_progress",
+    });
+    const exhaustedAt = new Date("2026-07-09T12:00:00.000Z");
+    const exhaustedRun = (id: string, agentId: string) => ({
+      id,
+      companyId,
+      agentId,
+      invocationSource: "automation" as const,
+      status: "failed" as const,
+      error: "adapter failed",
+      contextSnapshot: null,
+      createdAt: exhaustedAt,
+      updatedAt: exhaustedAt,
+      finishedAt: exhaustedAt,
+    });
+    const workerRunId = randomUUID();
+    const reviewerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      exhaustedRun(workerRunId, workerId),
+      exhaustedRun(reviewerRunId, reviewerId),
+      {
+        // Newer run, but on an issue: does not clear the worker's context-less failure.
+        id: randomUUID(),
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+        createdAt: new Date("2026-07-09T12:01:00.000Z"),
+        updatedAt: new Date("2026-07-09T12:01:00.000Z"),
+        finishedAt: new Date("2026-07-09T12:01:00.000Z"),
+      },
+      {
+        // Newer context-less run: clears the reviewer's failure.
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "timer",
+        status: "succeeded",
+        contextSnapshot: {},
+        createdAt: new Date("2026-07-09T12:01:00.000Z"),
+        updatedAt: new Date("2026-07-09T12:01:00.000Z"),
+        finishedAt: new Date("2026-07-09T12:01:00.000Z"),
+      },
+    ]);
+    await db.insert(heartbeatRunEvents).values([workerRunId, reviewerRunId].map((runId, index) => ({
+      companyId,
+      runId,
+      agentId: index === 0 ? workerId : reviewerId,
+      seq: 1,
+      eventType: "lifecycle",
+      message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+      createdAt: new Date("2026-07-09T12:00:01.000Z"),
+    })));
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id)).toEqual([
+      workerRunId,
+    ]);
+  });
+
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {
     const { companyId, workerId } = await seedCompany("ATE");
     const projectId = randomUUID();

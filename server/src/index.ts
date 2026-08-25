@@ -1419,6 +1419,27 @@ export async function startServer(): Promise<StartedServer> {
       return { archived, ...notifications };
     };
     await runRetentionSweep();
+    // The sweep rebuilds every active company's full attention feed
+    // (dismissed rows included, unscoped). On a large instance one build takes
+    // longer than a scheduler tick, so it runs on its own interval and never
+    // overlaps itself: a tick that finds a sweep in flight skips it.
+    let retentionSweepInFlight: Promise<void> | null = null;
+    let retentionSweepLastStartedAt = Date.now();
+    const scheduleRetentionSweep = () => {
+      if (retentionSweepInFlight) return;
+      const now = Date.now();
+      if (now - retentionSweepLastStartedAt < config.decisionRetentionSweepIntervalMs) return;
+      retentionSweepLastStartedAt = now;
+      retentionSweepInFlight = runRetentionSweep()
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          logger.error({ err }, "decision retention sweep failed");
+        })
+        .finally(() => {
+          retentionSweepInFlight = null;
+        });
+      trackHeartbeatSchedulerWork(retentionSweepInFlight);
+    };
 
     startHeartbeatSchedulerInterval(() => {
       // Track the outer async callback as well as the work it starts. Shutdown
@@ -1429,9 +1450,7 @@ export async function startServer(): Promise<StartedServer> {
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
         }));
-        trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
-          logger.error({ err }, "decision retention sweep failed");
-        }));
+        scheduleRetentionSweep();
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(
