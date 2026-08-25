@@ -1738,8 +1738,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
               coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb),
               '{taskWatchdog}',
               jsonb_build_object(
-                'watchedIssueId', ${scope.watchedIssueId},
-                'stopFingerprint', ${classification.stopFingerprint}
+                'watchedIssueId', ${scope.watchedIssueId}::text,
+                'stopFingerprint', ${classification.stopFingerprint}::text
               ),
               true
             )
