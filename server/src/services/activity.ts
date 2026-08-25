@@ -381,6 +381,7 @@ export function activityService(db: Db) {
       const runs = await db
         .select({
           runId: heartbeatRuns.id,
+          runtimeMode: heartbeatRuns.runtimeMode,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
           adapterType: agents.adapterType,

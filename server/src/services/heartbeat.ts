@@ -2569,6 +2569,7 @@ const heartbeatRunLogAccessColumns = {
 
 const heartbeatRunIssueSummaryColumns = {
   id: heartbeatRuns.id,
+  runtimeMode: heartbeatRuns.runtimeMode,
   status: heartbeatRuns.status,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,

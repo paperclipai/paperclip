@@ -310,8 +310,26 @@ export function transcriptToTaskChatItems(
         resetInline();
         break;
       }
-      // init / result / stderr / stdout / system / user carry no thread-visible
-      // content in the live turn (status is rendered separately).
+      case "result": {
+        if (entry.subtype !== "paperclip_runner_usage") break;
+        const inputTokens = entry.inputTokens || 0;
+        const outputTokens = entry.outputTokens || 0;
+        items.push({
+          id: `${runId}:usage:${i}`,
+          kind: "usage",
+          usage: {
+            used: inputTokens + outputTokens + (entry.cachedTokens || 0),
+            size: 0,
+            inputTokens,
+            outputTokens,
+            ...(entry.costUsd > 0 ? { costUsd: entry.costUsd } : {}),
+          },
+        });
+        resetInline();
+        break;
+      }
+      // init / stderr / stdout / system / user and non-runner result entries
+      // carry no thread-visible content (status is rendered separately).
       default:
         break;
     }

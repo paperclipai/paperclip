@@ -210,6 +210,11 @@ import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import {
+  deliverNativeQuestionResponse,
+  nativeQuestionRunToCancel,
+  validateNativeQuestionResponseInput,
+} from "../services/native-runtime/native-question-bridge.js";
+import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
@@ -11682,9 +11687,12 @@ export function issueRoutes(
         interactionId,
       );
       if (!authorizedResolution) return;
-      const { interactionSvc, resolutionAuthorization } = authorizedResolution;
+      const { interactionSvc, current, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
+      if (current.kind === "ask_user_questions") {
+        validateNativeQuestionResponseInput(current, req.body);
+      }
       const interaction = await interactionSvc.answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
@@ -11906,6 +11914,19 @@ export function issueRoutes(
               : null,
         },
       });
+
+      if (interaction.kind === "ask_user_questions") {
+        const nativeRunId = await nativeQuestionRunToCancel(db, interaction);
+        if (nativeRunId) {
+          await heartbeat.cancelRun(nativeRunId, "Cancelled while waiting for operator input", {
+            resultJson: {
+              cancelledByActorType: "user",
+              cancelledByUserId: req.actor.userId ?? null,
+              cancelledInteractionId: interaction.id,
+            },
+          });
+        }
+      }
 
       await queueResolvedInteractionContinuationWakeup({
         db,

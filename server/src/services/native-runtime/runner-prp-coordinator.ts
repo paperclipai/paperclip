@@ -13,6 +13,11 @@ import {
 
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
+import {
+  flushNativeQuestionResponses,
+  projectNativeRuntimeRequest,
+  registerNativeQuestionCommandTarget,
+} from "./native-question-bridge.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 
 const UUID_PATTERN =
@@ -214,7 +219,7 @@ export function runnerPrpCoordinator(
         agentId: input.agentId,
       });
       const semanticTools = await semanticAuthority.listAlwaysAvailableTools();
-      const nativeStore = new NativeRunCoordinatorStore(db, {
+      const storeBinding = {
         companyId: input.companyId,
         issueId: input.issueId,
         runId: input.runId,
@@ -225,7 +230,8 @@ export function runnerPrpCoordinator(
         completionContractSha256: binding.run.completionContractSha256,
         completionContractRevision: String(binding.completionContract.revision),
         completionContractCriterionIds: criterionIds,
-      });
+      } as const;
+      const nativeStore = new NativeRunCoordinatorStore(db, storeBinding);
       type StoredCompletedRun = NonNullable<Awaited<ReturnType<typeof nativeStore.readCompletedRun>>>;
       type CompletedRun = StoredCompletedRun & { readonly providerSessionId?: string };
       const withProviderSession = async (stored: StoredCompletedRun): Promise<CompletedRun> => {
@@ -255,6 +261,9 @@ export function runnerPrpCoordinator(
         connectionLeaseTtlMs,
         onCommittedEvent: async (event) => {
           await nativeStore.appendEvent(event);
+          if (event.eventType === "runtime_request.created") {
+            await projectNativeRuntimeRequest({ db, binding: storeBinding, event });
+          }
           await nativeStore.reconcileTerminalEvent(event);
           if (event.eventType === "run.terminal") {
             const stored = await nativeStore.readCompletedRun();
@@ -274,15 +283,38 @@ export function runnerPrpCoordinator(
         },
       });
 
-      const registration = await registerRunnerPrpAuthority({
-        companyId: input.companyId,
-        runId: input.runId,
-        authority,
-      });
+      let registration: Awaited<ReturnType<typeof registerRunnerPrpAuthority>>;
+      try {
+        registration = await registerRunnerPrpAuthority({
+          companyId: input.companyId,
+          runId: input.runId,
+          authority,
+        });
+      } catch (error) {
+        authority.disconnectActiveRunner();
+        throw error;
+      }
+      let releaseQuestionTarget = () => {};
+      try {
+        releaseQuestionTarget = registerNativeQuestionCommandTarget({
+          binding: storeBinding,
+          queueCommand: (type, payload = {}, commandId) => {
+            const command = authority.queueCommand(type, payload, commandId, true);
+            return { commandId: command.commandId, controllerSeq: command.controllerSeq };
+          },
+        });
+        await flushNativeQuestionResponses(db, input.runId);
+      } catch (error) {
+        releaseQuestionTarget();
+        authority.disconnectActiveRunner();
+        await registration.release();
+        throw error;
+      }
       let bootstrapTicket: string;
       try {
         bootstrapTicket = authority.issueBootstrapTicket(bootstrapTtlMs);
       } catch (error) {
+        releaseQuestionTarget();
         authority.disconnectActiveRunner();
         await registration.release();
         throw error;
@@ -339,6 +371,7 @@ export function runnerPrpCoordinator(
         release: async () => {
           if (released) return;
           released = true;
+          releaseQuestionTarget();
           authority.disconnectActiveRunner();
           await registration.release();
         },
