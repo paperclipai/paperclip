@@ -3277,20 +3277,108 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  function isGenerationCeilingProximate(latestRun: LatestIssueRun): boolean {
+    if (!latestRun) return false;
+    const errorCode = readNonEmptyString(latestRun.errorCode);
+    if (
+      errorCode === "issue_generation_ceiling_exceeded" ||
+      errorCode === "generation_run_ceiling" ||
+      errorCode === "aggregate_input_token_ceiling"
+    ) {
+      return true;
+    }
+    const result = parseObject(latestRun.resultJson);
+    const reason = readNonEmptyString(result.reason) ?? readNonEmptyString(result.stopReason);
+    return (
+      reason === "generation_run_ceiling" ||
+      reason === "issue_generation_ceiling_exceeded" ||
+      reason === "aggregate_input_ceiling" ||
+      reason === "aggregate_input_token_ceiling"
+    );
+  }
+
+  /**
+   * TSBC-2211 / fleet stranded recovery owner fallback.
+   *
+   * Upstream f572e0867 removed automatic SOURCE takeovers (assignee stays put).
+   * Company `strandedRecoveryOwnerAgentId` is still the sanctioned invokable
+   * recovery ACTION owner when manager/creator/executive are absent or over
+   * budget — wake that owner without reassigning the source card. Board mint
+   * only when no company default exists or the default is not invokable.
+   */
   async function resolveStrandedRecoveryRouting(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
+    recoveryCause?: StrandedRecoveryCause;
   }) {
     const originalAgentId = input.issue.assigneeAgentId ?? input.latestRun?.agentId ?? null;
     const sourceAssignee = input.issue.assigneeAgentId
       ? await getAgent(input.issue.assigneeAgentId)
       : null;
     const originalAgent = originalAgentId ? await getAgent(originalAgentId) : null;
+    const recoverySource = {
+      originKind: input.issue.originKind,
+      assigneeAdapterType: sourceAssignee?.adapterType ?? null,
+    };
+    const returnOwnerAgentId = isRecoveryOwnerCandidateEligible(originalAgent, recoverySource)
+      ? originalAgentId
+      : null;
+
+    const generationCeilingProximate = isGenerationCeilingProximate(input.latestRun);
+
+    const company = await db
+      .select({ strandedRecoveryOwnerAgentId: companies.strandedRecoveryOwnerAgentId })
+      .from(companies)
+      .where(eq(companies.id, input.issue.companyId))
+      .then((rows) => rows[0] ?? null);
+    const companyDefaultId = company?.strandedRecoveryOwnerAgentId ?? null;
+
+    let ownerAgentId: string | null = null;
+    let routingFallbackReason: string | null = null;
+    let routingPolicy: string | null = null;
+
+    if (companyDefaultId) {
+      const candidate = await getAgent(companyDefaultId);
+      if (!candidate || candidate.companyId !== input.issue.companyId) {
+        routingFallbackReason =
+          "Company strandedRecoveryOwnerAgentId is set but the agent is missing or in another company.";
+      } else if (!isRecoveryOwnerCandidateEligible(candidate, recoverySource)) {
+        // Shell handlers cannot own non-routine judgment recovery (isRecoveryOwnerCandidateEligible).
+        routingFallbackReason =
+          `Company stranded recovery owner ${candidate.name} is not eligible for this source ` +
+          `(adapterType=${candidate.adapterType}; shell handlers only own routine_execution shell work).`;
+      } else if (!(await isAgentInvokable(candidate))) {
+        routingFallbackReason =
+          `Company stranded recovery owner ${candidate.name} is not invokable (status=${candidate.status}).`;
+      } else if (!isHeartbeatWakeOnDemandEnabled(candidate)) {
+        routingFallbackReason =
+          `Company stranded recovery owner ${candidate.name} does not allow on-demand heartbeat wakes.`;
+      } else if (await isInvocationBudgetBlocked(input.issue, candidate.id)) {
+        routingFallbackReason =
+          `Company stranded recovery owner ${candidate.name} is over invocation budget.`;
+      } else {
+        ownerAgentId = candidate.id;
+        routingPolicy = "company_default_recovery_owner_v1";
+      }
+    } else {
+      routingFallbackReason =
+        "No company strandedRecoveryOwnerAgentId configured; cannot dispatch an invokable recovery owner without board mint.";
+    }
+
+    if (generationCeilingProximate) {
+      const ceilingNote =
+        "Proximate cause is generation/input ceiling; a fresh board/user comment resets the generation counter (do not silent no-owner escalate).";
+      routingFallbackReason = routingFallbackReason
+        ? `${routingFallbackReason} ${ceilingNote}`
+        : ceilingNote;
+    }
+
     return {
-      returnOwnerAgentId: isRecoveryOwnerCandidateEligible(originalAgent, {
-        originKind: input.issue.originKind,
-        assigneeAdapterType: sourceAssignee?.adapterType ?? null,
-      }) ? originalAgentId : null,
+      returnOwnerAgentId,
+      ownerAgentId,
+      routingFallbackReason,
+      routingPolicy,
+      generationCeilingProximate,
     };
   }
 
@@ -3626,6 +3714,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const routing = await resolveStrandedRecoveryRouting({
       issue: input.issue,
       latestRun: input.latestRun,
+      recoveryCause,
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota";
     // RECOVERY-LOOP CAP (2026-08-05).
@@ -3654,7 +3743,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // loop-cap branch; TSMC-20155/20183 were the inverse stranded-recovery class
     // with owner_type='board' and recovery_issue_id NULL). Provider-quota waits
     // are system-monitored and retry the original assignee, so they carry no card.
-    const recoveryIssueId = isProviderQuotaWait
+    // Company default invokable recovery owner (TSBC-2211): dispatch agent-owned
+    // recovery WITHOUT board mint and WITHOUT changing the source assignee.
+    // Loop-cap and workspace-validation still take the board/manual path.
+    const companyDefaultOwnerAgentId =
+      !isProviderQuotaWait &&
+      !recoveryLoopCapExceeded &&
+      recoveryCause !== "workspace_validation_failed" &&
+      routing.ownerAgentId
+        ? routing.ownerAgentId
+        : null;
+
+    const recoveryIssueId = isProviderQuotaWait || companyDefaultOwnerAgentId
       ? null
       : (await ensureRecoveryLoopCapEscalationIssue({
         issue: input.issue,
@@ -3663,7 +3763,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         priorActionCount,
         escalationReason: recoveryLoopCapExceeded
           ? "recovery_loop_cap"
-          : "board_escalation_no_takeover",
+          : routing.ownerAgentId
+            ? "board_escalation_no_takeover"
+            : "no_invokable_recovery_owner",
       })).id;
     if (recoveryLoopCapExceeded) {
       logger.warn(
@@ -3681,6 +3783,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
     }
     const now = new Date();
+    const generationCeilingNote = routing.generationCeilingProximate
+      ? " Proximate cause is generation/input ceiling — post a board/user comment to reset the counter, or record disposition/split work; do not thrash stranded_assigned retries."
+      : "";
+    const companyOwnerNextAction =
+      routing.generationCeilingProximate
+        ? "Company recovery owner: generation/input ceiling is the proximate cause. Post a board/user comment (resets the generation counter) or record a valid disposition/split; keep the source assignee unchanged."
+        : recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+          ? "Company recovery owner: successful run is missing a control-plane disposition. Record a valid disposition on the source (done/in_review/blocked/delegated) or coordinate with the disposition-repair path (TSBC-2210); do not reassign the source."
+          : recoveryCause === "process_lost"
+            ? "Company recovery owner: inspect retry history, restore a live execution path for the source assignee, or explicitly reassign; source assignee stays put unless you choose reassignment."
+            : "Company recovery owner: inspect evidence, restore a live execution path or record an intentional resolution; source assignee is preserved (no automatic takeover).";
+    const boardNextAction = recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+      ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."
+      : recoveryCause === "close_evidence_unmet"
+        ? `Add governed-path evidence until the measured count reaches the target (${input.closeEvidenceMeasurement?.measuredCount ?? 0}/${input.closeEvidenceMeasurement?.targetCount ?? 0}).`
+      : recoveryCause === "process_lost"
+        ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
+      : recoveryCause === "provider_quota"
+        ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
+      : recoveryCause === "detached_execution_required"
+        ? "Relaunch the long-running job detached (`nohup … &`) with a durable result path, then resume from the recorded artifact instead of another synchronous heartbeat."
+      : recoveryCause === "codex_output_inactivity_monitor"
+        ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
+      : recoveryCause === "workspace_validation_failed"
+        ? readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_branch_incoherence"
+          ? "Board operator: repair the source task git worktree branch incoherence or choose a new execution workspace, then explicitly retry or reassign."
+          : readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_base_materialization_failed"
+            ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
+            : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
+      : recoveryCause === "configuration_incomplete"
+        ? (
+          readConfigurationIncompleteRemediation(input.latestRun) ??
+          "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
+        )
+      : recoveryCause === "execution_review_participant_recovery"
+        ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
+      : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.";
+
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
@@ -3692,8 +3832,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
-      ownerType: isProviderQuotaWait ? "system" : "board",
-      ownerAgentId: null,
+      ownerType: isProviderQuotaWait
+        ? "system"
+        : companyDefaultOwnerAgentId
+          ? "agent"
+          : "board",
+      ownerAgentId: companyDefaultOwnerAgentId,
       ownerUserId: null,
       previousOwnerAgentId: input.issue.assigneeAgentId,
       returnOwnerAgentId: routing.returnOwnerAgentId,
@@ -3713,39 +3857,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           closeEvidenceMeasurement: input.closeEvidenceMeasurement,
         }),
         failureSummary: summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
+        generationCeilingProximate: routing.generationCeilingProximate,
+        routingFallbackReason: routing.routingFallbackReason,
         ...(recoveryLoopCapExceeded
           ? { recoveryLoopCap: { priorActionCount, cap: MAX_RECOVERY_ACTIONS_PER_ISSUE_KIND } }
           : {}),
       },
       evidenceOnCreate: isProviderQuotaWait
         ? {}
-        : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
-      nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
-        ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."
-        : recoveryCause === "close_evidence_unmet"
-          ? `Add governed-path evidence until the measured count reaches the target (${input.closeEvidenceMeasurement?.measuredCount ?? 0}/${input.closeEvidenceMeasurement?.targetCount ?? 0}).`
-        : recoveryCause === "process_lost"
-          ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
-        : recoveryCause === "provider_quota"
-          ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
-        : recoveryCause === "detached_execution_required"
-          ? "Relaunch the long-running job detached (`nohup … &`) with a durable result path, then resume from the recorded artifact instead of another synchronous heartbeat."
-        : recoveryCause === "codex_output_inactivity_monitor"
-          ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
-        : recoveryCause === "workspace_validation_failed"
-          ? readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_branch_incoherence"
-            ? "Board operator: repair the source task git worktree branch incoherence or choose a new execution workspace, then explicitly retry or reassign."
-            : readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_base_materialization_failed"
-              ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
-              : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
-        : recoveryCause === "configuration_incomplete"
-          ? (
-            readConfigurationIncompleteRemediation(input.latestRun) ??
-            "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
-          )
-        : recoveryCause === "execution_review_participant_recovery"
-          ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
-        : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
+        : {
+          routingPolicy: companyDefaultOwnerAgentId
+            ? (routing.routingPolicy ?? "company_default_recovery_owner_v1")
+            : STRANDED_BOARD_ESCALATION_POLICY,
+        },
+      nextAction: (companyDefaultOwnerAgentId ? companyOwnerNextAction : boardNextAction) + generationCeilingNote,
       wakePolicy: isProviderQuotaWait
         ? {
           type: "monitor_only",
@@ -3761,18 +3886,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ownerAgentId: null,
           preservesSourceAssignee: true,
         }
+        : companyDefaultOwnerAgentId
+        ? {
+          type: "wake_owner",
+          reason: routing.generationCeilingProximate
+            ? "generation_ceiling_company_recovery_owner"
+            : "company_default_recovery_owner",
+          ownerAgentId: companyDefaultOwnerAgentId,
+          preservesSourceAssignee: true,
+        }
         : {
           type: "board_escalation",
-          reason: recoveryCause,
+          // Keep cause as wake reason for existing observers; stamp
+          // no_invokable_recovery_owner on escalationReason when the company
+          // default could not dispatch (TSBC-2211).
+          reason: recoveryLoopCapExceeded ? "recovery_loop_cap" : recoveryCause,
           preservesSourceAssignee: true,
           ...(recoveryLoopCapExceeded
             ? { escalationReason: "recovery_loop_cap", priorActionCount }
+            : !routing.ownerAgentId
+              ? { escalationReason: "no_invokable_recovery_owner" }
+              : {}),
+          ...(routing.routingFallbackReason
+            ? { routingFallbackReason: routing.routingFallbackReason }
             : {}),
         },
       monitorPolicy: isProviderQuotaWait
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
         : null,
-      maxAttempts: null,
+      maxAttempts: companyDefaultOwnerAgentId ? 3 : null,
       lastAttemptAt: now,
     });
 
@@ -3995,8 +4137,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   ) {
     if (!action || action.ownerAgentId || action.ownerType !== "board") return false;
     const wakePolicy = parseObject(action.wakePolicy);
-    return readNonEmptyString(wakePolicy.type) === "board_escalation" &&
-      readNonEmptyString(wakePolicy.reason) === "no_invokable_recovery_owner";
+    if (readNonEmptyString(wakePolicy.type) !== "board_escalation") return false;
+    return (
+      readNonEmptyString(wakePolicy.reason) === "no_invokable_recovery_owner" ||
+      readNonEmptyString(wakePolicy.escalationReason) === "no_invokable_recovery_owner"
+    );
   }
 
   function strandedNoInvokableRecoveryOwnerBackoffMs(attemptCount: number) {
@@ -5505,10 +5650,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // keep-actionable todo path below; the board must repair the workspace first.
     const requiresDeterministicManualRepair =
       recoveryCause === "workspace_validation_failed";
-    // No per-source takeover wrapper is minted any more (upstream f572e0867: no
-    // automatic stranded-task takeovers). The board-visible receipt is the
-    // signature-scoped recovery card linked on the action itself.
+    // No per-source SOURCE takeover (upstream f572e0867). Company default recovery
+    // owner (TSBC-2211) may own the recovery ACTION and be woken while the source
+    // assignee stays put. Board-visible receipt is only minted when no invokable
+    // company default exists.
     const ensuredRecoveryIssueId: string | null = recoveryAction.recoveryIssueId ?? null;
+    const companyDefaultRecoveryOwner =
+      recoveryAction.ownerType === "agent" && recoveryAction.ownerAgentId
+        ? recoveryAction.ownerAgentId
+        : null;
 
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -5521,14 +5671,72 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
+
+    // Wake company default recovery owner on the source issue (preserves assignee).
+    if (companyDefaultRecoveryOwner) {
+      await deps.enqueueWakeup(companyDefaultRecoveryOwner, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "company_default_recovery_owner",
+        payload: withRecoveryModelProfileHint({
+          issueId: input.issue.id,
+          recoveryActionId: recoveryAction.id,
+          recoveryCause,
+          sourceAssigneeAgentId: input.issue.assigneeAgentId,
+          preservesSourceAssignee: true,
+          generationCeilingProximate: Boolean(
+            parseObject(recoveryAction.evidence).generationCeilingProximate,
+          ),
+          latestRunId: input.latestRun?.id ?? null,
+        }, "status_only"),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: input.issue.id,
+          taskId: input.issue.id,
+          wakeReason: "company_default_recovery_owner",
+          recoveryActionId: recoveryAction.id,
+          recoveryCause,
+          sourceAssigneeAgentId: input.issue.assigneeAgentId,
+          preservesSourceAssignee: true,
+        }, "status_only"),
+      });
+    }
+
     const blockerIds = [...new Set([
       ...await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id),
-      // The root escalation is the source issue's durable wait path as well
-      // as the recovery action's receipt. This keeps the source visible in
-      // dependency views while the board-visible root is unresolved.
-      ...(recoveryAction.recoveryIssueId ? [recoveryAction.recoveryIssueId] : []),
+      // Link board receipt only when there is no agent recovery owner. Circular
+      // blockedBy on the board card alone is forbidden without an unblockDescriptor
+      // that names a concrete owner+action (TSBC-2211).
+      ...(!companyDefaultRecoveryOwner && recoveryAction.recoveryIssueId
+        ? [recoveryAction.recoveryIssueId]
+        : []),
     ])];
     const strandedBlockedGate = strandedBlockedGatePatch({ issue: input.issue, blockerIds });
+    const boardUnblockDescriptor = !companyDefaultRecoveryOwner
+      ? {
+        owner: "board" as const,
+        action: recoveryCause === "workspace_validation_failed"
+          ? "Board: repair the workspace/validation fault named in the recovery receipt, then retry or reassign the source assignee."
+          : parseObject(recoveryAction.evidence).generationCeilingProximate
+            ? "Board: post a user/board comment to reset the generation counter, or record disposition/split remaining work (cause:generation_ceiling_no_invokable_recovery_owner)."
+            : routingFallbackAction(recoveryAction),
+      }
+      : {
+        owner: { agentId: companyDefaultRecoveryOwner },
+        action:
+          "Company recovery owner should restore a live execution path or record disposition; source assignee is preserved (cause:company_default_recovery_owner).",
+      };
+
+    function routingFallbackAction(action: typeof recoveryAction): string {
+      const evidence = parseObject(action.evidence);
+      const reason = readNonEmptyString(evidence.routingFallbackReason);
+      const base =
+        "Board: inspect the recovery receipt, then explicitly retry the original owner, reassign, repair runtime, or record intentional resolution";
+      return reason
+        ? `${base} (cause:no_invokable_recovery_owner; ${reason.slice(0, 240)})`
+        : `${base} (cause:no_invokable_recovery_owner).`;
+    }
 
     let updated: Awaited<ReturnType<typeof issuesSvc.update>> | null = null;
 
@@ -5543,23 +5751,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // its own recovery issue anyway).
     const onlySelfReferentialBlockers = blockerIds.every((id) => id === ensuredRecoveryIssueId);
     if (
-      recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      (
+        recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
+        Boolean(companyDefaultRecoveryOwner)
+      ) &&
       onlySelfReferentialBlockers &&
       !requiresDeterministicManualRepair
     ) {
-      // No assignee patch: upstream f572e0867 keeps both source assignee fields
-      // unchanged during automatic escalation.
+      // Company-default recovery owner path stays actionable (todo) so the wake
+      // can run; missing-disposition with only self-ref blockers stays todo too.
+      // Source assignee fields unchanged (no automatic takeover).
       updated = await issuesSvc.update(input.issue.id, { status: "todo" });
     }
 
     if (!updated) {
       // Board-owned escalation leaves the source assignee and user untouched
-      // (no automatic stranded-task takeover). The fork's external-wait gate
-      // keeps blocked-state accountability satisfied when no first-class
-      // blocker exists.
+      // (no automatic stranded-task takeover). Always attach unblockDescriptor
+      // naming concrete owner+action so the source is not circular-blocked on the
+      // board card with no named next step (TSBC-2211).
       updated = await issuesSvc.update(input.issue.id, {
         status: "blocked",
         blockedByIssueIds: blockerIds,
+        unblockDescriptor: boardUnblockDescriptor,
         ...strandedBlockedGate,
       });
     }
@@ -5622,11 +5835,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     // Fork: the comment BODY keeps the recovery receipt lines (operator tooling
     // and tests grep the body); upstream carries the same facts as metadata rows.
+    const recoveryOwnerLine = companyDefaultRecoveryOwner && recoveryOwner
+      ? `- Recovery owner: company default \`${recoveryOwner.name}\` (\`${recoveryOwner.id}\`) via strandedRecoveryOwnerAgentId; source assignee preserved (no automatic takeover).`
+      : "- Recovery owner: board escalation, because no invokable company strandedRecoveryOwnerAgentId was available (manager/creator/executive fallback removed by f572e0867; company default is the sanctioned agent path).";
+    const recoveryNextLine = companyDefaultRecoveryOwner
+      ? "- Next action: company recovery owner should inspect evidence, restore a live path or record disposition; generation-ceiling cases need a board/user comment reset."
+      : "- Next action: a board operator should inspect the evidence, then explicitly retry the original owner, reassign, repair the runtime, or record an intentional manual resolution.";
     const recoveryLine = [
       "",
       `- Recovery action: \`${recoveryAction.id}\``,
-      "- Recovery owner: board escalation, because automatic recovery keeps the source assignment unchanged and never wakes a substitute agent.",
-      "- Next action: a board operator should inspect the evidence, then explicitly retry the original owner, reassign, repair the runtime, or record an intentional manual resolution.",
+      recoveryOwnerLine,
+      recoveryNextLine,
     ].join("\n");
     const escalationBody = `${escalationNotice.body}${recoveryLine}`;
 
