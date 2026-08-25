@@ -11,6 +11,7 @@ import {
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
+  isPluginManagedIssueLifecycle,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
@@ -207,10 +208,69 @@ describe("successful run handoff decision", () => {
     expect(instruction).not.toMatch(/[\u0000-\u0008\u000B-\u001F\u007F]/);
   });
 
+  it("does not queue for a run woken by source_scoped_recovery_action", () => {
+    expect(
+      decide({
+        run: {
+          ...run,
+          contextSnapshot: {
+            issueId: "issue-1",
+            wakeReason: "source_scoped_recovery_action",
+          },
+        } as any,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "recovery action run owns its own follow-up path",
+    });
+    // the recoveryActionId marker alone is also enough (payloads carry it even
+    // when wakeReason is rewritten downstream)
+    expect(
+      decide({
+        run: {
+          ...run,
+          contextSnapshot: { issueId: "issue-1", recoveryActionId: "recovery-action-1" },
+        } as any,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "recovery action run owns its own follow-up path",
+    });
+  });
+
   it("does not queue when the issue already has a valid disposition", () => {
     expect(decide({ issue: { ...issue, status: "done" } as any })).toEqual({
       kind: "skip",
       reason: "issue status done is a valid disposition",
+    });
+  });
+
+  it("does not queue when a plugin owns the issue's lifecycle", () => {
+    expect(decide({ issue: { ...issue, originKind: "plugin:paperclip.workflow-engine" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue lifecycle is owned by a plugin",
+    });
+    expect(decide({ issue: { ...issue, originKind: "plugin:paperclip.workflow-engine:advance" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue lifecycle is owned by a plugin",
+    });
+  });
+
+  it("still queues for non-plugin origin kinds", () => {
+    expect(decide({ issue: { ...issue, originKind: "manual" } as any }).kind).toBe("enqueue");
+    expect(decide({ issue: { ...issue, originKind: null } as any }).kind).toBe("enqueue");
+  });
+
+  describe("isPluginManagedIssueLifecycle", () => {
+    it("is true for any plugin: prefixed origin kind", () => {
+      expect(isPluginManagedIssueLifecycle({ originKind: "plugin:paperclip.workflow-engine" })).toBe(true);
+      expect(isPluginManagedIssueLifecycle({ originKind: "plugin:paperclip.workflow-engine:advance" })).toBe(true);
+    });
+
+    it("is false for non-plugin or missing origin kinds", () => {
+      expect(isPluginManagedIssueLifecycle({ originKind: "manual" })).toBe(false);
+      expect(isPluginManagedIssueLifecycle({ originKind: null })).toBe(false);
+      expect(isPluginManagedIssueLifecycle({})).toBe(false);
     });
   });
 
@@ -471,7 +531,7 @@ describe("successful run handoff decision", () => {
     expect(notice.metadata.sourceRunId).toBe("22222222-2222-4222-8222-222222222222");
     expect(notice.metadata.sections).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        title: "Recovery owner",
+        title: "Recovery",
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "key_value", label: "Recovery action", value: "77777777-7777-4777-8777-777777777777" }),
           expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CTO" }),

@@ -17,7 +17,7 @@ export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
-  "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
+  "Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.";
 export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
   "## This issue still needs a next step",
   "## Successful run missing issue disposition",
@@ -49,6 +49,22 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
   return IDEMPOTENT_HANDOFF_WAKE_STATUS_SET.has(status);
 }
 
+/**
+ * A plugin (e.g. a graph/workflow engine) owns this issue's lifecycle and may
+ * legitimately hold it at `in_progress` for a long time — e.g. an anchor issue
+ * parked at a fan-out node waiting on spawned child issues. Generic handoff/stranded-
+ * issue recovery has no way to know that, so treating it as a missing disposition
+ * repeatedly nags the agent for a "disposition" it has no valid way to give: the
+ * agent's own status change gets reverted by the plugin's own enforcement on the next
+ * event, which re-triggers the exact same recovery again — an unbounded, real-cost
+ * retry loop with no possible resolution. Every recovery path that can escalate or
+ * nag based on "issue is stuck in_progress" must consult this first and leave
+ * plugin-managed issues to the plugin's own recovery/enforcement path instead.
+ */
+export function isPluginManagedIssueLifecycle(issue: { originKind?: string | null }) {
+  return Boolean(issue.originKind?.startsWith("plugin:"));
+}
+
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
@@ -57,10 +73,12 @@ type IssueRow = Pick<
   | "identifier"
   | "title"
   | "description"
+  | "originKind"
   | "status"
   | "assigneeAgentId"
   | "assigneeUserId"
   | "executionState"
+  | "originKind"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -194,15 +212,17 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
       sourceRunId: input.sourceRun?.id ?? null,
       sections: [
         {
-          title: "Recovery owner",
+          title: "Recovery",
           rows: [
             issueLinkRow("Source issue", input.issue),
             input.recoveryActionId
               ? keyValueRow("Recovery action", input.recoveryActionId)
               : issueLinkRow("Recovery issue", input.recoveryIssue),
-            agentLinkRow("Recovery owner", input.recoveryOwner),
+            input.recoveryOwner
+              ? agentLinkRow("Recovery owner", input.recoveryOwner)
+              : keyValueRow("Recovery owner", "Board decision required"),
             agentLinkRow("Source assignee", input.sourceAssignee),
-            keyValueRow("Suggested action", "choose and record a valid issue disposition without copying transcript content"),
+            keyValueRow("Suggested action", "inspect the evidence, then retry the original owner, explicitly reassign, or record a valid issue disposition"),
           ],
         },
         {
@@ -302,6 +322,19 @@ function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   return context.handoffRequired === true ||
     readString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
+}
+
+// A run woken by source_scoped_recovery_action must not become the source of another
+// successful-run handoff. The handoff idempotency key includes sourceRunId, so every
+// succeeding recovery run mints a fresh handoff wake: recovery run → handoff wake →
+// corrective run → new recovery action → recovery run → …, an unbounded ping-pong that
+// never reaches the handoff-exhausted escalation. Recovery runs own their own follow-up
+// path; if the disposition is still missing, the stranded-issue escalation (blocked +
+// exhausted notice) is the designed exit, not another handoff.
+function isRecoveryActionDrivenRun(run: HeartbeatRunRow) {
+  const context = readRecord(run.contextSnapshot);
+  return readString(context.wakeReason) === "source_scoped_recovery_action" ||
+    readString(context.recoveryActionId) !== null;
 }
 
 function isIssueMonitorMaintenanceRun(run: HeartbeatRunRow) {
@@ -423,6 +456,7 @@ export function decideSuccessfulRunHandoff(input: {
 
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
+  if (isRecoveryActionDrivenRun(run)) return { kind: "skip", reason: "recovery action run owns its own follow-up path" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
@@ -439,6 +473,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  if (isPluginManagedIssueLifecycle(issue)) {
+    return { kind: "skip", reason: "issue lifecycle is owned by a plugin" };
+  }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }

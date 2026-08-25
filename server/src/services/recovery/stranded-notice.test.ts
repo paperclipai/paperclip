@@ -101,7 +101,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
 
     const ownerRow = allRows(notice.metadata).find((row) => row.label === "Recovery owner");
     expect(ownerRow?.type).toBe("key_value");
-    expect(String(ownerRow?.value)).toContain("Board escalation");
+    expect(ownerRow?.value).toBe("Board decision required");
   });
 
   it("derives title from the recovery cause and body from the plain-comment fallback", () => {

@@ -172,6 +172,7 @@ describeEmbeddedPostgres("attention service", () => {
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
     harnessKind?: string | null;
+    reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -181,6 +182,7 @@ describeEmbeddedPostgres("attention service", () => {
       title: input.title,
       status: input.status,
       priority: input.priority ?? "medium",
+      reviewPolicy: input.reviewPolicy ?? null,
       parentId: input.parentId ?? null,
       projectId: input.projectId ?? null,
       projectWorkspaceId: input.projectWorkspaceId ?? null,
@@ -314,6 +316,9 @@ describeEmbeddedPostgres("attention service", () => {
       title: "Stalled review blocker",
       status: "in_review",
       assigneeAgentId: reviewerId,
+      // PAP-16506: the /decisions review card states who may give the verdict,
+      // so the subject has to carry the issue's opt-in constraint.
+      reviewPolicy: "human_only",
       updatedAt: new Date("2026-07-09T12:05:00.000Z"),
     });
     await db.insert(issueRelations).values({
@@ -673,7 +678,10 @@ describeEmbeddedPostgres("attention service", () => {
       // A stalled review resolves in-row on the /decisions card (PAP-16080 §4.4).
       inlineResolvable: true,
       subject: expect.objectContaining({
-        metadata: expect.objectContaining({ reviewAttentionState: "stalled" }),
+        metadata: expect.objectContaining({
+          reviewAttentionState: "stalled",
+          reviewPolicy: "human_only",
+        }),
       }),
       decisionVerbs: expect.arrayContaining([
         expect.objectContaining({ id: "choose_review_path", label: "Choose review path" }),
@@ -788,6 +796,101 @@ describeEmbeddedPostgres("attention service", () => {
       "Terminated reviewer question",
     ]));
     expect(interactionTitles).not.toContain("Active reviewer question");
+  });
+
+  // PAP-17287: a collapsed queue row offers Accept/Reject before anything fetches
+  // the interaction, so the audience the resolution routes will enforce has to
+  // ship with the feed item.
+  it("ships the effective resolver audience with each interaction row", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ARA");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ARA-1",
+      title: "Needs a decision",
+      status: "in_progress",
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Open question",
+        createdByAgentId: workerId,
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Creator-excluded question",
+        createdByAgentId: workerId,
+        requestedResolverPolicy: "not_creator",
+        effectiveResolverPolicy: "not_creator",
+        resolverPolicyProvenance: "explicit",
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Capped question",
+        createdByAgentId: workerId,
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "human_only",
+        effectiveResolverPolicySource: "company_cap",
+        payload: { version: 1, questions: [] },
+      },
+    ]);
+    // An addressed card only reaches board attention once its addressee cannot
+    // act, which is exactly when naming the addressee matters most.
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      title: "Addressed question",
+      createdByAgentId: workerId,
+      addresseeAgentId: reviewerId,
+      payload: { version: 1, questions: [] },
+    });
+    await agentService(db).pause(reviewerId);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const audienceByTitle = new Map(feed.items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => [item.subject.title, item.resolverAudience]));
+
+    expect(audienceByTitle.get("Open question")).toMatchObject({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      effectiveResolverPolicySource: "requested",
+      addresseeAgentId: null,
+      addresseeName: null,
+    });
+    expect(audienceByTitle.get("Creator-excluded question")).toMatchObject({
+      effectiveResolverPolicy: "not_creator",
+      createdByAgentId: workerId,
+      createdByAgentName: "Worker",
+    });
+    expect(audienceByTitle.get("Capped question")).toMatchObject({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "company_cap",
+    });
+    expect(audienceByTitle.get("Addressed question")).toMatchObject({
+      addresseeAgentId: reviewerId,
+      addresseeName: "Reviewer",
+    });
+    // Non-interaction rows carry no resolver policy at all.
+    expect(feed.items.find((item) => item.sourceKind !== "issue_thread_interaction")?.resolverAudience)
+      .toBeNull();
   });
 
   it("suppresses failed-run attention after a newer run for the same issue", async () => {

@@ -618,6 +618,23 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
   );
 }
 
+/**
+ * The bundled operating skills the default agent instructions assume every
+ * lead agent has (coordination, board usage, planning, hiring, memory). A
+ * seeded or hired CEO must arrive with these enabled: an agent's runtime only
+ * receives skills in its own desired set, so a CEO with an empty set
+ * truthfully reports these as not installed while its instructions tell it to
+ * use them. Mirrors the repo-root `skills/` bundle that
+ * `ensureSkillInventoryCurrent` imports into every company library.
+ */
+export const PAPERCLIP_CORE_SKILL_KEYS = [
+  "paperclipai/paperclip/paperclip",
+  "paperclipai/paperclip/paperclip-board",
+  "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
+  "paperclipai/paperclip/paperclip-create-agent",
+  "paperclipai/paperclip/para-memory-files",
+] as const;
+
 function deriveCanonicalSkillKey(
   companyId: string,
   input: Pick<ImportedSkill, "slug" | "sourceType" | "sourceLocator" | "metadata">,
@@ -5758,16 +5775,29 @@ export function companySkillService(db: Db) {
   ): Promise<RuntimeSkillSourceResolution | null> {
     const selectedVersionId = options.versionSelections?.get(skill.key) ?? null;
     if (selectedVersionId) {
+      const versionPath = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId);
       const version = await getVersion(companyId, skill.id, selectedVersionId);
       if (!version) {
         return {
           status: "missing",
-          source: path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId),
+          source: versionPath,
           detail: "The selected skill version no longer exists.",
         };
       }
-      const versionSource = await materializeVersionSnapshot(companyId, skill, version).catch(() => null);
-      return versionSource ? { status: "available", source: versionSource } : null;
+      // A failed snapshot materialization must surface as a "missing" entry
+      // with the real cause — a silent drop makes the skill vanish from the
+      // runtime while the library still shows it installed.
+      try {
+        const versionSource = await materializeVersionSnapshot(companyId, skill, version);
+        if (versionSource) return { status: "available", source: versionSource };
+        return { status: "missing", source: versionPath, detail: "The selected skill version produced no files." };
+      } catch (error) {
+        return {
+          status: "missing",
+          source: versionPath,
+          detail: `Failed to materialize the selected skill version: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
     }
 
     const source = await resolveExistingSkillDirectory(normalizeSkillDirectory(skill));
@@ -5784,8 +5814,24 @@ export function companySkillService(db: Db) {
       };
     }
 
-    const materializedSource = await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
-    return materializedSource ? { status: "available", source: materializedSource } : null;
+    // Same contract as above: a materialization failure becomes a structured
+    // "missing" resolution carrying the underlying error, so snapshots and the
+    // UI can show the skill as broken instead of pretending it does not exist.
+    try {
+      const materializedSource = await materializeRuntimeSkillFiles(companyId, skill);
+      if (materializedSource) return { status: "available", source: materializedSource };
+      return {
+        status: "missing",
+        source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: buildMissingRuntimeSourceDetail(skill),
+      };
+    } catch (error) {
+      return {
+        status: "missing",
+        source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: `Failed to materialize skill files: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   async function listRuntimeSkillEntries(

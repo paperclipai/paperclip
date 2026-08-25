@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  agents,
   assets,
+  companies,
   createDb,
   documentRevisions,
   documents,
@@ -155,7 +157,7 @@ interface SyntheticBundleOptions {
   documentsPerIssue: number;
 }
 
-/** Build an inline import bundle with the requested shape, valid at schemaVersion 6. */
+/** Build an inline import bundle with the requested shape, valid at schemaVersion 7. */
 function buildSyntheticBundle(options: SyntheticBundleOptions): {
   rootPath: string;
   files: Record<string, CompanyPortabilityFileEntry>;
@@ -191,7 +193,7 @@ function buildSyntheticBundle(options: SyntheticBundleOptions): {
     };
   }
 
-  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 6, tasks });
+  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 7, tasks });
 
   return { rootPath: "batching-bench", files };
 }
@@ -221,7 +223,7 @@ function buildTouchedIssuesBundle(issueCount: number): {
     };
   }
 
-  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 6, tasks });
+  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 7, tasks });
   return { rootPath: "inbox-flood", files };
 }
 
@@ -369,6 +371,202 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     });
     expect(mineAfterCreate.map((issue) => issue.id)).toContain(fresh.id);
     expect(mineAfterCreate.filter((issue) => importedIds.has(issue.id))).toEqual([]);
+  });
+
+  it("imports in_progress issues with a null startedAt", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Carried Over Co",
+      issuePrefix: "CAR",
+      requireBoardApprovalForNewAgents: false,
+    });
+    // pauseAutomations imports assignees paused; paused agents keep assignments.
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Carried Coder",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await issueService(db).importIssues(companyId, [{
+      id: randomUUID(),
+      ref: "carried-over",
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Carried-over work",
+      description: null,
+      assigneeAgentId: agentId,
+      status: "in_progress",
+      priority: "medium",
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionWorkspaceSettings: null,
+      labelIds: [],
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    }]);
+
+    const [imported] = await db
+      .select({ status: issues.status, startedAt: issues.startedAt })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(imported?.status).toBe("in_progress");
+    // A fabricated import-time startedAt made carried-over work look hours
+    // stale to duration-based sweeps (e.g. the productivity review).
+    expect(imported?.startedAt).toBeNull();
+  });
+
+  it("preserves bundle timestamps and parent hierarchy through a real import", async () => {
+    const files: Record<string, CompanyPortabilityFileEntry> = {};
+    files["COMPANY.md"] = ['---', 'schema: "agentcompanies/v1"', 'name: "Timestamp Fidelity Co"', '---', '', 'Synthetic import bundle.', ''].join("\n");
+    const taskFile = (name: string) => ['---', `name: "${name}"`, "kind: task", '---', '', `${name} body.`, ''].join("\n");
+    files["tasks/a-child/TASK.md"] = taskFile("Child");
+    files["tasks/m-grandchild/TASK.md"] = taskFile("Grandchild");
+    files["tasks/z-parent/TASK.md"] = taskFile("Parent");
+    files[".paperclip.yaml"] = renderPaperclipYaml({
+      schemaVersion: 7,
+      tasks: {
+        // The child slug sorts before its parent so the importer's
+        // parents-first row ordering (not manifest order) must satisfy the
+        // parent foreign key.
+        "a-child": {
+          status: "todo",
+          priority: "medium",
+          parent: "z-parent",
+          createdAt: "2026-01-05T00:00:00.000Z",
+          updatedAt: "2026-03-05T00:00:00.000Z",
+          comments: [{
+            body: "Older than the preserved updatedAt.",
+            authorType: "system",
+            createdAt: "2026-02-01T00:00:00.000Z",
+          }],
+        },
+        "m-grandchild": {
+          status: "todo",
+          priority: "medium",
+          parent: "a-child",
+          createdAt: "2026-01-06T00:00:00.000Z",
+          updatedAt: "2026-01-07T00:00:00.000Z",
+        },
+        "z-parent": {
+          status: "done",
+          priority: "medium",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-03-01T00:00:00.000Z",
+          completedAt: "2026-02-20T00:00:00.000Z",
+          comments: [{
+            body: "Newer than the preserved updatedAt.",
+            authorType: "system",
+            createdAt: "2026-04-01T00:00:00.000Z",
+          }],
+        },
+      },
+    });
+
+    const portability = companyPortabilityService(db);
+    const result = await portability.importBundle(
+      {
+        source: { type: "inline", rootPath: "timestamp-fidelity", files },
+        include: { company: true, agents: false, projects: false, issues: true },
+        target: { mode: "new_company", newCompanyName: "Timestamp Fidelity Co" },
+        collisionStrategy: "rename",
+      },
+      "user-timestamp-fidelity",
+    );
+    expect(result.warnings).toEqual([]);
+
+    const rows = await db
+      .select({
+        id: issues.id,
+        title: issues.title,
+        parentId: issues.parentId,
+        createdAt: issues.createdAt,
+        updatedAt: issues.updatedAt,
+        startedAt: issues.startedAt,
+        completedAt: issues.completedAt,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, result.company.id));
+    const parent = rows.find((row) => row.title === "Parent")!;
+    const child = rows.find((row) => row.title === "Child")!;
+    const grandchild = rows.find((row) => row.title === "Grandchild")!;
+
+    // The parent chain of three lands intact.
+    expect(parent.parentId).toBeNull();
+    expect(child.parentId).toBe(parent.id);
+    expect(grandchild.parentId).toBe(child.id);
+
+    expect(parent.createdAt).toEqual(new Date("2026-01-01T00:00:00.000Z"));
+    expect(parent.completedAt).toEqual(new Date("2026-02-20T00:00:00.000Z"));
+    expect(parent.startedAt).toBeNull();
+    expect(child.createdAt).toEqual(new Date("2026-01-05T00:00:00.000Z"));
+    expect(grandchild.createdAt).toEqual(new Date("2026-01-06T00:00:00.000Z"));
+    expect(grandchild.updatedAt).toEqual(new Date("2026-01-07T00:00:00.000Z"));
+
+    // A comment older than the preserved updatedAt must not regress it...
+    expect(child.updatedAt).toEqual(new Date("2026-03-05T00:00:00.000Z"));
+    // ...while a newer imported comment still bumps recency forward.
+    expect(parent.updatedAt).toEqual(new Date("2026-04-01T00:00:00.000Z"));
+  });
+
+  it("imports a v6 bundle without the timestamp fields using import-time defaults", async () => {
+    // A little slack absorbs clock drift between this process and Postgres.
+    const importStart = Date.now() - 1_000;
+    const files: Record<string, CompanyPortabilityFileEntry> = {};
+    files["COMPANY.md"] = ['---', 'schema: "agentcompanies/v1"', 'name: "Legacy Shape Co"', '---', '', 'Synthetic import bundle.', ''].join("\n");
+    files["tasks/legacy-task/TASK.md"] = ['---', 'name: "Legacy task"', "kind: task", '---', '', 'Legacy body.', ''].join("\n");
+    files[".paperclip.yaml"] = renderPaperclipYaml({
+      schemaVersion: 6,
+      tasks: {
+        "legacy-task": {
+          status: "todo",
+          priority: "medium",
+          comments: [{
+            body: "Predates the import.",
+            authorType: "system",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }],
+        },
+      },
+    });
+
+    const portability = companyPortabilityService(db);
+    const result = await portability.importBundle(
+      {
+        source: { type: "inline", rootPath: "legacy-shape", files },
+        include: { company: true, agents: false, projects: false, issues: true },
+        target: { mode: "new_company", newCompanyName: "Legacy Shape Co" },
+        collisionStrategy: "rename",
+      },
+      "user-legacy-shape",
+    );
+    expect(result.warnings).toContain(
+      "This package declares schemaVersion 6 and predates task timestamp and parent link transfer; that task data imports only if the bundle carries it.",
+    );
+
+    const [row] = await db
+      .select({
+        parentId: issues.parentId,
+        createdAt: issues.createdAt,
+        updatedAt: issues.updatedAt,
+        startedAt: issues.startedAt,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, result.company.id));
+    expect(row?.parentId).toBeNull();
+    expect(row?.startedAt).toBeNull();
+    // Without preserved timestamps the row keeps the old behavior: created and
+    // updated at import time, and the comment bump does not drag updatedAt
+    // back to the older comment createdAt.
+    expect(row!.createdAt.getTime()).toBeGreaterThanOrEqual(importStart);
+    expect(row!.updatedAt.getTime()).toBeGreaterThanOrEqual(importStart);
   });
 
   it("rolls back the whole work-product batch when a later chunk fails", async () => {

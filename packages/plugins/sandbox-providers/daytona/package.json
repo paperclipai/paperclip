@@ -42,7 +42,7 @@
   ],
   "scripts": {
     "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
-    "build": "rm -rf dist && tsc",
+    "build": "rm -rf dist && tsc && mkdir -p dist/scripts && cp -R src/scripts/. dist/scripts/",
     "clean": "rm -rf dist",
     "typecheck": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
@@ -53,8 +53,11 @@
     "@daytonaio/sdk": "0.203.0"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^24.0.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

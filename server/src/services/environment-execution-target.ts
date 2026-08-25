@@ -5,6 +5,8 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
+import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import {
   clampSpanLabel,
   getActiveStepContext,
@@ -16,6 +18,7 @@ import { parseObject } from "../adapters/utils.js";
 import { getStartupTracer } from "../instrumentation.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 
 export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
 
@@ -200,6 +203,15 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
   tracer?: ExecTracer;
+  // The host duplex observability recorder. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the safe no-op default in the
+  // bridge, so the surface stays inert until the host injects a real recorder.
+  duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
+  // The process-owned aggregate byte ledger. The seam stamps it onto the sandbox
+  // target next to the runner, so the live object stays on the host and never
+  // enters the sandbox environment. Absent keeps the bridge inert for this seam.
+  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -243,12 +255,96 @@ export async function resolveEnvironmentExecutionTarget(input: {
     // a recording tracer.
     const tracer = input.tracer ?? getStartupTracer();
 
+    // Resolve the read-only effective capability snapshot for this lease
+    // through the general resolver. Freeze it so a consumer reads it but
+    // never changes it. Track a resolution error apart from a genuinely
+    // absent snapshot: a rejected resolution must not read as an open grant.
+    //
+    // Gate the call on the `hasLeaseCapabilityModel` trait, not on whether the
+    // service exposes the method: the general resolver's `resolveCapabilities`
+    // never returns `null` for a registered driver, and it resolves every
+    // capability `false` for a driver with no lease capability model (see
+    // `ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT`). Calling it unconditionally
+    // would turn "no snapshot" into "every capability denied" for a driver
+    // this branch does not otherwise gate on. Reading the trait keeps that
+    // behavior change out of this phase: only the `sandbox` driver has a
+    // lease capability model today, and this branch only runs for `sandbox`.
+    let effectiveCapabilities: Awaited<
+      ReturnType<NonNullable<EnvironmentRuntimeService["resolveCapabilities"]>>
+    > | null = null;
+    let capabilityResolutionFailed = false;
+    const driverHasLeaseCapabilityModel =
+      getEnvironmentDriverTraits(input.environment.driver)?.hasLeaseCapabilityModel ?? false;
+    if (driverHasLeaseCapabilityModel && input.environmentRuntime?.resolveCapabilities && input.lease) {
+      try {
+        effectiveCapabilities = await input.environmentRuntime.resolveCapabilities({
+          environment: input.environment as Environment,
+          lease: input.lease,
+        });
+      } catch {
+        // The runtime could not resolve the snapshot. Fail closed for the
+        // persistent-session gates below; never grant persistent-session
+        // behavior from an unknown capability set.
+        capabilityResolutionFailed = true;
+        effectiveCapabilities = null;
+      }
+    }
+
+    // Gate the sync, session, and execution decisions below on the effective
+    // snapshot. A genuinely absent snapshot (no runtime, no lease) keeps the
+    // prior behavior, so it never removes a working path. A present snapshot
+    // can only remove a capability, never add one back.
+    //
+    // Native file sync needs BOTH sync verbs: the runner exposes syncIn and
+    // syncOut both-or-neither, so a consumer either uses the native path for
+    // both directions or keeps the base64 fallback for both. When the snapshot
+    // removes either verb, keep the byte-identical base64 fallback. When the
+    // resolution failed, fail closed and keep the base64 fallback too: an
+    // unverified provider never gets the native sync path. This preserves the
+    // existing reusable-lease sync enforcement unchanged.
+    const nativeSyncAllowed =
+      !capabilityResolutionFailed &&
+      (!effectiveCapabilities ||
+        (effectiveCapabilities.nativeSyncIn && effectiveCapabilities.nativeSyncOut));
+    // A command that opts onto the persistent session needs the provider to keep
+    // persistent process sessions. When the snapshot removes that capability,
+    // never force the session; the command runs one-shot instead. When the
+    // resolution failed, fail closed and never force the session.
+    const persistentSessionsAllowed =
+      !capabilityResolutionFailed &&
+      (!effectiveCapabilities || effectiveCapabilities.persistentProcessSessions);
+
+    // Resolve the per-run duplex bridge kill switch. It rides the host-side
+    // sandbox target on the same seam as `effectiveCapabilities`, so the value
+    // stays on the host and never enters the sandbox environment. Fail closed:
+    // an absent runtime, an absent method, or a read error keeps the file
+    // bridge. The stamp never turns a read error into a grant.
+    let enableSandboxDuplexBridge = false;
+    if (input.environmentRuntime?.readSandboxDuplexBridgeInput) {
+      try {
+        const duplexBridgeInput = await input.environmentRuntime.readSandboxDuplexBridgeInput();
+        enableSandboxDuplexBridge = duplexBridgeInput.enableDuplexBridge === true;
+      } catch {
+        enableSandboxDuplexBridge = false;
+      }
+    }
+
     return {
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
       shellCommand,
       remoteCwd,
+      enableSandboxDuplexBridge,
+      // Attach the host duplex observability recorder next to the runner. The bridge
+      // binds it to the fixed observability surface. Absent keeps the no-op
+      // default, so the surface stays inert on a run with no injected recorder.
+      duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
+      // Attach the process-owned aggregate byte ledger next to the runner. The
+      // bridge passes it to the broker, the decoder, and the response-body reader.
+      // Absent keeps the bridge inert for this seam.
+      duplexAggregateByteLedger: input.duplexAggregateByteLedger ?? null,
+      ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
@@ -256,10 +352,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
       // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
       // opt-out back to batch-at-end delivery.
       streamRunLogs: parsed.config.streamRunLogs !== false,
-      // Interactive ACP output streaming through the persistent session log
-      // stream. Default OFF: the process session bridge keeps the output-file
-      // poll unless an operator opts a sandbox environment in.
-      streamAgentSessionOutput: parsed.config.streamAgentSessionOutput === true,
+      // Interactive ACP output streaming is decided downstream from the effective
+      // capability snapshot alone: the process session bridge streams only when
+      // the provider keeps persistent process sessions and runs independent
+      // control commands. The snapshot is absent when resolution failed, so the
+      // bridge fails closed to the output-file poll.
       runner: input.environmentRuntime && input.lease
         ? {
             // Provider-backed sandbox RPCs do not surface bounded mid-stream
@@ -267,6 +364,12 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // here. The client falls back to the chunked upload path when this is
             // false.
             supportsSingleStreamStdinProgress: false,
+            // Carry the verified concurrent-sync opt-in to the sync client. The
+            // client copies it onto the native path and ignores it on the base64
+            // fallback, which always permits concurrency. A null snapshot or a
+            // provider that never opted in keeps it false, so an unverified
+            // provider never permits concurrent sync operations.
+            allowConcurrentSyncOperations: effectiveCapabilities?.concurrentSyncOperations === true,
             execute: async (commandInput) => {
               // Record true start and stop timestamps around the provider await,
               // so the exec span and the result carry a real wall time.
@@ -328,7 +431,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and
                     // streams output, even though it runs with no active step.
-                    forceSession: commandInput.useSession,
+                    // The effective snapshot gates it: a provider that cannot
+                    // keep persistent process sessions never forces the session,
+                    // so the command runs one-shot instead.
+                    forceSession: persistentSessionsAllowed ? commandInput.useSession : false,
                     // The bridge control-plane execs set `bypassSession` so they
                     // run one-shot and never queue behind the long-lived agent
                     // command on the persistent session. An explicit bypass wins
@@ -423,9 +529,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
               }
             },
             // Expose the native file-sync capability only when the provider's
-            // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut
-            // undefined so the orchestrator keeps the byte-identical base64 path.
-            ...(input.environmentRuntime.supportsSync({
+            // worker advertises BOTH sync verbs AND the effective snapshot still
+            // grants native sync; otherwise leave syncIn/syncOut undefined so
+            // the orchestrator keeps the byte-identical base64 path.
+            ...(nativeSyncAllowed &&
+            input.environmentRuntime.supportsSync({
               environment: input.environment as Environment,
               lease: input.lease,
             })
@@ -441,6 +549,22 @@ export async function resolveEnvironmentExecutionTarget(input: {
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                    }),
+                }
+              : {}),
+            // Expose the duplex channel only when the effective snapshot grants
+            // the opt-in `duplexCommandStream` capability. A null snapshot
+            // (resolution failed or the snapshot is not resolvable) leaves the
+            // member undefined, so the caller keeps the file bridge. This mirrors
+            // the syncIn/syncOut gate above and fails closed.
+            // HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+            ...(effectiveCapabilities?.duplexCommandStream
+              ? {
+                  openDuplexChannel: (channelInput) =>
+                    input.environmentRuntime!.openDuplexChannel({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      command: channelInput.command,
                     }),
                 }
               : {}),

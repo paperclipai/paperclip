@@ -26,6 +26,8 @@
 // exit via `shutdownInstrumentation()`, which index.ts awaits in its signal
 // handler before `process.exit`.
 
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
@@ -354,6 +356,72 @@ async function importExporter(protocol: ExporterProtocol): Promise<{
   }
 }
 
+/**
+ * Read the commit SHA from the build stamp. The server `build` script writes
+ * `dist/build-info.json` next to the compiled module. Return the SHA, or null
+ * when the stamp is absent or unreadable. In `tsx` dev mode the module runs
+ * from `src`, where no stamp exists, so this returns null and the caller falls
+ * back to a runtime git lookup.
+ */
+export function readBuildStamp(): string | null {
+  try {
+    const stampUrl = new URL("./build-info.json", import.meta.url);
+    const raw = readFileSync(stampUrl, "utf8");
+    const parsed = JSON.parse(raw) as { commit?: unknown };
+    if (typeof parsed.commit === "string" && parsed.commit.length > 0) {
+      return parsed.commit;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the current commit SHA with `git rev-parse --short HEAD`. Return the
+ * SHA, or null on any failure. This covers dev mode, where the process runs
+ * from a git checkout. A missing `git` or a checkout with no `.git` returns
+ * null and is not fatal.
+ *
+ * The lookup runs in the directory of this module, not the directory the
+ * server process started in. `import.meta.url` points at `src` in dev mode and
+ * `dist` in a built server; both sit inside the Paperclip checkout. A server
+ * launched from an unrelated directory, or from inside another repository,
+ * would otherwise report a wrong commit or fall back.
+ */
+export function readGitCommit(): string | null {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: new URL("./", import.meta.url),
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the `service.version` span attribute. The order is:
+ *   1. The build stamp — the commit the running server was built from.
+ *   2. A runtime git lookup — covers `tsx src/index.ts` dev mode.
+ *   3. The `OTEL_SERVICE_VERSION` environment variable.
+ *   4. "unknown".
+ * The build stamp wins over the environment variable, so a stale
+ * `OTEL_SERVICE_VERSION` cannot mask the true built commit. `OTEL_SERVICE_VERSION`
+ * is a Paperclip-specific variable, not an OpenTelemetry SDK variable, so
+ * Paperclip controls this precedence.
+ */
+export function resolveServiceVersion(
+  buildStamp: string | null,
+  gitCommit: string | null,
+  envVersion: string | undefined,
+): string {
+  return buildStamp || gitCommit || envVersion || "unknown";
+}
+
 async function bootstrapOtel(endpoint: string): Promise<void> {
   const { protocol, packageName: exporterPackage } = resolveProtocol();
 
@@ -379,10 +447,19 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     const { resourceFromAttributes } = resources;
     const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = semconv;
 
+    const serviceVersion = resolveServiceVersion(
+      readBuildStamp(),
+      readGitCommit(),
+      process.env.OTEL_SERVICE_VERSION,
+    );
+    // Log the resolved value once so an operator can confirm the built commit.
+    // eslint-disable-next-line no-console
+    console.log(`[paperclip] OpenTelemetry service.version=${serviceVersion}`);
+
     const sdk = new NodeSDK({
       resource: resourceFromAttributes({
         [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "paperclip",
-        [ATTR_SERVICE_VERSION]: process.env.OTEL_SERVICE_VERSION || "unknown",
+        [ATTR_SERVICE_VERSION]: serviceVersion,
       }),
       // For the HTTP protocols OTEL_EXPORTER_OTLP_ENDPOINT is a *base* URL
       // and the exporter appends /v1/traces only when it reads the env var

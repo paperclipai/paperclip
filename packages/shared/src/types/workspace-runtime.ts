@@ -1,4 +1,5 @@
 import type { TrustAuthorizationPolicy } from "../trust-policy.js";
+import type { RuntimeExposureStatus } from "./runtime-exposure.js";
 
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
@@ -82,6 +83,12 @@ export interface ExecutionWorkspaceStrategy {
   type: ExecutionWorkspaceStrategyType;
   baseRef?: string | null;
   branchTemplate?: string | null;
+  /**
+   * Pin the worktree to this exact pre-existing branch instead of rendering
+   * `branchTemplate`. Realization attaches (never creates) the branch and
+   * fails closed when the branch does not exist or is not safely attachable.
+   */
+  existingBranch?: string | null;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
   runtimeProvisionCommand?: string | null;
@@ -211,6 +218,8 @@ export interface WorkspaceOverviewPrimaryService {
   url: string | null;
   port: number | null;
   healthStatus: WorkspaceRuntimeService["healthStatus"];
+  /** HTTPS exposure state, surfaced separately from process `healthStatus`. */
+  exposure?: RuntimeExposureStatus | null;
   updatedAt: Date;
 }
 
@@ -305,24 +314,23 @@ export interface WorkspaceRuntimeService {
   stoppedAt: Date | null;
   stopPolicy: Record<string, unknown> | null;
   healthStatus: "unknown" | "healthy" | "unhealthy";
+  /**
+   * Structured HTTPS exposure state for the opt-in `tailscale_https` mode,
+   * modelled independently of `healthStatus` (process health). Null when the
+   * service does not opt into exposure. See PAP-17049 / PAP-17050.
+   */
+  exposure?: RuntimeExposureStatus | null;
   configIndex?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-export type WorkspaceRealizationTransport = "local" | "ssh" | "sandbox" | "plugin";
 export type WorkspaceRealizationMode = "copy" | "in_place";
 
 export interface WorkspaceRealizationPathAlias {
   path: string;
   target: string;
 }
-
-export type WorkspaceRealizationSyncStrategy =
-  | "none"
-  | "ssh_git_import_export"
-  | "sandbox_archive_upload_download"
-  | "provider_defined";
 
 export interface WorkspaceRealizationRequest {
   version: 1;
@@ -372,7 +380,6 @@ export interface WorkspaceRealizationRecord {
   authoritativeRoot: string;
   pathAliases: WorkspaceRealizationPathAlias[];
   outboundRestorePaths: string[];
-  transport: WorkspaceRealizationTransport;
   provider: string | null;
   environmentId: string;
   leaseId: string;
@@ -408,11 +415,6 @@ export interface WorkspaceRealizationRecord {
     port?: number | null;
     username?: string | null;
     sandboxId?: string | null;
-  };
-  sync: {
-    strategy: WorkspaceRealizationSyncStrategy;
-    prepare: string;
-    syncBack: string | null;
   };
   bootstrap: {
     command: string | null;

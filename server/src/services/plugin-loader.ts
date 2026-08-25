@@ -50,6 +50,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -118,8 +119,43 @@ const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
   "KUBERNETES_SERVICE_PORT_HTTPS",
 ];
 
+/**
+ * Each first-party sandbox provider's documented credential fallback env
+ * var. Environment rows may omit `config.apiKey` (managed/platform-
+ * provisioned rows always do — see `managed-environments.ts`), in which
+ * case the provider reads its documented process env var. That fallback
+ * executes inside the plugin worker, whose environment is scrubbed, so
+ * the deployment-level var must be forwarded explicitly.
+ *
+ * Keyed by the installed npm package name and cross-checked against the
+ * manifest's declared driver key — but name and manifest are both
+ * plugin-authored, so neither is proof of identity on its own. The gate
+ * therefore also requires a trusted install origin: a registry install
+ * (`packagePath` null — the `@paperclipai` scope is project-controlled at
+ * the registry), or a local path inside the repo/bundled plugin catalog,
+ * which ships inside the release image and is as trusted as the server
+ * code itself. An operator-added local plugin directory can claim any
+ * name and driver key and still receives nothing.
+ */
+const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
+  string,
+  { driverKey: string; envVars: readonly string[] }
+> = {
+  "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
+  "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
+  "@paperclipai/plugin-exe-dev": { driverKey: "exe-dev", envVars: ["EXE_API_KEY"] },
+  "@paperclipai/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
+};
+
 export function buildPluginWorkerEnv(input: {
-  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
+    environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
+  };
+  packageName?: string;
+  /** Local install path (`PluginRecord.packagePath`); null for registry installs. */
+  packagePath?: string | null;
+  /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
+  trustedLocalPluginRoots?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -132,7 +168,22 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
+  const trustedLocalRoots = input.trustedLocalPluginRoots
+    ?? [BUNDLED_LOCAL_PLUGIN_ROOT, resolveBundledCatalogRoot(processEnv)];
+  const installOriginTrusted =
+    input.packagePath == null
+    || trustedLocalRoots.some((root) => isPathWithin(root, path.resolve(input.packagePath as string)));
+  const credentialEntry = installOriginTrusted && input.packageName
+    ? SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[input.packageName]
+    : undefined;
+  const credentialKeys =
+    credentialEntry
+      && (input.manifest.environmentDrivers ?? []).some(
+        (driver) => driver.driverKey === credentialEntry.driverKey,
+      )
+      ? credentialEntry.envVars
+      : [];
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
@@ -1894,25 +1945,61 @@ export function pluginLoader(
       // Fetch all plugins in ready status, ordered by installOrder
       const readyPlugins = (await registry.listByStatus("ready")) as PluginRecord[];
 
-      if (readyPlugins.length === 0) {
+      // Retry plugins stranded in error status. An activation failure is often
+      // environmental — missing package dependencies, a stale build output, a
+      // module that moved under a pull — and the fix lands on disk without any
+      // write to the plugin row, so the row would otherwise stay dead until an
+      // operator flips it back by hand. One attempt per boot cannot crash-loop
+      // within a running process, and a failed attempt re-records the error
+      // through the normal markError path. The flip to ready must run BEFORE
+      // activation: the error status only legally transitions to ready or
+      // uninstalled, so a retry that failed while still in error status could
+      // not re-mark itself as errored.
+      const erroredPlugins = (await registry.listByStatus("error")) as PluginRecord[];
+      const retriedPlugins: PluginRecord[] = [];
+      for (const plugin of erroredPlugins) {
+        try {
+          const flipped = (await registry.updateStatus(plugin.id, { status: "ready" })) as PluginRecord | null;
+          if (flipped) retriedPlugins.push(flipped);
+        } catch (err) {
+          log.warn(
+            {
+              pluginId: plugin.id,
+              pluginKey: plugin.pluginKey,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "plugin-loader: could not queue errored plugin for a boot retry",
+          );
+        }
+      }
+      if (retriedPlugins.length > 0) {
+        log.info(
+          { count: retriedPlugins.length, pluginKeys: retriedPlugins.map((plugin) => plugin.pluginKey) },
+          "plugin-loader: retrying plugins that failed activation on a previous boot",
+        );
+      }
+
+      const pluginsToLoad = [...readyPlugins, ...retriedPlugins];
+
+      if (pluginsToLoad.length === 0) {
         log.info("plugin-loader: no ready plugins to load");
         return { total: 0, succeeded: 0, failed: 0, results: [] };
       }
 
       log.info(
-        { count: readyPlugins.length },
+        { count: pluginsToLoad.length },
         "plugin-loader: found ready plugins to load",
       );
 
       // Load plugins in parallel
       const results = await Promise.allSettled(
-        readyPlugins.map((plugin) => activatePlugin(plugin))
+        pluginsToLoad.map((plugin) => activatePlugin(plugin))
       );
 
       const loadResults = results.map((r, i) => {
         if (r.status === "fulfilled") return r.value;
         return {
-          plugin: readyPlugins[i]!,
+          plugin: pluginsToLoad[i]!,
           success: false,
           error: String(r.reason),
           registered: { worker: false, eventSubscriptions: 0, jobs: 0, webhooks: 0, tools: 0 },
@@ -1924,7 +2011,7 @@ export function pluginLoader(
 
       log.info(
         {
-          total: readyPlugins.length,
+          total: pluginsToLoad.length,
           succeeded,
           failed,
         },
@@ -1932,7 +2019,7 @@ export function pluginLoader(
       );
 
       return {
-        total: readyPlugins.length,
+        total: pluginsToLoad.length,
         succeeded,
         failed,
         results: loadResults,
@@ -2222,7 +2309,12 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        env: buildPluginWorkerEnv({
+          manifest,
+          packageName: activePlugin.packageName,
+          packagePath: activePlugin.packagePath,
+          instanceInfo,
+        }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
         // before any setup()-time worker→host call (LOOA-695). The authorized
@@ -2391,8 +2483,9 @@ export function pluginLoader(
       );
 
       if (options.markErrorOnFailure) {
-        // Mark the plugin as errored in the database so it is not retried
-        // automatically on next startup without operator intervention.
+        // Mark the plugin as errored in the database. The running process
+        // leaves it inactive; the next boot's loadAll retries it once, and the
+        // lifecycle enable() path can revive it sooner by hand.
         // markError also deactivates the plugin runtime in this process.
         try {
           await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);

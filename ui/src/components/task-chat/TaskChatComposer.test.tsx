@@ -43,10 +43,12 @@ vi.mock("@mdxeditor/editor", async () => {
       markdown,
       onChange,
       readOnly,
+      contentEditableClassName,
     }: {
       markdown: string;
       onChange?: (value: string) => void;
       readOnly?: boolean;
+      contentEditableClassName?: string;
     },
     forwardedRef: React.ForwardedRef<MockHandle | null>,
   ) {
@@ -84,6 +86,7 @@ vi.mock("@mdxeditor/editor", async () => {
       <div
         ref={editableRef}
         data-testid="mdx-editor"
+        data-content-class-name={contentEditableClassName}
         contentEditable={!readOnly}
         suppressContentEditableWarning
         onInput={(e) => {
@@ -244,6 +247,29 @@ function autocompleteOption(matchText: string) {
 }
 
 describe("TaskChatComposer", () => {
+  it("adds 10px to the composer's original 8px interior padding", () => {
+    render(<TaskChatComposer onAdd={async () => {}} workMode="standard" />);
+
+    const composer = container
+      .querySelector('[data-testid="task-chat-composer-input"]')
+      ?.parentElement;
+
+    expect(composer?.className).toContain("p-(--sz-18px)");
+    expect(composer?.className).not.toContain("p-2");
+  });
+
+  it("scopes the wrapping placeholder override to the task-chat composer", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
+
+    expect(container.firstElementChild?.classList).toContain("paperclip-task-chat-composer");
+  });
+
+  it("reserves enough mobile editor height for a wrapped two-line placeholder", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
+
+    expect(editable().dataset.contentClassName).toContain("min-h-(--sz-72px)");
+  });
+
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
@@ -293,7 +319,7 @@ describe("TaskChatComposer", () => {
 
     const chip = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-mode"]')!;
     expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip.textContent).toContain("Agent");
+    expect(chip.textContent).toContain("Auto");
 
     pressKey("Tab", { shiftKey: true });
     expect(chip.getAttribute("data-pending-work-mode")).toBe("planning");
@@ -647,15 +673,16 @@ describe("TaskChatComposer", () => {
       }
     });
 
-    it("clears the saved draft only after a successful send", async () => {
+    it("clears the composer and saved draft while the send is pending", async () => {
       localStorage.setItem(draftKey, "queued message");
-      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>(() => {}));
       render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
 
       pressKey("Enter", { metaKey: true });
       await flushAsync();
 
       expect(onAdd).toHaveBeenCalledWith("queued message", undefined, undefined);
+      expect(editable().textContent).toBe("");
       expect(localStorage.getItem(draftKey)).toBeNull();
     });
 
@@ -711,10 +738,13 @@ describe("TaskChatComposer", () => {
         .toContain("next.txt");
     });
 
-    it("keeps the body and saved draft when sending fails", async () => {
+    it("restores a failed send before text entered while it was pending", async () => {
       vi.useFakeTimers();
       try {
-        const onAdd = vi.fn().mockRejectedValue(new Error("network down"));
+        let rejectSend!: (error: Error) => void;
+        const onAdd = vi.fn().mockReturnValue(new Promise<void>((_resolve, reject) => {
+          rejectSend = reject;
+        }));
         render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={draftKey} />);
         typeText("do not lose this");
         vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
@@ -722,9 +752,16 @@ describe("TaskChatComposer", () => {
 
         pressKey("Enter", { metaKey: true });
         await flushAsync();
+        expect(editable().textContent).toBe("");
+        expect(localStorage.getItem(draftKey)).toBeNull();
 
-        expect(editable().textContent).toBe("do not lose this");
-        expect(localStorage.getItem(draftKey)).toBe("do not lose this");
+        typeText("next draft");
+        rejectSend(new Error("network down"));
+        await flushAsync();
+        await flushAsync();
+
+        expect(editable().textContent).toBe("do not lose this\n\nnext draft");
+        expect(localStorage.getItem(draftKey)).toBe("do not lose this\n\nnext draft");
       } finally {
         vi.useRealTimers();
       }

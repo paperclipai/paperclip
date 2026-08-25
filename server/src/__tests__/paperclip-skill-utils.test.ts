@@ -68,7 +68,7 @@ describe("paperclip skill utils", () => {
     const apiReference = await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8");
     const issueDocs = await fs.readFile(path.resolve("docs/api/issues.md"), "utf8");
     for (const body of [apiReference, issueDocs]) {
-      expect(body).toContain('resolverPolicy: "board_only" | "board_or_agents"');
+      expect(body).toContain('resolverPolicy: "anyone" | "not_creator" | "human_only"');
       expect(body).toContain("requestedResolverPolicy");
       expect(body).toContain("effectiveResolverPolicy");
       expect(body).toContain("toolAction");
@@ -88,6 +88,17 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("`monitorNextCheckAt` is non-null");
     expect(skillBody).toContain("`assigneeAgentId` is set");
     expect(skillBody).toContain("`assigneeUserId` is null");
+  });
+
+  it("requires issue-update writes to be verified, not inferred", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+
+    expect(skillBody).toContain("Verify writes — never infer them");
+    expect(skillBody).toContain("An empty response body means the write FAILED");
+    expect(skillBody).toContain("Never pipe a disposition write through `head`/`tail`");
+    // The helper's verification behavior (HTTP status parsing, retry
+    // classification, attempt bound, exit codes) is exercised end-to-end in
+    // paperclip-issue-update-helper.test.ts against a live local server.
   });
 
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {

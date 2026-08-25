@@ -318,10 +318,14 @@ function renderDialog(container: HTMLDivElement) {
 describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
   let originalResizeObserver: typeof ResizeObserver | undefined;
+  let originalVisualViewportDescriptor: PropertyDescriptor | undefined;
+  let originalInnerHeightDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     vi.useRealTimers();
     originalResizeObserver = globalThis.ResizeObserver;
+    originalVisualViewportDescriptor = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    originalInnerHeightDescriptor = Object.getOwnPropertyDescriptor(window, "innerHeight");
     globalThis.ResizeObserver = class ResizeObserver {
       observe() {}
       unobserve() {}
@@ -366,6 +370,16 @@ describe("NewIssueDialog", () => {
 
   afterEach(() => {
     globalThis.ResizeObserver = originalResizeObserver!;
+    if (originalVisualViewportDescriptor) {
+      Object.defineProperty(window, "visualViewport", originalVisualViewportDescriptor);
+    } else {
+      Reflect.deleteProperty(window, "visualViewport");
+    }
+    if (originalInnerHeightDescriptor) {
+      Object.defineProperty(window, "innerHeight", originalInnerHeightDescriptor);
+    } else {
+      Reflect.deleteProperty(window, "innerHeight");
+    }
     document.body.innerHTML = "";
   });
 
@@ -530,6 +544,33 @@ describe("NewIssueDialog", () => {
     });
 
     expect(container.textContent).toContain("agent_token,project_token");
+
+    act(() => root.unmount());
+  });
+
+  it("warns when the selected assignee is a paused imported agent", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Compare onboarding flows",
+      assigneeAgentId: "agent-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CEO",
+        status: "paused",
+        pauseReason: "import",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="new-issue-paused-assignee-note"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("arrived paused from a company import");
 
     act(() => root.unmount());
   });
@@ -945,6 +986,7 @@ describe("NewIssueDialog", () => {
 
     const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(modeChip()?.textContent).toContain("Auto mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -955,6 +997,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.textContent).toContain("Plan mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -965,6 +1008,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+    expect(modeChip()?.textContent).toContain("Ask mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -1095,8 +1139,6 @@ describe("NewIssueDialog", () => {
     );
     expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
-    expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-top)");
-    expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-bottom)");
 
     const titleInput = container.querySelector('textarea[placeholder="Task title"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
@@ -1107,6 +1149,65 @@ describe("NewIssueDialog", () => {
     expect(bodyScrollRegion?.className).toContain("overflow-y-auto");
     expect(bodyScrollRegion?.contains(titleInput ?? null)).toBe(true);
     expect(bodyScrollRegion?.contains(descriptionInput ?? null)).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("tracks the mobile visual viewport and keeps the focused editor visible above the keyboard", async () => {
+    const visualViewport = new EventTarget() as EventTarget & {
+      height: number;
+      offsetTop: number;
+    };
+    visualViewport.height = 844;
+    visualViewport.offsetTop = 0;
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: visualViewport,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 844,
+    });
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const dialogContent = Array.from(container.querySelectorAll<HTMLDivElement>("div")).find((element) =>
+      element.className.includes("max-h-(--new-issue-dialog-height)"),
+    );
+    const descriptionInput = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Add description..."]',
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(descriptionInput!, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    descriptionInput?.focus();
+
+    expect(dialogContent?.style.top).toBe("");
+    expect(dialogContent?.style.height).toBe("");
+    expect(dialogContent?.style.translate).toBe("");
+
+    visualViewport.height = 420;
+    visualViewport.offsetTop = 24;
+    await act(async () => {
+      visualViewport.dispatchEvent(new Event("resize"));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
+    expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-top")).toBe(
+      "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+    );
+    expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-height")).toBe(
+      "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
+    );
+    expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
+    expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
+    expect(dialogContent?.style.translate).toBe("var(--pct-neg-50)");
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
 
     act(() => root.unmount());
   });
@@ -1346,18 +1447,49 @@ describe("NewIssueDialog", () => {
       return button?.querySelector("svg")?.getAttribute("class") ?? "";
     }
 
-    it("uses agent-mode labels and brand status hues by default", async () => {
+    it("uses auto-mode labels and brand status hues by default", async () => {
       const { root } = renderDialog(container);
       await waitForAssertion(() => {
-        expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+        expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       });
 
-      expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
 
       expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
+
+      act(() => root.unmount());
+    });
+  });
+
+  describe("PAP-8501: company badge shows issuePrefix", () => {
+    it("displays issuePrefix instead of name-derived prefix", async () => {
+      // Override company data to have mismatched name/prefix
+      companyState.companies = [
+        {
+          id: "company-1",
+          name: "Acme Labs",
+          status: "active",
+          brandColor: "#123456",
+          issuePrefix: "OPS",
+        },
+      ];
+      companyState.selectedCompany = {
+        id: "company-1",
+        name: "Acme Labs",
+        status: "active",
+        brandColor: "#123456",
+        issuePrefix: "OPS",
+      };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        const text = container.textContent ?? "";
+        // Should show OPS (issuePrefix), not ACM (name.slice(0,3))
+        expect(text).toContain("OPS");
+      });
 
       act(() => root.unmount());
     });

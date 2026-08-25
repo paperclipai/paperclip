@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
+  "title": "PRP native event",
+  "type": "object",
+  "required": [
+    "schema",
+    "sourceEventId",
+    "sourceSeq",
+    "sourceInstanceId",
+    "sourceKind",
+    "runId",
+    "eventType",
+    "schemaVersion",
+    "priority",
+    "emittedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip.prp.event.v1" },
+    "sourceEventId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "sourceSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "sourceInstanceId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "sourceKind": { "enum": ["runner", "control_plane"] },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "itemId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "eventType": {
+      "enum": [
+        "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
+        "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
+        "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic",
+        "plan.updated",
+        "tool.execution.started", "tool.execution.progressed", "tool.execution.completed",
+        "research.started", "research.progressed", "research.completed",
+        "delegation.started", "delegation.updated", "delegation.completed",
+        "model.route.changed", "model.verification.updated", "context.compacted",
+        "artifact.viewed", "artifact.generated", "review.mode.changed",
+        "hook.started", "hook.completed", "memory.citation.referenced",
+        "safety.review.started", "safety.review.completed", "terminal.input.sent",
+        "wait.started", "wait.completed", "provider.notice.recorded",
+        "session.starting", "session.started", "session.resuming", "session.resumed", "session.reconciled", "session.updated", "session.closed", "session.failed",
+        "turn.submitted", "turn.accepted", "turn.started", "turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled",
+        "item.started", "item.delta", "item.completed", "item.failed", "usage.reported",
+        "semantic_tool.input", "semantic_tool.result",
+        "mcp_app.discovered", "mcp_app.resource.resolved", "mcp_app.initializing", "mcp_app.ready", "mcp_app.tool_input", "mcp_app.tool_result", "mcp_app.action.requested", "mcp_app.action.resolved", "mcp_app.host_context.changed", "mcp_app.failed", "mcp_app.teardown",
+        "runtime_request.created", "runtime_request.resolved", "runtime_request.expired", "runtime_request.cancelled",
+        "interaction.request.proposed", "interaction.request.materialized", "interaction.request.rejected", "interaction.response.progressed", "interaction.response.resolved", "interaction.response.delivered",
+        "run.attached", "run.detached", "run.result.proposed", "run.result.accepted", "run.result.rejected",
+        "attention.request.proposed", "attention.request.routed", "attention.request.resolved", "attention.request.expired", "attention.request.superseded",
+        "work.assessment.recorded", "issue.status.decision.recorded", "issue.status.decision.applied", "issue.status.decision.rejected", "issue.status.decision.superseded",
+        "run.terminal"
+      ]
+    },
+    "schemaVersion": { "const": 1 },
+    "priority": { "enum": [0, 1, 2] },
+    "emittedAt": { "type": "string", "format": "date-time" },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "channel": { "enum": ["progress", "final", "summary", "detail", "unknown"] },
+        "providerPhase": { "type": "string" },
+        "providerMethod": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "debug": { "type": "object", "additionalProperties": true }
+  },
+  "allOf": [
+    { "if": { "properties": { "eventType": { "const": "plan.updated" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/plan" } } } },
+    { "if": { "properties": { "eventType": { "enum": ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/toolExecution" } } } },
+    { "if": { "properties": { "eventType": { "enum": ["research.started", "research.progressed", "research.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/research" } } } },
+    { "if": { "properties": { "eventType": { "enum": ["delegation.started", "delegation.updated", "delegation.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/delegation" } } } },
+    { "if": { "properties": { "eventType": { "const": "model.route.changed" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/modelRoute" } } } },
+    { "if": { "properties": { "eventType": { "const": "model.verification.updated" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/modelVerification" } } } },
+    { "if": { "properties": { "eventType": { "const": "context.compacted" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/contextCompacted" } } } },
+    { "if": { "properties": { "eventType": { "const": "artifact.viewed" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/artifactViewed" } } } },
+    { "if": { "properties": { "eventType": { "const": "artifact.generated" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/artifactGenerated" } } } },
+    { "if": { "properties": { "eventType": { "const": "review.mode.changed" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/reviewMode" } } } },
+    { "if": { "properties": { "eventType": { "enum": ["hook.started", "hook.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/hook" } } } },
+    { "if": { "properties": { "eventType": { "const": "memory.citation.referenced" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/memoryCitation" } } } },
+    { "if": { "properties": { "eventType": { "enum": ["safety.review.started", "safety.review.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/safetyReview" } } } },
+    { "if": { "properties": { "eventType": { "const": "terminal.input.sent" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/terminalInput" } } } },
+    { "if": { "properties": { "eventType": { "enum": ["wait.started", "wait.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/wait" } } } },
+    { "if": { "properties": { "eventType": { "const": "provider.notice.recorded" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/providerNotice" } } } },
+    {
+      "if": { "properties": { "eventType": { "const": "workspace.file.referenced" } } },
+      "then": {
+        "properties": {
+          "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/workspace-file-reference.schema.json" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "enum": ["workspace.change.updated", "workspace.diff.recorded"] } } },
+      "then": {
+        "properties": {
+          "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/workspace-diff.schema.json" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "workspace.diff.recorded" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "allOf": [
+              { "$ref": "https://paperclip.dev/schemas/prp/v1/workspace-diff.schema.json" },
+              { "type": "object", "properties": { "complete": { "const": true } } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "enum": ["semantic_tool.input", "mcp_app.tool_input"] } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "semantic_tool": {
+                "allOf": [
+                  { "$ref": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json" },
+                  { "type": "object", "properties": { "phase": { "const": "input" } } }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "enum": ["semantic_tool.result", "mcp_app.tool_result"] } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "semantic_tool": {
+                "allOf": [
+                  { "$ref": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json" },
+                  { "type": "object", "properties": { "phase": { "const": "result" } } }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "run.terminal" } } },
+      "then": {
+        "properties": {
+          "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/terminal.schema.json" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "run.result.proposed" } } },
+      "then": {
+        "properties": {
+          "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/result.schema.json" }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

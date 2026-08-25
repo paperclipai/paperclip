@@ -11,6 +11,9 @@ const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const generalServerShardDurations = loadShardDurations(
   path.join(scriptsDir, "general-server-shard-durations.json"),
 );
+const serializedShardDurations = loadShardDurations(
+  path.join(scriptsDir, "serialized-shard-durations.json"),
+);
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
@@ -48,6 +51,7 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/invite-expiry.test.ts",
   "server/src/__tests__/invite-join-manager.test.ts",
   "server/src/__tests__/invite-onboarding-text.test.ts",
+  "server/src/__tests__/invite-url-public-base-url.test.ts",
   "server/src/__tests__/issues-checkout-wakeup.test.ts",
   "server/src/__tests__/issues-service.test.ts",
   "server/src/__tests__/opencode-local-adapter-environment.test.ts",
@@ -69,6 +73,7 @@ const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
 ];
+const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -208,10 +213,11 @@ function parseCliOptions(argv) {
 
   const shardAllowed =
     mode === serializedModeName ||
-    (mode === generalModeName && group === generalServerGroupName);
+    (mode === generalModeName &&
+      (group === generalServerGroupName || group === generalWorkspacesAGroupName));
   if (!shardAllowed && shardIndex !== null) {
     fail(
-      "--shard-index/--shard-count are only valid with --mode serialized or --mode general --group general-server.",
+      "--shard-index/--shard-count are only valid with --mode serialized, --mode general --group general-server, or --mode general --group general-workspaces-a.",
     );
   }
 
@@ -249,7 +255,18 @@ function parseCliOptions(argv) {
 }
 
 function selectSerializedSuites(routeTests, shardIndex, shardCount) {
-  return routeTests.filter((_, index) => index % shardCount === shardIndex);
+  // Same duration-aware LPT partition as the general-server lane. Round-robin
+  // over the alphabetical list clustered the heavy heartbeat/issues suites on
+  // one shard (291s vs 170-201s test steps across the matrix in actions run
+  // 32012408876), which made that shard the whole PR run's slowest check.
+  const byRepoPath = new Map(routeTests.map((routeTest) => [routeTest.repoPath, routeTest]));
+  const shardFiles = selectGeneralServerShard(
+    routeTests.map((routeTest) => routeTest.repoPath),
+    shardIndex,
+    shardCount,
+    serializedShardDurations,
+  );
+  return shardFiles.map((file) => byRepoPath.get(file));
 }
 
 function runVitest(args, label) {
@@ -267,7 +284,7 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
+  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",
@@ -287,9 +304,16 @@ function runGeneralSuites(routeTests) {
   }
 }
 
-function runProjectGroup(projects, groupName) {
+function runProjectGroup(projects, groupName, shardIndex = null, shardCount = null) {
+  // With shard args, lean on Vitest's native --shard: each matrix job runs the
+  // same per-project invocations but only its slice of each project's test
+  // files. Vitest's sharding is deterministic for an identical file list, so
+  // the matrix jobs form a complete, non-overlapping cover of every project.
+  const shardArgs =
+    shardCount !== null && shardCount > 1 ? [`--shard=${shardIndex + 1}/${shardCount}`] : [];
+  const shardSuffix = shardArgs.length > 0 ? ` shard ${shardIndex + 1}/${shardCount}` : "";
   for (const project of projects) {
-    runVitest(["--project", project], `${groupName} project ${project}`);
+    runVitest(["--project", project, ...shardArgs], `${groupName} project ${project}${shardSuffix}`);
   }
 }
 
@@ -335,7 +359,11 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
   }
 
   if (groupName === generalWorkspacesAGroupName) {
-    runProjectGroup(generalWorkspacesAProjects, groupName);
+    // The ui project dominates this lane (~224s of a 319s job in actions run
+    // 31371439296, 2026-08-10, where workspaces-a was the slowest PR check).
+    // Its 439 test files shard cleanly with Vitest's native --shard, so the
+    // lane splits across runners without a duration manifest.
+    runProjectGroup(generalWorkspacesAProjects, groupName, shardIndex, shardCount);
     return;
   }
 
@@ -415,6 +443,18 @@ if (options.dryRun) {
                 options.shardCount,
                 generalServerShardDurations,
               )
+            : null,
+        workspaceProjects:
+          options.group === generalWorkspacesAGroupName
+            ? generalWorkspacesAProjects
+            : options.group === generalWorkspacesBGroupName
+              ? generalWorkspacesBProjects
+              : null,
+        workspacesVitestShard:
+          options.group === generalWorkspacesAGroupName &&
+          options.shardCount !== null &&
+          options.shardCount > 1
+            ? `${options.shardIndex + 1}/${options.shardCount}`
             : null,
       },
       null,

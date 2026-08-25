@@ -3,11 +3,13 @@
 import type { ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { CompanySkillDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
+import type { CatalogSkill, CompanySkillDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DiscoveryGrid,
+  InstallPreviewDialog,
   SkillDetailPage,
+  defaultInstallAgentSelection,
   getSkillVersionDiffSelection,
   resolveDiscoveryTab,
   withDiscoveryTab,
@@ -279,6 +281,59 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
   return container;
 }
 
+const projectFolderResult: FolderListResult = {
+  kind: "skill",
+  allCount: 1,
+  unfiledCount: 0,
+  folders: [
+    {
+      id: "projects-root",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: null,
+      name: "Projects",
+      slug: "projects",
+      systemKey: "projects",
+      path: "projects",
+      depth: 1,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+    {
+      id: "project-folder",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: "projects-root",
+      name: "Acme",
+      slug: "acme",
+      systemKey: "project:project-1",
+      path: "projects/acme",
+      depth: 2,
+      color: null,
+      position: 0,
+      createdAt: new Date("2026-08-01T00:00:00Z"),
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+      itemCount: 1,
+    },
+  ],
+};
+
+function projectFolderGridProps() {
+  return {
+    folderResult: projectFolderResult,
+    onFolderSelect: vi.fn(),
+    onCreateFolder: vi.fn(),
+    onCreateFolderIn: vi.fn(),
+    onRenameFolder: vi.fn(),
+    onEditFolder: vi.fn(),
+    onMoveFolder: vi.fn(),
+    onDeleteFolder: vi.fn(),
+  } satisfies Partial<ComponentProps<typeof DiscoveryGrid>>;
+}
+
 function buttonsNamed(node: ParentNode, name: string) {
   return Array.from(node.querySelectorAll("button")).filter((button) => button.textContent?.trim() === name);
 }
@@ -339,6 +394,55 @@ describe("DiscoveryGrid Studio entry points", () => {
     await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
 
     expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps folder creation in the compact rail control", async () => {
+    const props = projectFolderGridProps();
+    const node = await renderDiscoveryGrid(props);
+    const compactCreateButton = node.querySelector<HTMLButtonElement>('button[title="New folder"]');
+
+    expect(buttonsNamed(node, "New folder")).toHaveLength(0);
+    expect(compactCreateButton).not.toBeNull();
+
+    await click(compactCreateButton!);
+
+    expect(props.onCreateFolderIn).toHaveBeenCalledWith(null);
+    expect(props.onCreateFolder).not.toHaveBeenCalled();
+  });
+
+  it("keeps folder creation available when no folder rail exists", async () => {
+    const onCreateFolder = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderResult: { ...projectFolderResult, folders: [] },
+      onCreateFolder,
+    });
+    const createButton = buttonsNamed(node, "New folder")[0] as HTMLButtonElement;
+
+    expect(createButton).toBeDefined();
+
+    await click(createButton);
+
+    expect(onCreateFolder).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes only the project represented by the active project folder", async () => {
+    const onScan = vi.fn();
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      folderSelection: "project-folder",
+      onScan,
+    });
+    const refreshButton = node.querySelector<HTMLButtonElement>(
+      'button[aria-label="Refresh Acme project skills"]',
+    );
+
+    expect(refreshButton).not.toBeNull();
+
+    await click(refreshButton!);
+
+    expect(onScan).toHaveBeenCalledOnce();
+    expect(onScan).toHaveBeenCalledWith("project-1");
   });
 
   it("does not open a skill when keyboard-activating its actions button", async () => {
@@ -733,5 +837,163 @@ describe("SkillDetailPage settings", () => {
     });
 
     expect((node.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe("memory");
+  });
+});
+
+describe("install-time agent enablement", () => {
+  const agentOptions = [
+    { id: "agent-ceo", name: "CEO", adapterType: "claude_local", supportsSkills: true, required: false, icon: null, paused: false },
+    { id: "agent-designer", name: "Designer", adapterType: "claude_local", supportsSkills: true, required: false, icon: null, paused: true },
+    { id: "agent-gateway", name: "Gateway", adapterType: "openclaw_gateway", supportsSkills: false, required: false, icon: null, paused: false },
+    { id: "agent-builtin", name: "Summarizer", adapterType: "claude_local", supportsSkills: true, required: true, icon: null, paused: false },
+  ];
+
+  function makeCatalogSkill(): CatalogSkill {
+    return {
+      id: "catalog-1",
+      key: "paperclipai/bundled/product/wireframe",
+      kind: "bundled",
+      category: "product",
+      slug: "wireframe",
+      name: "wireframe",
+      description: "Draw wireframes.",
+      path: "catalog/bundled/product/wireframe",
+      entrypoint: "SKILL.md",
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      defaultInstall: false,
+      recommendedForRoles: [],
+      requires: [],
+      tags: [],
+      files: [{ path: "SKILL.md", kind: "skill", sizeBytes: 128, sha256: "abc" }],
+      contentHash: "sha256:abc",
+    };
+  }
+
+  it("defaults to every skills-capable, non-required agent", () => {
+    expect(defaultInstallAgentSelection(agentOptions)).toEqual(new Set(["agent-ceo", "agent-designer"]));
+  });
+
+  it("passes the default agent selection through onConfirm for fresh installs", async () => {
+    const onConfirm = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <InstallPreviewDialog
+          open
+          onOpenChange={vi.fn()}
+          skill={makeCatalogSkill()}
+          packageName={null}
+          packageVersion={null}
+          conflict={null}
+          defaultSlug="wireframe"
+          defaultForce={false}
+          defaultAction="install"
+          agents={agentOptions}
+          isPending={false}
+          error={null}
+          onConfirm={onConfirm}
+        />,
+      );
+    });
+    // The dialog seeds its slug/agent state in passive effects; give them a
+    // macrotask to flush before interacting.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const node = container as ParentNode;
+    expect(node.textContent).toContain("Enable for agents");
+
+    await click(buttonsNamed(node, "Install skill")[0] as HTMLButtonElement);
+
+    expect(onConfirm).toHaveBeenCalledWith({
+      slug: "wireframe",
+      force: false,
+      agentIds: expect.arrayContaining(["agent-ceo", "agent-designer"]),
+    });
+    expect(onConfirm.mock.calls[0][0].agentIds).toHaveLength(2);
+  });
+
+  it("keeps tracking the agent default when agents load after the dialog opens", async () => {
+    const onConfirm = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const renderDialog = (agents: typeof agentOptions) =>
+      root?.render(
+        <InstallPreviewDialog
+          open
+          onOpenChange={vi.fn()}
+          skill={makeCatalogSkill()}
+          packageName={null}
+          packageVersion={null}
+          conflict={null}
+          defaultSlug="wireframe"
+          defaultForce={false}
+          defaultAction="install"
+          agents={agents}
+          isPending={false}
+          error={null}
+          onConfirm={onConfirm}
+        />,
+      );
+
+    // Dialog opens before the agents query resolves: nothing to select yet.
+    await act(async () => renderDialog([]));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // The agents arrive later; the untouched selection must pick them up.
+    await act(async () => renderDialog(agentOptions));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await click(buttonsNamed(container as ParentNode, "Install skill")[0] as HTMLButtonElement);
+
+    expect(onConfirm.mock.calls[0][0].agentIds).toHaveLength(2);
+  });
+
+  it("skips agent enablement for updates and replacements", async () => {
+    const onConfirm = vi.fn();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <InstallPreviewDialog
+          open
+          onOpenChange={vi.fn()}
+          skill={makeCatalogSkill()}
+          packageName={null}
+          packageVersion={null}
+          conflict={null}
+          defaultSlug="wireframe"
+          defaultForce={false}
+          defaultAction="update"
+          agents={agentOptions}
+          isPending={false}
+          error={null}
+          onConfirm={onConfirm}
+        />,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const node = container as ParentNode;
+    expect(node.textContent).not.toContain("Enable for agents");
+
+    await click(buttonsNamed(node, "Install update")[0] as HTMLButtonElement);
+
+    expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
   });
 });

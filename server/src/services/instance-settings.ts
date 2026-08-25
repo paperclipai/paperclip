@@ -1,5 +1,16 @@
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
+
+/**
+ * A `Db` or an open transaction handle — the subset of query builders the
+ * settings writes use. Lets `update` run inside a caller's transaction so
+ * it commits atomically with a sibling write.
+ */
+type InstanceSettingsTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type InstanceSettingsWriteDb = Pick<
+  Db | InstanceSettingsTransaction,
+  "select" | "insert" | "update"
+>;
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
@@ -208,6 +219,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
+      enableNativeRunner: parsed.data.enableNativeRunner ?? false,
+      enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enableApps: parsed.data.enableApps ?? false,
@@ -216,7 +229,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enablePipelines: parsed.data.enablePipelines ?? false,
       enableCases: parsed.data.enableCases ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
-      enableTaskChatRedesign: parsed.data.enableTaskChatRedesign ?? false,
+      enableClassicTaskInterface: parsed.data.enableClassicTaskInterface ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
       enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
@@ -235,6 +248,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
+      enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
@@ -246,6 +260,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   }
   return {
     enableEnvironments: false,
+    enableNativeRunner: false,
+    enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
     enableApps: false,
@@ -254,7 +270,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
-    enableTaskChatRedesign: false,
+    enableClassicTaskInterface: false,
     enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
@@ -273,6 +289,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
+    enableSandboxDuplexBridge: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
@@ -335,8 +352,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       updatedAt: row.updatedAt,
     } as InstanceSettings;
   }
-  async function getOrCreateRow() {
-    const existing = await db
+  async function getOrCreateRow(runner: InstanceSettingsWriteDb = db) {
+    const existing = await runner
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
@@ -344,7 +361,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     if (existing) return existing;
 
     const now = new Date();
-    const [created] = await db
+    const [created] = await runner
       .insert(instanceSettings)
       .values({
         singletonKey: DEFAULT_SINGLETON_KEY,
@@ -363,7 +380,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     if (created) return created;
 
-    const raced = await db
+    const raced = await runner
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
@@ -376,10 +393,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   return {
     get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
 
-    update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
+    update: async (
+      patch: PatchInstanceSettings,
+      writeOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceSettings> => {
+      // The write may run inside a caller-supplied transaction so it commits
+      // atomically with a sibling write (e.g. clearing the managed-default
+      // stamp on the environment row alongside a defaultEnvironmentId
+      // change). Reads use the same runner so the row is visible to the tx.
+      const runner = writeOptions?.db ?? db;
+      const current = await getOrCreateRow(runner);
       const now = new Date();
-      const [updated] = await db
+      const [updated] = await runner
         .update(instanceSettings)
         .set({
           ...(Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")

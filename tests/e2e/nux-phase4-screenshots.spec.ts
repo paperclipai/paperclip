@@ -66,24 +66,15 @@ test.describe("NUX Phase 4 visual QA", () => {
       await createCard.first().click();
     }
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
+      page.getByRole("heading", { name: "Name your organization" }),
     ).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder("Acme Corp").fill("QA Robotics");
     await page.screenshot({ path: shot("02-create-name.png") });
 
     await page.getByRole("button", { name: /^Next/ }).click();
-    await expect(
-      page.getByRole("heading", { name: "Define your mission" }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page
-      .getByPlaceholder("What is your team trying to achieve?")
-      .fill("Build affordable home robots that handle household chores.");
-    await page.screenshot({ path: shot("03-create-mission.png") });
-
-    // Step 2 advances via "Confirm mission" (creates the company + goal);
-    // step 3 is the team-lead naming step of the capsule wizard.
-    await page.getByRole("button", { name: /Confirm mission/ }).click();
-    await page.waitForSelector('input[placeholder="Chief of staff"]', {
+    // Step 1's "Next" creates the company and goes straight to the team lead.
+    // The mission screenshot that sat here is gone with the step it captured.
+    await page.waitForSelector("#onboarding-agent-role", {
       timeout: 30_000,
     });
     await page.screenshot({ path: shot("04-hire-team-lead.png") });
@@ -120,7 +111,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.getByRole("button", { name: /Add agents to your org/ }).click();
     // The grow path shares step 1 (company name) before its step-2 intake.
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
+      page.getByRole("heading", { name: "Name your organization" }),
     ).toBeVisible({ timeout: 10_000 });
     await page.getByPlaceholder("Acme Corp").fill("QA Robotics Grow");
     await page.getByRole("button", { name: /^Next/ }).click();
@@ -155,7 +146,6 @@ test.describe("NUX Phase 4 visual QA", () => {
     for (const f of [
       "01-front-door.png",
       "02-create-name.png",
-      "03-create-mission.png",
       "04-hire-team-lead.png",
       "05-growth-intake.png",
       "06-board-chat.png",

@@ -276,7 +276,7 @@ describe("codex_local ACP lane", () => {
     const commandPath = path.join(root, "bin", "codex-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
 
     expect(resolveCodexExecutionEngine({})).toEqual({ engine: "acp", explicit: false });
     await expect(
@@ -296,7 +296,7 @@ describe("codex_local ACP lane", () => {
       explicit: true,
     });
 
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.10.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { agentCommand: commandPath },
@@ -375,7 +375,7 @@ describe("codex_local ACP lane", () => {
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { agentCommand: "codex-acp" },
@@ -401,7 +401,7 @@ describe("codex_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: {},
@@ -420,7 +420,7 @@ describe("codex_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: {},
@@ -479,9 +479,9 @@ describe("codex_local ACP lane", () => {
   });
 
   it("checks the Node version required by the ACPX runtime", () => {
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.10.0");
     expect(nodeVersionMeetsCodexAcpMinimum()).toBe(false);
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     expect(nodeVersionMeetsCodexAcpMinimum()).toBe(true);
   });
 
@@ -490,7 +490,7 @@ describe("codex_local ACP lane", () => {
     const commandPath = path.join(root, "bin", "codex-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
 
     const result = await testCodexAcpEnvironment({
       adapterType: "codex_local",
@@ -543,7 +543,7 @@ describe("codex_local ACP lane", () => {
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-shared"}', "utf8");
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     process.env.CODEX_HOME = sharedCodexHome;
     delete process.env.OPENAI_API_KEY;
 
@@ -591,7 +591,7 @@ describe("codex_local ACP lane", () => {
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     process.env.CODEX_HOME = sharedCodexHome;
     delete process.env.OPENAI_API_KEY;
 
@@ -613,6 +613,65 @@ describe("codex_local ACP lane", () => {
         level: "warn",
         message: expect.stringContaining("Paperclip server"),
         hint: expect.stringContaining("separate Codex/chat session"),
+      }),
+    );
+  });
+
+  it("emits the canonical adapter_auth_missing check for a missing-auth sandbox target", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-sandbox-missing-auth-");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const managedAgentHome = path.join(
+      root,
+      "paperclip-home",
+      "instances",
+      "test",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "codex-home",
+    );
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    setNodeVersion("v24.11.0");
+    process.env.CODEX_HOME = sharedCodexHome;
+    delete process.env.OPENAI_API_KEY;
+
+    const result = await testCodexAcpEnvironment({
+      adapterType: "codex_local",
+      companyId: "company-1",
+      config: {
+        engine: "acp",
+        cwd: root,
+        // A shell-style command resolves without a real binary in the sandbox.
+        agentCommand: "node ./fake-acp.js",
+        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd: "/work",
+        runner: {
+          execute: async () => ({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          }),
+        },
+      } as never,
+    });
+
+    // A missing-auth sandbox is a warning, not a failure, and it carries the
+    // neutral canonical check code for the user interface.
+    expect(result.status).toBe("warn");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "adapter_auth_missing",
+        level: "warn",
       }),
     );
   });
@@ -1076,8 +1135,103 @@ describe("codex_local ACP lane", () => {
     expect(hostAuth.tokens.refresh_token).toBe("ref-sandbox-newer");
   });
 
+  it("test_codex_acp_teardown_restore_failure_sanitizes_the_run_log", async () => {
+    // Security regression for a workspace-restore write failure: the run log
+    // is readable by any same-company actor, so the teardown must never write
+    // the caught error's own message there — that message can carry the host
+    // workspace path. Force a real EACCES by making the workspace read-only,
+    // and name it with a sentinel marker so any leak is easy to spot.
+    const runId = "run-restore-failure";
+    const root = await makeTempRoot("paperclip-codex-acp-restore-failure-");
+    const localCwd = path.join(root, "SENTINEL-HOST-PATH-marker", "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const sourceHome = path.join(root, "codex-home");
+    const sharedHostHome = path.join(root, "shared-codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.mkdir(sharedHostHome, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+    process.env.CODEX_HOME = sharedHostHome;
+
+    // The runtime writes a new file into the in-sandbox workspace during the
+    // turn, so the teardown's restore has something to copy back — and a new
+    // file is exactly what a read-only workspace directory rejects. The
+    // workspace turns read-only only after the turn's own writes, so the
+    // teardown restore that runs after the turn is the write this forces to
+    // fail.
+    const runtime = new FakeRuntime({});
+    const startTurn = runtime.startTurn.bind(runtime);
+    runtime.startTurn = (input) => {
+      const turn = startTurn(input);
+      const remoteWorkspaceCwd = input.handle.cwd ?? remoteCwd;
+      return {
+        ...turn,
+        result: (async () => {
+          await fs.writeFile(path.join(remoteWorkspaceCwd, "from-sandbox.txt"), "synced", "utf8");
+          await fs.chmod(localCwd, 0o500);
+          return await turn.result;
+        })(),
+      };
+    };
+
+    const stagedRuntimes = new Map();
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+      stagedRuntimes,
+      stagingLocks: new Map(),
+    });
+
+    const loggedLines: string[] = [];
+    try {
+      const result = await execute(
+        buildContext(localCwd, {
+          runId,
+          config: {
+            engine: "acp",
+            cwd: localCwd,
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+            env: { CODEX_HOME: sourceHome },
+            promptTemplate: "Do the assigned work.",
+          },
+          context: {
+            issueId: "issue-1",
+            paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+          },
+          executionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            providerKey: "fake-plugin",
+            remoteCwd,
+            runner: createLocalSandboxRunner(),
+          } as never,
+          authToken: "real-run-jwt",
+          onLog: async (_stream, chunk) => {
+            loggedLines.push(chunk);
+          },
+        }),
+      );
+
+      // Fail-open: the restore miss never changes the run's exit code or
+      // status, and it surfaces as one allowlisted code — never the raw error.
+      expect(result.exitCode).toBe(0);
+      expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_permission_denied");
+      const allLogs = loggedLines.join("");
+      expect(allLogs).not.toContain("SENTINEL-HOST-PATH-marker");
+      expect(allLogs).not.toContain(localCwd);
+      expect(allLogs).not.toContain("EACCES");
+      expect(allLogs).toContain("permission denied");
+    } finally {
+      await fs.chmod(localCwd, 0o700).catch(() => undefined);
+    }
+  });
+
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     // Isolate the missing bidirectional runner as the sole fallback cause:
     // provide a valid ACP command and Node version so the only difference from
     // the runner-backed ACP case is the absent `runner`.

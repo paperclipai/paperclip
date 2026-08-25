@@ -197,13 +197,24 @@ process.stdout.write(`${stableSlot}.${max + 1}`);
 NODE
 }
 
-next_canary_version() {
-  local stable_version="$1"
-  shift
+require_prerelease_channel() {
+  case "$1" in
+    canary|nightly|beta) ;;
+    *) release_fail "unknown prerelease channel: $1" ;;
+  esac
+}
 
-  node - "$stable_version" "$@" <<'NODE'
-const stable = process.argv[2];
-const packageNames = process.argv.slice(3);
+next_prerelease_version() {
+  local channel="$1"
+  local stable_version="$2"
+  shift 2
+
+  require_prerelease_channel "$channel"
+
+  node - "$channel" "$stable_version" "$@" <<'NODE'
+const channel = process.argv[2];
+const stable = process.argv[3];
+const packageNames = process.argv.slice(4);
 const { execSync } = require("node:child_process");
 const { readFileSync } = require("node:fs");
 
@@ -218,7 +229,7 @@ if (process.env.RELEASE_PACKAGE_VERSIONS_FILE) {
   }
 }
 
-const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-canary\\.(\\d+)$`);
+const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-${channel}\\.(\\d+)$`);
 let max = -1;
 
 for (const packageName of packageNames) {
@@ -249,8 +260,14 @@ for (const packageName of packageNames) {
   }
 }
 
-process.stdout.write(`${stable}-canary.${max + 1}`);
+process.stdout.write(`${stable}-${channel}.${max + 1}`);
 NODE
+}
+
+next_canary_version() {
+  local stable_version="$1"
+  shift
+  next_prerelease_version canary "$stable_version" "$@"
 }
 
 release_notes_file() {
@@ -261,8 +278,13 @@ stable_tag_name() {
   printf 'v%s\n' "$1"
 }
 
+prerelease_tag_name() {
+  require_prerelease_channel "$1"
+  printf '%s/v%s\n' "$1" "$2"
+}
+
 canary_tag_name() {
-  printf 'canary/v%s\n' "$1"
+  prerelease_tag_name canary "$1"
 }
 
 npm_package_version_exists() {
@@ -369,11 +391,14 @@ publish_package_to_npm() {
     return 0
   fi
 
-  if [ "$dist_tag" != "canary" ]; then
-    release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
-    rm -f "$publish_log"
-    return 1
-  fi
+  case "$dist_tag" in
+    canary|nightly) ;;
+    *)
+      release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
+      rm -f "$publish_log"
+      return 1
+      ;;
+  esac
 
   release_warn "Retrying ${package_name}@${package_version} once with npm provenance disabled."
   if run_package_publish "$publish_tool" "$dist_tag" true; then
@@ -465,6 +490,33 @@ require_on_master_branch() {
   current_branch="$(git_current_branch)"
   if [ "$current_branch" != "master" ]; then
     release_fail "this release step must run from branch master, but current branch is ${current_branch:-<detached>}."
+  fi
+}
+
+# Promotion channels only republish commits that already shipped on the
+# previous lane, so the source commit must carry that lane's release tag.
+require_channel_tag_at_head() {
+  local channel="$1"
+
+  require_prerelease_channel "$channel"
+
+  if ! git -C "$REPO_ROOT" tag --points-at HEAD | grep -q "^${channel}/v"; then
+    release_fail "HEAD has no ${channel}/v* tag; this channel only publishes commits that already shipped a ${channel} release."
+  fi
+}
+
+# The inverse guard: a commit ships on a promotion channel at most once, so
+# concurrent or repeated runs cannot double-publish it. Delete the lane tag
+# first if a republish is genuinely intended.
+require_channel_tag_absent_at_head() {
+  local channel="$1"
+  local existing
+
+  require_prerelease_channel "$channel"
+
+  existing="$(git -C "$REPO_ROOT" tag --points-at HEAD | grep "^${channel}/v" | head -1 || true)"
+  if [ -n "$existing" ]; then
+    release_fail "HEAD already shipped as ${existing}; delete that tag first if you really want to republish this commit on the ${channel} channel."
   fi
 }
 

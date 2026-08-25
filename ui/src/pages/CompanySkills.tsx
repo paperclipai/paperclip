@@ -136,7 +136,6 @@ import {
   FolderOpen,
   FolderSearch,
   GitFork,
-  Github,
   Globe,
   HelpCircle,
   LayoutGrid,
@@ -164,6 +163,7 @@ import {
   X,
   XOctagon,
 } from "lucide-react";
+import { GithubIcon } from "../components/icons/github-icon";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
 
 type SkillTreeNode = {
@@ -265,7 +265,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "github":
       return isSkillsShManaged
         ? { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" }
-        : { icon: Github, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
+        : { icon: GithubIcon, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
     case "url":
       return { icon: Link2, label: sourceLabel ?? "URL", managedLabel: "URL managed" };
     case "local":
@@ -1084,7 +1084,7 @@ export function DiscoveryGrid({
   onImport: () => void;
   onImportFromProject: () => void;
   onBrowseCatalog: () => void;
-  onScan: () => void;
+  onScan: (projectId?: string) => void;
   scanPending: boolean;
   scanStatus: string | null;
   folderResult?: FolderListResult | null;
@@ -1138,7 +1138,15 @@ export function DiscoveryGrid({
   );
   // The nested folder tree owns the left rail whenever folders (reserved roots
   // or user folders) exist for the installed view.
-  const showFolderRail = Boolean(folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady);
+  const showFolderRail = Boolean(
+    folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady,
+  );
+  const activeProjectFolder = useMemo(() => {
+    if (!folderResult || folderSelection === "all" || folderSelection === "unfiled") return null;
+    const folder = folderResult.folders.find((candidate) => candidate.id === folderSelection);
+    return folder?.systemKey?.startsWith("project:") ? folder : null;
+  }, [folderResult, folderSelection]);
+  const activeProjectId = activeProjectFolder?.systemKey?.slice("project:".length) || null;
 
   return (
     // On desktop the store is bounded to the viewport so the category sidebar
@@ -1240,8 +1248,9 @@ export function DiscoveryGrid({
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={onScan}
+            onClick={() => onScan()}
             disabled={scanPending}
+            aria-label="Scan project workspaces for skills"
             title="Scan project workspaces for skills"
           >
             <RefreshCw className={cn("h-4 w-4", scanPending && "animate-spin")} />
@@ -1289,7 +1298,7 @@ export function DiscoveryGrid({
               />
             </div>
           ) : null}
-          {onCreateFolder ? (
+          {onCreateFolder && !showFolderRail ? (
             <Button variant="outline" size="sm" onClick={onCreateFolder}>
               <Plus className="mr-1 h-3.5 w-3.5" />
               New folder
@@ -1357,8 +1366,21 @@ export function DiscoveryGrid({
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {scanStatus ? <p className="mb-3 text-xs text-muted-foreground">{scanStatus}</p> : null}
           {showFolderRail && onFolderSelect ? (
-            <div className="mb-4">
+            <div className="mb-4 flex items-center justify-between gap-2">
               <FolderBreadcrumb result={folderResult} selection={folderSelection} onSelect={onFolderSelect} />
+              {activeProjectFolder && activeProjectId ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onScan(activeProjectId)}
+                  disabled={scanPending}
+                  aria-label={`Refresh ${activeProjectFolder.name} project skills`}
+                  title={`Refresh skills from ${activeProjectFolder.name}`}
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", scanPending && "animate-spin")} />
+                  Refresh
+                </Button>
+              ) : null}
             </div>
           ) : null}
           {folderNudgeStorageKey && onCreateFolder && folderResult && folderResult.folders.length === 0 && !loading && cards.length > 0 ? (
@@ -1996,7 +2018,17 @@ function CatalogDetailPane({
   );
 }
 
-function InstallPreviewDialog({
+// Installing only adds a skill to the company library; an agent can use it only
+// once it is also enabled for that agent. Pre-select every agent that can
+// receive the skill so "install" defaults to a state where the skill is
+// actually usable, instead of a library row no agent has.
+export function defaultInstallAgentSelection(
+  agents: Array<Pick<AttachAgentOption, "id" | "supportsSkills" | "required">>,
+): Set<string> {
+  return new Set(agents.filter((agent) => agent.supportsSkills && !agent.required).map((agent) => agent.id));
+}
+
+export function InstallPreviewDialog({
   open,
   onOpenChange,
   skill,
@@ -2006,6 +2038,7 @@ function InstallPreviewDialog({
   defaultSlug,
   defaultForce,
   defaultAction,
+  agents,
   isPending,
   error,
   onConfirm,
@@ -2019,13 +2052,21 @@ function InstallPreviewDialog({
   defaultSlug: string | null;
   defaultForce: boolean;
   defaultAction: "install" | "update" | "replace";
+  agents: AttachAgentOption[];
   isPending: boolean;
   error: string | null;
-  onConfirm: (input: { slug: string | null; force: boolean }) => void;
+  onConfirm: (input: { slug: string | null; force: boolean; agentIds: string[] }) => void;
 }) {
   const [slug, setSlug] = useState<string>("");
   const [force, setForce] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
+  // Whether the user changed the agent selection this open. Until then the
+  // selection keeps tracking the default: the agents query may resolve after
+  // the dialog opens, and a one-shot seed would freeze an empty selection and
+  // install the skill for nobody.
+  const [selectionTouched, setSelectionTouched] = useState(false);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -2033,6 +2074,18 @@ function InstallPreviewDialog({
     setForce(defaultForce);
     setAdvancedOpen(defaultAction === "replace" || defaultForce);
   }, [open, defaultSlug, defaultForce, defaultAction]);
+
+  useEffect(() => {
+    if (open && !wasOpenRef.current) setSelectionTouched(false);
+    wasOpenRef.current = open;
+  }, [open]);
+
+  // Track the default selection while the dialog is open and untouched; the
+  // user's first change takes over and background refetches never clobber it.
+  useEffect(() => {
+    if (!open || selectionTouched) return;
+    setSelectedAgentIds(defaultAction === "install" ? defaultInstallAgentSelection(agents) : new Set());
+  }, [open, selectionTouched, defaultAction, agents]);
 
   if (!skill) return null;
 
@@ -2118,6 +2171,33 @@ function InstallPreviewDialog({
             </div>
           ) : null}
 
+          {defaultAction === "install" ? (
+            <div className="rounded-md border border-border p-3">
+              <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">Enable for agents</div>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Installing adds the skill to the company library. Agents can only use it once it is enabled for them.
+              </p>
+              <AgentMultiSelect
+                agents={agents}
+                selectedAgentIds={selectedAgentIds}
+                onChange={(next) => {
+                  setSelectionTouched(true);
+                  setSelectedAgentIds(next);
+                }}
+                showSelectionPreview={false}
+                emptyMessage="No agents in this company support skills yet."
+                isAgentDisabled={(agent) => {
+                  const option = agent as AttachAgentOption;
+                  return option.required || !option.supportsSkills;
+                }}
+                getDescription={(agent) => {
+                  const option = agent as AttachAgentOption;
+                  return `${option.adapterType}${option.required ? " · required" : ""}${!option.supportsSkills ? " · skills not supported" : ""}`;
+                }}
+              />
+            </div>
+          ) : null}
+
           <button
             type="button"
             onClick={() => setAdvancedOpen((value) => !value)}
@@ -2152,7 +2232,13 @@ function InstallPreviewDialog({
           </Button>
           <Button
             variant={confirmVariant}
-            onClick={() => onConfirm({ slug: slug.trim().length > 0 ? slug.trim() : null, force })}
+            onClick={() =>
+              onConfirm({
+                slug: slug.trim().length > 0 ? slug.trim() : null,
+                force,
+                agentIds: defaultAction === "install" ? Array.from(selectedAgentIds) : [],
+              })
+            }
             disabled={isPending}
           >
             {confirmLabel}
@@ -3390,7 +3476,7 @@ export function SkillDetailPage({
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Source</div>
             {githubSource ? (
               <div className="flex items-start gap-2 text-sm">
-                <Github className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <GithubIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div className="min-w-0">
                   <div className="text-foreground">{githubLabel}</div>
                   <a
@@ -4278,13 +4364,21 @@ export function CompanySkills() {
   });
 
   const scanProjects = useMutation({
-    mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
-    onMutate: () => {
-      setScanStatusMessage("Scanning project workspaces for skills...");
+    mutationFn: (projectId?: string) => companySkillsApi.scanProjects(
+      selectedCompanyId!,
+      projectId ? { projectIds: [projectId] } : {},
+    ),
+    onMutate: (projectId) => {
+      setScanStatusMessage(
+        projectId ? "Refreshing project skills..." : "Scanning project workspaces for skills...",
+      );
     },
     onSuccess: async (result) => {
       setScanStatusMessage("Refreshing skills list...");
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
+      ]);
       const summary = formatProjectScanSummary(result);
       setScanStatusMessage(summary);
       pushToast({
@@ -4553,13 +4647,29 @@ export function CompanySkills() {
     return counts;
   }, [installedSkills]);
   const installCatalog = useMutation({
-    mutationFn: (payload: { catalogSkillId: string; slug: string | null; force: boolean }) =>
+    mutationFn: (payload: { catalogSkillId: string; slug: string | null; force: boolean; agentIds: string[] }) =>
       companySkillsApi.installCatalog(selectedCompanyId!, {
         catalogSkillId: payload.catalogSkillId,
         slug: payload.slug,
         force: payload.force,
       }),
-    onSuccess: async (result) => {
+    onSuccess: async (result, payload) => {
+      // Enable the skill for the agents chosen in the install dialog before any
+      // invalidation, so the refetched skill detail already reflects the
+      // attachments. Mode "add" appends to each agent's desired set without
+      // clobbering concurrent edits. A per-agent failure must not fail the
+      // install itself — the skill is in the library either way.
+      const enableTargets = result.action === "created" ? payload.agentIds : [];
+      let enabledCount = 0;
+      let enableFailures = 0;
+      for (const agentId of enableTargets) {
+        try {
+          await agentsApi.syncSkills(agentId, [{ key: result.skill.key, versionId: null }], "add", selectedCompanyId ?? undefined);
+          enabledCount += 1;
+        } catch {
+          enableFailures += 1;
+        }
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, result.skill.id) }),
@@ -4568,8 +4678,19 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: result.action === "created" ? "Skill installed" : result.action === "updated" ? "Skill updated" : "Skill is up to date",
-        body: result.skill.name,
+        body: result.action === "created"
+          ? enabledCount > 0
+            ? `${result.skill.name} — enabled for ${enabledCount} agent${enabledCount === 1 ? "" : "s"}.`
+            : `${result.skill.name} is in the library but not enabled for any agent yet. Use "Add to agent" to enable it.`
+          : result.skill.name,
       });
+      if (enableFailures > 0) {
+        pushToast({
+          tone: "warn",
+          title: "Skill installed, but enabling failed",
+          body: `Could not enable ${result.skill.name} for ${enableFailures} agent${enableFailures === 1 ? "" : "s"}. Use "Add to agent" on the skill page.`,
+        });
+      }
       if (result.warnings[0]) {
         pushToast({ tone: "warn", title: "Install warnings", body: result.warnings[0] });
       }
@@ -5135,14 +5256,16 @@ export function CompanySkills() {
         defaultSlug={installDialogState.defaultSlug}
         defaultForce={installDialogState.defaultForce}
         defaultAction={installDialogState.defaultAction}
+        agents={eligibleAgentsForAttach}
         isPending={installCatalog.isPending}
         error={installDialogState.error}
-        onConfirm={({ slug, force }) => {
+        onConfirm={({ slug, force, agentIds }) => {
           if (!installDialogState.catalogSkill) return;
           installCatalog.mutate({
             catalogSkillId: installDialogState.catalogSkill.id,
             slug,
             force,
+            agentIds,
           });
         }}
       />
@@ -5308,7 +5431,7 @@ export function CompanySkills() {
           onImport={() => setImportDialogOpen(true)}
           onImportFromProject={() => setImportFromProjectOpen(true)}
           onBrowseCatalog={() => setDiscoveryTab("catalog")}
-          onScan={() => scanProjects.mutate()}
+          onScan={(projectId) => scanProjects.mutate(projectId)}
           scanPending={scanProjects.isPending}
           scanStatus={scanStatusMessage}
           folderResult={showInstalledFolders ? railSkillFolderResult : null}

@@ -8,10 +8,33 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createCommandManagedRuntimeClient,
   prepareCommandManagedRuntime,
+  type CommandManagedDuplexChannel,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
 import type { SandboxSyncOperation } from "./sandbox-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
+
+/**
+ * An in-memory fake `CommandManagedDuplexChannel`. It holds no real process; a
+ * write echoes straight to the one registered data listener, so a test proves
+ * the channel contract carries a `Uint8Array` chunk with no string coercion in
+ * between. The fake never exits on its own; a test calls the listener it
+ * registers with `onExit` only when it needs one.
+ */
+function createFakeEchoDuplexChannel(): CommandManagedDuplexChannel {
+  let dataListener: ((chunk: Uint8Array) => void) | null = null;
+  return {
+    write(data: Uint8Array): void {
+      dataListener?.(data);
+    },
+    onData(listener: (chunk: Uint8Array) => void): void {
+      dataListener = listener;
+    },
+    onExit(): void {},
+    stop(): void {},
+    close: async (): Promise<void> => {},
+  };
+}
 
 const execFile = promisify(execFileCallback);
 
@@ -333,9 +356,9 @@ describe("command managed runtime", () => {
       adapterKey: "claude",
       workspaceLocalDir: localWorkspaceDir,
       additionalSources: [
-        { localPath: goodOne, projectId: "one" },
-        { localPath: path.join(rootDir, "missing"), projectId: "broken" },
-        { localPath: goodTwo, projectId: "two" },
+        { localPath: goodOne, projectId: "one", ignoreResolution: { kind: "other" } },
+        { localPath: path.join(rootDir, "missing"), projectId: "broken", ignoreResolution: { kind: "other" } },
+        { localPath: goodTwo, projectId: "two", ignoreResolution: { kind: "other" } },
       ],
     });
 
@@ -550,6 +573,62 @@ describe("command managed runtime", () => {
     const native = createCommandManagedRuntimeClient({ runner: both, commandCwd: "/", timeoutMs: 1 });
     expect(native.syncIn).toBeTypeOf("function");
     expect(native.syncOut).toBeTypeOf("function");
+  });
+
+  it("base64 fallback client reports allowConcurrentSyncOperations true", () => {
+    // A runner with no native sync uses the base64 fallback, which always
+    // permits concurrent sync operations.
+    const base = makeSpawnRunner().runner;
+    const client = createCommandManagedRuntimeClient({ runner: base, commandCwd: "/", timeoutMs: 1 });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
+  it("undeclared native runner reports allowConcurrentSyncOperations false", () => {
+    // A native runner (both sync verbs) that never opted into concurrency keeps
+    // the flag off.
+    const base = makeSpawnRunner().runner;
+    const undeclaredNative: CommandManagedRuntimeRunner = {
+      ...base,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({
+      runner: undeclaredNative,
+      commandCwd: "/",
+      timeoutMs: 1,
+    });
+    expect(client.allowConcurrentSyncOperations).toBe(false);
+  });
+
+  it("declared native runner reports allowConcurrentSyncOperations true", () => {
+    // A native runner that verified the opt-in carries the flag through to the
+    // client.
+    const base = makeSpawnRunner().runner;
+    const declaredNative: CommandManagedRuntimeRunner = {
+      ...base,
+      allowConcurrentSyncOperations: true,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({
+      runner: declaredNative,
+      commandCwd: "/",
+      timeoutMs: 1,
+    });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
+  it("base64 fallback ignores a runner opt-in without both sync verbs", () => {
+    // A runner that sets the opt-in but exposes only one sync verb still uses
+    // the fallback, which permits concurrency independent of the runner flag.
+    const base = makeSpawnRunner().runner;
+    const onlyIn: CommandManagedRuntimeRunner = {
+      ...base,
+      allowConcurrentSyncOperations: true,
+      syncIn: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({ runner: onlyIn, commandCwd: "/", timeoutMs: 1 });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
   });
 
   it("test_client_syncIn_delegates_to_native_runner_with_zero_execute_calls", async () => {
@@ -1000,5 +1079,23 @@ describe("command managed runtime", () => {
     await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 })).rejects.toThrow(
       /stdout: tar: workspace-download\.tar: Cannot open: Permission denied/,
     );
+  });
+
+  it("test_channel_round_trips_all_byte_values", () => {
+    const channel = createFakeEchoDuplexChannel();
+    const allByteValues = Uint8Array.from({ length: 256 }, (_, value) => value);
+    const received: Uint8Array[] = [];
+    channel.onData((chunk) => {
+      received.push(chunk);
+    });
+
+    channel.write(allByteValues);
+
+    expect(received).toHaveLength(1);
+    // A byte value of zero must survive. A UTF-8 string channel loses it: a
+    // JavaScript string can hold the code point U+0000, but a C-style consumer
+    // downstream of a string channel often treats it as a terminator.
+    expect(received[0]).toEqual(allByteValues);
+    expect(Array.from(received[0] ?? [])).toEqual(Array.from({ length: 256 }, (_, value) => value));
   });
 });

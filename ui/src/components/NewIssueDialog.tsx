@@ -61,6 +61,7 @@ import {
   Paperclip,
   FileText,
   Flag,
+  PauseCircle,
   Loader2,
   ListTree,
   X,
@@ -76,14 +77,65 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
+import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
-const MOBILE_DIALOG_HEIGHT = "calc(100dvh - max(1rem, env(safe-area-inset-top)) - max(1rem, env(safe-area-inset-bottom)))";
 
+type VisualViewportLayout = {
+  height: number;
+  offsetTop: number;
+  constrained: boolean;
+};
+
+type NewIssueDialogViewportStyle = CSSProperties & {
+  "--new-issue-visual-viewport-height"?: string;
+  "--new-issue-visual-viewport-offset-top"?: string;
+  "--new-issue-dialog-top"?: string;
+  "--new-issue-dialog-height"?: string;
+};
+
+function readVisualViewportLayout(): VisualViewportLayout | null {
+  if (typeof window === "undefined" || !window.visualViewport) return null;
+  const { height, offsetTop } = window.visualViewport;
+  return {
+    height,
+    offsetTop,
+    constrained: height < window.innerHeight,
+  };
+}
+
+function useVisualViewportLayout(enabled: boolean) {
+  const [layout, setLayout] = useState<VisualViewportLayout | null>(() =>
+    enabled ? readVisualViewportLayout() : null,
+  );
+
+  useEffect(() => {
+    if (!enabled) {
+      setLayout(null);
+      return;
+    }
+
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const updateLayout = () => setLayout(readVisualViewportLayout());
+    updateLayout();
+    viewport.addEventListener("resize", updateLayout);
+    viewport.addEventListener("scroll", updateLayout);
+    window.addEventListener("resize", updateLayout);
+    return () => {
+      viewport.removeEventListener("resize", updateLayout);
+      viewport.removeEventListener("scroll", updateLayout);
+      window.removeEventListener("resize", updateLayout);
+    };
+  }, [enabled]);
+
+  return layout;
+}
 
 interface IssueDraft {
   title: string;
@@ -415,6 +467,8 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
 
 export function NewIssueDialog() {
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
+  const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
+  const dialogBodyRef = useRef<HTMLDivElement>(null);
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const workModeOptions = useMemo(() => workModeMetaList(), []);
   const statuses = useMemo(() => buildStatusOptions(), []);
@@ -534,7 +588,11 @@ export function NewIssueDialog() {
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
+  const selectedAssigneeAgent = useMemo(
+    () => (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId) ?? null,
+    [agents, selectedAssigneeAgentId],
+  );
+  const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -1266,6 +1324,44 @@ export function NewIssueDialog() {
   );
   const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
+  const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
+    const dialogGeometry = {
+      "--new-issue-dialog-top":
+        "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+      "--new-issue-dialog-height":
+        "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
+    };
+    if (!visualViewportLayout) return dialogGeometry;
+    return {
+      ...dialogGeometry,
+      "--new-issue-visual-viewport-height": `${visualViewportLayout.height}px`,
+      "--new-issue-visual-viewport-offset-top": `${visualViewportLayout.offsetTop}px`,
+      ...(visualViewportLayout.constrained
+        ? {
+            top: "var(--new-issue-dialog-top)",
+            height: "var(--new-issue-dialog-height)",
+            translate: "var(--pct-neg-50)",
+          }
+        : {}),
+    };
+  }, [visualViewportLayout]);
+
+  useEffect(() => {
+    if (!visualViewportLayout?.constrained) return;
+    const focusedElement = document.activeElement;
+    if (
+      !(focusedElement instanceof HTMLElement)
+      || !dialogBodyRef.current?.contains(focusedElement)
+      || typeof focusedElement.scrollIntoView !== "function"
+    ) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      focusedElement.scrollIntoView({ block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [visualViewportLayout]);
 
   return (
     <Dialog
@@ -1277,7 +1373,7 @@ export function NewIssueDialog() {
       <DialogContent
         showCloseButton={false}
         aria-describedby={undefined}
-        style={{ "--new-issue-dialog-height": MOBILE_DIALOG_HEIGHT } as CSSProperties}
+        style={dialogViewportStyle}
         className={cn(
           "flex h-(--new-issue-dialog-height) max-h-(--new-issue-dialog-height) flex-col gap-0 overflow-hidden p-0 sm:h-auto",
           expanded
@@ -1336,7 +1432,7 @@ export function NewIssueDialog() {
                       : undefined
                   }
                 >
-                  {(dialogCompany?.name ?? "").slice(0, 3).toUpperCase()}
+                  {dialogCompany?.issuePrefix ?? ""}
                 </button>
               </PopoverTrigger>
               <PopoverContent className="w-48 p-1" align="start">
@@ -1366,7 +1462,7 @@ export function NewIssueDialog() {
                           : undefined
                       }
                     >
-                      {c.name.slice(0, 3).toUpperCase()}
+                      {c.issuePrefix}
                     </span>
                     <span className="truncate">{c.name}</span>
                   </button>
@@ -1398,7 +1494,7 @@ export function NewIssueDialog() {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div ref={dialogBodyRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           {/* Title */}
           <div className="px-4 pt-4 pb-2">
             <IssueTitleTextarea
@@ -2149,7 +2245,7 @@ export function NewIssueDialog() {
                 )}
               >
                 <CurrentWorkModeIcon className="h-3 w-3" />
-                {currentWorkMode.shortLabel}
+                {currentWorkMode.label}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
@@ -2238,6 +2334,15 @@ export function NewIssueDialog() {
             <span className="leading-snug">
               Assigning implies executable intent - leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
             </span>
+          </div>
+        ) : null}
+
+        {selectedAssigneeAgent?.status === "paused" ? (
+          <div data-testid="new-issue-paused-assignee-note" className="mx-4 mb-2">
+            <InlineBanner tone="warning" icon={PauseCircle} compact>
+              <span className="font-medium">{selectedAssigneeAgent.name}</span> is paused and will not start work on this task until it is resumed
+              {selectedAssigneeAgent.pauseReason === "import" ? " — it arrived paused from a company import" : ""}. You can resume it from the task page after creating the task.
+            </InlineBanner>
           </div>
         ) : null}
 
