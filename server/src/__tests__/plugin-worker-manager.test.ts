@@ -1372,9 +1372,12 @@ describe("plugin worker manager setup-token pty route gate", () => {
 // continuation of the `loginPtyOpen` reply, which runs as a microtask after
 // the whole synchronous line loop. So a worker that batches an output or an
 // exit notification with the open reply floods the host before the bind. The
-// tests below prove the host queues these pre-bind records, in order, and
-// replays them through the live router right after the bind, instead of
-// dropping them.
+// tests below prove the host queues these pre-bind records and replays them
+// through the live router right after the bind, instead of dropping them.
+// The host holds a queued exit apart from the queued output records, and it
+// always replays every held output record before the held exit, so a queued
+// exit never settles the session wait ahead of output the host already
+// queued — even when the worker sent the exit first.
 
 describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
   it("queues and replays a coalesced output notification that arrives before the bind", async () => {
@@ -1421,6 +1424,63 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
       await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
       expect(chunks).toEqual(["batched-output"]);
       await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers output that arrived behind a coalesced exit before the exit settles the wait", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          // The worker batched this output behind the exit. The host holds the
+          // exit apart from the output queue and replays every held output
+          // record first, so this record still reaches the listener even
+          // though the worker sent it after the exit.
+          outputsAfterExit: [{ chunk: "late-output" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["late-output"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("never settles the wait with a stale exit code when output queued behind the exit still terminalizes the route", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxTotalChars: 10, maxPreBindFrames: 1000, maxPreBindChars: 1000 },
+    });
+    try {
+      await handle.start();
+      // The worker batches an exit with the open reply, then an output record
+      // that would push the cumulative delivered total past the 10-character
+      // bound. The host replays every held output record before the held
+      // exit, so the bound violation terminalizes the route and settles the
+      // wait with the fixed null exit code. Before this fix, the queued exit
+      // replayed first and settled the wait with its own exit code, so the
+      // later terminalize call found the wait already settled and could
+      // never correct it — the runner would have read a false success.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          outputsAfterExit: [{ chunk: "aaaaaaaaaaaa" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual([]);
     } finally {
       await handle.stop().catch(() => undefined);
     }

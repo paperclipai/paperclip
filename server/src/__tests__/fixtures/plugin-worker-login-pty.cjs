@@ -14,6 +14,9 @@
 //     id; a test sets a wrong `sid` to prove the host drops a mismatched
 //     notification.
 //   - `exitCode`: when set, the fixture emits an exit notification after the outputs.
+//   - `outputsAfterExit`: an array of `{ chunk, sid? }`, same shape as `outputs`.
+//     The fixture emits these after the exit notification, so a test proves the
+//     host never delivers output that arrives behind a queued exit.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
@@ -30,13 +33,12 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-// Serialize the scripted output and exit notifications as newline-delimited
-// lines. The batch mode writes these together with the open reply in one
-// stdout write. A test sets a wrong `sid` on one entry to force a mismatch.
-function scriptedOutputLines(directive, workerSessionId) {
-  const outputs = Array.isArray(directive.outputs) ? directive.outputs : [];
+// Serialize one array of `{ chunk, sid? }` entries as newline-delimited output
+// notification lines. A test sets a wrong `sid` on one entry to force a
+// mismatch.
+function outputLines(entries, workerSessionId) {
   let lines = "";
-  for (const entry of outputs) {
+  for (const entry of entries) {
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
       method: "loginPty.output",
@@ -46,6 +48,19 @@ function scriptedOutputLines(directive, workerSessionId) {
       },
     })}\n`;
   }
+  return lines;
+}
+
+// Serialize the scripted output and exit notifications as newline-delimited
+// lines, in this fixed order: the pre-exit outputs, then the exit, then the
+// post-exit outputs. The batch mode writes these together with the open
+// reply in one stdout write.
+function scriptedOutputLines(directive, workerSessionId) {
+  const outputs = Array.isArray(directive.outputs) ? directive.outputs : [];
+  const outputsAfterExit = Array.isArray(directive.outputsAfterExit)
+    ? directive.outputsAfterExit
+    : [];
+  let lines = outputLines(outputs, workerSessionId);
   if (typeof directive.exitCode === "number") {
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
@@ -53,6 +68,7 @@ function scriptedOutputLines(directive, workerSessionId) {
       params: { workerSessionId, exitCode: directive.exitCode },
     })}\n`;
   }
+  lines += outputLines(outputsAfterExit, workerSessionId);
   return lines;
 }
 
