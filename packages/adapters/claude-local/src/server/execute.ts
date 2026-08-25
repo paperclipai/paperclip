@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { resolveRuntimeToolPolicy, summarizeRuntimeToolPolicy } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -79,7 +80,7 @@ import {
   resolveSharedClaudeConfigDir,
   writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
-import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
+import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -395,7 +396,17 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
+  const runtimeToolPolicy = resolveRuntimeToolPolicy({
+    agentRuntimeConfig: ctx.agent.runtimeConfig,
+    context: ctx.context,
+  });
   if (engineSelection.engine === "acp") {
+    if (runtimeToolPolicy.profile === "blind_judge" && runtimeToolPolicy.enforcement === "required") {
+      throw new Error(
+        "runtimeToolPolicy blind_judge is unsupported for claude_local ACP: " +
+          "the ACP server cannot structurally suppress direct and delegated Claude tool surfaces. Use engine=cli on a remote/sandbox target or a different adapter.",
+      );
+    }
     try {
       return await executeClaudeAcp(ctx);
     } catch (err) {
@@ -472,6 +483,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraArgs,
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
+  if (
+    runtimeToolPolicy.profile === "blind_judge" &&
+    runtimeToolPolicy.enforcement === "required" &&
+    !executionTargetIsRemote
+  ) {
+    throw new Error(
+      "runtimeToolPolicy blind_judge is unsupported for local claude_local: " +
+        "claude_local.account_connectors cannot be structurally suppressed. Use a remote/sandbox target or a different adapter.",
+    );
+  }
+  if (runtimeToolPolicy.restricted && runtimeToolPolicy.enforcement === "required") {
+    if (!claudeCommandLooksLike(command)) {
+      throw new Error(
+        "runtimeToolPolicy blind_judge requires the Claude CLI so Paperclip can structurally constrain its tool manifest; custom commands are unsupported.",
+      );
+    }
+    if (extraArgs.length > 0) {
+      throw new Error(
+        "runtimeToolPolicy blind_judge does not allow adapter extraArgs because they can override the required tool and MCP isolation flags.",
+      );
+    }
+  }
+  if (runtimeToolPolicy.restricted) {
+    env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+    env.CLAUDE_CODE_DISABLE_ORG_MEMORY = "1";
+    loggedEnv = {
+      ...loggedEnv,
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_ORG_MEMORY: "1",
+    };
+  }
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
     0,
@@ -845,8 +887,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
       localProcessUid: process.getuid?.() ?? null,
+      runtimeToolPolicy,
     }));
-    if (chrome) args.push("--chrome");
+    if (chrome && !runtimeToolPolicy.restricted) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
     // on Bedrock, so skip them and let the CLI use its own configured model.

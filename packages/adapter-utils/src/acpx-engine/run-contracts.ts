@@ -18,6 +18,7 @@ import type {
   AdapterExecutionTargetProcessSessionBridgeHandle,
   PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { ResolvedRuntimeToolPolicy } from "../runtime-tool-policy.js";
 
 // ---------------------------------------------------------------------------
 // Resource identity
@@ -422,6 +423,7 @@ export interface McpServerIdentity {
 /** The Paperclip Claude settings the fingerprint reads. */
 export interface PaperclipClaudeSettingsIdentity {
   readonly allow: readonly string[];
+  readonly deny: readonly string[];
   readonly additionalDirectories: readonly string[];
   readonly defaultMode: string;
 }
@@ -447,6 +449,7 @@ export interface SessionFingerprintIdentity {
   readonly skillsIdentity: Record<string, unknown>;
   readonly skillPromptInstructions: string;
   readonly paperclipClaudeSettings: PaperclipClaudeSettingsIdentity | null;
+  readonly runtimeToolPolicy: ResolvedRuntimeToolPolicy;
   readonly mcpServers: readonly McpServerIdentity[];
   readonly secretManifestHash: string;
   readonly adapterEnvHash: string;

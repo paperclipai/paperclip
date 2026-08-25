@@ -4,6 +4,9 @@ export interface PaperclipMcpConfig {
   companyId: string | null;
   agentId: string | null;
   runId: string | null;
+  toolProfile?: "blind_judge" | null;
+  allowedReadIssueIds?: string[];
+  taskId?: string | null;
 }
 
 function nonEmpty(value: string | undefined): string | null {
@@ -12,6 +15,11 @@ function nonEmpty(value: string | undefined): string | null {
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function splitNonEmpty(value: string | undefined): string[] {
+  if (!value) return [];
+  return [...new Set(value.split(",").map((entry) => entry.trim()).filter(Boolean))];
 }
 
 export function normalizeApiUrl(apiUrl: string): string {
@@ -35,5 +43,8 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Papercl
     companyId: nonEmpty(env.PAPERCLIP_COMPANY_ID),
     agentId: nonEmpty(env.PAPERCLIP_AGENT_ID),
     runId: nonEmpty(env.PAPERCLIP_RUN_ID),
+    toolProfile: env.PAPERCLIP_MCP_TOOL_PROFILE === "blind_judge" ? "blind_judge" : null,
+    allowedReadIssueIds: splitNonEmpty(env.PAPERCLIP_MCP_ALLOWED_READ_ISSUE_IDS),
+    taskId: nonEmpty(env.PAPERCLIP_TASK_ID),
   };
 }

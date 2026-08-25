@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  resolveRuntimeToolPolicy,
+  summarizeRuntimeToolPolicy,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -629,6 +635,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const runtimeToolPolicy = resolveRuntimeToolPolicy({
+    agentRuntimeConfig: agent.runtimeConfig,
+    context,
+  });
+  if (
+    runtimeToolPolicy.restricted &&
+    runtimeToolPolicy.enforcement === "required" &&
+    !/^codex(?:\.exe)?$/i.test(path.basename(command.trim() || "codex"))
+  ) {
+    throw new Error(
+      "runtimeToolPolicy blind_judge requires the Codex CLI so Paperclip can structurally constrain its runtime; custom commands are unsupported.",
+    );
+  }
+  if (runtimeToolPolicy.restricted && runtimeToolPolicy.enforcement === "required") {
+    throw new Error(
+      "runtimeToolPolicy blind_judge is unsupported for codex_local: " +
+        "the Codex CLI cannot structurally suppress its built-in web, messaging, and delegated-agent tool manifest. Use claude_local with engine=cli or a different structurally restricted adapter.",
+    );
+  }
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -1044,6 +1069,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
     const canResumeSession =
+      !runtimeToolPolicy.restricted &&
       runtimeSessionId.length > 0 &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
@@ -1114,7 +1140,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : "";
     const commandNotes = (() => {
       if (!instructionsFilePath) {
-        const notes = [repoAgentsNote];
+        const notes = [summarizeRuntimeToolPolicy(runtimeToolPolicy), repoAgentsNote];
         if (forceSaferInvocation) {
           notes.push("Codex transient fallback requested safer invocation settings for this retry.");
         }
@@ -1126,6 +1152,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (instructionsPrefix.length > 0) {
         if (shouldUseResumeDeltaPrompt) {
           const notes = [
+            summarizeRuntimeToolPolicy(runtimeToolPolicy),
             `Loaded agent instructions from ${instructionsFilePath}`,
             "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
             repoAgentsNote,
@@ -1139,6 +1166,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return notes;
         }
         const notes = [
+          summarizeRuntimeToolPolicy(runtimeToolPolicy),
           `Loaded agent instructions from ${instructionsFilePath}`,
           `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
           repoAgentsNote,
@@ -1152,6 +1180,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return notes;
       }
       const notes = [
+        summarizeRuntimeToolPolicy(runtimeToolPolicy),
         `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
         repoAgentsNote,
       ];
@@ -1197,7 +1226,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         forceSaferInvocation ? { ...config, fastMode: false } : config,
         {
           resumeSessionId,
-          skipGitRepoCheck: executionTargetIsSandbox,
+          skipGitRepoCheck: executionTargetIsSandbox || runtimeToolPolicy.restricted,
+          restricted: runtimeToolPolicy.restricted,
         },
       );
       const args = execArgs.args;

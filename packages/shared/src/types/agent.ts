@@ -29,8 +29,17 @@ export interface AgentModelProfileConfig {
   adapterConfig: Record<string, unknown>;
 }
 
+export interface AgentRuntimeToolPolicyConfig {
+  profile?: "blind_judge";
+  enforcement?: "required" | "best_effort";
+  allow?: string[];
+  deny?: string[];
+  paperclipReadIssueIds?: string[];
+}
+
 export interface AgentRuntimeConfig extends Record<string, unknown> {
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  runtimeToolPolicy?: AgentRuntimeToolPolicyConfig;
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";

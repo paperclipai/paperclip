@@ -36,22 +36,29 @@ export function buildCodexExecArgs(
   options: {
     resumeSessionId?: string | null;
     skipGitRepoCheck?: boolean;
+    restricted?: boolean;
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
+  const restricted = options.restricted === true;
   const model = normalizeCodexModel(asString(record.model, ""));
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),
   ).trim();
-  const search = asBoolean(record.search, false);
+  const search = !restricted && asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
-  const bypass = asBoolean(
+  const bypass = !restricted && asBoolean(
     record.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(record.dangerouslyBypassSandbox, false),
   );
   const extraArgs = readExtraArgs(record);
+  if (restricted && extraArgs.length > 0) {
+    throw new Error(
+      "runtimeToolPolicy blind_judge does not allow Codex adapter extraArgs because they can override the required isolation flags.",
+    );
+  }
 
   const args = ["exec", "--json"];
   // Codex rejects a repeated `--skip-git-repo-check` ("cannot be used multiple
@@ -61,6 +68,37 @@ export function buildCodexExecArgs(
   // copy stand.
   if (options.skipGitRepoCheck && !extraArgs.includes(SKIP_GIT_REPO_CHECK_FLAG)) {
     args.push(SKIP_GIT_REPO_CHECK_FLAG);
+  }
+  if (restricted) {
+    args.push(
+      "--strict-config",
+      "--sandbox",
+      "read-only",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--ignore-rules",
+    );
+    for (const feature of [
+      "apps",
+      "browser_use",
+      "browser_use_external",
+      "browser_use_full_cdp_access",
+      "computer_use",
+      "goals",
+      "image_generation",
+      "in_app_browser",
+      "multi_agent",
+      "multi_agent_v2",
+      "plugins",
+      "remote_plugin",
+      "shell_snapshot",
+      "shell_tool",
+      "unified_exec",
+      "view_image",
+      "workspace_dependencies",
+    ]) {
+      args.push("--disable", feature);
+    }
   }
   if (search) args.unshift("--search");
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
@@ -72,7 +110,7 @@ export function buildCodexExecArgs(
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
   if (extraArgs.length > 0) args.push(...extraArgs);
-  if (options.resumeSessionId) args.push("resume", options.resumeSessionId, "-");
+  if (options.resumeSessionId && !restricted) args.push("resume", options.resumeSessionId, "-");
   else args.push("-");
 
   return {

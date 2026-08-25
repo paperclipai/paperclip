@@ -14,6 +14,7 @@ import {
   linkIssueApprovalSchema,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
+import type { PaperclipMcpConfig } from "./config.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
 
 export interface ToolDefinition {
@@ -234,8 +235,27 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
   };
 }
 
-export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
-  return [
+export function createToolDefinitions(
+  client: PaperclipApiClient,
+  config?: Pick<PaperclipMcpConfig, "toolProfile" | "allowedReadIssueIds" | "taskId">,
+): ToolDefinition[] {
+  const blindJudge = config?.toolProfile === "blind_judge";
+  const allowedReadIssueIds = new Set(
+    (config?.allowedReadIssueIds ?? []).map((issueId) => issueId.toLowerCase()),
+  );
+  const taskId = config?.taskId?.toLowerCase() ?? null;
+  const assertReadIssueAllowed = (issueId: string) => {
+    if (blindJudge && !allowedReadIssueIds.has(issueId.toLowerCase())) {
+      throw new Error(`blind_judge may not read Paperclip issue ${issueId}`);
+    }
+  };
+  const assertCurrentTask = (issueId: string) => {
+    if (blindJudge && (!taskId || issueId.toLowerCase() !== taskId)) {
+      throw new Error("blind_judge may only write to its current Paperclip task");
+    }
+  };
+
+  const tools = [
     makeTool(
       "paperclipMe",
       "Get the current authenticated Paperclip actor details",
@@ -329,18 +349,22 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipGetDocument",
       "Get one issue document by key",
       z.object({ issueId: issueIdSchema, key: documentKeySchema }),
-      async ({ issueId, key }) =>
-        client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}`),
+      async ({ issueId, key }) => {
+        assertReadIssueAllowed(issueId);
+        return client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}`);
+      },
     ),
     makeTool(
       "paperclipListDocumentRevisions",
       "List revisions for an issue document",
       z.object({ issueId: issueIdSchema, key: documentKeySchema }),
-      async ({ issueId, key }) =>
-        client.requestJson(
+      async ({ issueId, key }) => {
+        assertReadIssueAllowed(issueId);
+        return client.requestJson(
           "GET",
           `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/revisions`,
-        ),
+        );
+      },
     ),
     makeTool(
       "paperclipListProjects",
@@ -465,8 +489,23 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipUpdateIssue",
       "Patch an issue, optionally including a comment; include resume=true when intentionally requesting follow-up on resumable closed work",
       updateIssueToolSchema,
-      async ({ issueId, ...body }) =>
-        client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body }),
+      async ({ issueId, ...body }) => {
+        assertCurrentTask(issueId);
+        if (blindJudge) {
+          const suppliedKeys = Object.entries(body)
+            .filter(([, value]) => value !== undefined)
+            .map(([key]) => key);
+          const unsupportedKeys = suppliedKeys.filter(
+            (key) => key !== "status" && key !== "outcomeType",
+          );
+          if (unsupportedKeys.length > 0) {
+            throw new Error(
+              `blind_judge may only update status and outcomeType; received ${unsupportedKeys.join(", ")}`,
+            );
+          }
+        }
+        return client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body });
+      },
     ),
     makeTool(
       "paperclipCheckoutIssue",
@@ -490,8 +529,10 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipAddComment",
       "Add a comment to an issue; include resume=true when intentionally requesting follow-up on resumable closed work",
       addCommentToolSchema,
-      async ({ issueId, ...body }) =>
-        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, { body }),
+      async ({ issueId, ...body }) => {
+        assertCurrentTask(issueId);
+        return client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, { body });
+      },
     ),
     makeTool(
       "paperclipSuggestTasks",
@@ -631,4 +672,13 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       },
     ),
   ];
+
+  if (!blindJudge) return tools;
+  const blindJudgeToolNames = new Set([
+    "paperclipGetDocument",
+    "paperclipListDocumentRevisions",
+    "paperclipUpdateIssue",
+    "paperclipAddComment",
+  ]);
+  return tools.filter((tool) => blindJudgeToolNames.has(tool.name));
 }

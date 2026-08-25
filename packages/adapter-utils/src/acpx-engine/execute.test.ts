@@ -1900,6 +1900,70 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(note).toBeTruthy();
   });
 
+  it("writes deny-by-default Claude settings for best-effort blind_judge ACP runs", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    await runExecutor(
+      { agent: "claude", stateDir, cwd },
+      {
+        context: {
+          paperclipWorkspace: { cwd },
+          paperclipRuntimeToolPolicy: {
+            profile: "blind_judge",
+            enforcement: "best_effort",
+          },
+        },
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: cwd },
+      },
+    );
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as { permissions?: { allow?: string[]; deny?: string[]; defaultMode?: string } };
+
+    expect(written.permissions?.defaultMode).toBe("dontAsk");
+    expect(written.permissions?.allow).not.toContain("Bash(curl:*)");
+    expect(written.permissions?.deny).toEqual(expect.arrayContaining([
+      "Agent",
+      "Bash",
+      "PushNotification",
+      "RemoteTrigger",
+      "SendMessage",
+      "Skill",
+      "Task",
+      "ToolSearch",
+      "WebFetch",
+      "WebSearch",
+      "mcp__*",
+      "mcp__browser__*",
+    ]));
+  });
+
+  it("fails closed for claude ACP blind_judge runs with required enforcement", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    await expect(
+      runExecutor(
+        { agent: "claude", stateDir, cwd },
+        {
+          context: {
+            paperclipWorkspace: { cwd },
+            paperclipRuntimeToolPolicy: {
+              profile: "blind_judge",
+              enforcement: "required",
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow("runtimeToolPolicy blind_judge is unsupported for claude_local ACP");
+  });
+
   it("merges Paperclip allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
