@@ -536,8 +536,38 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
           },
         }),
         "empty_checkout_previously_used",
-        "to a git checkout with zero commits",
+        "to an empty git checkout (zero commits, no other files)",
       );
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a previously-used workspace with zero commits when real uncommitted content is present", async () => {
+    // Regression coverage for a false positive caught live in the deploy-candidate
+    // gate: a `git init`'d directory with real files sitting in it, just not yet
+    // committed, is not the same as an emptied-out workspace.
+    const repoRoot = await createGitCheckout({ withRemote: false });
+    try {
+      await fs.writeFile(path.join(repoRoot, "work-in-progress.md"), "not committed yet\n", "utf8");
+
+      const input = buildWorkspaceValidationInput();
+      await expect(
+        assertGitSensitiveAdapterWorkspaceValid(
+          buildWorkspaceValidationInput({
+            resolvedWorkspace: buildResolvedWorkspace({ cwd: repoRoot }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              baseCwd: repoRoot,
+              cwd: repoRoot,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              cwd: repoRoot,
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
     } finally {
       await fs.rm(repoRoot, { recursive: true, force: true });
     }

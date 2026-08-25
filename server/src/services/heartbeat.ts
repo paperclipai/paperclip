@@ -2641,6 +2641,20 @@ async function hasGitCommits(cwd: string | null | undefined) {
     .catch(() => false);
 }
 
+// Zero commits alone is not a reliable "this got wiped" signal — a directory
+// can legitimately be `git init`'d with real, uncommitted work sitting in it
+// (caught live: a deploy-candidate test fixture pointed at a subtree that a
+// build step had nested its own bare `git init` into, with the full real repo
+// checked out alongside — zero commits, but far from empty). Requiring the
+// directory to hold nothing but `.git` narrows this to the actual incident
+// signature: content that existed is now simply gone.
+async function hasContentBesidesGit(cwd: string | null | undefined) {
+  const normalized = readNonEmptyString(cwd);
+  if (!normalized) return false;
+  const entries = await fs.readdir(normalized).catch(() => [] as string[]);
+  return entries.some((entry) => entry !== ".git");
+}
+
 function sameResolvedPath(left: string | null | undefined, right: string | null | undefined) {
   const leftPath = readNonEmptyString(left);
   const rightPath = readNonEmptyString(right);
@@ -2986,23 +3000,28 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   }
 
   // Fail closed rather than silently adopting an emptied-out shared workspace.
-  // Scoped tightly to avoid false positives on genuine first use: only fires
-  // when (a) this exact workspace has a prior persisted record — proof it
-  // held real state before — and (b) it is the shared primary workspace, not
-  // a fresh git_worktree checkout (which legitimately starts with no commits
-  // of its own beyond the base branch it forked from, and is validated by the
-  // branch-mismatch check below instead).
+  // Scoped tightly to avoid false positives: only fires when (a) this exact
+  // workspace has a prior persisted record — proof it held real state before
+  // — (b) it is the shared primary workspace, not a fresh git_worktree
+  // checkout (which legitimately starts with no commits of its own beyond the
+  // base branch it forked from, and is validated by the branch-mismatch check
+  // below instead), and (c) the checkout is truly empty — nothing but `.git`.
+  // Zero commits alone is not enough: a directory can be `git init`'d with
+  // real, uncommitted work still sitting in it (caught live via a
+  // deploy-candidate test fixture before this shipped — see
+  // hasContentBesidesGit's comment).
   if (
     workspaceExpectation &&
     effectiveCwd &&
     input.persistedExecutionWorkspace &&
     input.executionWorkspace.strategy !== "git_worktree" &&
     await hasGitMetadata(effectiveCwd) &&
-    !await hasGitCommits(effectiveCwd)
+    !await hasGitCommits(effectiveCwd) &&
+    !await hasContentBesidesGit(effectiveCwd)
   ) {
     fail(
       "empty_checkout_previously_used",
-      `Issue ${issue.identifier ?? issue.id} resolved shared project workspace "${effectiveCwd}" to a git checkout with zero commits, but a prior execution workspace record (${input.persistedExecutionWorkspace.id}) shows this workspace was used before. Refusing to treat an emptied-out checkout as the real workspace. Repair or intentionally reset the workspace, then retry.`,
+      `Issue ${issue.identifier ?? issue.id} resolved shared project workspace "${effectiveCwd}" to an empty git checkout (zero commits, no other files), but a prior execution workspace record (${input.persistedExecutionWorkspace.id}) shows this workspace was used before. Refusing to treat an emptied-out checkout as the real workspace. Repair or intentionally reset the workspace, then retry.`,
       { emptyCheckoutPreviouslyUsed: true, persistedExecutionWorkspaceId: input.persistedExecutionWorkspace.id },
     );
   }
