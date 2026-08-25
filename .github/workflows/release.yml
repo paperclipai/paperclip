@@ -647,6 +647,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # gh pr view needs PR read for the skeleton's nested summaries;
+      # without it the enrichment silently degrades to bare subjects.
+      pull-requests: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
