@@ -201,11 +201,13 @@ describe("Daytona sandbox provider plugin", () => {
     mockCreate.mockResolvedValue(sandbox);
 
     // Capture the data and the exit the worker forwards through `ctx.duplexChannel`.
+    // `ctx.duplexChannel.data` carries raw bytes; decode each chunk to text so the
+    // assertion below reads the plain-text payload.
     const dataChunks: Array<{ hostRouteId: string; workerSessionId: string; chunk: string }> = [];
     const restore = __setDaytonaPluginContextForTest({
       duplexChannel: {
-        data: (hostRouteId: string, workerSessionId: string, chunk: string) =>
-          dataChunks.push({ hostRouteId, workerSessionId, chunk }),
+        data: (hostRouteId: string, workerSessionId: string, chunk: Uint8Array) =>
+          dataChunks.push({ hostRouteId, workerSessionId, chunk: Buffer.from(chunk).toString("utf8") }),
         exit: () => {},
       },
     } as unknown as PluginContext);
@@ -242,10 +244,12 @@ describe("Daytona sandbox provider plugin", () => {
       expect(inputs[0]).toMatch(/2>'\/tmp\/paperclip-duplex-.+\.log'/);
 
       // A host write on the exact pair reaches the process on the same channel.
+      // `data` arrives in the wire-safe base64 form (see `ChannelBytesWireValue`
+      // in the plugin SDK's protocol.ts).
       await plugin.definition.onDuplexChannelWrite?.({
         hostRouteId: "route-1",
         workerSessionId,
-        data: '{"version":1,"type":"heartbeat"}\n',
+        data: Buffer.from('{"version":1,"type":"heartbeat"}\n', "utf8").toString("base64"),
       });
       expect(inputs[1]).toBe('{"version":1,"type":"heartbeat"}\n');
 
@@ -255,7 +259,7 @@ describe("Daytona sandbox provider plugin", () => {
       await plugin.definition.onDuplexChannelWrite?.({
         hostRouteId: "route-foreign",
         workerSessionId,
-        data: "foreign\n",
+        data: Buffer.from("foreign\n", "utf8").toString("base64"),
       });
       expect(inputs.length).toBe(inputsBeforeForeign);
       // A stop whose pair does not match the bound entry stops nothing.
@@ -297,7 +301,7 @@ describe("Daytona sandbox provider plugin", () => {
       await plugin.definition.onDuplexChannelWrite?.({
         hostRouteId: "route-1",
         workerSessionId,
-        data: "late\n",
+        data: Buffer.from("late\n", "utf8").toString("base64"),
       });
       expect(inputs.length).toBe(inputsBefore);
     } finally {

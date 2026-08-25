@@ -38,6 +38,65 @@ on:
         type: string
 
 jobs:
+  # The Docker smoke below can never exercise the background-service leg of
+  # onboarding: containers have no service manager, so v2026.824.0 shipped a
+  # service install that crash-looped on a missing shim while every
+  # golden-path check stayed green. Run the same published artifact directly
+  # on the runner VM's systemd and require the installed service to end up
+  # serving.
+  smoke_service:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Start a user systemd session
+        # The hosted runner has no login session for the runner user, so
+        # `systemctl --user` cannot reach a user manager until lingering
+        # starts one. Export the session address for the steps below.
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          uid="$(id -u)"
+          for _ in $(seq 1 30); do
+            [[ -S "/run/user/$uid/bus" ]] && break
+            sleep 1
+          done
+          [[ -S "/run/user/$uid/bus" ]]
+          {
+            echo "XDG_RUNTIME_DIR=/run/user/$uid"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus"
+          } >> "$GITHUB_ENV"
+
+      - name: Onboard with the background service
+        env:
+          PAPERCLIPAI_VERSION: ${{ inputs.paperclip_version }}
+          DATA_DIR: ${{ runner.temp }}/service-smoke-data
+          SMOKE_CLEANUP: "false"
+        run: ./scripts/service-onboard-smoke.sh
+
+      - name: Capture service diagnostics
+        if: always()
+        run: |
+          {
+            systemctl --user --no-pager status paperclipai.service || true
+            journalctl --user -u paperclipai.service --no-pager || true
+          } > "$RUNNER_TEMP/paperclipai-service.log" 2>&1
+
+      - name: Upload service diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-service
+          path: ${{ runner.temp }}/paperclipai-service.log
+          retention-days: 14
+
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 45

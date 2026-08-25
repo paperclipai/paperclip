@@ -419,9 +419,9 @@ key never reaches a sink by accident.
 | Key | Type | Optional | Value set |
 | --- | --- | --- | --- |
 | `provider` | string | no | `daytona`, or `other` for any other plugin key. |
-| `transport` | string | no | `duplex` or `file`. A fallback record uses `file`; every other record uses `duplex`. |
+| `transport` | string | no | `duplex`, `http2`, or `file`. `duplex` names the retired bespoke frame protocol; `http2` names the Node HTTP/2 session over the sandbox channel; a fallback record uses `file`. |
 | `outcome` | string | yes | `ok` or `error`. |
-| `fallback_reason` | string | yes | `gate_off`, `capability_absent`, `open_failed`, `ready_invalid`, `ready_nonce_mismatch`, `ready_timeout`, or `contaminated`. It rides only a fallback record. |
+| `fallback_reason` | string | yes | `gate_off`, `capability_absent`, `route_busy`, `entrypoint_sync_failed`, `broker_construction_failed`, `channel_open_failed`, `ready_invalid`, `ready_nonce_mismatch`, `ready_timeout`, `contaminated`, `aggregate_bytes_exceeded`, or `preface_missing`. It rides only a fallback record. `route_busy` marks the process-scoped route ceiling full. `entrypoint_sync_failed` and `broker_construction_failed` mark the named build step. `channel_open_failed` marks a failed channel open. `aggregate_bytes_exceeded` marks a readiness handshake, or an `http2` post-preface pre-bind buffer, where the host fell back because the process aggregate byte ceiling had no room. `preface_missing` marks a missing or an invalid HTTP/2 client connection preface inside the bounded readiness buffer: the host found no valid preface after the accepted READY line, aborted the `http2` open, and moved the run to the file bridge (`queue_v1`) one time. |
 | `loss_class` | string | yes | `pre_dispatch` or `post_dispatch`, relative to the first request dispatch. It rides only a loss record. |
 | `loss_reason` | string | yes | `stdin_eof`, `provider_exit`, `heartbeat_timeout`, `rpc_failure`, `write_error`, `transport_closed`, or `other`. The host maps every loss cause to one of these values, so no raw provider text reaches a sink. `write_error` marks a rejected host-to-sandbox write. `transport_closed` marks a reason-less provider transport close with no exit data. It rides only a loss record. |
 

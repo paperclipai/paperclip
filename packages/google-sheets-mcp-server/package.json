@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "googleapis": "^174.0.1",
+    "googleapis": "^176.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

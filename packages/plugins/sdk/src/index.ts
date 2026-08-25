@@ -86,6 +86,8 @@ export {
   LOGIN_PTY_EXIT_NOTIFICATION,
   DUPLEX_CHANNEL_DATA_NOTIFICATION,
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
+  encodeChannelBytes,
+  decodeChannelBytes,
   _resetIdCounter,
 } from "./protocol.js";
 

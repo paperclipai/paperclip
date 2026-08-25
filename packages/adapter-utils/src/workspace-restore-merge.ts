@@ -106,29 +106,38 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
   return false;
 }
 
-async function isHolderAlive(lockDir: string): Promise<boolean> {
+const LOCK_STALE_MS = 30_000;
+
+async function isLockStale(lockDir: string): Promise<boolean> {
   try {
     const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
     const owner = JSON.parse(raw) as { pid?: unknown };
     const pid = typeof owner.pid === "number" && Number.isFinite(owner.pid) && owner.pid > 0 ? owner.pid : null;
     if (pid === null) {
       // Owner record is unparseable / missing pid — treat as stale.
-      return false;
+      return true;
     }
     try {
       process.kill(pid, 0);
-      return true;
-    } catch {
       return false;
+    } catch {
+      return true;
     }
   } catch {
-    // owner.json missing or unreadable — treat as stale.
-    return false;
+    // owner.json is missing or unreadable. A live holder also passes through
+    // this exact state, briefly, between its own `fs.mkdir(lockDir)` and its
+    // `fs.writeFile(owner.json)` below. Reading "missing" as "stale" here would
+    // let a concurrent acquirer delete a live holder's lock directory during
+    // that window. Mirror the materializePaperclipSkillCopy lock pattern: fall
+    // back to the lock directory's own mtime, and only call it stale once the
+    // directory itself has outlived the stale threshold.
+    const stat = await fs.stat(lockDir).catch(() => null);
+    return !stat || Date.now() - stat.mtimeMs > LOCK_STALE_MS;
   }
 }
 
 async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise<void>> {
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + LOCK_STALE_MS;
   while (true) {
     try {
       await fs.mkdir(lockDir);
@@ -146,7 +155,7 @@ async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise
       // Stale-lock detection: if the owner PID is dead (SIGKILL / OOM / crash),
       // the lockDir would otherwise persist forever and stall restores. Mirror
       // the materializePaperclipSkillCopy lock pattern — remove and retry.
-      if (!(await isHolderAlive(lockDir))) {
+      if (await isLockStale(lockDir)) {
         await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
         continue;
       }

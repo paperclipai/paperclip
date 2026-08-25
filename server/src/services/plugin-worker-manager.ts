@@ -41,6 +41,8 @@ import {
   LOGIN_PTY_EXIT_NOTIFICATION,
   DUPLEX_CHANNEL_DATA_NOTIFICATION,
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
+  encodeChannelBytes,
+  decodeChannelBytes,
 } from "@paperclipai/plugin-sdk";
 import type {
   JsonRpcId,
@@ -610,10 +612,10 @@ export interface DuplexChannelOpenInput {
  * stream with the same methods.
  */
 export interface DuplexChannelHostSession {
-  /** Registers the one data listener. The session streams each raw chunk in order. */
-  onData(listener: (chunk: string) => void): void;
+  /** Registers the one data listener. The session streams each raw byte chunk in order. */
+  onData(listener: (chunk: Uint8Array) => void): void;
   /** Writes raw input bytes to the channel. */
-  write(data: string): void;
+  write(data: Uint8Array): void;
   /**
    * Resolves when the command ends or the route ends. A numeric `exitCode` is a
    * real process exit. `transportClosed` is true when the provider transport
@@ -913,7 +915,10 @@ export function createPluginWorkerHandle(
     options.loginPtyLimits?.closeTimeoutMs ?? LOGIN_PTY_CLOSE_TIMEOUT_MS;
 
   // Bounds and timeouts for the generic duplex channel route. A caller (a test)
-  // can lower them to exercise each bound and the terminalize paths.
+  // can lower them to exercise each bound and the terminalize paths. Each
+  // "Chars" name is a historical holdover: the channel now carries `Uint8Array`
+  // chunks, so every one of these bounds counts raw bytes (`.length` on a
+  // `Uint8Array` is its byte count), not UTF-16 code units.
   const maxDuplexChannelChunkChars =
     options.duplexChannelLimits?.maxChunkChars ?? MAX_DUPLEX_CHANNEL_CHUNK_CHARS;
   const maxDuplexChannelPreBindChars =
@@ -1630,10 +1635,10 @@ export function createPluginWorkerHandle(
   //   7. route lifetime — the milliseconds from the open to the terminal end.
 
   // One buffered data chunk retained for a late listener drain. It carries the raw
-  // chunk string and the aggregate byte token that reserved its raw bytes. The
+  // chunk bytes and the aggregate byte token that reserved its raw bytes. The
   // token is `null` when no ledger is injected.
   interface BufferedDuplexChunk {
-    chunk: string;
+    chunk: Uint8Array;
     token: ReservationToken | null;
   }
   // One pre-bind data event, normalized to the narrow duplex-event schema. The host
@@ -1643,7 +1648,7 @@ export function createPluginWorkerHandle(
   // fails closed.
   interface HeldDuplexEvent {
     workerSessionId: string;
-    chunk: string;
+    chunk: Uint8Array;
     token: ReservationToken | null;
   }
   // One pre-bind exit event, normalized to the narrow duplex-event schema.
@@ -1657,7 +1662,7 @@ export function createPluginWorkerHandle(
     hostRouteId: string;
     state: RouteState;
     workerSessionId: string | null;
-    listener: ((chunk: string) => void) | null;
+    listener: ((chunk: Uint8Array) => void) | null;
     buffered: BufferedDuplexChunk[];
     bufferedChars: number;
     pendingRequests: number;
@@ -1959,8 +1964,8 @@ export function createPluginWorkerHandle(
   // dispatch loop nor the pre-bind drain. The manager catches the error and logs
   // it without the raw bytes. This mirrors the `execute.log` delivery isolation.
   function deliverDuplexChannelChunk(
-    listener: (chunk: string) => void,
-    chunk: string,
+    listener: (chunk: Uint8Array) => void,
+    chunk: Uint8Array,
   ): void {
     try {
       listener(chunk);
@@ -2036,25 +2041,32 @@ export function createPluginWorkerHandle(
       return;
     }
     const route = resolved;
-    const chunk = params.chunk;
-    if (typeof chunk !== "string" || chunk.length === 0) {
-      // The exact pair matches, but the chunk is malformed. Count one per-route
-      // protocol error. Release a carried replay token first.
+    // The wire carries the chunk as a base64 string (JSON has no binary type; see
+    // `ChannelBytesWireValue` in protocol.ts). Decode it back to raw bytes before
+    // any bound check, so every bound below counts real bytes, not base64 text.
+    // A bind replay (`replayPreBindDuplexFrames`) reuses this function with a
+    // held event whose chunk the host already decoded once; it carries the
+    // already-decoded `Uint8Array` straight through with no second decode.
+    const rawChunk = params.chunk;
+    const chunk = rawChunk instanceof Uint8Array ? rawChunk : decodeChannelBytes(rawChunk);
+    if (chunk === null || chunk.byteLength === 0) {
+      // The exact pair matches, but the chunk is malformed or empty. Count one
+      // per-route protocol error. Release a carried replay token first.
       releaseRouteToken(route, carried?.token ?? null);
       recordDuplexChannelProtocolError(route);
       return;
     }
-    if (chunk.length > maxDuplexChannelChunkChars) {
+    if (chunk.byteLength > maxDuplexChannelChunkChars) {
       // One inbound chunk is larger than the per-chunk limit. End the route at
       // once. Do not count the chunk as a protocol error.
       releaseRouteToken(route, carried?.token ?? null);
       void terminalizeDuplexChannelRoute(route);
       return;
     }
-    // Count the bytes of the chunk. Enforce the cumulative total-byte cap before
-    // and after a listener attaches. End the route when the cap is exceeded, so a
-    // bound listener cannot receive data past the cap.
-    const chunkBytes = Buffer.byteLength(chunk);
+    // Enforce the cumulative total-byte cap before and after a listener attaches.
+    // End the route when the cap is exceeded, so a bound listener cannot receive
+    // data past the cap.
+    const chunkBytes = chunk.byteLength;
     if (route.totalDataBytes + chunkBytes > maxDuplexChannelTotalDataBytes) {
       releaseRouteToken(route, carried?.token ?? null);
       void terminalizeDuplexChannelRoute(route);
@@ -2178,9 +2190,10 @@ export function createPluginWorkerHandle(
       return;
     }
     // A data event. Validate and normalize it to the narrow duplex-event schema
-    // before any retention.
-    const chunk = params.chunk;
-    if (typeof chunk !== "string" || chunk.length === 0) {
+    // before any retention. The wire carries the chunk as base64; decode it back
+    // to raw bytes before any bound check or retention.
+    const chunk = decodeChannelBytes(params.chunk);
+    if (chunk === null || chunk.byteLength === 0) {
       recordDuplexChannelProtocolError(route);
       return;
     }
@@ -2189,7 +2202,7 @@ export function createPluginWorkerHandle(
       return;
     }
     // Reserve the exact retained raw byte count before the host holds the event.
-    const reserved = reserveRouteBytes(route, "pre_bind_event", Buffer.byteLength(chunk));
+    const reserved = reserveRouteBytes(route, "pre_bind_event", chunk.byteLength);
     if (reserved === null) {
       // The aggregate ceiling rejected the reservation. The caller retains nothing
       // and the route fails closed with the fixed marker.
@@ -2406,25 +2419,27 @@ export function createPluginWorkerHandle(
     >(
       method: M,
       params: HostToWorkerMethods[M][0],
+      // The exact raw byte count of a `duplexChannelWrite` payload, before base64
+      // encoding. The caller supplies it: `params.data` on the wire is the base64
+      // form (`ChannelBytesWireValue`), so its string length no longer equals the
+      // real payload bytes. A stop request carries no payload and omits this.
+      writeByteCount?: number,
     ): void => {
       if (route.state !== "open") return;
       if (route.pendingRequests >= maxDuplexChannelPendingRequests) {
         void terminalizeDuplexChannelRoute(route);
         return;
       }
-      // Reserve the exact UTF-8 byte count of a host→worker write against the
+      // Reserve the exact raw byte count of a host→worker write against the
       // aggregate ledger before `callInternal` retains the payload. A pending write
       // RPC holds `params.data` until it settles, so this reservation bounds the
-      // aggregate host→worker pending-write bytes across every route. Compute the
-      // byte count with `Buffer.byteLength`, not `data.length`, because one
-      // character can encode as several UTF-8 bytes. A stop request carries no
-      // payload, so it reserves nothing. When no ledger is present, admit the write
-      // with no token (a unit test constructs the handle this way).
+      // aggregate host→worker pending-write bytes across every route. A stop
+      // request carries no payload, so it reserves nothing. When no ledger is
+      // present, admit the write with no token (a unit test constructs the handle
+      // this way).
       let pendingWriteToken: ReservationToken | null = null;
       if (method === "duplexChannelWrite" && duplexAggregateByteLedger) {
-        const data = (params as HostToWorkerMethods["duplexChannelWrite"][0]).data;
-        const bytes = Buffer.byteLength(data, "utf8");
-        pendingWriteToken = duplexAggregateByteLedger.reserve("pending_write", bytes);
+        pendingWriteToken = duplexAggregateByteLedger.reserve("pending_write", writeByteCount ?? 0);
         if (!pendingWriteToken) {
           // The reservation would pass the aggregate ceiling. Retain nothing, do
           // not enqueue the RPC, and end the route fail-closed with the aggregate
@@ -2471,7 +2486,7 @@ export function createPluginWorkerHandle(
     };
 
     return {
-      onData(listener: (chunk: string) => void): void {
+      onData(listener: (chunk: Uint8Array) => void): void {
         route.listener = listener;
         if (route.buffered.length > 0) {
           const pending = route.buffered;
@@ -2489,20 +2504,28 @@ export function createPluginWorkerHandle(
           terminalDuplexRoutes.delete(route);
         }
       },
-      write(data: string): void {
+      write(data: Uint8Array): void {
         const sid = route.workerSessionId;
         if (route.state !== "open" || !sid) return;
-        if (data.length > maxDuplexChannelWriteChars) {
+        if (data.byteLength > maxDuplexChannelWriteChars) {
           // The write is larger than the size bound. End the route before the
           // write reaches the worker.
           void terminalizeDuplexChannelRoute(route);
           return;
         }
-        sendBoundedRequest("duplexChannelWrite", {
-          hostRouteId: route.hostRouteId,
-          workerSessionId: sid,
-          data,
-        });
+        // Encode the raw bytes to the wire-safe base64 form (JSON carries no
+        // binary type) and pass the exact raw byte count separately, so the
+        // pending-write ledger reservation charges the real payload bytes, not
+        // the inflated base64 string length.
+        sendBoundedRequest(
+          "duplexChannelWrite",
+          {
+            hostRouteId: route.hostRouteId,
+            workerSessionId: sid,
+            data: encodeChannelBytes(data),
+          },
+          data.byteLength,
+        );
       },
       wait(): Promise<{ exitCode: number | null }> {
         return waitPromise;

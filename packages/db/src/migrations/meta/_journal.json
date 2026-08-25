@@ -1576,6 +1576,13 @@
       "when": 1787261199301,
       "tag": "0226_tan_colossus",
       "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "7",
+      "when": 1787668790923,
+      "tag": "0227_modern_pandemic",
+      "breakpoints": true
     }
   ]
 }

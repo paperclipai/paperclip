@@ -20,7 +20,7 @@ vi.mock("../services/plugin-environment-driver.js", async (importActual) => ({
   resolvePluginSandboxProviderDriverById: mockResolvePluginSandboxProviderDriverById,
 }));
 
-import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import { adapterExecutionTargetDuplexAggregateByteLedger } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
@@ -44,7 +44,7 @@ import type {
 
 // A snapshot that grants the opt-in duplex capability, plus the rest true so the
 // gate reads only the duplex flag.
-const DUPLEX_GRANT: EffectiveSandboxCapabilities = {
+const DUPLEX_GRANT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: true,
@@ -54,7 +54,7 @@ const DUPLEX_GRANT: EffectiveSandboxCapabilities = {
   duplexCommandStream: true,
 };
 
-const DUPLEX_ABSENT: EffectiveSandboxCapabilities = {
+const DUPLEX_ABSENT: EffectiveExecutionCapabilities = {
   ...DUPLEX_GRANT,
   duplexCommandStream: false,
 };
@@ -149,8 +149,9 @@ describe("sandbox driver duplex channel wiring", () => {
     });
 
     // write / stop / close map to write / kill / close on the host session.
-    channel.write("input-bytes");
-    expect(hostSession.write).toHaveBeenCalledWith("input-bytes");
+    const inputBytes = new TextEncoder().encode("input-bytes");
+    channel.write(inputBytes);
+    expect(hostSession.write).toHaveBeenCalledWith(inputBytes);
     channel.stop();
     expect(hostSession.kill).toHaveBeenCalledTimes(1);
     await channel.close();
@@ -346,7 +347,7 @@ describe("sandbox execution target aggregate byte ledger stamp", () => {
 // environment runtime whose openDuplexChannel is a spy. The helper returns the
 // runner and the spy so a test reads the capability-gated member.
 async function buildSandboxRunner(input: {
-  snapshot: EffectiveSandboxCapabilities | null;
+  snapshot: EffectiveExecutionCapabilities | null;
 }) {
   mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
     driver: "sandbox",

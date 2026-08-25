@@ -9,7 +9,7 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { definePlugin, NOOP_PLUGIN_TRACER } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginTracer,
@@ -2861,10 +2861,18 @@ const plugin = definePlugin({
 
   // Write host input to an open duplex channel. Act only on the exact live pair.
   // A write whose pair does not match the bound entry applies no bytes.
+  //
+  // `params.data` arrives in the wire-safe base64 form (JSON carries no binary
+  // type; see `ChannelBytesWireValue` in the plugin SDK's protocol.ts). Decode it
+  // back to raw bytes before it reaches the pseudo-terminal. A malformed value
+  // decodes to `null`; the worker applies no bytes rather than sending an empty
+  // write to the sandbox.
   async onDuplexChannelWrite(params) {
     const entry = daytonaDuplexChannelBySession.get(params.workerSessionId);
     if (!entry || entry.hostRouteId !== params.hostRouteId) return;
-    entry.session.write(params.data);
+    const data = decodeChannelBytes(params.data);
+    if (data === null) return;
+    entry.session.write(data);
   },
 
   // Stop an open duplex channel child. Act only on the exact live pair. A stop

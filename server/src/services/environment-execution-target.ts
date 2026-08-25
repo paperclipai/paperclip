@@ -557,6 +557,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // (resolution failed or the snapshot is not resolvable) leaves the
             // member undefined, so the caller keeps the file bridge. This mirrors
             // the syncIn/syncOut gate above and fails closed.
+            // HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
             ...(effectiveCapabilities?.duplexCommandStream
               ? {
                   openDuplexChannel: (channelInput) =>

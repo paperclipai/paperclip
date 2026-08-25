@@ -34,7 +34,7 @@ import {
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexLossReason } from "../duplex-observability.js";
-import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../duplex-bridge-broker.js";
+import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
