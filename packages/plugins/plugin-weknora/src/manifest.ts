@@ -113,7 +113,7 @@ const configSchema = {
       type: "integer",
       title: "Request Timeout (ms)",
       minimum: 1000,
-      maximum: 120000,
+      maximum: 30000,
       default: 30000,
       "x-paperclip-advanced": true,
     },

@@ -69,7 +69,7 @@ import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { lookup as dnsLookup } from "node:dns/promises";
-import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
+import type { ClientRequest, IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
@@ -101,21 +101,25 @@ function resolvePluginFetchTimeoutMs(value: unknown): number {
 
 function racePluginFetchDeadline<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error(`Plugin fetch timed out after ${timeoutMs}ms`));
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = () => settle(() => reject(new Error(`Plugin fetch timed out after ${timeoutMs}ms`)));
+
     if (signal.aborted) {
       onAbort();
       return;
     }
+
     signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
+    void promise.then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error)),
     );
   });
 }
@@ -208,8 +212,9 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   // Race the DNS lookup against a timeout to prevent indefinite hangs
   // when DNS is misconfigured or unresponsive.
   const dnsPromise = dnsLookup(originalHostname, { all: true });
+  let dnsTimeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(
+    dnsTimeout = setTimeout(
       () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),
       DNS_LOOKUP_TIMEOUT_MS,
     );
@@ -249,6 +254,8 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
       err.message.startsWith("DNS lookup timed out")
     )) throw err;
     throw new Error(`DNS resolution failed for ${originalHostname}: ${(err as Error).message}`);
+  } finally {
+    if (dnsTimeout !== undefined) clearTimeout(dnsTimeout);
   }
 }
 
@@ -300,51 +307,80 @@ async function executePinnedHttpRequest(
 ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
   const { options, body } = buildPinnedRequestOptions(target, init);
 
-  const response = await new Promise<IncomingMessage>((resolve, reject) => {
-    const requestFn = target.useTls ? httpsRequest : httpRequest;
-    const req = requestFn({ ...options, signal }, resolve);
-
-    req.on("error", reject);
-
-    if (body !== undefined) {
-      req.write(body);
-    }
-    req.end();
-  });
-
-  const MAX_RESPONSE_BODY_BYTES = 200 * 1024 * 1024; // 200 MB
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  await new Promise<void>((resolve, reject) => {
-    response.on("data", (chunk: Buffer | string) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      totalBytes += buf.length;
-      if (totalBytes > MAX_RESPONSE_BODY_BYTES) {
-        chunks.length = 0;
-        response.destroy(new Error(`Response body exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`));
-        return;
-      }
-      chunks.push(buf);
-    });
-    response.on("end", resolve);
-    response.on("error", reject);
-  });
-
-  const headers: Record<string, string> = {};
-  for (const [key, value] of Object.entries(response.headers)) {
-    if (Array.isArray(value)) {
-      headers[key] = value.join(", ");
-    } else if (value !== undefined) {
-      headers[key] = value;
-    }
-  }
-
-  return {
-    status: response.statusCode ?? 500,
-    statusText: response.statusMessage ?? "",
-    headers,
-    body: Buffer.concat(chunks).toString("utf8"),
+  let request: ClientRequest | undefined;
+  let requestErrorHandler: ((error: Error) => void) | undefined;
+  let response: IncomingMessage | undefined;
+  let responseDataHandler: ((chunk: Buffer | string) => void) | undefined;
+  let responseEndHandler: (() => void) | undefined;
+  let responseErrorHandler: ((error: Error) => void) | undefined;
+  const cleanupResponseListeners = () => {
+    if (!response) return;
+    if (responseDataHandler) response.removeListener("data", responseDataHandler);
+    if (responseEndHandler) response.removeListener("end", responseEndHandler);
+    if (responseErrorHandler) response.removeListener("error", responseErrorHandler);
   };
+
+  try {
+    response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const requestFn = target.useTls ? httpsRequest : httpRequest;
+      request = requestFn({ ...options, signal }, resolve);
+      requestErrorHandler = (error: Error) => reject(error);
+      request.on("error", requestErrorHandler);
+
+      if (body !== undefined) {
+        request.write(body);
+      }
+      request.end();
+    });
+
+    if (!response) throw new Error("Plugin HTTP request returned no response");
+    const responseStream = response;
+    const MAX_RESPONSE_BODY_BYTES = 200 * 1024 * 1024; // 200 MB
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    await new Promise<void>((resolve, reject) => {
+      responseDataHandler = (chunk: Buffer | string) => {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalBytes += buf.length;
+        if (totalBytes > MAX_RESPONSE_BODY_BYTES) {
+          chunks.length = 0;
+          responseStream.destroy(new Error(`Response body exceeded ${MAX_RESPONSE_BODY_BYTES} bytes`));
+          return;
+        }
+        chunks.push(buf);
+      };
+      responseEndHandler = () => {
+        cleanupResponseListeners();
+        resolve();
+      };
+      responseErrorHandler = (error: Error) => {
+        cleanupResponseListeners();
+        reject(error);
+      };
+      responseStream.on("data", responseDataHandler);
+      responseStream.once("end", responseEndHandler);
+      responseStream.once("error", responseErrorHandler);
+    });
+
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(responseStream.headers)) {
+      if (Array.isArray(value)) {
+        headers[key] = value.join(", ");
+      } else if (value !== undefined) {
+        headers[key] = value;
+      }
+    }
+
+    return {
+      status: responseStream.statusCode ?? 500,
+      statusText: responseStream.statusMessage ?? "",
+      headers,
+      body: Buffer.concat(chunks).toString("utf8"),
+    };
+  } finally {
+    cleanupResponseListeners();
+    if (request && requestErrorHandler) request.removeListener("error", requestErrorHandler);
+  }
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

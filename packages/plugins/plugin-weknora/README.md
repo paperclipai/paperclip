@@ -9,7 +9,7 @@ Install the package through the Paperclip plugin manager. Configure a company in
 - `baseUrl`: an HTTP(S) origin or API root. The plugin normalizes it to `/api/v1` and rejects URL credentials and fragments.
 - `apiKeyRef`: a Paperclip `secret_ref` object. The resolved value is used only for the current outbound request.
 - Optional `tenantId` and default knowledge-base ids.
-- `resourceUrls: "handle"` (fixed in V1), result/character limits, and request timeout.
+- `resourceUrls: "handle"` (fixed in V1), result/character limits, and `requestTimeoutMs` from 1000 to 30000 milliseconds (default 30000; the host enforces the 30-second ceiling).
 - `enableWriteActions: false` unless the board explicitly wants manual or URL ingest and wiki maintenance actions.
 
 The plugin sends `X-API-Key`, optional `X-Tenant-ID`, and a generated `X-Request-ID`. It refuses redirects, caps result/page sizes, clips oversized content, and retries only idempotent reads (at most two retries). Knowledge-base listings are bounded by `maxResults` and report known `total`/`truncated` state. Manual and URL ingest requests have a 1 MB serialized JSON body limit. Ingest, rebuild-links, and auto-fix writes are never retried.
