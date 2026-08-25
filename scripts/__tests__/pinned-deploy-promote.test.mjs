@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -213,6 +214,108 @@ test("successful temporary-pointer promote records transition metadata on durabl
     assert.ok(durableNamed.length >= 1);
     const named = JSON.parse(readFileSync(path.join(receipts, durableNamed[0]), "utf8"));
     assert.equal(named.deployPointerMutated, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("promote-pointer prunes prev-* to N and removes staging orphans (TSMC-21623)", () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-promote-prune-"));
+  try {
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    const deploy = path.join(tmp, "deploy");
+    const candidate = path.join(tmp, "candidate");
+    const current = path.join(state, "current-receipt.json");
+    mkdirSync(receipts, { recursive: true });
+    mkdirSync(deploy, { recursive: true });
+    mkdirSync(candidate, { recursive: true });
+    mkdirSync(path.join(state, "deployment-lease"), { recursive: true });
+    writeFileSync(
+      path.join(state, "deployment-lease", "owner.json"),
+      JSON.stringify({ token: "test-deployment-lease" }),
+    );
+
+    // Pre-existing leak fixtures: three old prev snapshots + one orphaned staging.
+    const oldA = path.join(tmp, ".paperclip-deploy.prev-old-a");
+    const oldB = path.join(tmp, ".paperclip-deploy.prev-old-b");
+    const oldC = path.join(tmp, ".paperclip-deploy.prev-old-c");
+    const orphanStaging = path.join(tmp, ".paperclip-deploy.staging-orphan");
+    for (const dir of [oldA, oldB, oldC, orphanStaging]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "PAD"), "x".repeat(4096));
+    }
+    // Stagger mtimes so old-a is oldest.
+    const past = Date.now() - 60_000;
+    for (const [dir, delta] of [
+      [oldA, 0],
+      [oldB, 10_000],
+      [oldC, 20_000],
+    ]) {
+      const t = new Date(past + delta);
+      utimesSync(dir, t, t);
+    }
+
+    writeFileSync(path.join(deploy, "MARKER"), "gen-0");
+    writeFileSync(path.join(candidate, "MARKER"), "gen-1");
+    writeFileSync(
+      path.join(receipts, "working-receipt.json"),
+      JSON.stringify(greenReceipt("prune-sha-1"), null, 2),
+    );
+
+    const envBase = {
+      PAPERCLIP_DEPLOY_ROOT: deploy,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_DEPLOY_RECEIPT: current,
+      PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE: "1",
+      // keep=1 so two consecutive promotes assert the older rollback is gone.
+      PAPERCLIP_PINNED_DEPLOY_PREV_KEEP: "1",
+    };
+
+    const res1 = runOk("bash", [PROMOTE, "promote-pointer", "--allow-live-pointer"], envBase);
+    assert.match(res1.stderr, /PROMOTION COMPLETE/);
+    assert.match(res1.stderr, /prune prev: removing /);
+    assert.match(res1.stderr, /prune staging: removing /);
+    // Size is logged beside each removed path (acceptance #2).
+    assert.match(res1.stderr, /prune (prev|staging): removing \S+ \([^)]+\)/);
+    assert.equal(readFileSync(path.join(deploy, "MARKER"), "utf8"), "gen-1");
+    assert.ok(!existsSync(orphanStaging), "orphaned staging must be removed on success");
+    assert.ok(!existsSync(oldA), "oldest prev must be pruned under keep=1");
+
+    const prevAfterFirst = readdirSync(tmp).filter((n) => n.startsWith(".paperclip-deploy.prev-"));
+    assert.ok(
+      prevAfterFirst.length <= 1,
+      `after first promote expected <=1 prev-*, got ${prevAfterFirst.join(",")}`,
+    );
+
+    // Second promote: prior rollback becomes older than the brand-new one and must go.
+    writeFileSync(path.join(candidate, "MARKER"), "gen-2");
+    writeFileSync(
+      path.join(receipts, "working-receipt.json"),
+      JSON.stringify(greenReceipt("prune-sha-2"), null, 2),
+    );
+    const res2 = runOk("bash", [PROMOTE, "promote-pointer", "--allow-live-pointer"], envBase);
+    assert.match(res2.stderr, /PROMOTION COMPLETE/);
+    assert.match(res2.stderr, /prune prev: removing /);
+    assert.match(res2.stderr, /prune prev: removing \S+ \([^)]+\)/);
+    assert.equal(readFileSync(path.join(deploy, "MARKER"), "utf8"), "gen-2");
+
+    const prevAfterSecond = readdirSync(tmp).filter((n) => n.startsWith(".paperclip-deploy.prev-"));
+    assert.equal(
+      prevAfterSecond.length,
+      1,
+      `after second promote expected exactly 1 prev-*, got ${prevAfterSecond.join(",")}`,
+    );
+    // The surviving snapshot must be the immediate predecessor (gen-1), not gen-0.
+    assert.equal(
+      readFileSync(path.join(tmp, prevAfterSecond[0], "MARKER"), "utf8"),
+      "gen-1",
+      "kept prev must be the most recent rollback (gen-1)",
+    );
+    const stagingLeft = readdirSync(tmp).filter((n) => n.startsWith(".paperclip-deploy.staging-"));
+    assert.equal(stagingLeft.length, 0, `no staging orphans expected, got ${stagingLeft.join(",")}`);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

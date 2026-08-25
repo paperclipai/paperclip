@@ -66,6 +66,7 @@ Env:
   PAPERCLIP_TEST_RATCHET_ENFORCE=1       # make test_ratchet blocking (default: observe only)
   PAPERCLIP_TEST_RATCHET_RECEIPT         # default STATE_DIR/test-ratchet-verdict.json
   PAPERCLIP_TEST_RATCHET_MAX_AGE_HOURS   # default 36
+  PAPERCLIP_PINNED_DEPLOY_PREV_KEEP      # rollback snapshots to retain after promote (default 2)
 USAGE
 }
 
@@ -713,6 +714,79 @@ cmd_run_gates() {
   fi
 }
 
+# After a verified pointer swap, retain only the newest N rollback snapshots and
+# drop leftover staging dirs. Runs only on the success path (TSMC-21623). Never
+# call this before the live pointer is confirmed at DEPLOY_ROOT — a mid-swap
+# prune could delete the tree the failure path needs to restore.
+#
+# Default N=2 keeps one-back and two-back. Override with PAPERCLIP_PINNED_DEPLOY_PREV_KEEP.
+# Does not touch paperclip-deploy.candidate (prepare-candidate self-manages it).
+prune_deploy_rollbacks() {
+  local parent="$1"
+  local deploy_root="$2"
+  local keep="${PAPERCLIP_PINNED_DEPLOY_PREV_KEEP:-2}"
+  local path sz count kept removed
+
+  case "$keep" in
+    ''|*[!0-9]*)
+      log "WARN: PAPERCLIP_PINNED_DEPLOY_PREV_KEEP='$keep' is not a non-negative integer; using 2"
+      keep=2
+      ;;
+  esac
+
+  # Orphaned staging dirs have no post-swap purpose (success renames staging -> DEPLOY_ROOT).
+  # Glob with no match leaves the literal pattern; -e then skips it (set -u safe, no arrays).
+  for path in "$parent"/.paperclip-deploy.staging-*; do
+    [ -e "$path" ] || continue
+    if [ "$path" = "$deploy_root" ]; then
+      log "prune staging: skip live deploy root $path"
+      continue
+    fi
+    sz="$(du -sh "$path" 2>/dev/null | awk '{print $1}')" || sz="?"
+    log "prune staging: removing $path ($sz)"
+    rm -rf "$path"
+  done
+
+  # Newest-first by mtime (stat epoch). Empty find => no loop iterations.
+  count=0
+  kept=0
+  removed=0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    [ -e "$path" ] || continue
+    if [ "$path" = "$deploy_root" ]; then
+      log "prune prev: skip live deploy root $path"
+      continue
+    fi
+    count=$((count + 1))
+    if [ "$kept" -lt "$keep" ]; then
+      kept=$((kept + 1))
+      sz="$(du -sh "$path" 2>/dev/null | awk '{print $1}')" || sz="?"
+      log "prune prev: keeping ($kept/$keep) $path ($sz)"
+      continue
+    fi
+    sz="$(du -sh "$path" 2>/dev/null | awk '{print $1}')" || sz="?"
+    log "prune prev: removing $path ($sz)"
+    rm -rf "$path"
+    removed=$((removed + 1))
+  done < <(
+    # macOS stat -f '%m'; GNU would be -c '%Y'. Prefer portable find+stat -f on this host.
+    find "$parent" -maxdepth 1 \( -type d -o -type l \) -name '.paperclip-deploy.prev-*' 2>/dev/null \
+      | while IFS= read -r p; do
+          [ -n "$p" ] || continue
+          printf '%s\t%s\n' "$(stat -f '%m' "$p" 2>/dev/null || echo 0)" "$p"
+        done \
+      | sort -rn \
+      | cut -f2-
+  )
+
+  if [ "$count" -eq 0 ]; then
+    log "prune prev: none present under $parent (keep=$keep)"
+  else
+    log "prune prev: done kept=$kept removed=$removed scanned=$count keep=$keep parent=$parent"
+  fi
+}
+
 # Atomic pointer promotion: only after green gates + dual allow flags.
 cmd_promote_pointer() {
   require_deployment_lease
@@ -844,6 +918,15 @@ fs.writeFileSync(current, body);
 // Rewrite the durable receipt so it matches the final postcondition (same content).
 fs.writeFileSync(durable, body);
 NODE
+  # Pointer swap + receipt postconditions succeeded. Only now is it safe to
+  # drop older rollback snapshots and orphaned staging dirs (TSMC-21623).
+  # Never prune earlier: failure path may still need to restore $backup.
+  if [ -d "$DEPLOY_ROOT" ] || [ -e "$DEPLOY_ROOT" ]; then
+    prune_deploy_rollbacks "$parent" "$DEPLOY_ROOT" || log "WARN: rollback snapshot prune failed (non-fatal)"
+  else
+    log "WARN: skip rollback prune — DEPLOY_ROOT missing after promote: $DEPLOY_ROOT"
+  fi
+
   log "PROMOTION COMPLETE deployRoot=$DEPLOY_ROOT receipt=$CURRENT_RECEIPT durable=$durable"
   log "NOTE: promote-pointer does not reload launchd; use promote-and-restart for the sanctioned single door"
 }
