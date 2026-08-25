@@ -19,18 +19,6 @@ describe("liveEventToBeam", () => {
     expect(beam).toEqual({ fromAgentId: "a1", toAgentId: "a2", kind: "delegation" });
   });
 
-  it("maps a comment mention to a beam", () => {
-    const beam = liveEventToBeam(
-      ev("activity.logged", {
-        actorType: "agent",
-        actorId: "a1",
-        action: "issue.comment_added",
-        details: { toAgentId: "a3" },
-      }),
-    );
-    expect(beam).toEqual({ fromAgentId: "a1", toAgentId: "a3", kind: "mention" });
-  });
-
   it("returns null for a comment with no target agent", () => {
     expect(
       liveEventToBeam(

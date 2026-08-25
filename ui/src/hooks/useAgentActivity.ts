@@ -29,16 +29,6 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function firstString(value: unknown): string | null {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const s = str(item);
-      if (s) return s;
-    }
-  }
-  return null;
-}
-
 function readRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -65,14 +55,6 @@ export function liveEventToBeam(
     if (action === "issue.updated") {
       const to = str(details.assigneeAgentId) ?? str(details.toAgentId);
       if (to && to !== actorId) return { fromAgentId: actorId, toAgentId: to, kind: "delegation" };
-      return null;
-    }
-    if (action === "issue.comment_added") {
-      const to =
-        str(details.toAgentId) ??
-        str(details.mentionedAgentId) ??
-        firstString(details.mentionedAgentIds);
-      if (to && to !== actorId) return { fromAgentId: actorId, toAgentId: to, kind: "mention" };
       return null;
     }
     return null;

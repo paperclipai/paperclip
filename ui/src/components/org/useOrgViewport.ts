@@ -92,11 +92,16 @@ export function useOrgViewport({
     };
   }, []);
 
-  // Center + fit the content on first load.
-  const hasInitialized = useRef(false);
+  // Center + fit on first load, and re-fit once whenever the content bounds
+  // change (switching company, Lite/Deep, or a responsive relayout). Keyed on a
+  // bounds signature so plain re-renders never re-fit and we don't fight the
+  // user's pan/zoom (pan/zoom never change contentBounds).
+  const fittedSignature = useRef<string | null>(null);
   useEffect(() => {
-    if (hasInitialized.current || !ready || !containerRef.current) return;
-    hasInitialized.current = true;
+    if (!ready || !containerRef.current) return;
+    const signature = `${contentBounds.width}x${contentBounds.height}`;
+    if (fittedSignature.current === signature) return;
+    fittedSignature.current = signature;
 
     const container = containerRef.current;
     const containerW = container.clientWidth;

@@ -281,8 +281,7 @@ export function OfficeView() {
                     x={room.labelAnchor.x}
                     y={room.labelAnchor.y - WALL_H}
                     textAnchor="middle"
-                    className="fill-muted-foreground"
-                    style={{ fontSize: 13, fontWeight: 600 }}
+                    className="fill-muted-foreground text-(length:--text-compact) font-semibold"
                   >
                     {room.label} · {room.count}
                   </text>
@@ -344,7 +343,7 @@ export function OfficeView() {
                   </span>
                 </div>
                 {isLite && (
-                  <div className="mt-1 max-w-[120px] text-center leading-tight">
+                  <div className="mt-1 max-w-(--sz-120px) text-center leading-tight">
                     <div className="truncate text-(length:--text-micro) font-semibold text-foreground">{agent.name}</div>
                     <div className="truncate text-(length:--text-nano) text-muted-foreground">
                       {agent.title ?? roleLabel(agent.role)}
