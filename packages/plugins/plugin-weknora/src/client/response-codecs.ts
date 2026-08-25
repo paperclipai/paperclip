@@ -11,6 +11,7 @@ import type {
   WikiIssue,
   WikiPageSummary,
   WikiSearchResult,
+  WikiSourceReference,
   WikiStats,
 } from "./types.js";
 
@@ -49,6 +50,25 @@ function field(value: RecordValue, ...names: string[]): unknown {
 const SECRET_PATTERN = /(authorization|api[-_ ]?key|bearer|secret|token|password)\s*[:=]?\s*[^\s,;]+/gi;
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/;
 
+export const WIKI_RESPONSE_LIMITS = {
+  slugChars: 512,
+  titleChars: 512,
+  summaryChars: 2_000,
+  excerptChars: 2_000,
+  pageTypeChars: 128,
+  statusChars: 128,
+  updatedAtChars: 64,
+  contentChars: 10_000,
+  sourceRefIdChars: 512,
+  sourceRefTitleChars: 512,
+  sourceRefSlugChars: 512,
+  sourceRefUrlChars: 2_048,
+  linkChars: 512,
+  sourceRefs: 32,
+  inLinks: 64,
+  outLinks: 64,
+} as const;
+
 function safeText(value: unknown, maxLength = 200): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value
@@ -58,6 +78,18 @@ function safeText(value: unknown, maxLength = 200): string | undefined {
     .trim()
     .slice(0, maxLength);
   return text || undefined;
+}
+
+function boundedText(value: unknown, maxLength: number): { value?: string; truncated: boolean } {
+  const text = safeText(value, maxLength);
+  return {
+    ...(text == null ? {} : { value: text }),
+    truncated: typeof value === "string" && value.length > maxLength,
+  };
+}
+
+function boundedRequiredString(value: unknown, label: string, maxLength: number, fallback = ""): string {
+  return string(value, label, fallback).slice(0, maxLength);
 }
 
 function safeToken(value: unknown): string | undefined {
@@ -196,13 +228,15 @@ export function decodeChunks(data: unknown): { chunks: DocumentChunk[]; total?: 
 
 function decodeWikiSummary(value: unknown): WikiPageSummary {
   const item = record(value, "wiki page");
+  const summary = boundedText(field(item, "summary", "description", "excerpt"), WIKI_RESPONSE_LIMITS.summaryChars);
   return {
-    slug: string(field(item, "slug", "path", "page_slug"), "wiki page slug"),
-    title: string(field(item, "title", "name"), "wiki page title", "Untitled page"),
-    summary: optionalString(field(item, "summary", "description", "excerpt")),
-    pageType: optionalString(field(item, "page_type", "pageType", "type")),
-    status: optionalString(field(item, "status")),
-    updatedAt: optionalString(field(item, "updated_at", "updatedAt")),
+    slug: boundedRequiredString(field(item, "slug", "path", "page_slug"), "wiki page slug", WIKI_RESPONSE_LIMITS.slugChars),
+    title: boundedRequiredString(field(item, "title", "name"), "wiki page title", WIKI_RESPONSE_LIMITS.titleChars, "Untitled page"),
+    ...(summary.value == null ? {} : { summary: summary.value }),
+    ...(summary.truncated ? { summaryTruncated: true } : {}),
+    pageType: safeText(field(item, "page_type", "pageType", "type"), WIKI_RESPONSE_LIMITS.pageTypeChars),
+    status: safeText(field(item, "status"), WIKI_RESPONSE_LIMITS.statusChars),
+    updatedAt: safeText(field(item, "updated_at", "updatedAt"), WIKI_RESPONSE_LIMITS.updatedAtChars),
   };
 }
 
@@ -219,14 +253,108 @@ export function decodeWikiPage(data: unknown): { page: WikiPage } {
   const source = record(data, "wiki page");
   const page = record(field(source, "page", "item") ?? source, "wiki page");
   const summary = decodeWikiSummary(page);
+  const rawContent = string(field(page, "content", "body", "markdown"), "wiki page content", "");
+  const sourceRefsValue = field(page, "source_refs", "sourceRefs", "sources");
+  const inLinksValue = field(page, "in_links", "inLinks");
+  const outLinksValue = field(page, "out_links", "outLinks");
+  const sourceRefs = decodeSourceReferences(sourceRefsValue);
+  const inLinks = decodeWikiLinks(inLinksValue, WIKI_RESPONSE_LIMITS.inLinks);
+  const outLinks = decodeWikiLinks(outLinksValue, WIKI_RESPONSE_LIMITS.outLinks);
   return {
     page: {
       ...summary,
-      content: string(field(page, "content", "body", "markdown"), "wiki page content", ""),
-      sourceRefs: Array.isArray(field(page, "source_refs", "sourceRefs", "sources")) ? field(page, "source_refs", "sourceRefs", "sources") as Array<string | Record<string, unknown>> : undefined,
-      inLinks: Array.isArray(field(page, "in_links", "inLinks")) ? (field(page, "in_links", "inLinks") as unknown[]).filter((v): v is string => typeof v === "string") : undefined,
-      outLinks: Array.isArray(field(page, "out_links", "outLinks")) ? (field(page, "out_links", "outLinks") as unknown[]).filter((v): v is string => typeof v === "string") : undefined,
+      content: rawContent.slice(0, WIKI_RESPONSE_LIMITS.contentChars),
+      ...(rawContent.length > WIKI_RESPONSE_LIMITS.contentChars ? { truncated: true } : {}),
+      ...(sourceRefs == null ? {} : { sourceRefs: sourceRefs.values, ...(sourceRefs.truncated ? { sourceRefsTruncated: true } : {}) }),
+      ...(inLinks == null ? {} : { inLinks: inLinks.values, ...(inLinks.truncated ? { inLinksTruncated: true } : {}) }),
+      ...(outLinks == null ? {} : { outLinks: outLinks.values, ...(outLinks.truncated ? { outLinksTruncated: true } : {}) }),
     },
+  };
+}
+
+function decodeSourceReference(value: unknown): WikiSourceReference | undefined {
+  if (typeof value === "string") return safeText(value, WIKI_RESPONSE_LIMITS.sourceRefIdChars);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const item = value as RecordValue;
+  const id = safeText(field(item, "id", "source_id", "sourceId", "knowledge_id", "knowledgeId"), WIKI_RESPONSE_LIMITS.sourceRefIdChars);
+  const title = safeText(field(item, "title", "name"), WIKI_RESPONSE_LIMITS.sourceRefTitleChars);
+  const slug = safeText(field(item, "slug", "path"), WIKI_RESPONSE_LIMITS.sourceRefSlugChars);
+  const url = safeText(field(item, "url", "source_url", "sourceUrl"), WIKI_RESPONSE_LIMITS.sourceRefUrlChars);
+  if (id == null && title == null && slug == null && url == null) return undefined;
+  return {
+    ...(id == null ? {} : { id }),
+    ...(title == null ? {} : { title }),
+    ...(slug == null ? {} : { slug }),
+    ...(url == null ? {} : { url }),
+  };
+}
+
+function decodeSourceReferences(value: unknown): { values: WikiSourceReference[]; truncated: boolean } | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value
+    .slice(0, WIKI_RESPONSE_LIMITS.sourceRefs)
+    .map(decodeSourceReference)
+    .filter((item): item is WikiSourceReference => item != null);
+  return { values, truncated: value.length > WIKI_RESPONSE_LIMITS.sourceRefs };
+}
+
+function decodeWikiLinks(value: unknown, maxCount: number): { values: string[]; truncated: boolean } | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value
+    .slice(0, maxCount)
+    .map((item) => safeText(item, WIKI_RESPONSE_LIMITS.linkChars))
+    .filter((item): item is string => item != null);
+  return { values, truncated: value.length > maxCount };
+}
+
+export function boundWikiPageSummary(summary: WikiPageSummary): WikiPageSummary {
+  const boundedSummary = boundedText(summary.summary, WIKI_RESPONSE_LIMITS.summaryChars);
+  const pageType = summary.pageType == null ? undefined : safeText(summary.pageType, WIKI_RESPONSE_LIMITS.pageTypeChars);
+  const status = summary.status == null ? undefined : safeText(summary.status, WIKI_RESPONSE_LIMITS.statusChars);
+  const updatedAt = summary.updatedAt == null ? undefined : safeText(summary.updatedAt, WIKI_RESPONSE_LIMITS.updatedAtChars);
+  return {
+    slug: safeText(summary.slug, WIKI_RESPONSE_LIMITS.slugChars) ?? "",
+    title: safeText(summary.title, WIKI_RESPONSE_LIMITS.titleChars) ?? "Untitled page",
+    ...(boundedSummary.value == null ? {} : { summary: boundedSummary.value }),
+    ...(summary.summaryTruncated || boundedSummary.truncated ? { summaryTruncated: true } : {}),
+    ...(pageType == null ? {} : { pageType }),
+    ...(status == null ? {} : { status }),
+    ...(updatedAt == null ? {} : { updatedAt }),
+  };
+}
+
+export function boundWikiPage(page: WikiPage, maxContentChars: number): WikiPage {
+  const summary = boundWikiPageSummary(page);
+  const contentMax = Math.min(WIKI_RESPONSE_LIMITS.contentChars, Math.max(0, maxContentChars));
+  const content = page.content.slice(0, contentMax);
+  const sourceRefs = decodeSourceReferences(page.sourceRefs)?.values;
+  const sourceRefsTruncated = page.sourceRefsTruncated === true || (page.sourceRefs?.length ?? 0) > WIKI_RESPONSE_LIMITS.sourceRefs;
+  const inLinks = decodeWikiLinks(page.inLinks, WIKI_RESPONSE_LIMITS.inLinks)?.values;
+  const inLinksTruncated = page.inLinksTruncated === true || (page.inLinks?.length ?? 0) > WIKI_RESPONSE_LIMITS.inLinks;
+  const outLinks = decodeWikiLinks(page.outLinks, WIKI_RESPONSE_LIMITS.outLinks)?.values;
+  const outLinksTruncated = page.outLinksTruncated === true || (page.outLinks?.length ?? 0) > WIKI_RESPONSE_LIMITS.outLinks;
+  return {
+    ...summary,
+    content,
+    ...(page.truncated || content.length < page.content.length ? { truncated: true } : {}),
+    ...(sourceRefs == null ? {} : { sourceRefs, ...(sourceRefsTruncated ? { sourceRefsTruncated: true } : {}) }),
+    ...(inLinks == null ? {} : { inLinks, ...(inLinksTruncated ? { inLinksTruncated: true } : {}) }),
+    ...(outLinks == null ? {} : { outLinks, ...(outLinksTruncated ? { outLinksTruncated: true } : {}) }),
+  };
+}
+
+export function boundWikiSearchResult(result: WikiSearchResult): WikiSearchResult {
+  const summary = boundedText(result.summary, WIKI_RESPONSE_LIMITS.summaryChars);
+  const excerpt = boundedText(result.excerpt, WIKI_RESPONSE_LIMITS.excerptChars);
+  const score = typeof result.score === "number" && Number.isFinite(result.score) ? result.score : undefined;
+  return {
+    slug: safeText(result.slug, WIKI_RESPONSE_LIMITS.slugChars) ?? "",
+    title: safeText(result.title, WIKI_RESPONSE_LIMITS.titleChars) ?? "Untitled page",
+    ...(summary.value == null ? {} : { summary: summary.value }),
+    ...(result.summaryTruncated || summary.truncated ? { summaryTruncated: true } : {}),
+    ...(excerpt.value == null ? {} : { excerpt: excerpt.value }),
+    ...(result.excerptTruncated || excerpt.truncated ? { excerptTruncated: true } : {}),
+    ...(score == null ? {} : { score }),
   };
 }
 
@@ -236,11 +364,15 @@ export function decodeWikiSearch(data: unknown): { results: WikiSearchResult[] }
   return {
     results: items.map((value) => {
       const item = record(value, "wiki search result");
+      const summary = boundedText(field(item, "summary", "description"), WIKI_RESPONSE_LIMITS.summaryChars);
+      const excerpt = boundedText(field(item, "excerpt", "content", "text"), WIKI_RESPONSE_LIMITS.excerptChars);
       return {
-        slug: string(field(item, "slug", "path", "page_slug"), "wiki search result slug"),
-        title: string(field(item, "title", "name"), "wiki search result title", "Untitled page"),
-        summary: optionalString(field(item, "summary", "description")),
-        excerpt: optionalString(field(item, "excerpt", "content", "text")),
+        slug: boundedRequiredString(field(item, "slug", "path", "page_slug"), "wiki search result slug", WIKI_RESPONSE_LIMITS.slugChars),
+        title: boundedRequiredString(field(item, "title", "name"), "wiki search result title", WIKI_RESPONSE_LIMITS.titleChars, "Untitled page"),
+        ...(summary.value == null ? {} : { summary: summary.value }),
+        ...(summary.truncated ? { summaryTruncated: true } : {}),
+        ...(excerpt.value == null ? {} : { excerpt: excerpt.value }),
+        ...(excerpt.truncated ? { excerptTruncated: true } : {}),
         score: typeof field(item, "score", "similarity") === "number" ? field(item, "score", "similarity") as number : undefined,
       };
     }),
