@@ -69,6 +69,7 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 ARG PAPERCLIP_BUILD_COMMIT=""
 RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN rm -rf packages/paperclip-runner/runner/target
 
 FROM base AS production
 ARG USER_UID=1000
