@@ -83,3 +83,23 @@ test("prepareScanContent ignores JSX block-comment hexes in tests", () => {
   const scan = prepareScanContent("ui/src/components/Foo.test.tsx", source);
   assert.deepEqual(findColorLiteralIssues(scan), []);
 });
+
+test("regex literals with escaped slashes do not swallow the rest of the line", () => {
+  // Mirrors DocumentAnnotationLayer.test.tsx: `\/` plus the closing delimiter
+  // looks like `//` if the stripper is not regex-aware.
+  const source =
+    '        || /^(dark:|hover:|dark:hover:)?bg-yellow-\\d+\\//.test(className); const color = "#cdd6f4";\n';
+  const stripped = stripJsCommentsPreservingNewlines(source);
+  assert.equal(stripped.includes(".test(className)"), true);
+  assert.equal(stripped.includes("#cdd6f4"), true);
+  const scan = prepareScanContent("ui/src/components/DocumentAnnotationLayer.test.tsx", source);
+  const issues = findColorLiteralIssues(scan);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].snippet, "#cdd6f4");
+});
+
+test("line comments after a regex literal are still stripped", () => {
+  const source = 'const ok = /\\d+\\//; // leftover #cdd6f4\n';
+  const scan = prepareScanContent("ui/src/components/Foo.test.ts", source);
+  assert.deepEqual(findColorLiteralIssues(scan), []);
+});
