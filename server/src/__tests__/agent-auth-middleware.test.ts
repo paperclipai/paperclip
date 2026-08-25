@@ -221,6 +221,56 @@ describe("agent auth middleware", () => {
     expect(res.body.error).toContain(error);
   });
 
+  it("lets a public routine-trigger bearer reach the route instead of failing agent verification", async () => {
+    // Regression guard for the MC->OpCo gateway outage on 2026-08-25
+    // (TSMC-21571..21578). Public webhook triggers authenticate with the
+    // TRIGGER's own secret in `Authorization: Bearer`, and the route compares it
+    // itself. #11589 correctly stopped unverifiable agent bearers downgrading to
+    // the local actor, but that also 401'd these before the route could run, so
+    // every `signingMode: "bearer"` trigger became unauthenticatable and all
+    // seven OpCos stopped receiving directives.
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    let fired = 0;
+    app.post("/api/routine-triggers/public/:publicId/fire", (req, res) => {
+      fired += 1;
+      // The route sees the raw header and does its own constant-time compare.
+      res.status(202).json({ authorization: req.header("authorization") });
+    });
+    app.use(errorHandler);
+
+    const res = await request(app)
+      .post("/api/routine-triggers/public/badfffb5272d4320ecd24887/fire")
+      .set("Authorization", "Bearer a-trigger-secret-not-an-agent-token")
+      .send({ ping: true });
+
+    expect(res.status).toBe(202);
+    expect(fired).toBe(1);
+    expect(res.body.authorization).toBe("Bearer a-trigger-secret-not-an-agent-token");
+  });
+
+  it("still rejects the same non-agent bearer on a non-public path", async () => {
+    // Negative control: the bypass must be scoped to the public trigger route
+    // only, or #11589's fix is silently undone everywhere.
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    let fired = 0;
+    app.post("/api/routine-triggers/public/:publicId/notfire", (_req, res) => {
+      fired += 1;
+      res.status(202).json({ ok: true });
+    });
+    app.use(errorHandler);
+
+    const res = await request(app)
+      .post("/api/routine-triggers/public/badfffb5272d4320ecd24887/notfire")
+      .set("Authorization", "Bearer a-trigger-secret-not-an-agent-token")
+      .send({ ping: true });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+    expect(fired).toBe(0);
+  });
+
   it("rejects an agent JWT when the agent record belongs to another company", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

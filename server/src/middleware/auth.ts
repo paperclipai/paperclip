@@ -203,6 +203,23 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+// Public webhook routes authenticate with the ROUTINE TRIGGER's own secret
+// presented as `Authorization: Bearer <secret>` — not with an agent or board
+// token. `firePublicTrigger` compares that secret itself.
+//
+// Before #11589 an unverifiable agent bearer silently downgraded to the local
+// user actor, so these requests still reached the route and were validated
+// there. #11589 correctly stopped that downgrade — but it also made every
+// `signingMode: "bearer"` public trigger impossible to authenticate, because
+// the middleware now 401s on the trigger secret before the route can compare
+// it. Symptom: `HTTP 401 {"error":"Agent token did not verify..."}` on
+// /api/routine-triggers/public/<publicId>/fire, which took the MC->OpCo
+// gateway down for all 7 OpCos (TSMC-21571..21578).
+//
+// `actorMiddleware` is mounted app-level (before `app.use("/api", api)`), so
+// req.path carries the `/api` prefix here.
+const PUBLIC_TRIGGER_FIRE_PATH = /^\/api\/routine-triggers\/public\/[^/]+\/fire\/?$/;
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -269,6 +286,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
+      if (runIdHeader) req.actor.runId = runIdHeader;
+      next();
+      return;
+    }
+
+    // Leave public-trigger bearers alone — they are trigger secrets, not agent
+    // credentials, and the route authenticates them itself. Verifying them here
+    // can only ever fail. See PUBLIC_TRIGGER_FIRE_PATH above.
+    if (PUBLIC_TRIGGER_FIRE_PATH.test(req.path)) {
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
