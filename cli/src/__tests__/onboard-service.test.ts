@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleOnboardService } from "../onboard-service.js";
+import { handleOnboardService, isInstallableReleaseVersion, shouldOfferForegroundStart } from "../onboard-service.js";
 
 function supportedDetection() {
   return {
@@ -24,6 +24,7 @@ function supportedDetection() {
         pid: 123,
       })),
       logs: vi.fn(async () => undefined),
+      installedExecutablePath: vi.fn(async () => null),
     },
   };
 }
@@ -48,7 +49,11 @@ describe("onboard service policy", () => {
 
     const installed = await handleOnboardService(
       { yes: true, installService: true },
-      { detect: vi.fn(async () => detection), isInteractive: () => false },
+      {
+        detect: vi.fn(async () => detection),
+        isInteractive: () => false,
+        ensureServiceShim: vi.fn(async () => ({ ok: true, installedNow: false })),
+      },
     );
 
     expect(installed).toBe(true);
@@ -61,7 +66,12 @@ describe("onboard service policy", () => {
 
     const installed = await handleOnboardService(
       {},
-      { detect: vi.fn(async () => detection), isInteractive: () => true, confirm },
+      {
+        detect: vi.fn(async () => detection),
+        isInteractive: () => true,
+        confirm,
+        ensureServiceShim: vi.fn(async () => ({ ok: true, installedNow: false })),
+      },
     );
 
     expect(confirm).toHaveBeenCalledOnce();
@@ -80,5 +90,75 @@ describe("onboard service policy", () => {
     expect(installed).toBe(false);
     expect(detect).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
+  });
+
+  it("materializes the managed shim before installing the service", async () => {
+    const detection = supportedDetection();
+    const success = vi.fn();
+    const ensureServiceShim = vi.fn(async () => ({ ok: true, installedNow: true }));
+
+    const installed = await handleOnboardService(
+      { yes: true, installService: true },
+      { detect: vi.fn(async () => detection), isInteractive: () => false, ensureServiceShim, success },
+    );
+
+    expect(installed).toBe(true);
+    expect(ensureServiceShim).toHaveBeenCalledOnce();
+    expect(success).toHaveBeenCalledWith(expect.stringContaining("managed paperclipai payload"));
+    expect(detection.manager.install).toHaveBeenCalledWith({ startNow: true, startOnLogin: true });
+  });
+
+  it("declines instead of installing a service without a binary", async () => {
+    const detection = supportedDetection();
+    const warn = vi.fn();
+
+    const installed = await handleOnboardService(
+      { yes: true, installService: true },
+      {
+        detect: vi.fn(async () => detection),
+        isInteractive: () => false,
+        ensureServiceShim: vi.fn(async () => ({ ok: false, installedNow: false, reason: "npm exploded" })),
+        warn,
+      },
+    );
+
+    expect(installed).toBe(false);
+    expect(detection.manager.install).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("npm exploded"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("paperclipai install"));
+  });
+
+});
+
+describe("isInstallableReleaseVersion", () => {
+  it("accepts calendar releases and rejects placeholders", () => {
+    expect(isInstallableReleaseVersion("2026.824.1")).toBe(true);
+    expect(isInstallableReleaseVersion("2026.818.0-beta.1")).toBe(true);
+    expect(isInstallableReleaseVersion("0.3.1")).toBe(false);
+    expect(isInstallableReleaseVersion("not-a-version")).toBe(false);
+  });
+});
+
+describe("shouldOfferForegroundStart", () => {
+  const base = { serviceInstalled: false, startAlreadyDecided: false, invokedByRun: false, interactive: true };
+
+  it("offers a foreground start on a plain interactive onboard", () => {
+    expect(shouldOfferForegroundStart(base)).toBe(true);
+  });
+
+  it("never prompts after the service was installed and started", () => {
+    expect(shouldOfferForegroundStart({ ...base, serviceInstalled: true })).toBe(false);
+  });
+
+  it("never prompts when the start decision was already made by flags", () => {
+    expect(shouldOfferForegroundStart({ ...base, startAlreadyDecided: true })).toBe(false);
+  });
+
+  it("never prompts when run itself invoked onboarding", () => {
+    expect(shouldOfferForegroundStart({ ...base, invokedByRun: true })).toBe(false);
+  });
+
+  it("never prompts without an interactive terminal", () => {
+    expect(shouldOfferForegroundStart({ ...base, interactive: false })).toBe(false);
   });
 });
