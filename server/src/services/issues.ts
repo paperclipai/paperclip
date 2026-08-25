@@ -773,6 +773,7 @@ export interface IssueFilters {
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
+  boardActionRequired?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
   limit?: number;

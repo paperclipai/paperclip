@@ -4,12 +4,14 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  boardTokenExceptions,
   companies,
   costEvents,
   createDb,
   heartbeatRuns,
   issueComments,
   issues,
+  issueThreadInteractions,
   toolCallEvents,
 } from "@paperclipai/db";
 import {
@@ -203,9 +205,16 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
     expect(admitted?.status).toBe("succeeded");
   });
 
-  it("rejects an issue at one million weighted aggregate input tokens (cache reads at 0.1)", async () => {
+  it("preserves a credential unblock descriptor when aggregate admission denies the run", async () => {
     executeAdapter.mockClear();
     const target = await seedScopedTarget(2);
+    const credentialDescriptor = {
+      owner: { userId: "operator" },
+      action: "Re-authenticate the Substack cookie before the task can resume.",
+    };
+    await db.update(issues)
+      .set({ status: "blocked", unblockDescriptor: credentialDescriptor })
+      .where(eq(issues.id, target.issueId));
     // 250K fresh + 7.5M cached * 0.1 = 1,000,000 weighted. Cache reads are
     // budget-weighted (K36 / TSMC-20864): resident context re-read across
     // resumes must not exhaust a ceiling that bounds real burn.
@@ -234,8 +243,73 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
         reason: "aggregate_input_ceiling",
         aggregateInputTokens: 1_000_000,
         modelDispatched: false,
+        generationAdmissionBlock: {
+          reason: "aggregate_input_ceiling",
+          aggregateInputTokens: 1_000_000,
+        },
       },
     });
+    const issueAfterDeny = await db
+      .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
+      .from(issues)
+      .where(eq(issues.id, target.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueAfterDeny).toEqual({
+      status: "blocked",
+      unblockDescriptor: credentialDescriptor,
+    });
+  });
+
+  it("keeps a near-ceiling issue stopped without an exception, then admits it under a scoped board exception", async () => {
+    executeAdapter.mockClear();
+    const target = await seedScopedTarget(6);
+    const aggregateInputTokens = 990_000;
+    await db.insert(costEvents).values({
+      companyId: target.companyId,
+      agentId: target.agentId,
+      issueId: target.issueId,
+      provider: "test",
+      biller: "test",
+      billingType: "subscription",
+      model: "test-model",
+      inputTokens: aggregateInputTokens,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 0,
+      occurredAt: new Date(),
+    });
+
+    const denied = await invokeAndRead(target.agentId, target.issueId);
+
+    expect(executeAdapter).not.toHaveBeenCalled();
+    expect(denied).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_generation_ceiling_exceeded",
+      resultJson: {
+        reason: "aggregate_input_ceiling",
+        aggregateInputTokens,
+        modelDispatched: false,
+      },
+    });
+    expect(await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, target.issueId)))
+      .toEqual([]);
+
+    await db.insert(boardTokenExceptions).values({
+      companyId: target.companyId,
+      issueId: target.issueId,
+      capTokens: 1_100_000,
+      reason: "Bounded recovery after the useful-run floor stopped the issue.",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      createdByUserId: "local-board",
+    });
+
+    const admitted = await invokeAndRead(target.agentId, target.issueId);
+
+    expect(executeAdapter).toHaveBeenCalledTimes(1);
+    expect(admitted?.status).toBe("succeeded");
   });
 
   it("admits a cache-heavy issue whose weighted aggregate is under the ceiling", async () => {

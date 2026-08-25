@@ -11273,35 +11273,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const millionTokens = (aggregateInputTokens / 1_000_000).toFixed(2);
-    const interactionsSvc = issueThreadInteractionService(db);
-    const action = "The issue reached the ≥1M aggregate-input ceiling. Automatic continuation is blocked.";
-    const interaction = await interactionsSvc.create(issue, {
-      kind: "request_confirmation",
-      continuationPolicy: "wake_assignee",
-      idempotencyKey: `aggregate_input_token_ceiling:${issue.id}:${input.run.id}`,
-      sourceRunId: input.run.id,
-      title: "Issue aggregate-input ceiling reached",
-      summary: action,
-      payload: {
-        version: 1,
-        prompt: "Approve a concrete split or non-LLM route before this task is resumed.",
-        acceptLabel: "Resume with approved route",
-        rejectLabel: "Keep stopped",
-        rejectRequiresReason: true,
-        allowDeclineReason: true,
-        supersedeOnUserComment: false,
-        detailsMarkdown:
-          `Issue aggregate reached **${millionTokens}M total input tokens (including cache reads)** after run ${input.run.id}. `
-          + `${action}\n\n`
-          + "Required decision: split the task into bounded issues, route deterministic work to a shell handler/script, or document why this is an approved exception.",
-      },
-    }, { agentId: input.agent.id });
-
+    const action = "The issue reached the ≥1M aggregate-input ceiling. Automatic continuation is blocked. Use the real board_token_exception door (POST /companies/:companyId/board-token-exceptions) — confirmation is no longer offered to avoid placebo UX.";
     await issuesSvc.update(issue.id, {
       status: "blocked",
       unblockDescriptor: {
         owner: "board",
-        action: "Approve a split or deterministic route after the aggregate input ceiling, then explicitly resume the task.",
+        action: "Request board grant of board_token_exception (cap/expiry/reason) for this issue via the exception API, or split the remaining work; then resume.",
       },
       actorAgentId: input.agent.id,
     });
@@ -11317,7 +11294,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "- Board exception: none on record\n"
           : `- Board exception on record but **not honoured (${exceptionDecision})**; record a task/cap/reason/expiry exception that covers this run to permit it\n`)
         + `- Action: ${action}\n`
-        + `- Review card: \`${interaction.id}\``,
+        + `- Real recovery: create board_token_exception (TSMC-21380) or split-carry; no placebo confirmation offered`,
       { runId: input.run.id },
       { authorType: "system" },
     );
@@ -11325,14 +11302,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Issue aggregate-input ceiling stopped continuation pending board split/route decision",
+      message: "Issue aggregate-input ceiling stopped continuation pending board exception or split",
       payload: {
         inputTokens: aggregateInputTokens,
         freshInputTokens: input.inputTokens,
         cachedInputTokens: input.cachedInputTokens,
         threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
         highRunCount,
-        interactionId: interaction.id,
         issueId: issue.id,
       },
     });
@@ -11352,7 +11328,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cachedInputTokens: input.cachedInputTokens,
         threshold: HIGH_INPUT_TOKEN_RUN_THRESHOLD,
         highRunCount,
-        interactionId: interaction.id,
         issue: issueUiLink(issue),
       },
     });
@@ -19604,14 +19579,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       if (issueId && issueContext && !["done", "cancelled"].includes(issueContext.status)) {
         const wasAlreadyBlocked = issueContext.status === "blocked";
-        await issuesSvc.update(issueId, {
-          status: "blocked",
-          unblockDescriptor: {
+        const update: any = { status: "blocked", actorAgentId: agent.id };
+        const priorDesc = await db.select({ unblockDescriptor: issues.unblockDescriptor }).from(issues).where(eq(issues.id, issueId)).then((r) => r[0]?.unblockDescriptor ?? null);
+        if (!priorDesc || Object.keys(priorDesc).length === 0) {
+          update.unblockDescriptor = {
             owner: "board",
             action: "Record the business disposition, split the remaining work into bounded issues, or approve a deterministic route before resuming generation.",
-          },
-          actorAgentId: agent.id,
-        });
+          };
+        }
+        await issuesSvc.update(issueId, update);
         if (!wasAlreadyBlocked) {
           await issuesSvc.addComment(
             issueId,

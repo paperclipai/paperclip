@@ -7099,6 +7099,7 @@ export function issueRoutes(
     const compactView = view === "compact";
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     const includeLiveDescendantSummary = parseOptionalBooleanQuery(req.query.includeLiveDescendantSummary);
+    const boardActionRequired = parseOptionalBooleanQuery(req.query.boardActionRequired);
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
@@ -7149,6 +7150,10 @@ export function issueRoutes(
     }
     if (includeLiveDescendantSummary === null) {
       res.status(400).json({ error: "includeLiveDescendantSummary must be true or false when provided" });
+      return;
+    }
+    if (boardActionRequired === null) {
+      res.status(400).json({ error: "boardActionRequired must be true or false when provided" });
       return;
     }
     if (assigneeAgentFilterRaw !== undefined) {
@@ -7203,6 +7208,7 @@ export function issueRoutes(
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
       hasPlanDocument,
+      boardActionRequired,
       q: req.query.q as string | undefined,
       limit,
       offset,
