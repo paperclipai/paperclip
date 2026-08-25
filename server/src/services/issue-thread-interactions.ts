@@ -1550,6 +1550,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       issueId: string;
       continuationPolicy: string;
       creatorAgentId: string | null;
+      // Set on the reuse paths, where the interaction's status was read outside
+      // this transaction and can be stale by now. Left unset on the insert path,
+      // whose interaction is inserted by this very transaction.
+      requireStillPendingInteractionId?: string;
     },
   ) {
     if (!args.creatorAgentId) return;
@@ -1568,6 +1572,22 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       .then((rows) => rows[0] ?? null);
 
     if (!current || current.assigneeAgentId || current.assigneeUserId) return;
+
+    // Re-read the interaction under lock before writing. The reuse paths decided
+    // "still pending" from an unlocked snapshot, and a concurrent resolution can
+    // land between that read and here. Adopting then would hand the issue to a
+    // creator whose one continuation has already been spent — an ownership change
+    // that buys no wake path, which is the opposite of this guard's purpose.
+    // Lock order stays issue -> interaction, matching the resolution paths.
+    if (args.requireStillPendingInteractionId) {
+      const lockedInteraction = await tx
+        .select({ status: issueThreadInteractions.status })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, args.requireStillPendingInteractionId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedInteraction || lockedInteraction.status !== "pending") return;
+    }
 
     await adoptWakeTargetCreator(tx, args.issueId, args.creatorAgentId);
   }
@@ -1598,6 +1618,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         issueId: existing.issueId,
         continuationPolicy: existing.continuationPolicy,
         creatorAgentId,
+        requireStillPendingInteractionId: existing.id,
       });
     });
   }

@@ -34,6 +34,33 @@ function createSelectChain(rows: SelectRow[], onLock?: (mode: string) => void) {
   };
 }
 
+// `status` is a column on both `issues` and `issue_thread_interactions`, so the
+// create flow's selects can only be told apart by the table they read. Used for
+// the locked interaction re-read on the reuse paths.
+function createTableAwareSelectChain(
+  rowsByTable: Record<string, SelectRow[]>,
+  onLock?: (mode: string) => void,
+  onFrom?: (tableName: string) => void,
+) {
+  return {
+    from(table: unknown) {
+      const tableName = getTableName(table as never);
+      onFrom?.(tableName);
+      const rows = rowsByTable[tableName] ?? [];
+      const result: any = {
+        for(mode: string) {
+          onLock?.(mode);
+          return result;
+        },
+        then(callback: (r: SelectRow[]) => unknown) {
+          return Promise.resolve(callback(rows));
+        },
+      };
+      return { where: () => result };
+    },
+  };
+}
+
 function createFakeDb(args: {
   interactionRow: Record<string, unknown>;
   parentRows?: SelectRow[];
@@ -92,6 +119,10 @@ function createCreateFlowDb(args: {
   issueStatus?: string;
   failAssignment?: boolean;
   onInsert?: () => void;
+  // What the locked interaction re-read sees inside the reuse transaction. Set
+  // it apart from `existingInteractionRow` to model a concurrent resolution
+  // landing between the unlocked read and the transaction.
+  lockedInteractionRow?: SelectRow | null;
 }) {
   const touches: Array<Record<string, unknown>> = [];
   const events: string[] = [];
@@ -106,15 +137,25 @@ function createCreateFlowDb(args: {
       // The create path reads status and assignee together under one lock; the
       // idempotent-reuse path reads assignee columns on their own.
       if (columns && "status" in columns) {
-        events.push("select:issue");
-        return createSelectChain(
-          [{
-            status: args.issueStatus ?? "in_progress",
-            assigneeAgentId: null,
-            assigneeUserId: null,
-            ...(args.currentIssueRow ?? {}),
-          }],
+        // Both the create path's issue read and the reuse path's locked
+        // interaction re-read select `status`, so dispatch on the table.
+        const lockedInteraction = args.lockedInteractionRow !== undefined
+          ? args.lockedInteractionRow
+          : args.existingInteractionRow ?? null;
+        return createTableAwareSelectChain(
+          {
+            issues: [{
+              status: args.issueStatus ?? "in_progress",
+              assigneeAgentId: null,
+              assigneeUserId: null,
+              ...(args.currentIssueRow ?? {}),
+            }],
+            issue_thread_interactions: lockedInteraction ? [lockedInteraction] : [],
+          },
           (mode) => locks.push(mode),
+          (tableName) => events.push(
+            tableName === "issues" ? "select:issue" : "select:interaction",
+          ),
         );
       }
       if (wantsAssignee) {
@@ -489,7 +530,78 @@ describe("issueThreadInteractionService", { timeout: 30_000 }, () => {
     expect(db.insert).not.toHaveBeenCalled();
     expect(touches).toContainEqual(expect.objectContaining({ assigneeAgentId: "agent-1" }));
     expect(locks).toContain("update");
-    expect(events).toEqual(["tx:begin", "select:assignee", "update:assignee", "tx:end"]);
+    // The locked interaction re-read sits between the issue lock and the write:
+    // the caller's "still pending" came from an unlocked snapshot.
+    expect(events).toEqual([
+      "tx:begin",
+      "select:assignee",
+      "select:interaction",
+      "update:assignee",
+      "tx:end",
+    ]);
+  });
+
+  it("create does not adopt the issue when the reused interaction resolves before the repair", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    // The reuse paths decide "still pending" from an unlocked read. A concurrent
+    // resolution can land between that read and the repair transaction; adopting
+    // then would hand the issue to a creator whose one continuation is already
+    // spent — an ownership change that buys no wake path. Reported by review as a
+    // P1 on the first rebased head, so it is pinned by a test rather than a comment.
+    const pendingSnapshot = {
+      id: "interaction-existing",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "requested",
+      addresseeAgentId: null,
+      idempotencyKey: "run-1:suggest",
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: null,
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-04-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+    };
+
+    const { db, events, touches } = createCreateFlowDb({
+      currentIssueRow: { assigneeAgentId: null, assigneeUserId: null },
+      // The unlocked idempotency lookup still sees `pending` …
+      existingInteractionRow: pendingSnapshot,
+      // … while the locked re-read inside the transaction sees the resolution.
+      lockedInteractionRow: { ...pendingSnapshot, status: "accepted" },
+    });
+
+    const svc = issueThreadInteractionService(db as never);
+    const created = await svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "suggest_tasks",
+      idempotencyKey: "run-1:suggest",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+    }, {
+      agentId: "agent-1",
+    });
+
+    expect(created.id).toBe("interaction-existing");
+    expect(events).toContain("select:interaction");
+    expect(events).not.toContain("update:assignee");
+    expect(touches).toEqual([]);
   });
 
   it("create does not adopt the issue when reusing an already-resolved interaction", async () => {
