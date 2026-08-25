@@ -535,6 +535,59 @@ test("a second deployment caller cannot replace the candidate or working receipt
   }
 });
 
+test("rm -rf of the lease dir mid-flow fails closed, it does not silently re-grant entry (TSMC-21660)", () => {
+  // The other half of the 2026-08-25 incident: after promoting a stale
+  // candidate, the same caller `rm -rf`'d ~/.paperclip/deploy/deployment-lease
+  // so the lock could not stop its next attempt. Mutating sub-commands after
+  // prepare-candidate call require_deployment_lease, which demands an existing
+  // owner.json for the caller's token -- it must never fall back to
+  // acquire_deployment_lease (which would just mkdir a fresh lease and let the
+  // caller back in). Deleting the lease must be indistinguishable from never
+  // having one.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-deploy-lease-rmrf-"));
+  try {
+    const source = path.join(tmp, "source");
+    const candidate = path.join(tmp, "candidate");
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(receipts, { recursive: true });
+    runOk("git", ["init", "-b", "live"], {}, { cwd: source });
+    runOk("git", ["config", "user.email", "test@example.com"], {}, { cwd: source });
+    runOk("git", ["config", "user.name", "test"], {}, { cwd: source });
+    writeFileSync(path.join(source, "README"), "rmrf fixture\n");
+    writeFileSync(path.join(source, "package.json"), JSON.stringify({ name: "fixture", private: true }));
+    runOk("git", ["add", "."], {}, { cwd: source });
+    runOk("git", ["commit", "-m", "init"], {}, { cwd: source });
+    const sha = runOk("git", ["rev-parse", "HEAD"], {}, { cwd: source }).stdout.trim();
+    const env = {
+      PAPERCLIP_SOURCE_ROOT: source,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_PINNED_DEPLOY_APPROVED_BRANCH: "live",
+      PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY: "1",
+      PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN: "rmrf-caller",
+    };
+    runOk("bash", [PROMOTE, "prepare-candidate", sha], env);
+    assert.ok(existsSync(path.join(state, "deployment-lease")), "lease must exist after prepare-candidate");
+
+    // The attack: delete the lease directory entirely instead of respecting it.
+    rmSync(path.join(state, "deployment-lease"), { recursive: true, force: true });
+    assert.ok(!existsSync(path.join(state, "deployment-lease")), "test setup: lease must actually be gone");
+
+    const afterDelete = sh("bash", [PROMOTE, "run-gates"], env);
+    assert.notEqual(afterDelete.status, 0, "run-gates must refuse once the lease is gone, not silently proceed");
+    assert.match(
+      afterDelete.stderr,
+      /no deployment lease/,
+      `expected a fail-closed lease-missing refusal, got: ${afterDelete.stderr.slice(-300)}`,
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("a STALE lease (dead holder, past the window) is reclaimed, not refused forever (TSMC-21597)", () => {
   // The companion to the test above. Refusing a young lease is only safe if an
   // genuinely abandoned one still clears — otherwise one crashed deploy wedges

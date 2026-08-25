@@ -1,0 +1,29 @@
+✔ plutil lint passes on rendered deploy and source templates (162.326333ms)
+✔ promote-pointer refuses without allow flags (fail closed) (69.737333ms)
+✔ promote-pointer refuses when a mandatory gate is red (pointer unchanged) (277.463875ms)
+✔ mutating commands refuse an agent-lane caller; read-only ones do not (TSMC-21652) (219.562708ms)
+✔ promote-pointer refuses an ANCESTOR candidate unless --rollback (TSMC-21652) (1057.266333ms)
+✔ successful temporary-pointer promote records transition metadata on durable receipt (632.31175ms)
+✔ promote-pointer prunes prev-* to N and removes staging orphans (TSMC-21623) (1237.9575ms)
+✔ prepare-candidate provisions .paperclip/.env and records worktree_env + candidate_deps (SKIP_HEAVY) (601.523625ms)
+✔ a second deployment caller cannot replace the candidate or working receipt while the lease is held (1078.090625ms)
+✔ rm -rf of the lease dir mid-flow fails closed, it does not silently re-grant entry (TSMC-21660) (575.442792ms)
+✔ a STALE lease (dead holder, past the window) is reclaimed, not refused forever (TSMC-21597) (1281.4445ms)
+✔ promotion replaces an existing linked serving worktree without leaving its pointer absent (1700.122ms)
+✔ promotion gives the serving tree its own Git metadata, not the candidate's (1663.120584ms)
+✔ promote-and-restart refuses without allow flags (fail closed, no pointer move) (20.58625ms)
+✔ sanctioned restart uses SIGTERM so the old server can write its handoff snapshot (0.529ms)
+✔ rollback-drill passes in isolated state dir (231.073375ms)
+✔ uq-fixture rejects duplicate open fallback-monitor rows on disposable DB (624.0125ms)
+✔ snapshot smoke refuses live database name and missing dump (147.501ms)
+✔ boot-api smoke on disposable port: health + issue create/read + cleanup safety (1653.587083ms)
+✔ restore-migrate with BOOT_STUB runs boot/API after disposable DB create (1715.612459ms)
+✔ cleanup safety refuses protected live database name (0.199125ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 15041.759875
