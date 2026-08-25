@@ -4617,7 +4617,10 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         if (issueIdsToCancel.length > 0) {
           const cancelledIssues = await tx
             .update(issues)
-            .set({ status: "cancelled", updatedAt: now })
+            // Direct status write — does not pass through applyStatusSideEffects,
+            // so stamp cancelledAt explicitly or the row closes with no closure
+            // timestamp and drops out of close-rate reporting.
+            .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
             .where(and(
               eq(issues.companyId, input.companyId),
               inArray(issues.id, issueIdsToCancel),

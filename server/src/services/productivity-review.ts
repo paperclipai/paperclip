@@ -393,7 +393,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     for (const orphan of orphans) {
       await db
         .update(issues)
-        .set({ status: "cancelled", updatedAt: opts.now })
+        // cancelledAt must be stamped here too: this path writes the status
+        // directly and never reaches applyStatusSideEffects, so without it the
+        // row is terminal with no closure timestamp and every close-rate metric
+        // silently under-counts it (TSMC: 203 such rows).
+        .set({ status: "cancelled", cancelledAt: opts.now, updatedAt: opts.now })
         .where(and(eq(issues.id, orphan.id), notInArray(issues.status, [...SOURCE_TERMINAL_STATUSES])));
       await logActivity(db, {
         companyId: orphan.companyId,
