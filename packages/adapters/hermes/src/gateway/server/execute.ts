@@ -110,10 +110,21 @@ function resolveRuntimeEnv(rawEnv: unknown): Record<string, string> {
   return resolved;
 }
 
+// Minimum length for a per-run env value to be registered for literal text
+// redaction. Real secrets (tokens, keys, passwords) are long and high-entropy.
+// A short common value such as "true", "admin", or "prod" -- even under a
+// sensitive-looking key like AUTH_ENABLED -- must NOT be globally scrubbed,
+// because it would also strike identical substrings in legitimate agent output
+// (SSE deltas, logs, summaries, final results) and corrupt it. 8 keeps
+// realistic credentials redacted while excluding common non-secret values.
+const MIN_REDACTABLE_SECRET_LENGTH = 8;
+
 function collectSecretEnvValues(env: Record<string, string>): string[] {
   const out: string[] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (SENSITIVE_KEY_PATTERN.test(key) && value.length > 0) out.push(value);
+    if (SENSITIVE_KEY_PATTERN.test(key) && value.length >= MIN_REDACTABLE_SECRET_LENGTH) {
+      out.push(value);
+    }
   }
   return out;
 }

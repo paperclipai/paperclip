@@ -226,6 +226,49 @@ describe("execute", () => {
     expect(haystack).toContain("leaked");
   });
 
+  it("does not scrub common short sensitive-keyed values from legitimate output", async () => {
+    // Regression for over-redaction: a sensitive-looking key with a common
+    // short value (AUTH_ENABLED=true, ADMIN_SECRET=admin) must NOT be
+    // registered for literal text redaction, or it would strike identical
+    // substrings in real agent output and corrupt it.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-red-2", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            ["event: run.completed", `data: {"status":"completed","output":"the statement is true and the admin approved it","session_id":"s2"}`, ""].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "ok" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      env: { AUTH_ENABLED: "true", ADMIN_SECRET: "admin", SITE_URL: "https://thebikeratlas.com" },
+    });
+    const result = await execute(ctx);
+
+    // The common values still reach the gateway as env...
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const sentEnv = JSON.parse(String((createCall?.[1] as RequestInit).body)).env;
+    expect(sentEnv.AUTH_ENABLED).toBe("true");
+    expect(sentEnv.ADMIN_SECRET).toBe("admin");
+    // ...but they are NOT redacted out of legitimate agent output.
+    const haystack = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, line]) => String(line)).join("\n") + "\n" + JSON.stringify(result);
+    expect(haystack).toContain("statement is true");
+    expect(haystack).toContain("admin approved");
+  });
+
   it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
     const description = "Update launch-card.svg and change the CTA to Try Team free.";
     const fullTaskMarkdown = [
