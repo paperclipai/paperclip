@@ -1,5 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleOnboardService, isInstallableReleaseVersion, shouldOfferForegroundStart } from "../onboard-service.js";
+import {
+  handleOnboardService,
+  handoffToOnboardedService,
+  isInstallableReleaseVersion,
+  resolveOnboardServiceDashboardUrl,
+  shouldOfferForegroundStart,
+} from "../onboard-service.js";
+
+function dashboardConfig(overrides: {
+  host?: string;
+  port?: number;
+  baseUrlMode?: "auto" | "explicit";
+  publicBaseUrl?: string;
+} = {}) {
+  return {
+    server: {
+      host: overrides.host ?? "127.0.0.1",
+      port: overrides.port ?? 3100,
+    },
+    auth: {
+      baseUrlMode: overrides.baseUrlMode ?? "auto",
+      disableSignUp: false,
+      ...(overrides.publicBaseUrl ? { publicBaseUrl: overrides.publicBaseUrl } : {}),
+    },
+  };
+}
 
 function supportedDetection() {
   return {
@@ -136,6 +161,73 @@ describe("isInstallableReleaseVersion", () => {
     expect(isInstallableReleaseVersion("2026.818.0-beta.1")).toBe(true);
     expect(isInstallableReleaseVersion("0.3.1")).toBe(false);
     expect(isInstallableReleaseVersion("not-a-version")).toBe(false);
+  });
+});
+
+describe("onboarded service dashboard handoff", () => {
+  it("resolves a reachable local dashboard URL", () => {
+    expect(resolveOnboardServiceDashboardUrl(dashboardConfig({ host: "0.0.0.0", port: 4321 })))
+      .toBe("http://127.0.0.1:4321");
+    expect(resolveOnboardServiceDashboardUrl(dashboardConfig({ host: "::1" })))
+      .toBe("http://[::1]:3100");
+  });
+
+  it("uses the configured public URL when auth requires one", () => {
+    expect(resolveOnboardServiceDashboardUrl(dashboardConfig({
+      baseUrlMode: "explicit",
+      publicBaseUrl: "https://paperclip.example.com/",
+    }))).toBe("https://paperclip.example.com");
+  });
+
+  it("prints the dashboard URL without opening a browser in non-interactive runs", async () => {
+    const info = vi.fn();
+    const waitUntilReady = vi.fn(async () => true);
+    const openDashboard = vi.fn(async () => true);
+
+    await handoffToOnboardedService(dashboardConfig(), {
+      isInteractive: () => false,
+      waitUntilReady,
+      openDashboard,
+      info,
+    });
+
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("http://127.0.0.1:3100"));
+    expect(waitUntilReady).not.toHaveBeenCalled();
+    expect(openDashboard).not.toHaveBeenCalled();
+  });
+
+  it("waits for service health before opening the dashboard", async () => {
+    const waitUntilReady = vi.fn(async () => true);
+    const openDashboard = vi.fn(async () => true);
+    const success = vi.fn();
+
+    await handoffToOnboardedService(dashboardConfig(), {
+      isInteractive: () => true,
+      waitUntilReady,
+      openDashboard,
+      info: vi.fn(),
+      success,
+    });
+
+    expect(waitUntilReady).toHaveBeenCalledWith("http://127.0.0.1:3100/api/health");
+    expect(openDashboard).toHaveBeenCalledWith("http://127.0.0.1:3100");
+    expect(success).toHaveBeenCalledWith(expect.stringContaining("Opened"));
+  });
+
+  it("keeps the manual link and warns when service health does not become ready", async () => {
+    const openDashboard = vi.fn(async () => true);
+    const warn = vi.fn();
+
+    await handoffToOnboardedService(dashboardConfig(), {
+      isInteractive: () => true,
+      waitUntilReady: vi.fn(async () => false),
+      openDashboard,
+      info: vi.fn(),
+      warn,
+    });
+
+    expect(openDashboard).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("paperclipai service logs"));
   });
 });
 
