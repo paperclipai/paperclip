@@ -64,8 +64,8 @@ export function normalizeBaseUrl(value: unknown): string {
   } catch {
     throw new WeknoraPluginError("invalid_config", "baseUrl must be an absolute HTTP(S) URL", false);
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new WeknoraPluginError("invalid_config", "baseUrl must use HTTP or HTTPS", false);
+  if (parsed.protocol !== "https:") {
+    throw new WeknoraPluginError("invalid_config", "baseUrl must use HTTPS", false);
   }
   if (parsed.username || parsed.password) {
     throw new WeknoraPluginError("invalid_config", "baseUrl must not contain URL credentials", false);
