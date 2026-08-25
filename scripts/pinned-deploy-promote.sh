@@ -62,7 +62,7 @@ Env:
   PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS # default 150
   PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN    # required, unique per approved deployment
   PAPERCLIP_PINNED_DEPLOY_BOOT_PORT      # candidate boot-proof port (default 3399)
-  PAPERCLIP_PINNED_DEPLOY_BOOT_TIMEOUT_SECONDS # default 90
+  PAPERCLIP_PINNED_DEPLOY_BOOT_TIMEOUT_SEC # default 240 (raise it on a loaded box)
   PAPERCLIP_TEST_RATCHET_ENFORCE=1       # make test_ratchet blocking (default: observe only)
   PAPERCLIP_TEST_RATCHET_RECEIPT         # default STATE_DIR/test-ratchet-verdict.json
   PAPERCLIP_TEST_RATCHET_MAX_AGE_HOURS   # default 36
@@ -626,7 +626,7 @@ cmd_candidate_boots() {
 
   if [ "$healthy" != "1" ]; then
     tail -30 "$log" >&2 || true
-    receipt_set_gate "candidate_boots" "fail" "candidate did not answer /api/health within ${CANDIDATE_BOOT_TIMEOUT_SEC}s"
+    receipt_set_gate "candidate_boots" "fail" "candidate did not answer /api/health within ${CANDIDATE_BOOT_TIMEOUT_SEC}s (raise PAPERCLIP_PINNED_DEPLOY_BOOT_TIMEOUT_SEC)"
     fail "candidate_boots: the staged tree does not boot — refusing to swap the pointer"
   fi
   rm -f "$log"
