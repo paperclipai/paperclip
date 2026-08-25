@@ -199,6 +199,16 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
+Merge pull requests with the repository-standard guarded command, never with
+`gh pr merge`:
+
+```sh
+node .claude/scripts/lane.mjs merge <PR_NUMBER> [--auto]
+```
+
+It pins and re-validates the head SHA, requires reported-green checks and an
+independent approval, and squash-merges. See [`doc/GUARDED-PR-MERGE.md`](doc/GUARDED-PR-MERGE.md).
+
 ## 11. Definition of Done
 
 A change is done when all are true:
