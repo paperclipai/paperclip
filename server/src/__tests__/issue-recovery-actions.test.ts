@@ -1796,6 +1796,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         status: "queued",
         idempotencyKey: options.idempotencyKey,
       }).returning();
+      await db.update(agentWakeupRequests).set({
+        status: "completed",
+        finishedAt: new Date(),
+      }).where(eq(agentWakeupRequests.id, wake.id));
       return { id: wake.id } as never;
     });
     const app = createApp(undefined, { recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup });

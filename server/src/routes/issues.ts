@@ -7046,18 +7046,18 @@ export function issueRoutes(
       }
 
       const idempotencyKey = `recovery-action:${result.recoveryAction.id}:execution-participant`;
-      const findLiveWake = () => db
+      const findDispatchedWake = () => db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
         .where(and(
           eq(agentWakeupRequests.companyId, result.issue.companyId),
           eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-          inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+          notInArray(agentWakeupRequests.status, ["skipped"]),
         ))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      let liveWake = await findLiveWake();
-      let dispatchConfirmed = Boolean(liveWake);
+      let dispatchedWake = await findDispatchedWake();
+      let dispatchConfirmed = Boolean(dispatchedWake);
 
       if (!dispatchConfirmed) {
         try {
@@ -7079,8 +7079,8 @@ export function issueRoutes(
           // wake before resolving the shared recovery action.
         }
         if (!dispatchConfirmed) {
-          liveWake = await findLiveWake();
-          dispatchConfirmed = Boolean(liveWake);
+          dispatchedWake = await findDispatchedWake();
+          dispatchConfirmed = Boolean(dispatchedWake);
         }
       }
 
@@ -7109,7 +7109,7 @@ export function issueRoutes(
         if (
           !concurrentlyResolvedAction ||
           !["resolved", "cancelled"].includes(concurrentlyResolvedAction.status) ||
-          !(await findLiveWake())
+          !(await findDispatchedWake())
         ) {
           throw conflict("Review participant dispatch was not queued; recovery action remains active", {
             code: "recovery_review_participant_dispatch_not_queued",
