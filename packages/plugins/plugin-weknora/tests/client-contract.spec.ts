@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import { createWeKnoraClient } from "../src/client/weknora-client.js";
@@ -9,6 +9,10 @@ import { createRetrievalService } from "../src/services/retrieval.js";
 import * as fixtures from "./fixtures/weknora-responses.js";
 
 const config = { baseUrl: "https://weknora.example", apiKeyRef: { type: "secret_ref", secretId: "secret-1" } };
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function clientFor(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, configOverrides: Record<string, unknown> = {}) {
   const harness = createTestHarness({ manifest, config: { ...config, ...configOverrides } });
@@ -127,6 +131,24 @@ describe("WeKnora HTTP contract", () => {
     }).client;
     await expect(writeTimeoutClient.ingestUrl("kb-1", { url: "https://docs.example/runbook" })).rejects.toMatchObject({ kind: "timeout" });
     expect(writeAttempts).toBe(1);
+  });
+
+  it("keeps the request timeout active while the response body is read", async () => {
+    vi.useFakeTimers();
+    const stalledBodyClient = clientFor(async (_url, init) => ({
+      type: "default",
+      status: 200,
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: () => new Promise<string>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      }),
+    }) as Response, { requestTimeoutMs: 1000 }).client;
+
+    const pending = stalledBodyClient.ingestManual("kb-1", { title: "Note", content: "Text" });
+    const assertion = expect(pending).rejects.toMatchObject({ kind: "timeout" });
+    await vi.advanceTimersByTimeAsync(1001);
+    await assertion;
   });
 
   it("makes authentication, missing-secret, and invalid-config health failures unavailable", async () => {

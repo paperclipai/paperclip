@@ -99,13 +99,12 @@ export class WeKnoraClient {
           redirect: "manual",
           signal: controller.signal,
         });
-        clearTimeout(timeout);
-
         if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
           throw new WeknoraPluginError("upstream", "WeKnora redirects are not allowed", false, response.status, requestId);
         }
 
         const payload = await readBody(response);
+        clearTimeout(timeout);
         if (!response.ok) {
           const mapped = mapHttpError(response.status, payload, requestId);
           if (idempotent && attempt < maxRetries && (RETRYABLE_STATUS.has(response.status) || mapped.retryable)) {

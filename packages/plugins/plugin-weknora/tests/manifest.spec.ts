@@ -30,6 +30,7 @@ describe("WeKnora manifest and config contract", () => {
   it("normalizes the API root and validates the secret boundary", () => {
     expect(normalizeBaseUrl("https://weknora.example/" )).toBe("https://weknora.example/api/v1");
     expect(normalizeBaseUrl("https://weknora.example/api/v1/" )).toBe("https://weknora.example/api/v1");
+    expect(() => normalizeBaseUrl("http://weknora.example")).toThrow(/must use HTTPS/);
     expect(() => normalizeBaseUrl("https://user:pass@weknora.example")).toThrow(/credentials/);
     expect(() => normalizeBaseUrl("https://weknora.example#secret")).toThrow(/fragment/);
     expect(normalizeConfig({ baseUrl: "https://weknora.example", apiKeyRef: { type: "secret_ref", secretId: "secret-1" } })).toMatchObject({
