@@ -246,7 +246,7 @@ describe("EnvironmentRuntimeService.openDuplexChannel capability gate", () => {
       driver: "sandbox",
       acquireRunLease: vi.fn(),
       releaseRunLease: vi.fn(),
-      effectiveSandboxCapabilities: vi.fn(async () => ({ ...DUPLEX_ABSENT })),
+      resolveCapabilities: vi.fn(async () => ({ ...DUPLEX_ABSENT })),
       openDuplexChannel,
     } as unknown as EnvironmentRuntimeDriver;
     const service = environmentRuntimeService({} as never, { drivers: [narrowedDriver] });
@@ -373,7 +373,7 @@ async function buildSandboxRunner(input: {
     syncIn: vi.fn(),
     syncOut: vi.fn(),
     openDuplexChannel,
-    effectiveSandboxCapabilities: vi.fn(async () =>
+    resolveCapabilities: vi.fn(async () =>
       input.snapshot ? Object.freeze({ ...input.snapshot }) : null,
     ),
   } as unknown as EnvironmentRuntimeService;

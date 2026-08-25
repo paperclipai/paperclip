@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json",
+  "title": "PRP provider runtime descriptor",
+  "type": "object",
+  "required": ["provider", "driver", "model", "executionKind", "providerVersion"],
+  "properties": {
+    "provider": { "const": "codex" },
+    "driver": { "const": "codex_app_server" },
+    "model": { "type": ["string", "null"], "maxLength": 240 },
+    "executionKind": { "const": "local_process" },
+    "providerVersion": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "providerSessionId": { "type": ["string", "null"], "maxLength": 240 },
+    "processId": { "type": ["integer", "null"], "minimum": 1 }
+  },
+  "additionalProperties": true
+}

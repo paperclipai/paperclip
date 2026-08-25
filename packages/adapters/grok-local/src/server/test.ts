@@ -226,15 +226,22 @@ export async function testEnvironment(
         });
       }
       if (configuredModel) {
+        // The default model id is a sentinel meaning "let the Grok CLI pick its
+        // own default" — execute.ts only passes `--model` when the value differs
+        // from it, so the sentinel is never sent to grok and must not be checked
+        // against the discovered list (real grok never lists "grok-build", which
+        // otherwise produced a spurious "not found" warning on every probe).
+        const usesCliDefault = configuredModel === DEFAULT_GROK_LOCAL_MODEL;
+        const available = usesCliDefault || parsedModels.models.includes(configuredModel);
         checks.push({
-          code: parsedModels.models.includes(configuredModel) ? "grok_model_configured" : "grok_model_not_found",
-          level: parsedModels.models.includes(configuredModel) ? "info" : "warn",
-          message: parsedModels.models.includes(configuredModel)
-            ? `Configured model: ${configuredModel}`
-            : `Configured model "${configuredModel}" not found in available models.`,
-          hint: parsedModels.models.includes(configuredModel)
-            ? undefined
-            : "Run `grok models` and choose an available model id.",
+          code: available ? "grok_model_configured" : "grok_model_not_found",
+          level: available ? "info" : "warn",
+          message: usesCliDefault
+            ? `Using the Grok CLI's default model${parsedModels.defaultModel ? ` (${parsedModels.defaultModel})` : ""}.`
+            : available
+              ? `Configured model: ${configuredModel}`
+              : `Configured model "${configuredModel}" not found in available models.`,
+          hint: available ? undefined : "Run `grok models` and choose an available model id.",
         });
       }
     }

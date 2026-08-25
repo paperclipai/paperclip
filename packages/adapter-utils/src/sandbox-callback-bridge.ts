@@ -34,7 +34,8 @@ const DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES = 8 * 1024 * 1024;
 // (PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS), so the host loop fails fast and writes
 // 503 responses before the in-sandbox client gives up. A silently unresponsive
 // sandbox channel makes a client call hang with no reject; this timeout turns
-// that hang into a caught error, so the loop `catch` runs `failPendingRequests`.
+// that hang into a caught error, so the poll loop can back off and retry while
+// the watchdog below decides when to fail the queued requests.
 const DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS = 10_000;
 // Watchdog backstop for a hang that the per-iteration timeout does not catch
 // (for example many slow-but-under-timeout calls, or a stall outside the awaited
@@ -58,6 +59,12 @@ const MAX_BACKSTOP_WRITE_ATTEMPTS = 3;
 // The delay between two 504 backstop write attempts. It is short, so all retries
 // finish well under the in-sandbox 30s response deadline.
 const BACKSTOP_WRITE_RETRY_MS = 50;
+// Backoff cap between poll-loop retries after a transient iteration failure.
+// The cap keeps a recovering loop probing often enough to resume before the
+// in-sandbox 30s response deadline strands queued callers, while the
+// exponential ramp below it keeps a hard-down channel from burning an exec
+// call every poll interval.
+const MAX_TRANSIENT_ITERATION_BACKOFF_MS = 5_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 export const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -976,7 +983,22 @@ export async function startSandboxCallbackBridgeWorker(input: {
       await writeAbortedHandlerBackstop(fileName, guard, lastWriteError);
     };
     try {
-      const raw = await input.client.readTextFile(requestPath);
+      let raw: string;
+      try {
+        raw = await input.client.readTextFile(requestPath);
+      } catch (error) {
+        // The gateway deletes a request file when its caller stops waiting
+        // (client-side timeout cleanup). A read that fails because the file is
+        // gone is that benign race, not a channel fault: confirm the file
+        // vanished and skip quietly instead of escalating into a recovery
+        // pass. A file that is still listed rethrows, so a real read fault
+        // keeps its existing handling.
+        const remaining = await input.client.listJsonFiles(directories.requestsDir).catch(() => null);
+        if (remaining !== null && !remaining.includes(fileName)) {
+          return;
+        }
+        throw error;
+      }
       let request: SandboxCallbackBridgeRequest;
       try {
         request = JSON.parse(raw) as SandboxCallbackBridgeRequest;
@@ -1380,13 +1402,54 @@ export async function startSandboxCallbackBridgeWorker(input: {
       watchdogTimer.unref();
     }
     try {
+      // Consecutive transient poll failures. A single failed list call — one
+      // reset or slow sandbox exec — must not end the relay for the rest of the
+      // run: the in-sandbox gateway keeps queueing requests, so a dead loop
+      // strands every later API call from the agent (its status writes then look
+      // like connection failures and the issue loses its disposition). Back off
+      // and retry the poll instead. The watchdog stays the escalation path for a
+      // sustained outage — it fires after `watchdogTimeoutMs` without a
+      // successful iteration and fails the queued requests fast, while this loop
+      // keeps probing for recovery.
+      let consecutivePollFailures = 0;
       while (true) {
-        const fileNames = await withTimeout(
-          input.client.listJsonFiles(directories.requestsDir),
-          iterationTimeoutMs,
-          "Sandbox callback bridge list requests",
-        );
-        if (fileNames.length === 0) {
+        let fileNames: string[];
+        try {
+          fileNames = await withTimeout(
+            input.client.listJsonFiles(directories.requestsDir),
+            iterationTimeoutMs,
+            "Sandbox callback bridge list requests",
+          );
+          consecutivePollFailures = 0;
+        } catch (error) {
+          if (stopping) {
+            break;
+          }
+          consecutivePollFailures += 1;
+          const message = `${buildWorkerFailureMessage(error)} (transient poll failure ${consecutivePollFailures}; retrying)`;
+          if (consecutivePollFailures === 1) {
+            // Put the first failure of a streak on the run trace; later repeats
+            // only warn, so a flapping channel does not spam failed spans.
+            await surfaceRunError(new Error(message));
+          } else {
+            console.warn(`[paperclip] ${message}`);
+          }
+          const backoffMs = Math.min(
+            pollIntervalMs * 2 ** consecutivePollFailures,
+            MAX_TRANSIENT_ITERATION_BACKOFF_MS,
+          );
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+        // A file whose attempt is still in flight (or waiting on its 504
+        // backstop) is not actionable: `processRequestFile` would skip it via
+        // the guard map. Treat an all-guarded listing like an empty one and
+        // sleep a poll interval. Re-listing immediately would spin the loop —
+        // an exec storm against a real sandbox channel, and with an in-memory
+        // client a pure-microtask loop that starves every timer in the process
+        // (including the guard's own backstop and abort timers).
+        const actionableFileNames = fileNames.filter((fileName) => !inFlightRequestGuards.has(fileName));
+        if (actionableFileNames.length === 0) {
           lastSuccessfulIterationAt = Date.now();
           if (stopping) {
             break;
@@ -1394,7 +1457,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           continue;
         }
-        for (const fileName of fileNames) {
+        for (const fileName of actionableFileNames) {
           if (stopping && Date.now() >= stopDeadline) break;
           inFlight += 1;
           try {
@@ -1406,7 +1469,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             // `task.run` after it. Without a runner, the request runs under the
             // run parent with no wrapper span, exactly like the earlier behavior.
             // The per-iteration timeout wraps the whole request, so a hung
-            // request rejects and the loop `catch` runs `failPendingRequests`.
+            // request rejects and the catch below runs the recovery pass.
             await withTimeout(
               input.runtimeSpan
                 ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
@@ -1419,6 +1482,23 @@ export async function startSandboxCallbackBridgeWorker(input: {
               `Sandbox callback bridge process request ${fileName}`,
             );
             lastSuccessfulIterationAt = Date.now();
+          } catch (error) {
+            // A single request attempt failed or hung. Run the same recovery
+            // pass the loop previously died on — abort the in-flight handler
+            // (its 504 backstop keeps the caller from stranding) and 503 the
+            // unclaimed queued requests — but keep the loop alive afterward. A
+            // caller that sees the retry-safe 503 re-queues, and the recovered
+            // loop serves the retry; the old terminal catch left every later
+            // request to strand instead.
+            const message = buildWorkerFailureMessage(error);
+            await surfaceRunError(new Error(message));
+            try {
+              await failPendingRequests(message, { abandonInFlight: true });
+            } catch (failPendingError) {
+              console.warn(
+                `[paperclip] sandbox callback bridge failed to abort queued requests after a request failure: ${failPendingError instanceof Error ? failPendingError.message : String(failPendingError)}`,
+              );
+            }
           } finally {
             inFlight -= 1;
           }
@@ -2053,6 +2133,32 @@ if (bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}" && !queueDir) {
   throw new Error("PAPERCLIP_BRIDGE_QUEUE_DIR and PAPERCLIP_BRIDGE_TOKEN are required.");
 }
 
+// A crashed gateway is a dead loopback port for the rest of the run: nothing
+// inside the sandbox respawns this process, and every later agent API call
+// then fails at the connection level. Once the gateway is ready, log an
+// uncaught fault to stderr (the host redirects it into logs/bridge.log) and
+// keep serving — the relay holds no state a fault can corrupt beyond the one
+// request it interrupted. Before readiness the same fault means the gateway
+// can never become usable (a failed bind, a failed readiness write), so exit
+// instead: surviving there only leaves an un-ready zombie behind while the
+// host waits out its readiness poll.
+let gatewayReady = false;
+process.on("uncaughtException", (error) => {
+  process.stderr.write(
+    "[paperclip-bridge] uncaught exception: " + (error && error.stack ? error.stack : String(error)) + "\\n",
+  );
+  if (!gatewayReady) {
+    process.exit(1);
+  }
+});
+process.on("unhandledRejection", (reason) => {
+  const detail = reason && typeof reason === "object" && "stack" in reason ? reason.stack : String(reason);
+  process.stderr.write("[paperclip-bridge] unhandled rejection: " + detail + "\\n");
+  if (!gatewayReady) {
+    process.exit(1);
+  }
+});
+
 // The embedded zero-dependency frame codec. The duplex gateway uses it; the file
 // gateway ignores it.
 ${DUPLEX_GATEWAY_CODEC_SOURCE}
@@ -2112,6 +2218,24 @@ async function runFileGateway() {
     return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
   }
 
+  // Delete request files older than the response deadline. Every live caller
+  // cleans its own request file when it times out, so a file this old is an
+  // orphan: its writer was killed mid-wait, or a previous gateway process died
+  // and left its queue behind. Orphans otherwise count toward the queue-depth
+  // cap forever and wedge the gateway at a permanent 503.
+  async function sweepStaleRequests() {
+    const staleBefore = Date.now() - responseTimeoutMs - 2000;
+    const entries = await fs.readdir(requestsDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const filePath = path.posix.join(requestsDir, entry.name);
+      const stats = await fs.stat(filePath).catch(() => null);
+      if (stats && stats.mtimeMs < staleBefore) {
+        await fs.rm(filePath, { force: true }).catch(() => undefined);
+      }
+    }
+  }
+
   async function waitForResponse(requestId) {
     const responsePath = path.posix.join(responsesDir, \`\${requestId}.json\`);
     const deadline = Date.now() + responseTimeoutMs;
@@ -2136,8 +2260,13 @@ async function runFileGateway() {
       }
 
       if (await queueDepth() >= maxQueueDepth) {
-        writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
-        return;
+        // Reclaim orphaned request files before rejecting; only a queue that
+        // is genuinely full of live requests gets the 503.
+        await sweepStaleRequests();
+        if (await queueDepth() >= maxQueueDepth) {
+          writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
+          return;
+        }
       }
 
       const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -2162,7 +2291,19 @@ async function runFileGateway() {
       await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");
       await fs.rename(tempPath, requestPath);
 
-      const response = await waitForResponse(requestId);
+      let response;
+      try {
+        response = await waitForResponse(requestId);
+      } catch (error) {
+        // The host never delivered a response inside the deadline. Remove this
+        // request's file so it cannot pile up toward the queue-depth cap. The
+        // host's normal response write is guarded on the request file, so the
+        // removal also tells the host that no caller waits anymore. Without
+        // this cleanup a stalled host wedges the gateway at the cap and every
+        // later request gets an immediate 503 until run end.
+        await fs.rm(requestPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
       const responseHeaders = response.headers || {};
       // The host marks a possibly-committed mutation with an indeterminate outcome.
       // The host cannot cancel a host operation that is in flight, so the mutation
@@ -2200,7 +2341,24 @@ async function runFileGateway() {
   await fs.mkdir(responsesDir, { recursive: true });
   await fs.mkdir(logsDir, { recursive: true });
 
+  // Newer Node runtimes do not reliably surface a failed bind through
+  // uncaughtException here: with nothing else keeping the event loop alive,
+  // the process can drain and exit 0 before the error event is delivered
+  // (observed on Node 24/25; Node 22 delivered it). Attach an explicit error
+  // listener and pin the loop with a keepalive until the bind settles, so a
+  // startup failure exits 1 with the fault on stderr on every runtime.
+  const bindKeepalive = setInterval(() => {}, 1000);
+  server.once("error", (error) => {
+    clearInterval(bindKeepalive);
+    process.stderr.write(
+      "[paperclip-bridge] server error: " + (error && error.stack ? error.stack : String(error)) + "\\n",
+    );
+    if (!gatewayReady) {
+      process.exit(1);
+    }
+  });
   server.listen(port, host, async () => {
+    clearInterval(bindKeepalive);
     const address = server.address();
     if (!address || typeof address === "string") {
       throw new Error("Bridge server did not expose a TCP address.");
@@ -2215,6 +2373,9 @@ async function runFileGateway() {
     const tempReadyFile = \`\${readyFile}.tmp\`;
     await fs.writeFile(tempReadyFile, JSON.stringify(ready), "utf8");
     await fs.rename(tempReadyFile, readyFile);
+    // The readiness file is on disk, so the host will adopt this process.
+    // From here on an uncaught fault must not kill the listener.
+    gatewayReady = true;
   });
 }
 
@@ -2556,6 +2717,9 @@ function runDuplexGateway() {
       type: "ready",
       nonce: bridgeNonce,
     });
+    // READY is on the wire, so the host will adopt this process. From here on
+    // an uncaught fault must not kill the listener.
+    gatewayReady = true;
   });
 }
 

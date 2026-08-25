@@ -43,7 +43,7 @@ export function normalizeProviderFamily(key: string | undefined): string {
 
 /**
  * The common prefix for every sandbox-startup span attribute. One prefix keeps
- * the attribute namespace closed and easy to find in the telemetry backend.
+ * the attribute namespace closed and easy to find in the OpenTelemetry backend.
  */
 export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
 
@@ -794,11 +794,12 @@ export async function emitSkippedStartupStep(
 
 /**
  * Structured event emitted once per named run-lifecycle phase, so the duration
- * and the outcome of each phase land in the run-events stream. It is
- * observability-only and rides the existing `ctx.onEvent` bridge. The payload is
- * a closed shape: exactly `phase`, `durationMs`, and `outcome`. The phase name is
- * from a closed allowlist, so the event never carries a command, an argument, a
- * path, an environment value, or a raw identifier.
+ * and the outcome of each phase land in the run-events stream. It is a
+ * run-log event and rides the existing `ctx.onEvent` bridge. It never changes
+ * startup control flow. The payload is a closed shape: exactly `phase`,
+ * `durationMs`, and `outcome`. The phase name is from a closed allowlist, so
+ * the event never carries a command, an argument, a path, an environment
+ * value, or a raw identifier.
  */
 export const RUN_PHASE_TIMING_EVENT_TYPE = "run.phase.timing";
 

@@ -71,7 +71,7 @@ import {
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { getStartupTraceContext, getStartupTracer } from "../instrumentation.js";
-import { createHostDuplexTelemetryRecorder } from "./duplex-telemetry-recorder.js";
+import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
 import { logger } from "../middleware/logger.js";
@@ -159,6 +159,7 @@ import {
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
+import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
@@ -2847,7 +2848,7 @@ export function isMultiProjectWorkspaceSyncEnabled(
  * treated as local.
  */
 export function isRemoteExecutionEnvironmentDriver(driver: string | null | undefined): boolean {
-  return driver === "ssh" || driver === "sandbox" || driver === "plugin";
+  return getEnvironmentDriverTraits(driver)?.runsWorkspaceOffHost ?? false;
 }
 
 /**
@@ -2882,7 +2883,7 @@ export function isMultiProjectWorkspaceSyncRemoteEnabled(
  * confines each staged referenced tree.
  */
 export function isConfinedRemoteStagingDriver(driver: string | null | undefined): boolean {
-  return driver === "sandbox";
+  return getEnvironmentDriverTraits(driver)?.confinesStagedProjects ?? false;
 }
 
 /**
@@ -15448,13 +15449,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lease: acquiredEnvironment.lease,
       leaseContext: acquiredEnvironment.leaseContext,
     };
-    // The host duplex telemetry recorder for this run. It binds the fixed duplex
+    // The host duplex observability recorder for this run. It binds the fixed duplex
     // observability surface to real sinks: the spans to the OTel tracer, the
     // guarded counters to the tool-runtime metric store, and the transport event
     // to the run-event path. Each sink runs guarded and fire-and-forget, so a
     // telemetry failure never breaks the run. The orchestrator stamps it on the
     // sandbox target; a non-duplex run keeps the safe no-op default in the bridge.
-    const duplexTelemetryRecorder = createHostDuplexTelemetryRecorder({
+    const duplexObservabilityRecorder = createHostDuplexObservabilityRecorder({
       tracer: getStartupTracer(),
       incrementCounter: (metric) => {
         void incrementToolRuntimeMetricCounter(db, {
@@ -15485,7 +15486,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       executionWorkspace,
       effectiveExecutionWorkspaceMode,
       persistedExecutionWorkspace,
-      duplexTelemetryRecorder,
+      duplexObservabilityRecorder,
     });
     activeEnvironmentLease = {
       ...activeEnvironmentLease,
