@@ -803,6 +803,33 @@ cmd_promote_pointer() {
   fi
   [ -d "$CANDIDATE_ROOT" ] || fail "candidate root missing: $CANDIDATE_ROOT"
 
+  # ANCESTOR-SHA REFUSAL (TSMC-21652, born 2026-08-25).
+  #
+  # On 08-25 a lane promoted a candidate that was STALE — its SHA was an
+  # ancestor of what was already deployed. Nothing objected, so production went
+  # BACKWARDS ~3h, silently removing a verified gateway fix (TSMC-21615) and
+  # three other commits. Every gate was green: the candidate was internally
+  # consistent, it just pointed at older code. Gates prove a tree is sound; they
+  # say nothing about whether it moves the deploy forward.
+  #
+  # A legitimate rollback is a real operation, so this is refusable rather than
+  # impossible — pass --rollback to mean it. It is deliberately NOT covered by
+  # the existing --allow-live-pointer/ALLOW_LIVE pair: those authorise "touch
+  # the live pointer", not "move it backwards", and today proved that conflating
+  # the two loses changes with no warning at all.
+  local rollback_flag=0
+  for arg in "$@"; do
+    [ "$arg" = "--rollback" ] && rollback_flag=1
+  done
+  local promote_sha deployed_sha
+  promote_sha="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(r.candidateSha||""))' "$(working_receipt_path)" 2>/dev/null || true)"
+  deployed_sha="$(git -C "$DEPLOY_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  if [ "$rollback_flag" != "1" ] && [ -n "$promote_sha" ] && [ -n "$deployed_sha" ] \
+     && [ "$promote_sha" != "$deployed_sha" ] \
+     && git -C "$SOURCE_ROOT" merge-base --is-ancestor "$promote_sha" "$deployed_sha" 2>/dev/null; then
+    fail "promote-pointer refused: candidate ${promote_sha:0:9} is an ANCESTOR of the deployed ${deployed_sha:0:9} — this would move production BACKWARDS and drop everything in between. Re-run prepare-candidate against the current live HEAD, or pass --rollback if reverting is genuinely intended. Pointer unchanged at $DEPLOY_ROOT."
+  fi
+
   local staging parent
   parent="$(dirname "$DEPLOY_ROOT")"
   staging="$parent/.paperclip-deploy.staging-$$"

@@ -152,6 +152,84 @@ test("promote-pointer refuses when a mandatory gate is red (pointer unchanged)",
   }
 });
 
+test("promote-pointer refuses an ANCESTOR candidate unless --rollback (TSMC-21652)", () => {
+  // Born 2026-08-25: a lane promoted a stale candidate whose SHA was an ancestor
+  // of the deployed one. Gates were green — the tree was internally consistent,
+  // it just pointed at older code — so production silently went BACKWARDS ~3h
+  // and dropped a verified gateway fix plus three other commits.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-promote-ancestor-"));
+  try {
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    const source = path.join(tmp, "source");
+    const deploy = path.join(tmp, "deploy");
+    const candidate = path.join(tmp, "candidate");
+    mkdirSync(receipts, { recursive: true });
+    mkdirSync(candidate, { recursive: true });
+    mkdirSync(path.join(state, "deployment-lease"), { recursive: true });
+    writeFileSync(
+      path.join(state, "deployment-lease", "owner.json"),
+      JSON.stringify({ token: "test-deployment-lease" }),
+    );
+
+    // Two real commits: OLD is an ancestor of NEW.
+    const git = (args, cwd) => runOk("git", args, {}, { cwd });
+    mkdirSync(source, { recursive: true });
+    git(["init", "-q", "-b", "main"], source);
+    git(["config", "user.email", "t@t"], source);
+    git(["config", "user.name", "t"], source);
+    writeFileSync(path.join(source, "f"), "old");
+    git(["add", "-A"], source); git(["commit", "-qm", "old"], source);
+    const oldSha = runOk("git", ["rev-parse", "HEAD"], {}, { cwd: source }).stdout.trim();
+    writeFileSync(path.join(source, "f"), "new");
+    git(["add", "-A"], source); git(["commit", "-qm", "new"], source);
+    const newSha = runOk("git", ["rev-parse", "HEAD"], {}, { cwd: source }).stdout.trim();
+
+    // Deployed = NEW. Candidate receipt claims OLD -> a backwards move.
+    runOk("git", ["clone", "-q", source, deploy], {});
+    runOk("git", ["checkout", "-q", newSha], {}, { cwd: deploy });
+    writeFileSync(path.join(deploy, "MARKER"), "before");
+    writeFileSync(path.join(candidate, "MARKER"), "after");
+    const rec = greenReceipt();
+    rec.candidateSha = oldSha;
+    writeFileSync(path.join(receipts, "working-receipt.json"), JSON.stringify(rec, null, 2));
+
+    const env = {
+      PAPERCLIP_SOURCE_ROOT: source,
+      PAPERCLIP_DEPLOY_ROOT: deploy,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_PINNED_DEPLOY_ALLOW_LIVE: "1",
+    };
+
+    const refused = sh("bash", [PROMOTE, "promote-pointer", "--allow-live-pointer"], env);
+    assert.notEqual(refused.status, 0, "must refuse a backwards promote");
+    assert.ok(
+      refused.stderr.includes("ANCESTOR"),
+      `expected an ANCESTOR refusal, got: ${refused.stderr.slice(-400)}`,
+    );
+    assert.equal(
+      readFileSync(path.join(deploy, "MARKER"), "utf8"),
+      "before",
+      "pointer must be untouched after refusal",
+    );
+
+    // An intentional rollback is a real operation and must remain possible.
+    const allowed = sh(
+      "bash",
+      [PROMOTE, "promote-pointer", "--allow-live-pointer", "--rollback"],
+      env,
+    );
+    assert.ok(
+      !(allowed.stderr || "").includes("ANCESTOR"),
+      "--rollback must bypass the ancestor refusal",
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("successful temporary-pointer promote records transition metadata on durable receipt", () => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-promote-ok-"));
   try {
