@@ -5,6 +5,14 @@ import { describe, expect, it } from "vitest";
 const packageJsonPath = fileURLToPath(new URL("../../package.json", import.meta.url));
 
 describe("server package build script", () => {
+  it("builds the compiled package entry during prepack", () => {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.prepack).toBe("pnpm run prepare:ui-dist && pnpm run build");
+  });
+
   it("copies static runtime asset directories into dist", () => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
       scripts?: Record<string, string>;
