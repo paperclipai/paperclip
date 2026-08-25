@@ -144,6 +144,88 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
+  it("forwards resolved string env values and drops unresolved binding objects", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-env-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            ["event: run.completed", 'data: {"status":"completed","output":"ok","session_id":"s1"}', ""].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "ok" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      env: {
+        SITE_URL: "https://thebikeratlas.com",
+        DIRECTORY_API_URL: "https://thebikeratlas.com/api",
+        DIRECTORY_AGENT_EMAIL: "agents@thebikeratlas.com",
+        BIKER_ATLAS_DB_DISABLED: "true",
+        DIRECTORY_AGENT_PASSWORD: "sup3r-s3cr3t-value",
+        LEAKY_BINDING: { type: "plain", value: "true" } as unknown as string,
+      },
+    }));
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String((createCall?.[1] as RequestInit).body));
+
+    expect(body.env).toEqual({
+      SITE_URL: "https://thebikeratlas.com",
+      DIRECTORY_API_URL: "https://thebikeratlas.com/api",
+      DIRECTORY_AGENT_EMAIL: "agents@thebikeratlas.com",
+      BIKER_ATLAS_DB_DISABLED: "true",
+      DIRECTORY_AGENT_PASSWORD: "sup3r-s3cr3t-value",
+    });
+    expect(body.env).not.toHaveProperty("LEAKY_BINDING");
+    expect(body.env).not.toHaveProperty("DATABASE_URL");
+    expect(typeof body.env.BIKER_ATLAS_DB_DISABLED).toBe("string");
+  });
+
+  it("never emits secret env values in adapter logs or summary", async () => {
+    const secret = "sup3r-s3cr3t-value";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-red-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            ["event: run.completed", `data: {"status":"completed","output":"leaked ${secret} here","session_id":"s1"}`, ""].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "ok" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      env: { DIRECTORY_AGENT_PASSWORD: secret, SITE_URL: "https://thebikeratlas.com" },
+    });
+    const result = await execute(ctx);
+
+    const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, line]) => String(line)).join("\n");
+    const haystack = logText + "\n" + JSON.stringify(result);
+    expect(haystack).not.toContain(secret);
+    expect(haystack).toContain("leaked");
+  });
+
   it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
     const description = "Update launch-card.svg and change the CTA to Try Team free.";
     const fullTaskMarkdown = [

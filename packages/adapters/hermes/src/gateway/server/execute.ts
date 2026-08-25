@@ -98,6 +98,26 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function resolveRuntimeEnv(rawEnv: unknown): Record<string, string> {
+  const source = asRecord(rawEnv);
+  if (!source) return {};
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof key === "string" && key.length > 0 && typeof value === "string") {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+}
+
+function collectSecretEnvValues(env: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (SENSITIVE_KEY_PATTERN.test(key) && value.length > 0) out.push(value);
+  }
+  return out;
+}
+
 function parseNonNegativeNumber(value: unknown, fallback: number): number {
   const parsed = typeof value === "number"
     ? value
@@ -319,7 +339,11 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
 }
 
-function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
+function buildRunBody(
+  ctx: AdapterExecutionContext,
+  sessionKey: string | null,
+  runtimeEnv: Record<string, string>,
+): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
@@ -331,6 +355,7 @@ function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): 
     ...payloadTemplate,
     input,
     instructions,
+    ...(Object.keys(runtimeEnv).length > 0 ? { env: runtimeEnv } : {}),
     ...(sessionKey ? { session_id: sessionKey } : {}),
   };
 }
@@ -846,13 +871,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraHeaders,
     accept: "text/event-stream",
   });
+  const runtimeEnv = resolveRuntimeEnv(ctx.config.env);
   const redactText = createTextRedactor([
     apiKey,
     sessionKey,
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
+    ...collectSecretEnvValues(runtimeEnv),
   ]);
-  const body = buildRunBody(ctx, sessionKey);
+  const body = buildRunBody(ctx, sessionKey, runtimeEnv);
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
