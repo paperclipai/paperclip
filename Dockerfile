@@ -151,16 +151,6 @@ ENV NODE_ENV=production \
 
 EXPOSE 3100
 
-<<<<<<< HEAD
-=======
-# tini, not node, is PID 1. The entrypoint ends in `exec`, so without an init
-# node inherits PID 1 and never wait()s the orphans the kernel re-parents onto
-# it -- agent runs spawn git/claude/esbuild/sh descendants that outlive their
-# leader, so they pile up as permanent zombies (~79/h measured) until the
-# cgroup pid limit is exhausted and *every* fork() in the container fails.
-# tini reaps adopted orphans and forwards signals, so the exec chain below and
-# graceful shutdown are unchanged. Mirrors docker/agent-runtime/Dockerfile.base.
->>>>>>> upstream/master
 ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
 
