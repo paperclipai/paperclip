@@ -227,6 +227,14 @@ export function getMergeConfirmationPullRequestReferences(
 const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =
   "issue_thread_interactions_company_issue_idempotency_uq";
 
+/**
+ * How many times a create may re-enter the insert after a uniqueness conflict
+ * whose winner had already gone terminal. Each extra attempt costs one failed
+ * insert; three is far past any contention a single issue's idempotency key
+ * sees in practice, and it stops an unbounded spin.
+ */
+const MAX_INTERACTION_CREATE_ATTEMPTS = 3;
+
 type IssueWakeTarget = {
   id: string;
   assigneeAgentId: string | null;
@@ -403,11 +411,28 @@ function isUserCommentSupersedableKind(kind: string): kind is UserCommentSuperse
   return (USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS as readonly string[]).includes(kind);
 }
 
+/**
+ * Walks the `cause` chain: a uniqueness violation raised inside `db.transaction`
+ * reaches the caller wrapped, and the wrapper carries neither `code` nor
+ * `constraint`. Reading only the outer error made every racing create surface
+ * the raw PostgreSQL error as a 500 instead of replaying the winner.
+ */
 function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const err = error as { code?: string; constraint?: string; constraint_name?: string };
-  const constraint = err.constraint ?? err.constraint_name;
-  return err.code === "23505" && constraint === ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT;
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && typeof current === "object" && current !== null; depth += 1) {
+    const err = current as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+    };
+    const constraint = err.constraint ?? err.constraint_name;
+    if (err.code === "23505" && constraint === ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT) {
+      return true;
+    }
+    current = err.cause;
+  }
+  return false;
 }
 
 function isEquivalentCreateRequest(
@@ -1471,6 +1496,19 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     }));
     return states;
   }
+  /**
+   * Idempotent reuse only ever looks at the *live* row for a key. Terminal rows
+   * (`expired` from a user-comment supersede, `accepted`/`rejected`/`answered`/
+   * `cancelled`/`failed` from a resolution) are deliberately invisible here.
+   *
+   * Without that restriction a key was burned the moment its interaction went
+   * terminal: `create` found the dead row, treated an equivalent request as a
+   * successful replay and handed the caller back an already-`expired`
+   * interaction — so a confirmation superseded by a board comment could never be
+   * asked again on that issue, and there is no withdraw path to free the key.
+   * The matching partial unique index is scoped to `status = 'pending'` for the
+   * same reason; see `issue_thread_interactions_company_issue_idempotency_uq`.
+   */
   async function getIdempotentInteraction(args: {
     issueId: string;
     companyId: string;
@@ -1483,6 +1521,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         eq(issueThreadInteractions.companyId, args.companyId),
         eq(issueThreadInteractions.issueId, args.issueId),
         eq(issueThreadInteractions.idempotencyKey, args.idempotencyKey),
+        eq(issueThreadInteractions.status, "pending"),
       ))
       .then((rows) => rows[0] ?? null);
   }
@@ -2358,126 +2397,149 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         || data.kind === "request_checkbox_confirmation"
         || data.kind === "request_item_verdicts";
 
-      let created: IssueThreadInteractionRow;
+      let created: IssueThreadInteractionRow | null = null;
       let superseded: IssueThreadInteractionRow[] = [];
-      try {
-        // A terminal issue must not regain pending actionable cards. FOR UPDATE
-        // on the issue row serializes this insert both against terminal status
-        // transitions and against concurrent confirmations on the same issue.
-        // Idempotent reuse above stays allowed so retries of a pre-close
-        // create keep returning the (by now expired) original.
-        const result = await db.transaction(async (tx) => {
-          const [issueRow] = await tx
-            .select({ status: issues.status })
-            .from(issues)
-            .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
-            .for("update");
-          if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
-            throw conflict("Cannot create an interaction on a closed issue");
-          }
-          // Validate the plan/document confirmation target inside the same
-          // transaction (locking the document row) so the latest-revision check
-          // is atomic with the insert below. A concurrent revision publish can no
-          // longer slip between the check and the insert to leave a confirmation
-          // pointing at a stale revision.
-          if (requiresCurrentTarget) {
-            await assertRequestConfirmationTargetIsCurrent(tx, {
-              companyId: issue.companyId,
-              issueId: issue.id,
-              target: data.payload.target ?? null,
-              lockForUpdate: true,
-            });
-          }
-          const [row] = await tx
-            .insert(issueThreadInteractions)
-            .values({
-              companyId: issue.companyId,
-              issueId: issue.id,
-              kind: data.kind,
-              status: "pending",
-              continuationPolicy: data.continuationPolicy,
-              requestedResolverPolicy: policy.requestedResolverPolicy,
-              effectiveResolverPolicy: policy.effectiveResolverPolicy,
-              resolverPolicyProvenance: policy.resolverPolicyProvenance,
-              effectiveResolverPolicySource: policy.effectiveResolverPolicySource,
-              idempotencyKey: data.idempotencyKey ?? null,
-              sourceCommentId: data.sourceCommentId ?? null,
-              sourceRunId: data.sourceRunId ?? null,
-              title: data.title ?? null,
-              summary: data.summary ?? null,
-              createdByAgentId: actor.agentId ?? null,
-              addresseeAgentId: data.addresseeAgentId ?? null,
-              createdByUserId: actor.userId ?? null,
-              payload: data.payload,
-            })
-            .returning();
-
-          // An agent replacing its own still-pending card supersedes the older
-          // one so the thread never accumulates stale sibling cards. This covers
-          // request_confirmation drafts and ask_user_questions (PAP-437: probe
-          // question cards that agents never withdrew). Each kind keeps its own
-          // result shape. Scoped strictly to the same agent + issue + kind, so
-          // other agents' or other kinds' pending cards are untouched.
-          const canSupersedeSiblingCards =
-            (data.kind === "request_confirmation"
-              && data.payload.toolAction === undefined
-              && data.payload.secretProposal === undefined)
-            || data.kind === "ask_user_questions";
-          if (!actor.agentId || !canSupersedeSiblingCards) {
-            return { row, supersededRows: [] };
-          }
-
-          const now = new Date();
-          const supersededResult = data.kind === "ask_user_questions"
-            ? buildSupersededByNewerInteractionResult(row.id)
-            : buildSupersededByNewerRequestResult(row.id);
-          const supersededRows = await tx
-            .update(issueThreadInteractions)
-            .set({
-              status: "expired",
-              result: supersededResult,
-              resolvedByAgentId: actor.agentId,
-              resolvedByUserId: actor.userId ?? null,
-              resolvedAt: now,
-              updatedAt: now,
-            })
-            .where(and(
-              eq(issueThreadInteractions.companyId, issue.companyId),
-              eq(issueThreadInteractions.issueId, issue.id),
-              eq(issueThreadInteractions.kind, data.kind),
-              eq(issueThreadInteractions.createdByAgentId, actor.agentId),
-              eq(issueThreadInteractions.status, "pending"),
-              ne(issueThreadInteractions.id, row.id),
-            ))
-            .returning();
-          for (const supersededRow of supersededRows) {
-            await resolveLinkedToolActionRequests(tx, supersededRow, {
-              status: "expired",
-              fromStatuses: ["pending", "approved"],
-              actor,
-              now,
-            });
-          }
-          return { row, supersededRows };
-        });
-        created = result.row;
-        superseded = result.supersededRows;
-      } catch (error) {
-        if (!normalizedData.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
-          throw error;
+      // A terminal issue must not regain pending actionable cards. FOR UPDATE
+      // on the issue row serializes this insert both against terminal status
+      // transitions and against concurrent confirmations on the same issue.
+      // Idempotent reuse above only returns a still-pending original, so a
+      // retry that arrives after the close (whose expiry sweep already
+      // collected the row) is rejected here rather than answered with a dead
+      // interaction.
+      const insertInteraction = async () => await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
+          throw conflict("Cannot create an interaction on a closed issue");
         }
-        const existing = await getIdempotentInteraction({
-          issueId: issue.id,
-          companyId: issue.companyId,
-          idempotencyKey: normalizedData.idempotencyKey,
-        });
-        if (!existing) throw error;
-        if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
-          throw conflict("Interaction idempotency key already exists for a different request", {
-            idempotencyKey: normalizedData.idempotencyKey,
+        // Validate the plan/document confirmation target inside the same
+        // transaction (locking the document row) so the latest-revision check
+        // is atomic with the insert below. A concurrent revision publish can no
+        // longer slip between the check and the insert to leave a confirmation
+        // pointing at a stale revision.
+        if (requiresCurrentTarget) {
+          await assertRequestConfirmationTargetIsCurrent(tx, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            target: data.payload.target ?? null,
+            lockForUpdate: true,
           });
         }
-        return hydrateInteraction(existing);
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: data.kind,
+            status: "pending",
+            continuationPolicy: data.continuationPolicy,
+            requestedResolverPolicy: policy.requestedResolverPolicy,
+            effectiveResolverPolicy: policy.effectiveResolverPolicy,
+            resolverPolicyProvenance: policy.resolverPolicyProvenance,
+            effectiveResolverPolicySource: policy.effectiveResolverPolicySource,
+            idempotencyKey: data.idempotencyKey ?? null,
+            sourceCommentId: data.sourceCommentId ?? null,
+            sourceRunId: data.sourceRunId ?? null,
+            title: data.title ?? null,
+            summary: data.summary ?? null,
+            createdByAgentId: actor.agentId ?? null,
+            addresseeAgentId: data.addresseeAgentId ?? null,
+            createdByUserId: actor.userId ?? null,
+            payload: data.payload,
+          })
+          .returning();
+
+        // An agent replacing its own still-pending card supersedes the older
+        // one so the thread never accumulates stale sibling cards. This covers
+        // request_confirmation drafts and ask_user_questions (PAP-437: probe
+        // question cards that agents never withdrew). Each kind keeps its own
+        // result shape. Scoped strictly to the same agent + issue + kind, so
+        // other agents' or other kinds' pending cards are untouched.
+        const canSupersedeSiblingCards =
+          (data.kind === "request_confirmation"
+            && data.payload.toolAction === undefined
+            && data.payload.secretProposal === undefined)
+          || data.kind === "ask_user_questions";
+        if (!actor.agentId || !canSupersedeSiblingCards) {
+          return { row, supersededRows: [] };
+        }
+
+        const now = new Date();
+        const supersededResult = data.kind === "ask_user_questions"
+          ? buildSupersededByNewerInteractionResult(row.id)
+          : buildSupersededByNewerRequestResult(row.id);
+        const supersededRows = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: supersededResult,
+            resolvedByAgentId: actor.agentId,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, data.kind),
+            eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row.id),
+          ))
+          .returning();
+        for (const supersededRow of supersededRows) {
+          await resolveLinkedToolActionRequests(tx, supersededRow, {
+            status: "expired",
+            fromStatuses: ["pending", "approved"],
+            actor,
+            now,
+          });
+        }
+        return { row, supersededRows };
+      });
+
+      // Every attempt ends one of three ways: the insert lands, a pending winner
+      // is found and replayed, or the winner went terminal between the conflict
+      // and the recovery lookup and freed the key again. Only the last case
+      // loops, and the retry has to re-enter this same handling rather than run
+      // bare — a third creator can claim the freed key in that window, and a
+      // bare retry would surface its uniqueness error as a 500 on a request
+      // that is idempotently valid. The bound keeps a key that is repeatedly
+      // claimed and released from spinning here forever.
+      for (let attempt = 1; !created; attempt += 1) {
+        try {
+          const result = await insertInteraction();
+          created = result.row;
+          superseded = result.supersededRows;
+        } catch (error) {
+          if (!normalizedData.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
+            throw error;
+          }
+          // The unique index is scoped to `status = 'pending'`, so this conflict
+          // can only come from a racing create that won the insert.
+          const existing = await getIdempotentInteraction({
+            issueId: issue.id,
+            companyId: issue.companyId,
+            idempotencyKey: normalizedData.idempotencyKey,
+          });
+          if (existing) {
+            if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+              throw conflict("Interaction idempotency key already exists for a different request", {
+                idempotencyKey: normalizedData.idempotencyKey,
+              });
+            }
+            return hydrateInteraction(existing);
+          }
+          if (attempt >= MAX_INTERACTION_CREATE_ATTEMPTS) {
+            throw conflict(
+              "Interaction idempotency key is being claimed and released by concurrent creates",
+              { idempotencyKey: normalizedData.idempotencyKey },
+            );
+          }
+        }
       }
 
       await touchIssue(db, issue.id);

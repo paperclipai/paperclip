@@ -67,9 +67,12 @@ export const issueThreadInteractions = pgTable(
       table.issueId,
       table.status,
     ),
+    // Scoped to still-pending rows on purpose: once an interaction goes terminal
+    // its idempotency key must be free again, otherwise a confirmation that a
+    // board comment superseded can never be re-asked on that issue.
     companyIssueIdempotencyUq: uniqueIndex("issue_thread_interactions_company_issue_idempotency_uq")
       .on(table.companyId, table.issueId, table.idempotencyKey)
-      .where(sql`${table.idempotencyKey} IS NOT NULL`),
+      .where(sql`${table.idempotencyKey} IS NOT NULL AND ${table.status} = 'pending'`),
     sourceCommentIdx: index("issue_thread_interactions_source_comment_idx").on(table.sourceCommentId),
     addresseeAgentIdx: index("issue_thread_interactions_addressee_agent_idx").on(table.addresseeAgentId),
   }),
