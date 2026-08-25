@@ -1138,8 +1138,18 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     if (issueIds.length === 0) return [];
     const candidates = new Set(issueIds);
     const [contextRuns, executionRuns] = await Promise.all([
+      // PERF (TSMC-21604): project the two JSON fields instead of selecting the
+      // whole `context_snapshot` column. That column is TOASTed — 6.6GB of a
+      // 7.4GB table, averaging 5.4KB per row and up to 239KB — and this query
+      // scans by (companyId, status) rather than by primary key, so every
+      // matching row was detoasted just to read one string. Under I/O pressure
+      // this shape was measured at 238s. The consumer below needs `issueId`
+      // (falling back to `taskId`) and nothing else.
       db
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .select({
+          contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'`,
+          contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'taskId'`,
+        })
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, companyId),
@@ -1161,7 +1171,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     ]);
     const completed = new Set<string>();
     for (const row of contextRuns) {
-      const issueId = issueIdFromRunContext(row.contextSnapshot);
+      // Mirrors issueIdFromRunContext exactly: issueId, else taskId, each
+      // required to be a non-empty string. `->>` yields NULL for a missing key,
+      // which readNonEmptyString already rejects.
+      const issueId = readNonEmptyString(row.contextIssueId) ?? readNonEmptyString(row.contextTaskId);
       if (issueId && candidates.has(issueId)) completed.add(issueId);
     }
     for (const row of executionRuns) {
