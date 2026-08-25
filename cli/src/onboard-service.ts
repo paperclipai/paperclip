@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -7,10 +6,11 @@ import { resolvePaperclipInstanceId } from "./config/home.js";
 import { resolveInstallStorePaths } from "./install-store.js";
 import {
   detectServiceManager,
+  isExecutableFile,
   resolveServiceShimPath,
   type ServiceManagerDetection,
 } from "./services/service-manager.js";
-import { cliVersion } from "./version.js";
+import { packageVersion } from "./version.js";
 
 export type OnboardServiceOptions = {
   yes?: boolean;
@@ -37,20 +37,21 @@ const defaultDependencies: OnboardServiceDependencies = {
   // a definition that crash-loops on a missing binary.
   ensureServiceShim: async () => {
     const shimPath = resolveServiceShimPath();
-    try {
-      await fs.access(shimPath);
+    if (await isExecutableFile(shimPath)) {
       return { ok: true, installedNow: false };
-    } catch {}
+    }
     const storeShimPath = resolveInstallStorePaths().shimPath;
     if (path.resolve(shimPath) !== path.resolve(storeShimPath)) {
       return {
         ok: false,
         installedNow: false,
-        reason: `nothing is executable at ${shimPath} (PAPERCLIP_SHIM_PATH), and it is outside the managed install store`,
+        reason: `no executable exists at ${shimPath} (PAPERCLIP_SHIM_PATH), and it is outside the managed install store`,
       };
     }
     try {
-      await installCommand({ version: cliVersion, yes: true });
+      // packageVersion, not cliVersion: a managed executable's cliVersion
+      // carries provenance text that is not an installable npm spec.
+      await installCommand({ version: packageVersion, yes: true });
     } catch (error) {
       return {
         ok: false,
@@ -58,16 +59,14 @@ const defaultDependencies: OnboardServiceDependencies = {
         reason: error instanceof Error ? error.message : String(error),
       };
     }
-    try {
-      await fs.access(shimPath);
+    if (await isExecutableFile(shimPath)) {
       return { ok: true, installedNow: true };
-    } catch {
-      return {
-        ok: false,
-        installedNow: false,
-        reason: `the managed install completed but no shim appeared at ${shimPath}`,
-      };
     }
+    return {
+      ok: false,
+      installedNow: false,
+      reason: `the managed install completed but no executable shim appeared at ${shimPath}`,
+    };
   },
   confirm: async () => {
     const answer = await p.confirm({

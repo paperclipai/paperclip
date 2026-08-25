@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { serviceHealthChecks } from "../checks/service-health-check.js";
+import { isExecutableFile } from "../services/service-manager.js";
 import { resolveRestartExpectedVersion, withHotRestartLock } from "../commands/service.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
@@ -142,6 +143,21 @@ describe("service health doctor checks", () => {
   });
 });
 
+describe("isExecutableFile", () => {
+  it("accepts only executable regular files", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shim-check-"));
+    const executable = path.join(dir, "exec");
+    const plain = path.join(dir, "plain");
+    fs.writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 });
+    fs.writeFileSync(plain, "data", { mode: 0o644 });
+
+    await expect(isExecutableFile(executable)).resolves.toBe(true);
+    await expect(isExecutableFile(plain)).resolves.toBe(false);
+    await expect(isExecutableFile(dir)).resolves.toBe(false);
+    await expect(isExecutableFile(path.join(dir, "missing"))).resolves.toBe(false);
+  });
+});
+
 describe("service runtime shim awareness", () => {
   function inactiveManager() {
     return {
@@ -176,8 +192,25 @@ describe("service runtime shim awareness", () => {
     });
     const runtime = results.find((r) => r.name === "Service runtime");
     expect(runtime?.status).toBe("fail");
-    expect(runtime?.message).toContain("its binary is missing at");
+    expect(runtime?.message).toContain("no executable exists at");
     expect(runtime?.repairHint).toContain("paperclipai install");
+  });
+
+  it("points custom PAPERCLIP_SHIM_PATH repairs at the custom path, not paperclipai install", async () => {
+    vi.stubEnv("PAPERCLIP_SHIM_PATH", "/custom/bin/paperclipai");
+    try {
+      const results = await serviceHealthChecks({} as never, {
+        detect: vi.fn(async () => ({ supported: true as const, manager: inactiveManager() as never })),
+        probe: vi.fn(async () => ({ ok: false, version: null, error: "fetch failed" })),
+        shimPresent: vi.fn(async () => false),
+      });
+      const runtime = results.find((r) => r.name === "Service runtime");
+      expect(runtime?.repairHint).toContain("/custom/bin/paperclipai");
+      expect(runtime?.repairHint).toContain("PAPERCLIP_SHIM_PATH");
+      expect(runtime?.repairHint).not.toContain("Run `paperclipai install`");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("attributes a healthy foreign responder instead of reporting Healthy", async () => {

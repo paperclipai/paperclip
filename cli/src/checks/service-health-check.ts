@@ -1,9 +1,11 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import { resolvePaperclipInstanceId } from "../config/home.js";
-import { readInstallManifest } from "../install-store.js";
+import { readInstallManifest, resolveInstallStorePaths } from "../install-store.js";
 import {
   detectServiceManager,
+  isExecutableFile,
   resolveServiceShimPath,
   type ServiceManagerDetection,
 } from "../services/service-manager.js";
@@ -47,14 +49,7 @@ export async function serviceHealthChecks(
   const deps: ServiceCheckDependencies = {
     detect: (instanceId) => detectServiceManager({ instanceId }),
     probe: probeHealth,
-    shimPresent: async () => {
-      try {
-        await fs.access(resolveServiceShimPath());
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    shimPresent: () => isExecutableFile(resolveServiceShimPath()),
     ...dependencies,
   };
   const instanceId = resolvePaperclipInstanceId();
@@ -102,8 +97,11 @@ export async function serviceHealthChecks(
         ? {
             name: "Service runtime",
             status: "fail",
-            message: `${status.serviceName} cannot start: its binary is missing at ${resolveServiceShimPath()}`,
-            repairHint: "Run `paperclipai install` to restore the managed payload and shim, then `paperclipai service start`",
+            message: `${status.serviceName} cannot start: no executable exists at ${resolveServiceShimPath()}`,
+            repairHint:
+              path.resolve(resolveServiceShimPath()) === path.resolve(resolveInstallStorePaths().shimPath)
+                ? "Run `paperclipai install` to restore the managed payload and shim, then `paperclipai service start`"
+                : `Restore the executable at ${resolveServiceShimPath()}, or unset PAPERCLIP_SHIM_PATH and run \`paperclipai service install\``,
           }
         : health.ok
           ? {

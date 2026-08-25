@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -73,6 +74,20 @@ function escapeRegExp(value: string): string {
 
 export function resolveServiceShimPath(homeDir = os.homedir()): string {
   return process.env.PAPERCLIP_SHIM_PATH?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
+}
+
+// The service definition executes this path directly: existence is not
+// enough — a directory or a non-executable file would satisfy fs.access's
+// default mode and still crash the supervisor at spawn.
+export async function isExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    if (!stats.isFile()) return false;
+    await fs.access(filePath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function systemdServiceName(instanceId: string): string {
