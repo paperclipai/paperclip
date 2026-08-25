@@ -24,6 +24,7 @@ function supportedDetection() {
         pid: 123,
       })),
       logs: vi.fn(async () => undefined),
+      installedExecutablePath: vi.fn(async () => null),
     },
   };
 }

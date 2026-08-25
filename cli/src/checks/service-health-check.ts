@@ -16,7 +16,7 @@ type HealthResult = { ok: boolean; version: string | null; error?: string };
 type ServiceCheckDependencies = {
   detect: (instanceId: string) => Promise<ServiceManagerDetection>;
   probe: (config: PaperclipConfig) => Promise<HealthResult>;
-  shimPresent: () => Promise<boolean>;
+  shimPresent: (executablePath: string) => Promise<boolean>;
 };
 
 async function probeHealth(config: PaperclipConfig): Promise<HealthResult> {
@@ -49,7 +49,7 @@ export async function serviceHealthChecks(
   const deps: ServiceCheckDependencies = {
     detect: (instanceId) => detectServiceManager({ instanceId }),
     probe: probeHealth,
-    shimPresent: () => isExecutableFile(resolveServiceShimPath()),
+    shimPresent: (executablePath) => isExecutableFile(executablePath),
     ...dependencies,
   };
   const instanceId = resolvePaperclipInstanceId();
@@ -89,7 +89,10 @@ export async function serviceHealthChecks(
   );
 
   const health = await deps.probe(config);
-  const shimPresent = status.active ? true : await deps.shimPresent();
+  // The installed definition is the truth about what the service executes;
+  // fall back to the environment-derived path only when it is unreadable.
+  const serviceExecutable = (await manager.installedExecutablePath()) ?? resolveServiceShimPath();
+  const shimPresent = status.active ? true : await deps.shimPresent(serviceExecutable);
   results.push(
     status.active
       ? { name: "Service runtime", status: "pass", message: `${status.serviceName} is active` }
@@ -97,11 +100,11 @@ export async function serviceHealthChecks(
         ? {
             name: "Service runtime",
             status: "fail",
-            message: `${status.serviceName} cannot start: no executable exists at ${resolveServiceShimPath()}`,
+            message: `${status.serviceName} cannot start: no executable exists at ${serviceExecutable}`,
             repairHint:
-              path.resolve(resolveServiceShimPath()) === path.resolve(resolveInstallStorePaths().shimPath)
+              path.resolve(serviceExecutable) === path.resolve(resolveInstallStorePaths().shimPath)
                 ? "Run `paperclipai install` to restore the managed payload and shim, then `paperclipai service start`"
-                : `Restore the executable at ${resolveServiceShimPath()}, or unset PAPERCLIP_SHIM_PATH and run \`paperclipai install\` followed by \`paperclipai service install\``,
+                : `Restore the executable at ${serviceExecutable}, or run \`paperclipai install\` followed by \`paperclipai service install\` to re-point the service at the managed shim`,
           }
         : health.ok
           ? {
