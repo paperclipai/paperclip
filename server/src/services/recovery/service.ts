@@ -45,6 +45,7 @@ import { logActivity } from "../activity-log.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import { hasExplicitExternalOwnerAction } from "../issue-blocked-gate.js";
@@ -973,6 +974,7 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const interactionsSvc = issueThreadInteractionService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -3467,7 +3469,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .orderBy(desc(issues.updatedAt), desc(issues.id))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (existing) return existing;
+      if (existing) {
+        // Backfill: an escalation raised before the interaction fix below shipped
+        // (or one raced past it under a different lock generation) can still be
+        // sitting open with no pending interaction. Without this it stays a
+        // silent, unassigned card forever — see the note on
+        // ensureBoardEscalationInteraction.
+        await ensureBoardEscalationInteraction({
+          issue: existing,
+          escalationReason,
+          kind: input.kind,
+          recoveryCause: input.recoveryCause,
+        });
+        return existing;
+      }
 
       const prefix = await getCompanyIssuePrefix(input.issue.companyId);
       const title = escalationReason === "no_invokable_recovery_owner"
@@ -3480,7 +3495,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : escalationReason === "board_escalation_no_takeover"
           ? "Automatic recovery keeps the source assignment unchanged and does not wake a substitute agent; the board must choose the next action."
         : "Automatic recovery has stopped after the same exit signature repeatedly failed.";
-      return issuesSvc.create(input.issue.companyId, {
+      const requiredBoardActionLine = escalationReason === "board_escalation_no_takeover"
+        ? "Inspect the linked source evidence, then explicitly retry the original owner, reassign, repair the runtime, or record an intentional resolution. Automatic recovery never takes the source task over."
+        : "Assign an invokable owner for the underlying runtime/exit-path defect, or record an intentional manual resolution.";
+      const created = await issuesSvc.create(input.issue.companyId, {
         title,
         description: [
           summaryLine,
@@ -3498,9 +3516,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           "",
           "## Required board action",
           "",
-          escalationReason === "board_escalation_no_takeover"
-            ? "- Inspect the linked source evidence, then explicitly retry the original owner, reassign, repair the runtime, or record an intentional resolution. Automatic recovery never takes the source task over."
-            : "- Assign an invokable owner for the underlying runtime/exit-path defect, or record an intentional manual resolution.",
+          `- ${requiredBoardActionLine}`,
           "- This is a single root escalation; additional sources with the same signature link here rather than creating more board cards.",
         ].join("\n"),
         status: "todo",
@@ -3517,7 +3533,85 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ].join(":"),
         billingCode: input.issue.billingCode,
       });
+      // A "BOARD ACTION REQUIRED" title is not itself a control surface — the
+      // Operator Console derives boardActionRequired strictly from a PENDING
+      // request_confirmation-family interaction on the issue (issues.ts
+      // computeBoardActionRequiredForIssues), never from title text. This
+      // escalation is also created with assigneeAgentId: null by design (the
+      // whole point of "no_takeover" is that automatic recovery must not wake a
+      // substitute agent). Put those two facts together and, without an
+      // interaction, the card was both undispatchable AND invisible: nothing
+      // ever surfaced it to a human, so it silently blocked its source (and any
+      // other issue that shared its recovery signature, via originId dedup
+      // above) until someone found it by accident. Mint the interaction here so
+      // the card is actually load-bearing.
+      await ensureBoardEscalationInteraction({
+        issue: created,
+        escalationReason,
+        kind: input.kind,
+        recoveryCause: input.recoveryCause,
+        requiredBoardActionLine,
+        summaryLine,
+      });
+      return created;
     });
+  }
+
+  // Companion to ensureRecoveryLoopCapEscalationIssue: mints the
+  // request_confirmation interaction that actually makes a board-escalation
+  // issue show up in the Operator Console. Idempotent per issue (scoped by
+  // idempotencyKey) and safe to call on an issue that already has a pending
+  // interaction — it is a no-op in that case.
+  async function ensureBoardEscalationInteraction(input: {
+    issue: typeof issues.$inferSelect;
+    escalationReason: "recovery_loop_cap" | "no_invokable_recovery_owner" | "board_escalation_no_takeover";
+    kind: string;
+    recoveryCause: StrandedRecoveryCause;
+    requiredBoardActionLine?: string;
+    summaryLine?: string;
+  }) {
+    const existingPending = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, input.issue.companyId),
+        eq(issueThreadInteractions.issueId, input.issue.id),
+        eq(issueThreadInteractions.kind, "request_confirmation"),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existingPending) return existingPending;
+
+    const requiredBoardActionLine = input.requiredBoardActionLine
+      ?? (input.escalationReason === "board_escalation_no_takeover"
+        ? "Inspect the linked source evidence, then explicitly retry the original owner, reassign, repair the runtime, or record an intentional resolution. Automatic recovery never takes the source task over."
+        : "Assign an invokable owner for the underlying runtime/exit-path defect, or record an intentional manual resolution.");
+    const summaryLine = input.summaryLine
+      ?? (input.escalationReason === "no_invokable_recovery_owner"
+        ? "Automatic recovery has no invokable owner to dispatch and has escalated to the board."
+        : input.escalationReason === "board_escalation_no_takeover"
+          ? "Automatic recovery keeps the source assignment unchanged and does not wake a substitute agent; the board must choose the next action."
+          : "Automatic recovery has stopped after the same exit signature repeatedly failed.");
+
+    return interactionsSvc.create(input.issue, {
+      kind: "request_confirmation",
+      resolverPolicy: "human_only",
+      continuationPolicy: "none",
+      idempotencyKey: `board_escalation_interaction:${input.issue.id}`,
+      title: input.issue.title,
+      summary: summaryLine,
+      payload: {
+        version: 1,
+        prompt: requiredBoardActionLine,
+        acceptLabel: "Reviewed — action taken",
+        rejectLabel: "Keep open",
+        rejectRequiresReason: false,
+        allowDeclineReason: true,
+        supersedeOnUserComment: false,
+        detailsMarkdown: (input.issue.description ?? "").slice(0, 20000) || undefined,
+      },
+    }, {});
   }
 
   async function ensureSourceScopedStrandedRecoveryAction(input: {

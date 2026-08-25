@@ -1266,6 +1266,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(receipt).toMatchObject({ originKind: "recovery_loop_cap_escalation", assigneeAgentId: null });
     expect(receipt?.title).toContain("BOARD ACTION REQUIRED");
 
+    // The receipt is unassigned by design (no substitute-agent takeover), so a
+    // title alone is not a control: boardActionRequired in the Operator Console
+    // is derived strictly from a PENDING request_confirmation-family
+    // interaction on the issue, never from title text. Without one, this card
+    // is both undispatchable (unassigned) and invisible (no interaction) —
+    // exactly the silent-forever-block defect. Assert the interaction actually
+    // exists and is resolvable only by a human, matching "the board must
+    // choose the next action".
+    const receiptInteractions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, receipt!.id),
+        eq(issueThreadInteractions.kind, "request_confirmation"),
+      ));
+    expect(receiptInteractions).toHaveLength(1);
+    expect(receiptInteractions[0]).toMatchObject({
+      status: "pending",
+      effectiveResolverPolicy: "human_only",
+    });
+
     // No per-source takeover wrapper card.
     const recoveryIssues = await db
       .select()
@@ -9503,6 +9525,109 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, routineOpsAgentId));
     expect(routineWakeups).toHaveLength(0);
+  });
+
+  it("backfills a pending board interaction onto a pre-existing signature-scoped escalation that was minted with none, and reuses it for a second stranded source", async () => {
+    // Reproduces the live defect (DP-4701/DP-4728): a `stranded_assigned_issue`
+    // board escalation issue titled "BOARD ACTION REQUIRED: ..." existed with
+    // assigneeAgentId: null and ZERO issue-thread interactions. Nothing
+    // dispatched to it (unassigned) and nothing surfaced it to a human (no
+    // pending request_confirmation), so it silently blocked its source forever.
+    // This simulates that exact pre-fix row — inserted directly, the way it
+    // would have been left by the old code path — and proves
+    // ensureRecoveryLoopCapEscalationIssue now backfills a real interaction
+    // onto it instead of reusing it silently.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+    // TSMC-21406 grace window: a `todo` assignment younger than
+    // STRANDED_ASSIGNMENT_GRACE_MS (15 minutes) is deliberately left alone —
+    // one missed wake on a healthy lane is not evidence of stranding. The
+    // fixture's issue is freshly inserted (age ~0), so back-date it past the
+    // window to reach the escalation branch this test targets.
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date(Date.now() - 30 * 60 * 1000) })
+      .where(eq(issues.id, issueId));
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const staleEscalationId = randomUUID();
+    const staleOriginId = "stranded_assigned_issue:process_lost";
+
+    // The broken pre-fix shape: a bare issue, no interaction row at all.
+    await db.insert(issues).values({
+      id: staleEscalationId,
+      companyId,
+      title: "BOARD ACTION REQUIRED: Stranded recovery needs a board decision — process_lost",
+      description: "Automatic recovery keeps the source assignment unchanged and does not wake a substitute agent; the board must choose the next action.",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: null,
+      originKind: "recovery_loop_cap_escalation",
+      originId: staleOriginId,
+      originFingerprint: ["recovery_loop_cap_escalation", companyId, staleOriginId].join(":"),
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    const priorInteractions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, staleEscalationId));
+    expect(priorInteractions).toHaveLength(0);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    // The signature-scoped receipt is REUSED (dedup by originKind+originId is
+    // intentional — "This is a single root escalation; additional sources with
+    // the same signature link here rather than creating more board cards"),
+    // not recreated.
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(action?.recoveryIssueId).toBe(staleEscalationId);
+    const escalationIssues = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "recovery_loop_cap_escalation"),
+        eq(issues.originId, staleOriginId),
+      ));
+    expect(escalationIssues).toHaveLength(1);
+
+    // The defect is closed: the reused card now carries exactly one pending,
+    // human-only request_confirmation, so it actually surfaces in the Operator
+    // Console instead of sitting invisibly forever.
+    const backfilledInteractions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, staleEscalationId));
+    expect(backfilledInteractions).toHaveLength(1);
+    expect(backfilledInteractions[0]).toMatchObject({
+      kind: "request_confirmation",
+      status: "pending",
+      effectiveResolverPolicy: "human_only",
+    });
+
+    // Source issue is still assigned to its original owner and blocked by the
+    // (now-visible) escalation card — no substitute takeover.
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+
+    // Re-running the sweep must not mint a second interaction on the same card.
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const afterRerun = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, staleEscalationId));
+    expect(afterRerun).toHaveLength(1);
   });
 
   it("does not hand genuine routine execution recovery to the shell-handler catch-all (board escalation keeps the source assignee)", async () => {
