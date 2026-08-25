@@ -96,43 +96,47 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
 
   const hostDir = path.dirname(hostAuthPath);
   await mkdir(hostDir, { recursive: true });
-  const hostOutcome = await withDirectoryMergeLock(hostDir, async () => {
-    // Stage on the same filesystem as the host target so both the predicate read
-    // and the final rename stay device-local (rename across devices is not
-    // atomic and would fail with EXDEV).
-    const stagedTempPath = path.join(hostDir, `.auth.json.copyback-${process.pid}-${randomUUID()}.tmp`);
-    // `wx` + explicit mode create the temp private (0600) and fail if it somehow
-    // already exists, so we never write through a pre-existing symlink.
-    const handle = await open(stagedTempPath, "wx", 0o600);
-    try {
-      await handle.writeFile(sandboxAuthBytes);
-      await handle.close();
+  const hostOutcome = await withDirectoryMergeLock(
+    hostDir,
+    async () => {
+      // Stage on the same filesystem as the host target so both the predicate read
+      // and the final rename stay device-local (rename across devices is not
+      // atomic and would fail with EXDEV).
+      const stagedTempPath = path.join(hostDir, `.auth.json.copyback-${process.pid}-${randomUUID()}.tmp`);
+      // `wx` + explicit mode create the temp private (0600) and fail if it somehow
+      // already exists, so we never write through a pre-existing symlink.
+      const handle = await open(stagedTempPath, "wx", 0o600);
+      try {
+        await handle.writeFile(sandboxAuthBytes);
+        await handle.close();
 
-      const decision = await decideCodexAuthMerge(stagedTempPath, hostAuthPath, {
-        errorLabel: "codex auth copy-back",
-      });
-      if (decision === USE_SOURCE_EXIT) {
-        // Atomic same-directory swap; rename preserves the temp's 0600 mode.
-        await rename(stagedTempPath, hostAuthPath);
+        const decision = await decideCodexAuthMerge(stagedTempPath, hostAuthPath, {
+          errorLabel: "codex auth copy-back",
+        });
+        if (decision === USE_SOURCE_EXIT) {
+          // Atomic same-directory swap; rename preserves the temp's 0600 mode.
+          await rename(stagedTempPath, hostAuthPath);
+          await log(
+            "[paperclip] Codex auth copy-back: sandbox credential is strictly newer for the same subscription identity; installed to the host at mode 0600.",
+          );
+          return "copied";
+        }
+
         await log(
-          "[paperclip] Codex auth copy-back: sandbox credential is strictly newer for the same subscription identity; installed to the host at mode 0600.",
+          "[paperclip] Codex auth copy-back: host credential kept (sandbox copy is not a strictly-newer same-identity subscription credential).",
         );
-        return "copied";
+        return "kept-host";
+      } finally {
+        // Close is idempotent-safe to skip after an explicit close; the temp is the
+        // thing that must never linger. On the copy path rename already consumed it
+        // (force makes the removal a no-op); on every other path this deletes the
+        // staged credential bytes.
+        await handle.close().catch(() => undefined);
+        await rm(stagedTempPath, { force: true }).catch(() => undefined);
       }
-
-      await log(
-        "[paperclip] Codex auth copy-back: host credential kept (sandbox copy is not a strictly-newer same-identity subscription credential).",
-      );
-      return "kept-host";
-    } finally {
-      // Close is idempotent-safe to skip after an explicit close; the temp is the
-      // thing that must never linger. On the copy path rename already consumed it
-      // (force makes the removal a no-op); on every other path this deletes the
-      // staged credential bytes.
-      await handle.close().catch(() => undefined);
-      await rm(stagedTempPath, { force: true }).catch(() => undefined);
-    }
-  });
+    },
+    env,
+  );
 
   // Additive cache write. Independent of the host default overwrite above: it
   // runs on its own directory lock, keys the slot by the real sandbox
@@ -150,7 +154,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       const sandboxAccountId = readSubscriptionAccountId(sandboxAuthBytes);
       if (sandboxAccountId) {
         const cacheEntryPath = await resolveCacheEntryPath(sandboxAccountId);
-        await writeCodexAuthCacheEntry({ sandboxAuthBytes, cacheEntryPath, log });
+        await writeCodexAuthCacheEntry({ sandboxAuthBytes, cacheEntryPath, log, env });
       }
     } catch (error) {
       // Log only the errno code, never the error message. The message embeds the

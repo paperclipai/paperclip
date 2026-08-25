@@ -21,14 +21,6 @@ const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
-// The default cap on the aggregate raw bytes the in-sandbox duplex frame decoder
-// retains between chunks. The generated gateway runs in a separate operating-system
-// process, so it cannot share the host aggregate byte ledger. It enforces this
-// separate cap locally under the `sandbox_process` scope, and the provider memory
-// allocation bounds it. The host passes the value through
-// PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES. The default is well above one maximum
-// frame, so a legitimate single frame never trips it.
-const DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES = 8 * 1024 * 1024;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well
@@ -94,18 +86,6 @@ const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest"
 const CALLBACK_BRIDGE_WORKER_FAILED_SPAN = "sandbox.callbackBridge.workerFailed";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
-
-/**
- * The default cap on the aggregate raw bytes the generated in-sandbox duplex frame
- * decoder retains. The host passes it through
- * `PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES`. The in-sandbox decoder enforces the
- * cap locally under the `sandbox_process` scope; it never touches the host
- * aggregate byte ledger.
- */
-export const DEFAULT_SANDBOX_DUPLEX_DECODER_MAX_BYTES = DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES;
-
-/** The scope label the in-sandbox duplex decoder reports for its local byte counter. */
-export const SANDBOX_DUPLEX_DECODER_SCOPE = "sandbox_process";
 
 export interface SandboxCallbackBridgeRouteRule {
   method: string;
@@ -2027,246 +2007,30 @@ export function createSandboxHttp2BridgeGateway(
 
 /**
  * The zero-dependency codec the generated duplex gateway embeds. It is a plain
- * JavaScript copy of the host codec in `duplex-frame-codec.ts`. It uses only the
- * `Buffer`, `JSON`, `Object`, `Set`, and `Array` globals, so the generated
- * `.mjs` needs no workspace import. It carries no template literal and no `${`
- * sequence, so it embeds inside the gateway template literal with no escape.
+ * JavaScript copy of the encode side of the host codec in `duplex-frame-codec.ts`.
+ * The generated gateway never decodes: it writes exactly one READY line, then
+ * hands stdout to its transport. So this copy carries only the frame version and
+ * the encode function, not a decoder. It uses only the `Buffer` and `JSON`
+ * globals, so the generated `.mjs` needs no workspace import. It carries no
+ * template literal and no `${` sequence, so it embeds inside the gateway
+ * template literal with no escape.
  *
- * A shared fixture file (`duplex-frame-vectors.json`) proves this copy stays wire
- * compatible with the host codec. {@link getSandboxDuplexGatewayCodecSource}
- * returns this exact source so a test can run every fixture vector against it.
+ * A shared fixture file (`duplex-frame-vectors.json`) proves the host encode side
+ * stays wire compatible with this copy. {@link getSandboxDuplexGatewayCodecSource}
+ * returns this exact source so a test can run the READY encode vector against it.
  */
 const DUPLEX_GATEWAY_CODEC_SOURCE = `const DUPLEX_FRAME_VERSION = 2;
-const DUPLEX_BODY_CHUNK_RAW_BYTES = 256 * 1024;
-const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1000000;
-const DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES = 256;
-const DEFAULT_MAX_DUPLEX_DECODER_BYTES = ${DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES};
-const DUPLEX_DECODER_SCOPE = "${SANDBOX_DUPLEX_DECODER_SCOPE}";
-const DUPLEX_NEWLINE_BYTE = 0x0a;
-const DUPLEX_EMPTY = Buffer.alloc(0);
-const DUPLEX_RESPONSE_OUTCOMES = new Set(["completed", "indeterminate", "unavailable"]);
-
-function duplexOk(frame) {
-  return { ok: true, frame: frame };
-}
-
-function duplexFail(code, message) {
-  return { ok: false, error: { code: code, message: message } };
-}
-
-function duplexIsPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function duplexIsStringRecord(value) {
-  if (!duplexIsPlainObject(value)) return false;
-  for (const entry of Object.values(value)) {
-    if (typeof entry !== "string") return false;
-  }
-  return true;
-}
-
-function duplexIsSafeNonNegativeInteger(value) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
 
 function encodeDuplexFrame(frame) {
   return JSON.stringify(frame) + "\\n";
-}
-
-function encodeDuplexFrameChecked(frame, maxFrameBytes) {
-  const limit = maxFrameBytes != null ? maxFrameBytes : DEFAULT_MAX_DUPLEX_FRAME_BYTES;
-  const json = JSON.stringify(frame);
-  if (Buffer.byteLength(json, "utf8") > limit) {
-    return { ok: false, error: { code: "frame_too_large", message: "frame exceeds the maximum size" } };
-  }
-  return { ok: true, line: json + "\\n" };
-}
-
-function decodeDuplexLine(line) {
-  const text = typeof line === "string" ? line : line.toString("utf8");
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    return duplexFail("malformed_frame", "frame is not valid JSON");
-  }
-  if (!duplexIsPlainObject(parsed)) {
-    return duplexFail("malformed_frame", "frame is not a JSON object");
-  }
-  if (parsed.version !== DUPLEX_FRAME_VERSION) {
-    return duplexFail("version_mismatch", "frame version " + String(parsed.version) + " is not " + DUPLEX_FRAME_VERSION);
-  }
-  return duplexValidateFrame(parsed);
-}
-
-function duplexValidateFrame(frame) {
-  switch (frame.type) {
-    case "request":
-      return duplexValidateRequest(frame);
-    case "response":
-      return duplexValidateResponse(frame);
-    case "body_chunk":
-      return duplexValidateBodyChunk(frame);
-    case "ready":
-      return duplexValidateReady(frame);
-    case "heartbeat":
-      return duplexOk(frame);
-    case "close":
-      return duplexOk(frame);
-    case "error":
-      return duplexValidateError(frame);
-    default:
-      return duplexFail("unknown_type", "unknown frame type " + JSON.stringify(frame.type));
-  }
-}
-
-function duplexValidateRequest(frame) {
-  if (
-    typeof frame.id !== "string" ||
-    typeof frame.method !== "string" ||
-    typeof frame.path !== "string" ||
-    typeof frame.query !== "string" ||
-    !duplexIsSafeNonNegativeInteger(frame.bodyByteCount) ||
-    !duplexIsStringRecord(frame.headers)
-  ) {
-    return duplexFail("malformed_frame", "request frame has a missing or wrong-typed field");
-  }
-  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
-    return duplexFail("id_too_large", "request frame id exceeds the maximum size");
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateResponse(frame) {
-  if (
-    typeof frame.id !== "string" ||
-    typeof frame.status !== "number" ||
-    !duplexIsSafeNonNegativeInteger(frame.bodyByteCount) ||
-    !duplexIsStringRecord(frame.headers) ||
-    typeof frame.outcome !== "string" ||
-    !DUPLEX_RESPONSE_OUTCOMES.has(frame.outcome)
-  ) {
-    return duplexFail("malformed_frame", "response frame has a missing or wrong-typed field");
-  }
-  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
-    return duplexFail("id_too_large", "response frame id exceeds the maximum size");
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateBodyChunk(frame) {
-  if (typeof frame.id !== "string" || typeof frame.data !== "string") {
-    return duplexFail("malformed_frame", "body_chunk frame has a missing or wrong-typed field");
-  }
-  if (!duplexIsSafeNonNegativeInteger(frame.seq)) {
-    return duplexFail("malformed_frame", "body_chunk frame has a missing or wrong-typed seq");
-  }
-  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
-    return duplexFail("id_too_large", "body_chunk frame id exceeds the maximum size");
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateReady(frame) {
-  if (typeof frame.nonce !== "string") {
-    return duplexFail("malformed_frame", "ready frame has a missing or wrong-typed nonce");
-  }
-  for (const key of Object.keys(frame)) {
-    if (key !== "version" && key !== "type" && key !== "nonce") {
-      return duplexFail("malformed_frame", "ready frame has an unexpected field");
-    }
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateError(frame) {
-  if (typeof frame.code !== "string") {
-    return duplexFail("malformed_frame", "error frame has a missing or wrong-typed code");
-  }
-  if (frame.message !== undefined && typeof frame.message !== "string") {
-    return duplexFail("malformed_frame", "error frame has a wrong-typed message");
-  }
-  return duplexOk(frame);
-}
-
-class DuplexFrameDecoder {
-  constructor(options) {
-    this.buffer = DUPLEX_EMPTY;
-    this.discarding = false;
-    this.maxFrameBytes =
-      options && options.maxFrameBytes != null ? options.maxFrameBytes : DEFAULT_MAX_DUPLEX_FRAME_BYTES;
-    // The in-sandbox decoder runs in a separate operating-system process, so it
-    // cannot share the host aggregate byte ledger. It bounds its own retained
-    // bytes with a local cap under the "sandbox_process" scope. The counters here
-    // never increment or release a host aggregate token.
-    this.scope = DUPLEX_DECODER_SCOPE;
-    this.maxAggregateBytes =
-      options && options.maxAggregateBytes != null
-        ? options.maxAggregateBytes
-        : DEFAULT_MAX_DUPLEX_DECODER_BYTES;
-    this.bytesInUse = 0;
-    this.aggregateRejections = 0;
-  }
-
-  push(chunk) {
-    const incoming = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
-    // Enforce the local sandbox-process cap before the concat allocates the peak
-    // "old + incoming" buffer. A rejection fails closed: the decoder drops the
-    // retained buffer and the incoming chunk, resynchronizes at the next newline,
-    // and reports the aggregate rejection. It retains nothing over the cap.
-    if (this.buffer.length + incoming.length > this.maxAggregateBytes) {
-      this.buffer = DUPLEX_EMPTY;
-      this.discarding = true;
-      this.bytesInUse = 0;
-      this.aggregateRejections += 1;
-      return [duplexFail("aggregate_bytes_exceeded", "aggregate retained bytes exceeded the sandbox-process cap")];
-    }
-    this.buffer = this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming]);
-    const results = [];
-    for (;;) {
-      if (this.discarding) {
-        const newlineIndex = this.buffer.indexOf(DUPLEX_NEWLINE_BYTE);
-        if (newlineIndex === -1) {
-          this.buffer = DUPLEX_EMPTY;
-          break;
-        }
-        this.buffer = this.buffer.subarray(newlineIndex + 1);
-        this.discarding = false;
-        continue;
-      }
-      const newlineIndex = this.buffer.indexOf(DUPLEX_NEWLINE_BYTE);
-      if (newlineIndex === -1) {
-        if (this.buffer.length > this.maxFrameBytes) {
-          results.push(duplexFail("frame_too_large", "frame exceeds the maximum size"));
-          this.discarding = true;
-          this.buffer = DUPLEX_EMPTY;
-        }
-        break;
-      }
-      const line = this.buffer.subarray(0, newlineIndex);
-      this.buffer = this.buffer.subarray(newlineIndex + 1);
-      if (line.length === 0) continue;
-      if (line.length > this.maxFrameBytes) {
-        results.push(duplexFail("frame_too_large", "frame exceeds the maximum size"));
-        continue;
-      }
-      results.push(decodeDuplexLine(line));
-    }
-    // Reconcile the local sandbox-process counter to the bytes still retained.
-    this.bytesInUse = this.buffer.length;
-    return results;
-  }
 }`;
 
 /**
  * Return the exact zero-dependency codec source the generated duplex gateway
- * embeds. A test runs every fixture vector against this source, so it proves the
- * embedded copy decodes the same bytes as the host codec. The source declares
- * `encodeDuplexFrame`, `encodeDuplexFrameChecked`, `decodeDuplexLine`,
- * `DuplexFrameDecoder`, `DUPLEX_FRAME_VERSION`, and
- * `DEFAULT_MAX_DUPLEX_FRAME_BYTES`, but exports none of them; a caller wraps it to
- * read those names.
+ * embeds. A test wraps this source and calls `encodeDuplexFrame` to prove the
+ * embedded copy encodes the READY frame the same way the host encode side does.
+ * The source declares `encodeDuplexFrame` and `DUPLEX_FRAME_VERSION`, but exports
+ * neither; a caller wraps it to read those names.
  */
 export function getSandboxDuplexGatewayCodecSource(): string {
   return DUPLEX_GATEWAY_CODEC_SOURCE;
@@ -2369,7 +2133,7 @@ function normalizeHeaders(headers) {
   return out;
 }
 
-async function readBody(req) {
+async function readBodyBytes(req) {
   const chunks = [];
   let totalBytes = 0;
   for await (const chunk of req) {
@@ -2380,7 +2144,11 @@ async function readBody(req) {
       throw new Error("Bridge request body exceeded the configured size limit.");
     }
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req) {
+  return (await readBodyBytes(req)).toString("utf8");
 }
 
 function tokensMatch(received) {
@@ -2711,7 +2479,7 @@ function runHttp2Gateway() {
         writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
         return;
       }
-      const requestBodyBuffer = Buffer.from(await readBody(req), "utf8");
+      const requestBodyBuffer = await readBodyBytes(req);
       let response;
       try {
         response = await forwardOverHttp2({
