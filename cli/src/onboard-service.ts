@@ -165,3 +165,20 @@ export async function handleOnboardService(
   deps.success(`Installed and started ${detection.manager.serviceName}.`);
   return true;
 }
+
+// Onboarding falls back to offering a foreground start when nothing else
+// will serve. A just-installed service is already serving, so offering the
+// start would only run the user into the already-running instance guard.
+export function shouldOfferForegroundStart(options: {
+  serviceInstalled: boolean;
+  startAlreadyDecided: boolean;
+  invokedByRun: boolean;
+  interactive: boolean;
+}): boolean {
+  return (
+    !options.startAlreadyDecided &&
+    !options.serviceInstalled &&
+    !options.invokedByRun &&
+    options.interactive
+  );
+}
