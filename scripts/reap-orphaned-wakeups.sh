@@ -33,7 +33,23 @@ PGPORT="${PGPORT:-54329}"
 PGUSER="${PGUSER:-paperclip}"
 PGDATABASE="${PGDATABASE:-paperclip}"
 export PGPASSWORD="${PGPASSWORD:-paperclip}"
-PSQL=(psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1)
+# ⛔ Resolve psql ABSOLUTELY. `launchctl getenv PATH` on this box is empty, and a
+# lane's execution environment is equally bare, so a bare `psql` resolves only
+# for callers that happen to have Homebrew on PATH. This script's own LaunchAgent
+# does set PATH — so guard-bus runs it fine — but an agent lane asked to re-run
+# the monitor check gets `psql: command not found` and reasonably, but wrongly,
+# reports "local Paperclip database inaccessible" (TSMC-21716, 2026-08-25).
+#
+# Same class as the ws-gc incident the same morning: a PATH lookup that works by
+# hand and fails everywhere else, and never fails loudly enough to be believed.
+PSQL_BIN="${PSQL_BIN:-}"
+if [ -z "$PSQL_BIN" ]; then
+  for candidate in /opt/homebrew/bin/psql /usr/local/bin/psql "$(command -v psql 2>/dev/null || true)"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] && { PSQL_BIN="$candidate"; break; }
+  done
+fi
+[ -n "$PSQL_BIN" ] || { echo "reap-orphaned-wakeups: psql not found (looked in /opt/homebrew/bin, /usr/local/bin, PATH). This is a TOOL RESOLUTION failure, not a database outage — do not report the control plane as down." >&2; exit 2; }
+PSQL=("$PSQL_BIN" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1)
 
 ORPHAN_PREDICATE="aw.status IN ('queued','deferred_issue_execution')
   AND EXISTS (
