@@ -19,6 +19,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
+import { startPointerCapabilityDetection } from "./lib/pointerCapability";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -28,6 +29,11 @@ initPluginBridge(React, ReactDOM);
 // DevTools performance tracks and never clears them; on a long-lived tab they
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
+
+// iPadOS lies about hover capability, so CSS `hover:*` is gated on a class this
+// maintains instead of a media query. Run it before the first render
+// so touch-only devices never paint a hover state.
+startPointerCapabilityDetection();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

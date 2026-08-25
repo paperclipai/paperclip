@@ -13,18 +13,23 @@ function TestHarness({
   onSearch,
   onToggleCollapse,
   onGoToInbox,
+  onShowShortcuts,
+  enabled = true,
 }: {
   onNewIssue: () => void;
   onSearch?: () => void;
   onToggleCollapse?: () => void;
   onGoToInbox?: () => void;
+  onShowShortcuts?: () => void;
+  enabled?: boolean;
 }) {
   useKeyboardShortcuts({
-    enabled: true,
+    enabled,
     onNewIssue,
     onSearch,
     onToggleCollapse,
     onGoToInbox,
+    onShowShortcuts,
   });
 
   return <div>keyboard shortcuts test</div>;
@@ -215,6 +220,60 @@ describe("useKeyboardShortcuts", () => {
       cancelable: true,
     }));
     expect(onToggleCollapse).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  // The cheatsheet is only reachable via `?`, and `?` used to be gated on the
+  // same setting the cheatsheet documents — so a disabled instance had no way to
+  // discover that shortcuts exist or where the toggle lives.
+  it("still opens the cheatsheet on '?' while shortcuts are disabled", () => {
+    const root = createRoot(container);
+    const onShowShortcuts = vi.fn();
+    const onNewIssue = vi.fn();
+
+    act(() => {
+      root.render(
+        <TestHarness enabled={false} onNewIssue={onNewIssue} onShowShortcuts={onShowShortcuts} />,
+      );
+    });
+
+    document.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "?",
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(onShowShortcuts).toHaveBeenCalledTimes(1);
+
+    // ...but only `?`. Every other shortcut stays off.
+    document.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "c",
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(onNewIssue).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not double-fire '?' when shortcuts are enabled", () => {
+    const root = createRoot(container);
+    const onShowShortcuts = vi.fn();
+
+    act(() => {
+      root.render(<TestHarness onNewIssue={vi.fn()} onShowShortcuts={onShowShortcuts} />);
+    });
+
+    document.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "?",
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(onShowShortcuts).toHaveBeenCalledTimes(1);
 
     act(() => {
       root.unmount();

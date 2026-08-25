@@ -176,6 +176,7 @@ import {
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
+import { usePointerMovedSinceKeyNav } from "../hooks/usePointerMovedSinceKeyNav";
 import {
   captureInboxOrderPin,
   reconcileInboxOrderPin,
@@ -1713,14 +1714,7 @@ export function Inbox() {
   // Keyboard nav scrolls the list, which fires mouseenter on whatever row lands
   // under the stationary cursor — that must not steal the selection. Hover only
   // selects after the pointer has physically moved since the last key nav.
-  const pointerMovedSinceKeyNavRef = useRef(true);
-  useEffect(() => {
-    const handlePointerMove = () => {
-      pointerMovedSinceKeyNavRef.current = true;
-    };
-    window.addEventListener("mousemove", handlePointerMove, { passive: true });
-    return () => window.removeEventListener("mousemove", handlePointerMove);
-  }, []);
+  const pointerMovedSinceKeyNavRef = usePointerMovedSinceKeyNav();
   // Which row the cursor is over, tracked WITHOUT React state so scrubbing the
   // list costs zero re-renders (hover paints via CSS `:hover`, see IssueRow).
   // Keyboard nav reads this to continue from the hovered row.
