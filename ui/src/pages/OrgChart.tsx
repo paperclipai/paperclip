@@ -182,7 +182,13 @@ export function OrgChart() {
     zoomTowardPoint,
     fitToScreen,
     viewportHandlers,
-  } = useOrgViewport({ contentBounds: bounds, ready: allNodes.length > 0 });
+  } = useOrgViewport({
+    contentBounds: bounds,
+    ready: allNodes.length > 0,
+    // Re-fit when the selected company changes, even if the new org happens to
+    // share the previous width×height (the hook also re-fits on a size change).
+    fitKey: selectedCompanyId ?? undefined,
+  });
 
   // Live activity: which agents are working (pulse) + agent→agent beams.
   const { liveAgentIds, activeBeams } = useAgentActivity(selectedCompanyId);

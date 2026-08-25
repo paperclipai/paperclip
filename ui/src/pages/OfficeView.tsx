@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
@@ -103,14 +103,14 @@ export function OfficeView() {
     zoomTowardPoint,
     fitToScreen,
     viewportHandlers,
-  } = useOrgViewport({ contentBounds: layout.bounds, ready: layout.desks.length > 0 });
-
-  // Re-fit when the user switches Lite/Deep (call the latest fit fn post-render).
-  const fitRef = useRef(fitToScreen);
-  fitRef.current = fitToScreen;
-  useEffect(() => {
-    fitRef.current();
-  }, [view]);
+  } = useOrgViewport({
+    contentBounds: layout.bounds,
+    ready: layout.desks.length > 0,
+    // Re-fit on a different company or Lite/Deep view even if the new content
+    // happens to share the previous width×height; the hook also re-fits on a
+    // dimension change, so a plain relayout is covered too.
+    fitKey: `${selectedCompanyId ?? ""}:${view}`,
+  });
 
   // Live activity: which agents are working (pulse) + agent→agent beams.
   const { liveAgentIds, activeBeams } = useAgentActivity(selectedCompanyId);

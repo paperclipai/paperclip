@@ -63,9 +63,11 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 export function useOrgViewport({
   contentBounds,
   ready,
+  fitKey,
 }: {
   contentBounds: ViewportBounds;
   ready: boolean;
+  fitKey?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -92,14 +94,15 @@ export function useOrgViewport({
     };
   }, []);
 
-  // Center + fit on first load, and re-fit once whenever the content bounds
-  // change (switching company, Lite/Deep, or a responsive relayout). Keyed on a
-  // bounds signature so plain re-renders never re-fit and we don't fight the
-  // user's pan/zoom (pan/zoom never change contentBounds).
+  // Center + fit on first load, and re-fit once whenever the content changes —
+  // a different company/view (caller-supplied fitKey) or a relayout to different
+  // dimensions. Combining the identity key with the bounds size means two
+  // distinct contents that happen to share the same width×height still re-fit,
+  // while plain re-renders and the user's own pan/zoom never re-fit.
   const fittedSignature = useRef<string | null>(null);
   useEffect(() => {
     if (!ready || !containerRef.current) return;
-    const signature = `${contentBounds.width}x${contentBounds.height}`;
+    const signature = `${fitKey ?? ""}:${contentBounds.width}x${contentBounds.height}`;
     if (fittedSignature.current === signature) return;
     fittedSignature.current = signature;
 
@@ -119,7 +122,7 @@ export function useOrgViewport({
       x: (containerW - chartW) / 2,
       y: (containerH - chartH) / 2,
     });
-  }, [ready, contentBounds]);
+  }, [ready, contentBounds, fitKey]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
