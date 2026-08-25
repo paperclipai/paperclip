@@ -45,6 +45,7 @@ export const VALID_PROVIDERS = [
   "minimax",
   "minimax-cn",
   "kilocode",
+  "ollama-launch",
 ] as const;
 
 /**
