@@ -27,10 +27,19 @@ const VERIFY = path.join(REPO_ROOT, "scripts/pinned-deploy-verify.sh");
 const SMOKE = path.join(REPO_ROOT, "scripts/pinned-deploy-snapshot-smoke.sh");
 
 function sh(cmd, args, env = {}, opts = {}) {
+  // Strip the invoking process's own agent identity (TSMC-21660): this suite
+  // runs inside an agent lane whenever an agent runs it, and PAPERCLIP_AGENT_ID
+  // / PAPERCLIP_RUN_ID would otherwise leak into every subprocess and trip the
+  // capability-boundary refusal added below (TSMC-21652) for tests that never
+  // meant to simulate a lane caller. Tests that DO want a lane caller add
+  // PAPERCLIP_AGENT_ID/PAPERCLIP_RUN_ID back explicitly via the env argument.
+  const baseEnv = { ...process.env };
+  delete baseEnv.PAPERCLIP_AGENT_ID;
+  delete baseEnv.PAPERCLIP_RUN_ID;
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...baseEnv,
       PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN: "test-deployment-lease",
       ...env,
     },
