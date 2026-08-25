@@ -102,6 +102,7 @@ import type {
   TurnCompletion,
 } from "./run-contracts.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
+import { sharedSessionInitGate } from "./session-init-gate.js";
 import { settleAcpRun, type SettlementSteps } from "./settlement-sequence.js";
 import {
   runAttempt,
@@ -3616,6 +3617,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         try {
           if (!handle) {
+            // Cold handshakes take a shared slot so a post-resume run backlog
+            // establishes sessions a few at a time instead of stampeding the
+            // provider proxy into session-create timeouts (KEN-7183). The slot
+            // spans the resume-retry below; warm-handle hits never queue here.
+            const sessionInitSlot = await sharedSessionInitGate.acquire();
+            if (sessionInitSlot.waitedMs > 1000) {
+              await ctx.onLog(
+                "stdout",
+                `[paperclip] ACPX session-init gate: waited ${Math.round(sessionInitSlot.waitedMs / 1000)}s for a cold-handshake slot${sessionInitSlot.timedOut ? " (max wait elapsed; proceeding ungated)" : ""}.\n`,
+              );
+            }
             try {
               // Step 7 — acp.handshake: ACP session establishment (session/new or
               // resume). A throwing handshake still reports its duration before the
@@ -3671,6 +3683,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 // only its own ensure-session sub-time on the span.
                 spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
               });
+            } finally {
+              sessionInitSlot.release();
             }
           } else {
             // Warm-handle hit: a compatible cached handle reuses the running ACP
