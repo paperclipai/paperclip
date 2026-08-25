@@ -5,6 +5,7 @@ import type { PaperclipConfig } from "./config/schema.js";
 import { openUrl } from "./client/board-auth.js";
 import { installCommand } from "./commands/install.js";
 import { resolvePaperclipInstanceId } from "./config/home.js";
+import { readRuntimeInfo, type PaperclipRuntimeInfo } from "./runtime-info.js";
 import {
   readInstallManifest,
   resolveInstallStorePaths,
@@ -32,7 +33,7 @@ type OnboardServiceDashboardConfig = {
 
 type OnboardServiceDashboardDependencies = {
   isInteractive: () => boolean;
-  waitUntilReady: (healthUrl: string) => Promise<boolean>;
+  waitUntilReady: () => Promise<PaperclipRuntimeInfo | null>;
   openDashboard: (url: string) => Promise<boolean>;
   info: (message: string) => void;
   success: (message: string) => void;
@@ -44,17 +45,28 @@ function envDisablesBrowser(value = process.env.PAPERCLIP_NO_BROWSER): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
-async function waitUntilDashboardReady(healthUrl: string, timeoutMs = 60_000): Promise<boolean> {
+async function waitUntilDashboardReady(timeoutMs = 60_000): Promise<PaperclipRuntimeInfo | null> {
+  const instanceId = resolvePaperclipInstanceId();
+  const detection = await detectServiceManager({ instanceId });
+  if (!detection.supported) return null;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    try {
-      const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
-      const body = await response.json() as { status?: unknown };
-      if (response.ok && body.status === "ok") return true;
-    } catch {}
+    const info = readRuntimeInfo(instanceId);
+    if (info) {
+      const status = await detection.manager.status().catch(() => null);
+      if (status?.active && status.pid === info.pid) {
+        try {
+          const response = await fetch(buildLocalHealthUrl(info.host, info.port), {
+            signal: AbortSignal.timeout(2_000),
+          });
+          const body = await response.json() as { status?: unknown };
+          if (response.ok && body.status === "ok") return info;
+        } catch {}
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  return false;
+  return null;
 }
 
 const defaultDashboardDependencies: OnboardServiceDashboardDependencies = {
@@ -66,7 +78,11 @@ const defaultDashboardDependencies: OnboardServiceDashboardDependencies = {
   warn: (message) => p.log.warn(message),
 };
 
-export function resolveOnboardServiceDashboardUrl(config: OnboardServiceDashboardConfig): string {
+export function resolveOnboardServiceDashboardUrl(
+  config: OnboardServiceDashboardConfig,
+  runtime?: Pick<PaperclipRuntimeInfo, "dashboardUrl"> | null,
+): string {
+  if (runtime?.dashboardUrl.trim()) return runtime.dashboardUrl.trim().replace(/\/+$/, "");
   if (config.auth.baseUrlMode === "explicit" && config.auth.publicBaseUrl?.trim()) {
     return config.auth.publicBaseUrl.trim().replace(/\/+$/, "");
   }
@@ -78,13 +94,11 @@ export async function handoffToOnboardedService(
   dependencies: Partial<OnboardServiceDashboardDependencies> = {},
 ): Promise<void> {
   const deps = { ...defaultDashboardDependencies, ...dependencies };
-  const dashboardUrl = resolveOnboardServiceDashboardUrl(config);
+  const runtime = await deps.waitUntilReady();
+  const dashboardUrl = resolveOnboardServiceDashboardUrl(config, runtime);
   deps.info(`Paperclip dashboard: ${pc.cyan(dashboardUrl)}`);
 
-  if (!deps.isInteractive() || envDisablesBrowser()) return;
-
-  const ready = await deps.waitUntilReady(buildLocalHealthUrl(config.server.host, config.server.port));
-  if (!ready) {
+  if (!runtime) {
     deps.warn(
       `The background service started, but the dashboard is not ready yet. ` +
         `Open ${dashboardUrl} after checking \`paperclipai service logs\`.`,
@@ -92,8 +106,10 @@ export async function handoffToOnboardedService(
     return;
   }
 
+  if (!deps.isInteractive() || envDisablesBrowser()) return;
+
   if (await deps.openDashboard(dashboardUrl)) {
-    deps.success("Opened the Paperclip dashboard in your browser.");
+    deps.success("Sent the Paperclip dashboard to your browser.");
   } else {
     deps.warn(`Could not open a browser automatically. Open ${dashboardUrl} manually.`);
   }

@@ -181,7 +181,15 @@ describe("onboarded service dashboard handoff", () => {
 
   it("prints the dashboard URL without opening a browser in non-interactive runs", async () => {
     const info = vi.fn();
-    const waitUntilReady = vi.fn(async () => true);
+    const waitUntilReady = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      instanceId: "default",
+      pid: 123,
+      host: "127.0.0.1",
+      port: 3100,
+      dashboardUrl: "http://127.0.0.1:3100",
+      startedAt: "2026-08-25T00:00:00.000Z",
+    }));
     const openDashboard = vi.fn(async () => true);
 
     await handoffToOnboardedService(dashboardConfig(), {
@@ -192,12 +200,20 @@ describe("onboarded service dashboard handoff", () => {
     });
 
     expect(info).toHaveBeenCalledWith(expect.stringContaining("http://127.0.0.1:3100"));
-    expect(waitUntilReady).not.toHaveBeenCalled();
+    expect(waitUntilReady).toHaveBeenCalledOnce();
     expect(openDashboard).not.toHaveBeenCalled();
   });
 
-  it("waits for service health before opening the dashboard", async () => {
-    const waitUntilReady = vi.fn(async () => true);
+  it("uses the ready service runtime port before opening the dashboard", async () => {
+    const waitUntilReady = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      instanceId: "default",
+      pid: 123,
+      host: "127.0.0.1",
+      port: 3101,
+      dashboardUrl: "http://127.0.0.1:3101",
+      startedAt: "2026-08-25T00:00:00.000Z",
+    }));
     const openDashboard = vi.fn(async () => true);
     const success = vi.fn();
 
@@ -209,9 +225,9 @@ describe("onboarded service dashboard handoff", () => {
       success,
     });
 
-    expect(waitUntilReady).toHaveBeenCalledWith("http://127.0.0.1:3100/api/health");
-    expect(openDashboard).toHaveBeenCalledWith("http://127.0.0.1:3100");
-    expect(success).toHaveBeenCalledWith(expect.stringContaining("Opened"));
+    expect(waitUntilReady).toHaveBeenCalledOnce();
+    expect(openDashboard).toHaveBeenCalledWith("http://127.0.0.1:3101");
+    expect(success).toHaveBeenCalledWith(expect.stringContaining("Sent"));
   });
 
   it("keeps the manual link and warns when service health does not become ready", async () => {
@@ -220,7 +236,7 @@ describe("onboarded service dashboard handoff", () => {
 
     await handoffToOnboardedService(dashboardConfig(), {
       isInteractive: () => true,
-      waitUntilReady: vi.fn(async () => false),
+      waitUntilReady: vi.fn(async () => null),
       openDashboard,
       info: vi.fn(),
       warn,
