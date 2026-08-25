@@ -960,7 +960,33 @@ describe.sequential("plugin tool and bridge authz", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ runId: "run-1", jobId: "job-1" });
-    expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual");
+    expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual", null);
+  });
+
+  it("forwards the requested companyId to a manual job trigger", async () => {
+    readyPlugin();
+    const scheduler = {
+      triggerJob: vi.fn().mockResolvedValue({
+        runId: "run-1",
+        jobId: "job-1",
+        companyId: "company-1",
+      }),
+    };
+    const jobStore = { getJobByIdForPlugin: vi.fn().mockResolvedValue({ id: "job-1" }) };
+    const { app } = await createApp(boardActor({
+      userId: "admin-1",
+      isInstanceAdmin: true,
+      companyIds: [],
+    }), {}, {
+      jobDeps: { scheduler, jobStore },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/jobs/job-1/trigger`)
+      .send({ companyId: "company-1" });
+
+    expect(res.status).toBe(200);
+    expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual", "company-1");
   });
 
   // ─── Agent JWT tool execution (cherry-picked from #5549) ─────────────────────

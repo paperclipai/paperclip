@@ -59,6 +59,7 @@ import type { PluginPerformActionContext } from "./protocol.js";
 export type {
   PaperclipPluginManifestV1,
   PluginJobDeclaration,
+  PluginJobScope,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
@@ -238,6 +239,20 @@ export interface PluginJobContext {
   trigger: "schedule" | "manual" | "retry";
   /** ISO 8601 timestamp when the run was scheduled to start. */
   scheduledAt: string;
+  /**
+   * Company this run is scoped to, or `null` for an instance-scoped job.
+   *
+   * Populated only when the job's manifest declaration says
+   * `scope: "company"`. It is the id to pass to company-scoped host calls
+   * (`ctx.config.get(companyId)`, `ctx.secrets.resolve(..., { companyId })`,
+   * `ctx.issues.*`) — and the host has already minted the matching invocation
+   * scope, so those calls are authorized.
+   *
+   * `null`/absent on an instance-scoped job, and there is no way to obtain one
+   * from inside the handler: every company-scoped host call will be refused
+   * with "company context is required". Declare `scope: "company"` instead.
+   */
+  companyId?: string | null;
 }
 
 // ---------------------------------------------------------------------------

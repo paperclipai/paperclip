@@ -2607,6 +2607,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         runId: partial.runId ?? randomUUID(),
         trigger: partial.trigger ?? "manual",
         scheduledAt: partial.scheduledAt ?? new Date().toISOString(),
+        // Defaults to instance scope, matching a manifest declaration that
+        // omits `scope`. Pass `companyId` to simulate a `scope: "company"`
+        // job.
+        companyId: partial.companyId ?? null,
       });
     },
     async getData<T = unknown>(key: string, params: Record<string, unknown> = {}) {

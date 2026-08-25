@@ -10,7 +10,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
-import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@paperclipai/shared";
+import type {
+  PluginJobScope,
+  PluginJobStatus,
+  PluginJobRunStatus,
+  PluginJobRunTrigger,
+} from "@paperclipai/shared";
 
 /**
  * `plugin_jobs` table — registration and runtime configuration for
@@ -25,6 +30,15 @@ import type { PluginJobStatus, PluginJobRunStatus, PluginJobRunTrigger } from "@
  * - `active` — job is enabled and will run on schedule
  * - `paused` — job is temporarily disabled by the operator
  * - `error` — job has been disabled due to repeated failures
+ *
+ * Scope values (mirrored from the manifest declaration):
+ * - `instance` — one unscoped run per tick (the default)
+ * - `company` — one run per tick per company the plugin is enabled for, each
+ *   carrying that company's invocation scope
+ *
+ * Note there is deliberately no `company_id` here: a job *definition* stays
+ * plugin-global. Only the runs it produces (`plugin_job_runs.company_id`) are
+ * company-scoped.
  *
  * @see PLUGIN_SPEC.md §21.3 — `plugin_jobs`
  */
@@ -42,6 +56,8 @@ export const pluginJobs = pgTable(
     schedule: text("schedule").notNull(),
     /** Current scheduling state. */
     status: text("status").$type<PluginJobStatus>().notNull().default("active"),
+    /** Tenancy of the job, mirrored from the manifest declaration. */
+    scope: text("scope").$type<PluginJobScope>().notNull().default("instance"),
     /** Timestamp of the most recent successful execution. */
     lastRunAt: timestamp("last_run_at", { withTimezone: true }),
     /** Pre-computed timestamp of the next scheduled execution. */

@@ -98,7 +98,7 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction"],
+        supportedMethods: ["getData", "performAction", "runJob"],
       },
     });
     return;
@@ -106,6 +106,16 @@ rl.on("line", (line) => {
 
   if (method === "getData" || method === "performAction") {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
+    return;
+  }
+
+  if (method === "runJob") {
+    // A scheduled job's probe params ride on the job context, so reshape into
+    // the { params: { ... } } envelope sendNestedHostRequest expects.
+    sendNestedHostRequest(
+      { id: message.id, params: { params: message.params?.job?.probe ?? {} } },
+      message.paperclipInvocation?.id,
+    );
     return;
   }
 
