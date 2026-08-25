@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 
-import type { DurablePrpControlPlane } from "@paperclipai/paperclip-runner";
+import type { DurablePrpControlPlane } from "../vendor/paperclip-runner/index.js";
 
 import { logger } from "../middleware/logger.js";
 

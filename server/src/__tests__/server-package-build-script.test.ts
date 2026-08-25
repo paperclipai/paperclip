@@ -23,4 +23,21 @@ describe("server package build script", () => {
     expect(buildScript).toContain("cp -R src/onboarding-assets/. dist/onboarding-assets/");
     expect(buildScript).toContain("cp -R src/built-ins/. dist/built-ins/");
   });
+
+  it("vendors the private runner runtime without a production workspace dependency", () => {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      scripts?: Record<string, string>;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+
+    expect(packageJson.dependencies?.["@paperclipai/paperclip-runner"]).toBeUndefined();
+    expect(packageJson.devDependencies?.["@paperclipai/paperclip-runner"]).toBe("workspace:*");
+    expect(packageJson.scripts?.["prepare:runner-vendor"]).toBe(
+      "pnpm --filter @paperclipai/paperclip-runner build",
+    );
+    expect(packageJson.scripts?.build).toContain(
+      "cp -R ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/",
+    );
+  });
 });

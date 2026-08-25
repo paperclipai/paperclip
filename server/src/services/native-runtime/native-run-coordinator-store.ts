@@ -15,7 +15,7 @@ import {
   type PrpTerminalState,
   validatePrpEvent,
   validatePrpStructuredRunResult,
-} from "@paperclipai/paperclip-runner";
+} from "../../vendor/paperclip-runner/index.js";
 
 export interface NativeRunStoreBinding {
   readonly companyId: string;

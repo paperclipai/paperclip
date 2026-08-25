@@ -20,7 +20,7 @@ import {
   type PaperclipSemanticToolCall,
   type PaperclipSemanticToolDefinition,
   type PaperclipSemanticToolResult,
-} from "@paperclipai/paperclip-runner";
+} from "../../vendor/paperclip-runner/index.js";
 
 export interface PaperclipRunnerSemanticBinding {
   readonly companyId: string;
