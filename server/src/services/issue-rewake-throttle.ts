@@ -368,3 +368,91 @@ export function evaluateBlockedRepollThrottle(input: BlockedRepollInput): Blocke
   }
   return { blocked: false, blockedStreak };
 }
+
+/* ---------------------------------------------------------------------------
+ * Budget-aware wake governor (TSMC-21552 generators, 2026-08-25)
+ *
+ * Every gate above is PROGRESS-shaped: a run that leaves any issue-visible
+ * progress resets the streaks, and the completion-chain paths deliberately
+ * re-offer productive cards immediately. Measured on TSMC-21587, that
+ * combination is exactly how a card dies: 15 billed runs in 70 minutes, each
+ * leaving a document tweak + comment ("productive"), rotating through
+ * completion_reoffer -> completion_continuation -> completion_chain -> sweep
+ * wakes so no single-path cap could engage, banking 1.01M weighted input
+ * before the terminal aggregate ceiling stopped it — permanently, because at
+ * the ceiling there is no self-recovery (TSMC-21552).
+ *
+ * This governor is BUDGET-shaped: as an issue's weighted aggregate input
+ * (fresh + CACHED_INPUT_BUDGET_WEIGHT x cached — the admission ceiling's own
+ * formula) climbs toward the ceiling, automation wakes are first paced, then
+ * held entirely:
+ *
+ *   < 60%   clear — no effect.
+ *   >= 60%  soft  — automation re-wakes for the issue run at most once per
+ *                   ISSUE_BUDGET_SOFT_RUN_SPACING_MS: burn becomes slow and
+ *                   linear instead of loop-speed.
+ *   >= 85%  hard  — automation re-wakes are held. Each further run requires
+ *                   fresh human/board input since the last run, so the final
+ *                   15% is only ever spent under supervision.
+ *
+ * Like everything else in this file it applies only to throttle-candidate
+ * wakes: human comments, interaction responses, blocker resolutions, monitor
+ * wakes and direct user kicks pass untouched — they ARE the supervision the
+ * hard zone demands. An unexpired board_token_exception raises the effective
+ * ceiling, so granted headroom moves both thresholds up with it.
+ */
+export const ISSUE_BUDGET_WAKE_SOFT_FRACTION = 0.6;
+export const ISSUE_BUDGET_WAKE_HARD_FRACTION = 0.85;
+
+/** Minimum spacing between automation runs on an issue in the soft zone. */
+export const ISSUE_BUDGET_SOFT_RUN_SPACING_MS = 15 * 60_000;
+
+export interface IssueBudgetWakeGovernorInput {
+  now: Date;
+  /** Weighted aggregate: fresh + CACHED_INPUT_BUDGET_WEIGHT x cached input. */
+  weightedAggregateInputTokens: number;
+  /** Effective ceiling: the admission threshold or a granted exception cap. */
+  ceilingTokens: number;
+  /** Most recent finished run bound to this issue, any agent. */
+  lastRunFinishedAt: Date | null;
+  /** User/board-authored issue input landed after that run finished. */
+  hasHumanInputSinceLastRun: boolean;
+}
+
+export type IssueBudgetWakeGovernorDecision =
+  | { hold: false; zone: "clear" | "soft" | "hard"; fraction: number }
+  | { hold: true; zone: "soft"; fraction: number; nextAllowedAt: Date }
+  | { hold: true; zone: "hard"; fraction: number };
+
+export function evaluateIssueBudgetWakeGovernor(
+  input: IssueBudgetWakeGovernorInput,
+): IssueBudgetWakeGovernorDecision {
+  if (!Number.isFinite(input.ceilingTokens) || input.ceilingTokens <= 0) {
+    return { hold: false, zone: "clear", fraction: 0 };
+  }
+  const fraction = Math.max(0, input.weightedAggregateInputTokens) / input.ceilingTokens;
+  if (fraction < ISSUE_BUDGET_WAKE_SOFT_FRACTION) {
+    return { hold: false, zone: "clear", fraction };
+  }
+  // Human/board input since the last run is the supervision signal both zones
+  // wait for. It admits exactly one further run: the next wake re-evaluates
+  // against a fresh "since last run" window.
+  if (input.hasHumanInputSinceLastRun) {
+    return {
+      hold: false,
+      zone: fraction >= ISSUE_BUDGET_WAKE_HARD_FRACTION ? "hard" : "soft",
+      fraction,
+    };
+  }
+  if (fraction >= ISSUE_BUDGET_WAKE_HARD_FRACTION) {
+    return { hold: true, zone: "hard", fraction };
+  }
+  if (!input.lastRunFinishedAt) {
+    return { hold: false, zone: "soft", fraction };
+  }
+  const nextAllowedAt = new Date(input.lastRunFinishedAt.getTime() + ISSUE_BUDGET_SOFT_RUN_SPACING_MS);
+  if (input.now.getTime() < nextAllowedAt.getTime()) {
+    return { hold: true, zone: "soft", fraction, nextAllowedAt };
+  }
+  return { hold: false, zone: "soft", fraction };
+}

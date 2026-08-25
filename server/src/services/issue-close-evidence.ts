@@ -27,10 +27,15 @@ const GENERATION_MEASUREMENT_LABEL_HINTS = [
 const GENERATION_MEASUREMENT_TITLE_RE =
   /(\[burn\]|\bburn[- ]tail\b|\basset[- ]generation\b|\bbenchmark[- ]cell\b|\bmatrix[- ]cells?\b|\bvision[- ]judge\b|\bgenerated media\b|\burl[- ]pool\b|\bmatrix incomplete\b)/i;
 
-// Authors use this exact phrase to state that a task cannot be accepted from
-// prose alone. Make it executable at creation time instead of relying on an
-// agent to remember to add a close contract later.
-const EXPLICIT_ACCEPTANCE_EVIDENCE_RE = /\bacceptance\s+evidence\b/i;
+// Authors use these phrases to state that a task cannot be accepted from
+// prose alone. Make them executable at creation time instead of relying on an
+// agent to remember to add a close contract later. "attach evidence" /
+// "close with evidence" joined "acceptance evidence" after TSC-7617
+// (2026-08-25): a re-cut brief demanding "Attach evidence and close with a
+// verdict" was closed done two minutes after creation with "No work
+// performed" — the demand was prose, so nothing enforced it.
+const EXPLICIT_ACCEPTANCE_EVIDENCE_RE =
+  /\b(?:acceptance\s+evidence|attach(?:\s+(?:the|all|supporting))?\s+evidence|close\s+with\s+evidence)\b/i;
 
 export type CloseEvidenceMeasurement = {
   closeContract: IssueCloseEvidenceContract;

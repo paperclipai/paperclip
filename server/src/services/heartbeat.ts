@@ -173,7 +173,9 @@ import {
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
+  ISSUE_BUDGET_WAKE_SOFT_FRACTION,
   evaluateBlockedRepollThrottle,
+  evaluateIssueBudgetWakeGovernor,
   evaluateIssueRewakeThrottle,
   isBlockedRepollCircuitBreakerStreak,
   isImmediateNoopLifecycleIssueRewake,
@@ -25599,6 +25601,130 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   }
                   : {}),
               };
+            }
+          }
+
+          // Budget governor (TSMC-21552): every gate below is progress-shaped,
+          // and a loop whose runs each leave a document tweak + comment reads
+          // as "productive" to all of them while burning the issue's aggregate
+          // ceiling at loop speed (TSMC-21587: 1.01M weighted input in 78
+          // minutes, rotating completion_reoffer/continuation/chain/sweep so
+          // no per-path cap engaged). Pace automation by BUDGET as the issue
+          // nears the terminal ceiling: >=60% one run per spacing window,
+          // >=85% supervised runs only (fresh human/board input since the
+          // last run). Direct user kicks and every event-shaped wake bypass
+          // this whole branch, so supervision always reaches the card.
+          if (opts.requestedByActorType !== "user") {
+            const budgetAggregateRow = await tx
+              .select({
+                tokens: sql<number>`coalesce(sum(coalesce(${costEvents.inputTokens}, 0) + floor(coalesce(${costEvents.cachedInputTokens}, 0) * ${sql.raw(String(CACHED_INPUT_BUDGET_WEIGHT))})), 0)::bigint`,
+              })
+              .from(costEvents)
+              .where(and(
+                eq(costEvents.companyId, agent.companyId),
+                eq(costEvents.issueId, issue.id),
+              ))
+              .then((rows) => rows[0] ?? null);
+            const weightedAggregateInputTokens = Number(budgetAggregateRow?.tokens ?? 0);
+            if (weightedAggregateInputTokens >= HIGH_INPUT_TOKEN_RUN_THRESHOLD * ISSUE_BUDGET_WAKE_SOFT_FRACTION) {
+              const budgetExceptionRow = await tx
+                .select({
+                  capTokens: boardTokenExceptions.capTokens,
+                  expiresAt: boardTokenExceptions.expiresAt,
+                })
+                .from(boardTokenExceptions)
+                .where(and(
+                  eq(boardTokenExceptions.companyId, agent.companyId),
+                  eq(boardTokenExceptions.issueId, issue.id),
+                  isNull(boardTokenExceptions.revokedAt),
+                  or(
+                    isNull(boardTokenExceptions.agentId),
+                    eq(boardTokenExceptions.agentId, agentId),
+                  ),
+                ))
+                .orderBy(desc(boardTokenExceptions.createdAt))
+                .limit(1)
+                .then((rows) => rows[0] ?? null);
+              const budgetExceptionCap = budgetExceptionRow
+                && (!budgetExceptionRow.expiresAt || budgetExceptionRow.expiresAt.getTime() > throttleNow.getTime())
+                ? Number(budgetExceptionRow.capTokens)
+                : 0;
+              const budgetCeilingTokens = Math.max(
+                HIGH_INPUT_TOKEN_RUN_THRESHOLD,
+                Number.isFinite(budgetExceptionCap) ? budgetExceptionCap : 0,
+              );
+              const budgetLastRunRow = await tx
+                .select({ finishedAt: heartbeatRuns.finishedAt })
+                .from(heartbeatRuns)
+                .where(and(
+                  eq(heartbeatRuns.companyId, agent.companyId),
+                  sql`${heartbeatRuns.finishedAt} is not null`,
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                ))
+                .orderBy(desc(heartbeatRuns.finishedAt))
+                .limit(1)
+                .then((rows) => rows[0] ?? null);
+              const budgetLastRunFinishedAt = budgetLastRunRow?.finishedAt ?? null;
+              const budgetHumanInputRows = budgetLastRunFinishedAt
+                ? await tx
+                  .select({ id: activityLog.id })
+                  .from(activityLog)
+                  .where(and(
+                    eq(activityLog.companyId, agent.companyId),
+                    eq(activityLog.entityType, "issue"),
+                    eq(activityLog.entityId, issue.id),
+                    gt(activityLog.createdAt, budgetLastRunFinishedAt),
+                    eq(activityLog.actorType, "user"),
+                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                  ))
+                  .limit(1)
+                : [];
+              const budgetDecision = evaluateIssueBudgetWakeGovernor({
+                now: throttleNow,
+                weightedAggregateInputTokens,
+                ceilingTokens: budgetCeilingTokens,
+                lastRunFinishedAt: budgetLastRunFinishedAt,
+                hasHumanInputSinceLastRun: !budgetLastRunFinishedAt || budgetHumanInputRows.length > 0,
+              });
+              if (budgetDecision.hold) {
+                const skipReason = budgetDecision.zone === "hard"
+                  ? "issue_budget_supervision_hold"
+                  : "issue_budget_pacing_hold";
+                await tx.insert(agentWakeupRequests).values({
+                  companyId: agent.companyId,
+                  agentId,
+                  source,
+                  triggerDetail,
+                  reason: skipReason,
+                  payload: {
+                    ...(payload ?? {}),
+                    issueId,
+                    heartbeatSkip: {
+                      reason: skipReason,
+                      requestedReason: reason,
+                      weightedAggregateInputTokens,
+                      ceilingTokens: budgetCeilingTokens,
+                      budgetFraction: Number(budgetDecision.fraction.toFixed(4)),
+                      nextAllowedAt: budgetDecision.hold && budgetDecision.zone === "soft"
+                        ? budgetDecision.nextAllowedAt.toISOString()
+                        : null,
+                      remediation: budgetDecision.zone === "hard"
+                        ? "The issue has consumed >=85% of its weighted aggregate-input ceiling; automation wakes are held so the "
+                          + "remaining budget is only spent under supervision. A board/user comment on the issue admits one more run. "
+                          + "For more headroom create a board_token_exception; otherwise re-cut the remaining scope to a fresh card "
+                          + "(a card AT the ceiling is unrecoverable - TSMC-21552)."
+                        : "The issue has consumed >=60% of its weighted aggregate-input ceiling; automation re-runs are paced to one "
+                          + "per spacing window. Human comments and event-shaped wakes pass immediately.",
+                    },
+                  },
+                  status: "skipped",
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: throttleNow,
+                });
+                return { kind: "skipped" as const };
+              }
             }
           }
 
