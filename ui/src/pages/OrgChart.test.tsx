@@ -190,7 +190,7 @@ describe("OrgChart mobile gestures", () => {
     vi.clearAllMocks();
   });
 
-  async function renderOrgChart() {
+  async function renderOrgChart(view: "list" | "chart" = "list") {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -201,6 +201,16 @@ describe("OrgChart mobile gestures", () => {
     });
     await flushReact();
     await flushReact();
+    if (view === "chart") {
+      const chartToggle = container.querySelector(
+        '[data-testid="org-view-chart"]',
+      ) as HTMLButtonElement;
+      await act(async () => {
+        chartToggle.click();
+      });
+      await flushReact();
+      await flushReact();
+    }
     return {
       viewport: container.querySelector('[data-testid="org-chart-viewport"]') as HTMLDivElement,
       layer: container.querySelector('[data-testid="org-chart-card-layer"]') as HTMLDivElement,
@@ -208,7 +218,7 @@ describe("OrgChart mobile gestures", () => {
   }
 
   it("pans the chart with one-finger touch drag", async () => {
-    const { viewport, layer } = await renderOrgChart();
+    const { viewport, layer } = await renderOrgChart("chart");
 
     await act(async () => {
       viewport.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
@@ -220,7 +230,7 @@ describe("OrgChart mobile gestures", () => {
   });
 
   it("suppresses card navigation after a touch pan", async () => {
-    const { viewport } = await renderOrgChart();
+    const { viewport } = await renderOrgChart("chart");
     const card = container.querySelector("[data-org-card]") as HTMLDivElement;
 
     await act(async () => {
@@ -234,7 +244,7 @@ describe("OrgChart mobile gestures", () => {
   });
 
   it("allows card navigation after a touch tap without movement", async () => {
-    const { viewport } = await renderOrgChart();
+    const { viewport } = await renderOrgChart("chart");
     const card = container.querySelector("[data-org-card]") as HTMLDivElement;
 
     await act(async () => {
@@ -246,7 +256,7 @@ describe("OrgChart mobile gestures", () => {
     expect(navigateMock).toHaveBeenCalledWith("/agents/ceo");
   });
   it("pinch-zooms toward the touch center", async () => {
-    const { viewport, layer } = await renderOrgChart();
+    const { viewport, layer } = await renderOrgChart("chart");
 
     await act(async () => {
       viewport.dispatchEvent(createTouchEvent("touchstart", [
@@ -261,5 +271,94 @@ describe("OrgChart mobile gestures", () => {
     });
 
     expect(layer.style.transform).toBe("translate(-45px, 40px) scale(1.5)");
+  });
+
+  it("collapses a chart card even when no list collapse happened first", async () => {
+    await renderOrgChart("chart");
+    const collapse = container.querySelector(
+      "[data-org-card] [data-org-collapse]",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      collapse.click();
+    });
+    const names = Array.from(container.querySelectorAll("[data-org-card]")).map(
+      (el) => el.textContent ?? "",
+    );
+    expect(names.some((t) => t.includes("CEO"))).toBe(true);
+    expect(names.some((t) => t.includes("Engineer"))).toBe(false);
+  });
+});
+
+describe("OrgChart exploded list view", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    orgMock.mockResolvedValue(orgTree);
+    listMock.mockResolvedValue(agents);
+  });
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    container.remove();
+    document.body.innerHTML = "";
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  async function renderList() {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OrgChart />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+  }
+
+  it("starts in the list view with every node visible and indented by depth", async () => {
+    await renderList();
+    const names = Array.from(container.querySelectorAll("[data-org-list-node]")).map(
+      (el) => el.getAttribute("data-org-name"),
+    );
+    expect(names).toEqual(["CEO", "Engineer"]);
+    const depths = Array.from(container.querySelectorAll("[data-org-list-node]")).map(
+      (el) => el.getAttribute("data-depth"),
+    );
+    // Root is exploded by default: its report is shown (not collapsed away).
+    expect(depths).toEqual(["0", "1"]);
+    // The connector graph linking parent rows to their reports is drawn.
+    const links = Array.from(container.querySelectorAll("svg[aria-hidden] path")).filter(
+      (el) => el.getAttribute("d")?.includes(" M "),
+    );
+    expect(links.length).toBeGreaterThan(0);
+  });
+
+  it("collapses and re-expands a node in the list view by hand", async () => {
+    await renderList();
+    const chevron = container.querySelector(
+      '[data-testid="org-list-collapse"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      chevron.click();
+    });
+    expect(container.querySelector('[data-org-name="Engineer"]')).toBeNull();
+    await act(async () => {
+      chevron.click();
+    });
+    expect(container.querySelector('[data-org-name="Engineer"]')).not.toBeNull();
   });
 });
