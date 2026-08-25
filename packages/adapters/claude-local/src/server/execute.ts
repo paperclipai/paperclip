@@ -195,10 +195,11 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = resolveAdapterWorkingDirectory({
+  const cwd = await resolveAdapterWorkingDirectory({
     adapterType: "claude_local",
     workspaceCwd: effectiveWorkspaceCwd,
     configuredCwd,
+    onLog,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);

@@ -627,10 +627,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = targetWorkspaceRealization?.mode === "in_place"
     ? targetWorkspaceRealization.authoritativeRoot
     : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = resolveAdapterWorkingDirectory({
+  const cwd = await resolveAdapterWorkingDirectory({
     adapterType: "codex_local",
     workspaceCwd: effectiveWorkspaceCwd,
     configuredCwd,
+    onLog,
   });
   const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);

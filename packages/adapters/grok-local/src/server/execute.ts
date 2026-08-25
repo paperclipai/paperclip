@@ -229,10 +229,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = resolveAdapterWorkingDirectory({
+  const cwd = await resolveAdapterWorkingDirectory({
     adapterType: "grok_local",
     workspaceCwd: effectiveWorkspaceCwd,
     configuredCwd,
+    onLog,
   });
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
