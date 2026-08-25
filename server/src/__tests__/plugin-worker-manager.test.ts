@@ -1429,6 +1429,30 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
     }
   });
 
+  it("settles the wait with a valid pre-bind exit that a later mismatched exit cannot displace", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches a valid exit for the real worker session id, then a
+      // second exit for a forged worker session id, both before the open
+      // reply. The bind still verifies the real session id, so the held valid
+      // exit settles the wait, and the mismatched exit that arrived after it
+      // never displaces it.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          extraExits: [{ exitCode: 1, sid: "ws-EVIL" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("delivers output that arrived behind a coalesced exit before the exit settles the wait", async () => {
     const handle = makeLoginPtyHandle();
     try {
@@ -1550,6 +1574,33 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
             // 15, past the 10-character bound, so the host terminalizes the
             // route before the bind can complete.
             outputs: [{ chunk: "aaaaa" }, { chunk: "bbbbb" }, { chunk: "ccccc" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when a third distinct pre-bind exit session passes the exit-slot bound", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches exits for three distinct worker session ids before
+      // the bind. The host holds one exit record per distinct session, up to
+      // its fixed exit-slot bound of two, so the third distinct session
+      // passes the bound and the host terminalizes the route before the bind
+      // can complete.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            workerSessionId: "ws-A",
+            exitCode: 0,
+            extraExits: [
+              { exitCode: 1, sid: "ws-B" },
+              { exitCode: 2, sid: "ws-C" },
+            ],
           }),
         ),
       ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");

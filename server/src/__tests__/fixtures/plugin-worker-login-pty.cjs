@@ -14,6 +14,10 @@
 //     id; a test sets a wrong `sid` to prove the host drops a mismatched
 //     notification.
 //   - `exitCode`: when set, the fixture emits an exit notification after the outputs.
+//   - `extraExits`: an array of `{ exitCode, sid? }`. The fixture emits each as a
+//     further exit notification, after the main `exitCode` exit. `sid` defaults
+//     to the real worker session id; a test sets a wrong `sid` to script a worker
+//     that sends a valid exit, then a mismatched exit, before the bind.
 //   - `outputsAfterExit`: an array of `{ chunk, sid? }`, same shape as `outputs`.
 //     The fixture emits these after the exit notification, so a test proves the
 //     host never delivers output that arrives behind a queued exit.
@@ -51,22 +55,31 @@ function outputLines(entries, workerSessionId) {
   return lines;
 }
 
+// Serialize one exit notification line for the given worker session id.
+function exitLine(workerSessionId, exitCode) {
+  return `${JSON.stringify({
+    jsonrpc: "2.0",
+    method: "loginPty.exit",
+    params: { workerSessionId, exitCode },
+  })}\n`;
+}
+
 // Serialize the scripted output and exit notifications as newline-delimited
-// lines, in this fixed order: the pre-exit outputs, then the exit, then the
-// post-exit outputs. The batch mode writes these together with the open
-// reply in one stdout write.
+// lines, in this fixed order: the pre-exit outputs, then the main exit, then
+// every extra exit, then the post-exit outputs. The batch mode writes these
+// together with the open reply in one stdout write.
 function scriptedOutputLines(directive, workerSessionId) {
   const outputs = Array.isArray(directive.outputs) ? directive.outputs : [];
   const outputsAfterExit = Array.isArray(directive.outputsAfterExit)
     ? directive.outputsAfterExit
     : [];
+  const extraExits = Array.isArray(directive.extraExits) ? directive.extraExits : [];
   let lines = outputLines(outputs, workerSessionId);
   if (typeof directive.exitCode === "number") {
-    lines += `${JSON.stringify({
-      jsonrpc: "2.0",
-      method: "loginPty.exit",
-      params: { workerSessionId, exitCode: directive.exitCode },
-    })}\n`;
+    lines += exitLine(workerSessionId, directive.exitCode);
+  }
+  for (const exit of extraExits) {
+    lines += exitLine(exit.sid ?? workerSessionId, exit.exitCode);
   }
   lines += outputLines(outputsAfterExit, workerSessionId);
   return lines;
