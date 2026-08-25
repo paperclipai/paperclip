@@ -60,7 +60,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 const agentModelProfileConfigSchema = z.object({
   enabled: z.boolean().optional(),
   label: z.string().trim().min(1).optional(),
-  adapterConfig: adapterConfigSchema,
+  adapterConfig: adapterConfigSchema.optional(),
 }).strict();
 
 export const agentRuntimeConfigSchema = z.object({
