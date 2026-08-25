@@ -94,14 +94,73 @@ export function isUiTestFile(relPath) {
 
 /**
  * Replace line and block comments with spaces so match indices and line
- * numbers stay aligned with the original source. Strings and
- * template-literal interpolations are preserved. `://` is not treated as
- * a line comment so URLs in JSX text survive.
+ * numbers stay aligned with the original source. Strings, template-literal
+ * interpolations, and regex literals are preserved. `://` is not treated as
+ * a line comment so URLs in JSX text survive. Regex literals are copied as
+ * code so an escaped slash plus the closing delimiter (`\/` `/`) is not
+ * mistaken for a line comment.
  */
 export function stripJsCommentsPreservingNewlines(source) {
   let output = "";
   let index = 0;
   const length = source.length;
+
+  function isLineTerminator(ch) {
+    return ch === "\n" || ch === "\r";
+  }
+
+  function looksLikeRegexLiteralStart() {
+    let cursor = index - 1;
+    while (cursor >= 0 && (source[cursor] === " " || source[cursor] === "\t")) {
+      cursor -= 1;
+    }
+    if (cursor < 0 || isLineTerminator(source[cursor])) return true;
+
+    const prev = source[cursor];
+    if (prev === "+" && cursor > 0 && source[cursor - 1] === "+") return false;
+    if (prev === "-" && cursor > 0 && source[cursor - 1] === "-") return false;
+
+    if (/[A-Za-z0-9_)$\]]/.test(prev)) {
+      if (!/[A-Za-z0-9_$]/.test(prev)) return false;
+      let start = cursor;
+      while (start >= 0 && /[A-Za-z0-9_$]/.test(source[start])) start -= 1;
+      const word = source.slice(start + 1, cursor + 1);
+      return /^(?:return|case|throw|typeof|void|delete|new|in|of|await|yield|else)$/.test(word);
+    }
+    return true;
+  }
+
+  function copyRegexLiteral() {
+    output += "/";
+    index += 1;
+    let inCharClass = false;
+    while (index < length) {
+      const ch = source[index];
+      if (isLineTerminator(ch)) return;
+      if (ch === "\\") {
+        output += ch;
+        index += 1;
+        if (index < length && !isLineTerminator(source[index])) {
+          output += source[index];
+          index += 1;
+        }
+        continue;
+      }
+      if (ch === "[" && !inCharClass) inCharClass = true;
+      else if (ch === "]" && inCharClass) inCharClass = false;
+      else if (ch === "/" && !inCharClass) {
+        output += ch;
+        index += 1;
+        while (index < length && /[gimsuy]/.test(source[index])) {
+          output += source[index];
+          index += 1;
+        }
+        return;
+      }
+      output += ch;
+      index += 1;
+    }
+  }
 
   function copyCode(stopAtUnmatchedBrace) {
     let braceDepth = 0;
@@ -119,7 +178,7 @@ export function stripJsCommentsPreservingNewlines(source) {
       }
 
       if (ch === "/" && next === "/" && source[index - 1] !== ":") {
-        while (index < length && source[index] !== "\n" && source[index] !== "\r") {
+        while (index < length && !isLineTerminator(source[index])) {
           output += " ";
           index += 1;
         }
@@ -135,9 +194,14 @@ export function stripJsCommentsPreservingNewlines(source) {
             index += 2;
             break;
           }
-          output += source[index] === "\n" || source[index] === "\r" ? source[index] : " ";
+          output += isLineTerminator(source[index]) ? source[index] : " ";
           index += 1;
         }
+        continue;
+      }
+
+      if (ch === "/" && looksLikeRegexLiteralStart()) {
+        copyRegexLiteral();
         continue;
       }
 
