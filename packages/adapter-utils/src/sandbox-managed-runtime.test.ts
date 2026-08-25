@@ -2281,9 +2281,7 @@ describe("sandbox managed runtime", () => {
         adapterKey: "test-adapter",
         client,
         workspaceLocalDir: localWorkspaceDir,
-        additionalSources: [
-          { localPath: referencedDir, projectId: "proj-first", ignoreResolution: { kind: "other" } },
-        ],
+        additionalSources: [{ localPath: referencedDir, projectId: "proj-first", ignoreResolution: { kind: "other" } }],
         onProgress: (line) => { lines.push(line); },
       });
 
