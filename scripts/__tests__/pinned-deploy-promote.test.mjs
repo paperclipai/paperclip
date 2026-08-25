@@ -152,6 +152,47 @@ test("promote-pointer refuses when a mandatory gate is red (pointer unchanged)",
   }
 });
 
+test("mutating commands refuse an agent-lane caller; read-only ones do not (TSMC-21652)", () => {
+  // Born 2026-08-25: a TSBC benchmark lane ran this script against live
+  // production, promoted a stale candidate (rolling the pointer back ~3h), and
+  // on its next attempt rm -rf'd the deployment lease so the lock could not
+  // stop it. A lease serialises callers that respect it; it cannot stop one
+  // that deletes it. Refuse at the door instead.
+  const agentEnv = { PAPERCLIP_AGENT_ID: "fake-lane", PAPERCLIP_RUN_ID: "fake-run" };
+
+  const refused = sh("bash", [PROMOTE, "promote-pointer", "--allow-live-pointer"], agentEnv);
+  assert.notEqual(refused.status, 0, "a lane must not reach promote-pointer");
+  assert.ok(
+    refused.stderr.includes("not an agent-lane capability"),
+    `expected the lane refusal, got: ${refused.stderr.slice(-300)}`,
+  );
+
+  // Read-only inspection stays available: an agent diagnosing a deploy should
+  // still be able to look, it just cannot move the pointer.
+  const help = sh("bash", [PROMOTE, "--help"], agentEnv);
+  assert.ok(
+    !(help.stderr || "").includes("not an agent-lane capability"),
+    "read-only commands must not be fenced",
+  );
+
+  // A deliberately-sanctioned automation can still opt in.
+  const override = sh("bash", [PROMOTE, "promote-pointer"], {
+    ...agentEnv,
+    PAPERCLIP_PINNED_DEPLOY_ALLOW_AGENT_CALLER: "1",
+  });
+  assert.ok(
+    !(override.stderr || "").includes("not an agent-lane capability"),
+    "the sanctioned override must bypass the lane refusal",
+  );
+
+  // And an operator shell (no agent env) is unaffected.
+  const operator = sh("bash", [PROMOTE, "promote-pointer"], {});
+  assert.ok(
+    !(operator.stderr || "").includes("not an agent-lane capability"),
+    "an operator caller must never see the lane refusal",
+  );
+});
+
 test("promote-pointer refuses an ANCESTOR candidate unless --rollback (TSMC-21652)", () => {
   // Born 2026-08-25: a lane promoted a stale candidate whose SHA was an ancestor
   // of the deployed one. Gates were green — the tree was internally consistent,

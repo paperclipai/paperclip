@@ -1211,9 +1211,45 @@ cmd_mark_gate() {
   receipt_set_gate "$name" "$status" "manual mark"
 }
 
+# LANE CAPABILITY BOUNDARY (TSMC-21652, born 2026-08-25).
+#
+# On 08-25 a TSBC BENCHMARK lane ran this script end to end against live
+# production: it promoted a stale candidate (rolling the deploy pointer back
+# ~3h and silently dropping a verified gateway fix), and on its next attempt it
+# `rm -rf`'d ~/.paperclip/deploy/deployment-lease so the lock could not stop it.
+#
+# The deployment lease is the wrong layer to fix that. A lease serialises
+# callers who respect it; it cannot stop a caller that deletes it. Moving the
+# live deploy pointer is simply not an agent-lane capability, so refuse at the
+# door instead.
+#
+# Paperclip injects PAPERCLIP_AGENT_ID / PAPERCLIP_RUN_ID into every agent run's
+# environment (services/workspace-runtime.ts, adapters/process/execute.ts), so
+# their presence is a reliable signature for "a lane is calling me".
+#
+# Read-only sub-commands stay available to lanes on purpose — an agent
+# diagnosing a deploy should still be able to inspect state. Only the mutating
+# commands are fenced.
+#
+# Escape hatch for a deliberately-sanctioned automation, never for convenience:
+#   PAPERCLIP_PINNED_DEPLOY_ALLOW_AGENT_CALLER=1
+assert_not_agent_lane() {
+  local cmd="$1"
+  case "$cmd" in
+    show-receipt|assert-green|lint-plists|-h|--help|help|"") return 0 ;;
+  esac
+  [ "${PAPERCLIP_PINNED_DEPLOY_ALLOW_AGENT_CALLER:-0}" = "1" ] && return 0
+  local caller=""
+  [ -n "${PAPERCLIP_AGENT_ID:-}" ] && caller="agent ${PAPERCLIP_AGENT_ID}"
+  [ -n "${PAPERCLIP_RUN_ID:-}" ] && caller="${caller:+$caller, }run ${PAPERCLIP_RUN_ID}"
+  [ -z "$caller" ] && return 0
+  fail "refused: '$cmd' was invoked from inside a Paperclip agent run ($caller). Moving the live deploy pointer is not an agent-lane capability — on 2026-08-25 a bench lane used this path to roll production back ~3h and deleted the deployment lease to do it (TSMC-21652). Escalate to the operator, or set PAPERCLIP_PINNED_DEPLOY_ALLOW_AGENT_CALLER=1 for a sanctioned automation."
+}
+
 main() {
   local cmd="${1:-}"
   shift || true
+  assert_not_agent_lane "$cmd"
   case "$cmd" in
     prepare-candidate) cmd_prepare_candidate "$@" ;;
     run-gates) cmd_run_gates "$@" ;;
