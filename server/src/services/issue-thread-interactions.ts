@@ -1573,20 +1573,28 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
     if (!current || current.assigneeAgentId || current.assigneeUserId) return;
 
-    // Re-read the interaction under lock before writing. The reuse paths decided
-    // "still pending" from an unlocked snapshot, and a concurrent resolution can
-    // land between that read and here. Adopting then would hand the issue to a
+    // Re-read the interaction before writing. The reuse paths decided "still
+    // pending" from a snapshot taken outside this transaction, and a concurrent
+    // resolution can land in between. Adopting then would hand the issue to a
     // creator whose one continuation has already been spent — an ownership change
     // that buys no wake path, which is the opposite of this guard's purpose.
-    // Lock order stays issue -> interaction, matching the resolution paths.
+    //
+    // Deliberately NOT `FOR UPDATE`. Every resolution path in this file writes the
+    // issue row before it commits (`touchIssue`, or `issueService.update` on the
+    // hand-back branch), so the issue lock this transaction already holds is what
+    // serializes us against all of them: a resolution either committed before we
+    // took that lock — and this read sees it — or it blocks behind us and commits
+    // after. Locking the interaction as well would buy nothing and would invert
+    // the lock order against paths that take the interaction first and only then
+    // write the issue (`submitItemVerdicts`), turning a benign read into a real
+    // deadlock cycle on the same issue.
     if (args.requireStillPendingInteractionId) {
-      const lockedInteraction = await tx
+      const currentInteraction = await tx
         .select({ status: issueThreadInteractions.status })
         .from(issueThreadInteractions)
         .where(eq(issueThreadInteractions.id, args.requireStillPendingInteractionId))
-        .for("update")
         .then((rows) => rows[0] ?? null);
-      if (!lockedInteraction || lockedInteraction.status !== "pending") return;
+      if (!currentInteraction || currentInteraction.status !== "pending") return;
     }
 
     await adoptWakeTargetCreator(tx, args.issueId, args.creatorAgentId);

@@ -529,9 +529,14 @@ describe("issueThreadInteractionService", { timeout: 30_000 }, () => {
     expect(created.id).toBe("interaction-existing");
     expect(db.insert).not.toHaveBeenCalled();
     expect(touches).toContainEqual(expect.objectContaining({ assigneeAgentId: "agent-1" }));
-    expect(locks).toContain("update");
-    // The locked interaction re-read sits between the issue lock and the write:
-    // the caller's "still pending" came from an unlocked snapshot.
+    // Exactly one row lock: the issue. The interaction is re-read WITHOUT a lock
+    // on purpose — every resolution path writes the issue row before committing,
+    // so the issue lock already serializes this repair against all of them, while
+    // locking the interaction too would invert the order against paths that take
+    // the interaction first (`submitItemVerdicts`) and deadlock on the same issue.
+    expect(locks).toEqual(["update"]);
+    // The re-read still happens, and still sits between the issue lock and the
+    // write: the caller's "still pending" came from a snapshot taken earlier.
     expect(events).toEqual([
       "tx:begin",
       "select:assignee",
