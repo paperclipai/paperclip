@@ -80,12 +80,26 @@ export function resolveServiceShimPath(homeDir = os.homedir()): string {
 // The installed definition, not the current environment, is the truth
 // about what the service executes: PAPERCLIP_SHIM_PATH may have changed
 // or been unset since the definition was written.
+function unescapeSystemd(value: string): string {
+  return value.replace(/\\\\|\\"|\$\$|%%/g, (m) =>
+    m === "\\\\" ? "\\" : m === '\\"' ? '"' : m === "$$" ? "$" : "%",
+  );
+}
+
+function unescapeXml(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) =>
+    name === "amp" ? "&" : name === "lt" ? "<" : name === "gt" ? ">" : name === "quot" ? '"' : "'",
+  );
+}
+
 export function extractExecutableFromSystemdUnit(content: string): string | null {
-  return content.match(/^ExecStart="([^"]+)"/m)?.[1] ?? null;
+  const match = content.match(/^ExecStart="((?:\\.|[^"\\])*)"/m);
+  return match ? unescapeSystemd(match[1]) : null;
 }
 
 export function extractExecutableFromLaunchdPlist(content: string): string | null {
-  return content.match(/<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/)?.[1] ?? null;
+  const match = content.match(/<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/);
+  return match ? unescapeXml(match[1]) : null;
 }
 
 // The service definition executes this path directly: existence is not

@@ -243,4 +243,12 @@ describe("definition executable extraction", () => {
     expect(extractExecutableFromSystemdUnit("garbage")).toBe(null);
     expect(extractExecutableFromLaunchdPlist("garbage")).toBe(null);
   });
+
+  it("round-trips paths the renderers escape", () => {
+    const hostile = '/tmp/we"ird $pa%th & <x>/paperclipai';
+    const unit = renderSystemdUnit({ instanceId: "default", shimPath: hostile, homeDir: "/home/x/.paperclip" });
+    expect(extractExecutableFromSystemdUnit(unit)).toBe(hostile);
+    const plist = renderLaunchdPlist({ instanceId: "default", shimPath: hostile, homeDir: "/home/x/.paperclip", stdoutPath: "/tmp/o.log", stderrPath: "/tmp/e.log" });
+    expect(extractExecutableFromLaunchdPlist(plist)).toBe(hostile);
+  });
 });
