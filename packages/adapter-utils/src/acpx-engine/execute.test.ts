@@ -31,11 +31,13 @@ import {
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
+  referencedSourceContentSignature,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
+import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -1417,6 +1419,50 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(repointed)).not.toBe(fp(two));
   });
 
+  it("routes every referenced project's Git-ignore scan through the registered scheduler, not an unbounded direct spawn", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    // The paths need not exist: the scheduler hook intercepts the scan before
+    // any real `git` process (or even a directory-existence check) runs.
+    const projectPaths = ["/host/project-a", "/host/project-b", "/host/project-c"];
+
+    const scannedPaths: string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      scannedPaths.push(input.localDir);
+      const error = new Error("fatal: not a git repository (or any of the parent directories): .git");
+      throw Object.assign(error, { stdout: "", stderr: error.message });
+    });
+
+    try {
+      await runExecutor(baseConfig, {
+        context: {
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWorkspace: {
+            cwd,
+            realization: {
+              additional: projectPaths.map((localPath, index) => ({
+                path: localPath,
+                projectId: String.fromCharCode(97 + index),
+              })),
+            },
+          },
+        },
+      });
+    } finally {
+      setExpensiveWorkspaceGitExecutor(null);
+    }
+
+    // Every referenced project's scan reached the registered scheduler hook.
+    // The `Promise.all` fan-out over projects can no longer bypass it by
+    // spawning `git` directly, so a host process that bounds concurrent scans
+    // there bounds referenced-project scans too, however many projects a run
+    // configures.
+    expect(scannedPaths.sort()).toEqual([...projectPaths].sort());
+  });
+
   it("busts the session fingerprint when referenced-project files change at the same host path", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -1511,6 +1557,53 @@ describe("shared ACPX engine runtime behavior", () => {
     // The content signature reads bytes, so an equal-size, equal-mtime edit busts
     // the fingerprint and the resume re-stages instead of reusing a stale tree.
     expect(fp(after)).not.toBe(fp(before));
+  });
+
+  describe("referencedSourceContentSignature", () => {
+    it("returns a stable marker without walking the tree when the ignore resolution failed", async () => {
+      const root = await makeTempRoot();
+      // A directory that does not exist: a walk would throw ENOENT. The
+      // `failed` resolution must short-circuit before any `fs.readdir` call.
+      const localPath = path.join(root, "does-not-exist");
+
+      const signature = await referencedSourceContentSignature(localPath, { kind: "failed", reason: "git status timed out" });
+
+      expect(signature).toBe("unreadable:git status timed out");
+    });
+
+    it("skips a Git-ignored file (exact match) so its content never affects the signature", async () => {
+      const root = await makeTempRoot();
+      const localPath = path.join(root, "project");
+      await fs.mkdir(localPath, { recursive: true });
+      await fs.writeFile(path.join(localPath, "kept.txt"), "kept\n", "utf8");
+      await fs.writeFile(path.join(localPath, "secret.env"), "TOKEN=1\n", "utf8");
+
+      const resolution = { kind: "git" as const, ignoredPaths: ["secret.env"] };
+      const before = await referencedSourceContentSignature(localPath, resolution);
+      await fs.writeFile(path.join(localPath, "secret.env"), "TOKEN=2\n", "utf8");
+      const afterIgnoredEdit = await referencedSourceContentSignature(localPath, resolution);
+      await fs.writeFile(path.join(localPath, "kept.txt"), "kept, changed\n", "utf8");
+      const afterKeptEdit = await referencedSourceContentSignature(localPath, resolution);
+
+      // Editing the ignored file never busts the signature; editing the kept file does.
+      expect(afterIgnoredEdit).toBe(before);
+      expect(afterKeptEdit).not.toBe(before);
+    });
+
+    it("skips every file under a Git-ignored directory (prefix match)", async () => {
+      const root = await makeTempRoot();
+      const localPath = path.join(root, "project");
+      await fs.mkdir(path.join(localPath, "build", "nested"), { recursive: true });
+      await fs.writeFile(path.join(localPath, "kept.txt"), "kept\n", "utf8");
+      await fs.writeFile(path.join(localPath, "build", "nested", "artifact.js"), "v1\n", "utf8");
+
+      const resolution = { kind: "git" as const, ignoredPaths: ["build"] };
+      const before = await referencedSourceContentSignature(localPath, resolution);
+      await fs.writeFile(path.join(localPath, "build", "nested", "artifact.js"), "v2\n", "utf8");
+      const after = await referencedSourceContentSignature(localPath, resolution);
+
+      expect(after).toBe(before);
+    });
   });
 
   it("shapes ACPX session env for remote execution identities", async () => {
@@ -2926,6 +3019,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
             stagedRuntime,
             teardown: async () => {
               teardownCalls += 1;
+              return { ok: true };
             },
           };
         },
@@ -3269,6 +3363,7 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
           stagedRuntime,
           teardown: async () => {
             teardownCalls += 1;
+            return { ok: true };
           },
           disposeStaged: async () => {
             disposeCalls += 1;
@@ -3313,6 +3408,7 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
         stagedRuntime: await input.stage([]),
         teardown: async () => {
           teardownCalls += 1;
+          return { ok: true };
         },
         disposeStaged: async () => {
           disposeCalls += 1;
@@ -4582,6 +4678,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
               teardownExecFired = true;
               issueSandboxExecFromStore(traceContext);
             }
+            return { ok: true };
           },
         };
       },

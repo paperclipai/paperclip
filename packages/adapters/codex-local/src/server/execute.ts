@@ -665,6 +665,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // freshest same-identity copy. The off-switch (default on) skips the vend.
   if (isCodexAuthCacheEnabled(process.env)) {
     const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    // This caller reads `process.env` directly and holds no separate `env`
+    // object, so `selectVendCredential` falls back to its own `process.env`
+    // default for the merge lock root.
     await selectVendCredential(
       sharedHomeAuthPath,
       (accountId) => resolveCodexAuthCacheEntryPath(process.env, accountId, agent.companyId),

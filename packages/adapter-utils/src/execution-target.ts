@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
@@ -20,8 +19,12 @@ import type {
   AdditionalSourceStagingFailure,
   SandboxAdditionalSource,
 } from "./sandbox-managed-runtime.js";
+export {
+  resolveReferencedSourceIgnore,
+} from "./sandbox-managed-runtime.js";
 export type {
   AdditionalSourceStagingFailure,
+  ReferencedSourceIgnoreResolution,
   SandboxAdditionalSource,
 } from "./sandbox-managed-runtime.js";
 import {
@@ -29,7 +32,6 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
-  DEFAULT_SANDBOX_DUPLEX_DECODER_MAX_BYTES,
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
@@ -53,7 +55,6 @@ import {
   type DuplexBrokerRunDisposition,
 } from "./bridge-transport-contract.js";
 import { decodeDuplexLine, DEFAULT_MAX_DUPLEX_FRAME_BYTES } from "./duplex-frame-codec.js";
-import type { ReassembledBody } from "./duplex-body-spool.js";
 import {
   createDuplexObservability,
   mapHttp2EventToDuplexLossReason,
@@ -3687,12 +3688,6 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     signal?: AbortSignal,
     options?: {
       suppressDebugLog?: boolean;
-      /**
-       * The duplex broker passes the reassembled request body here. The forward
-       * streams it to the host, so a spilled body never loads into memory on the
-       * receive side. The forward never disposes it; the broker owns its lifecycle.
-       */
-      reassembledBody?: ReassembledBody;
     },
   ): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
     const method = request.method.trim().toUpperCase() || "GET";
@@ -3718,24 +3713,15 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // the forward budget here, whichever comes first.
     const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-    // Build the request-body init. A GET or a HEAD carries no body. The duplex
-    // broker passes the reassembled body: stream it, so a body that spilled to
-    // disk never loads into memory here. A streamed body needs `duplex: "half"`.
-    // The file bridge passes the whole body as one string.
-    const forwardInit: RequestInit & { duplex?: "half" } = {
+    // Build the request-body init. A GET or a HEAD carries no body. The file
+    // bridge passes the whole body as one string.
+    const forwardInit: RequestInit = {
       method,
       headers,
       signal: forwardSignal,
     };
-    if (method !== "GET" && method !== "HEAD") {
-      if (options?.reassembledBody) {
-        forwardInit.body = Readable.toWeb(
-          options.reassembledBody.createReadStream(),
-        ) as unknown as ReadableStream<Uint8Array>;
-        forwardInit.duplex = "half";
-      } else if (typeof request.body === "string") {
-        forwardInit.body = request.body;
-      }
+    if (method !== "GET" && method !== "HEAD" && typeof request.body === "string") {
+      forwardInit.body = request.body;
     }
     const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), forwardInit);
     if (emitDebugLog) {
@@ -3869,11 +3855,6 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         PAPERCLIP_BRIDGE_PORT: String(assignedPort),
         PAPERCLIP_BRIDGE_NONCE: nonce,
         PAPERCLIP_BRIDGE_MAX_BODY_BYTES: String(maxBodyBytes),
-        // The separate sandbox-process raw-decoder cap. The generated gateway runs
-        // in a different operating-system process, so it cannot share the host
-        // aggregate byte ledger. It enforces this cap locally under the
-        // `sandbox_process` scope, and the provider memory allocation bounds it.
-        PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES: String(DEFAULT_SANDBOX_DUPLEX_DECODER_MAX_BYTES),
       };
       const command = buildDuplexGatewayLaunchArgv({
         shellCommand,
