@@ -526,6 +526,59 @@ test("a second deployment caller cannot replace the candidate or working receipt
   }
 });
 
+test("a STALE lease (dead holder, past the window) is reclaimed, not refused forever (TSMC-21597)", () => {
+  // The companion to the test above. Refusing a young lease is only safe if an
+  // genuinely abandoned one still clears — otherwise one crashed deploy wedges
+  // every future deploy, which is worse than the race it prevents. Four leases
+  // were abandoned on 2026-08-25 alone.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-deploy-lease-stale-"));
+  try {
+    const source = path.join(tmp, "source");
+    const candidate = path.join(tmp, "candidate");
+    const state = path.join(tmp, "state");
+    const receipts = path.join(state, "receipts");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(receipts, { recursive: true });
+    mkdirSync(path.join(state, "deployment-lease"), { recursive: true });
+    runOk("git", ["init", "-b", "live"], {}, { cwd: source });
+    runOk("git", ["config", "user.email", "test@example.com"], {}, { cwd: source });
+    runOk("git", ["config", "user.name", "test"], {}, { cwd: source });
+    writeFileSync(path.join(source, "README"), "stale fixture\n");
+    writeFileSync(path.join(source, "package.json"), JSON.stringify({ name: "fixture", private: true }));
+    runOk("git", ["add", "."], {}, { cwd: source });
+    runOk("git", ["commit", "-m", "init"], {}, { cwd: source });
+    const sha = runOk("git", ["rev-parse", "HEAD"], {}, { cwd: source }).stdout.trim();
+
+    // A lease whose holder is long gone and which is well past the window.
+    writeFileSync(
+      path.join(state, "deployment-lease", "owner.json"),
+      JSON.stringify({
+        token: "ghost-caller",
+        actor: "ghost",
+        acquiredAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+        pid: 999_999_999,
+      }),
+    );
+
+    const res = sh("bash", [PROMOTE, "prepare-candidate", sha], {
+      PAPERCLIP_SOURCE_ROOT: source,
+      PAPERCLIP_PINNED_DEPLOY_CANDIDATE_ROOT: candidate,
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: receipts,
+      PAPERCLIP_PINNED_DEPLOY_APPROVED_BRANCH: "live",
+      PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY: "1",
+      PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN: "new-caller",
+    });
+    assert.match(
+      res.stderr,
+      /reclaiming stale deployment lease/,
+      `expected a stale reclaim, got: ${res.stderr.slice(-400)}`,
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("promotion replaces an existing linked serving worktree without leaving its pointer absent", () => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-promote-linked-serving-"));
   try {

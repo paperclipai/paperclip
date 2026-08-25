@@ -117,14 +117,47 @@ NODE
   owner_pid="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.pid||""))' "$(lease_owner_path)")"
   owner_actor="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.actor||"unknown"))' "$(lease_owner_path)")"
   owner_since="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.acquiredAt||"unknown"))' "$(lease_owner_path)")"
-  if [ -n "$owner_pid" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
-    log "reclaiming abandoned deployment lease: holder pid $owner_pid ($owner_actor, acquired $owner_since) is no longer running"
+  # ⛔ TSMC-21597: pid-liveness alone is the WRONG signal, and this is why the
+  # lease protected nothing on 2026-08-25.
+  #
+  # Each sub-command is a SEPARATE PROCESS. `prepare-candidate` acquires the
+  # lease, writes its own pid, and exits — so by the time `run-gates` or a
+  # rival caller runs, the recorded pid is ALWAYS dead, including for the same
+  # deployment. A different token therefore reclaimed instantly, every time.
+  # The lease serialised nothing between commands, which is precisely the
+  # window a multi-command deploy spends almost all of its time in.
+  #
+  # A same-token caller already returned above, so a legitimate continuation is
+  # unaffected. What is left is a genuine rival, and for that the meaningful
+  # question between commands is AGE, not liveness:
+  #
+  #   pid alive              -> refuse (a command is mid-flight)
+  #   young lease, pid dead  -> refuse (a deployment is between commands)
+  #   old lease, pid dead    -> reclaim (genuinely abandoned)
+  #
+  # The window must exceed the slowest single gate run so a live deployment is
+  # never stomped between phases — the original comment's concern, kept.
+  local stale_after_sec owner_epoch now_epoch age_sec
+  stale_after_sec="${PAPERCLIP_PINNED_DEPLOY_LEASE_STALE_SEC:-1800}"
+  owner_epoch="$(node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const t=Date.parse(j.acquiredAt||"");process.stdout.write(Number.isFinite(t)?String(Math.floor(t/1000)):"")' "$(lease_owner_path)" 2>/dev/null || true)"
+  now_epoch="$(date -u +%s)"
+  age_sec=""
+  [ -n "$owner_epoch" ] && age_sec=$(( now_epoch - owner_epoch ))
+
+  if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+    fail "deployment lease held by a LIVE deploy: pid $owner_pid ($owner_actor) since $owner_since. Wait for it to finish."
+  fi
+  if [ -n "$age_sec" ] && [ "$age_sec" -lt "$stale_after_sec" ]; then
+    fail "deployment lease already held by another caller ($owner_actor, since $owner_since, ${age_sec}s ago). Its command has exited but the deployment is still in progress between phases — that is normal, and stomping it is how production got rolled back on 2026-08-25. Wait, or if you are certain it is abandoned: rm -rf $LEASE_DIR"
+  fi
+  if [ -n "$owner_pid" ]; then
+    log "reclaiming stale deployment lease: holder pid $owner_pid ($owner_actor, acquired $owner_since) is gone and the lease is ${age_sec:-unknown}s old (>= ${stale_after_sec}s)"
     rm -f "$(lease_owner_path)"
     rmdir "$LEASE_DIR" 2>/dev/null || fail "abandoned lease directory has unexpected contents, refusing to reclaim: $LEASE_DIR"
     acquire_deployment_lease
     return 0
   fi
-  fail "deployment lease held by a LIVE deploy: pid $owner_pid ($owner_actor) since $owner_since. Wait for it to finish. If you are certain it is dead: rm -rf $LEASE_DIR"
+  fail "deployment lease is held and could not be classified (pid '$owner_pid', actor $owner_actor, since $owner_since). Refusing rather than guessing. If you are certain it is abandoned: rm -rf $LEASE_DIR"
 }
 
 require_deployment_lease() {
