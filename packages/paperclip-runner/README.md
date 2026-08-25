@@ -2,7 +2,7 @@
 
 This private workspace package contains the staged Paperclip Runner work.
 
-The package currently exposes only the language-neutral PRP v1 TypeScript
+The package currently exposes the language-neutral PRP v1 TypeScript
 contract, provider-neutral structured questions and responses, deterministic
 fixture validation/replay, structured-result normalization, and the session
 reducer oracle. It also contains a package-local Rust runner, scripted fake
@@ -11,27 +11,35 @@ PRP transport. The transport authenticates and encrypts loopback WebSocket
 sessions, persists an ACK-driven outbox and command journal, and reconnects with
 a short-lived lease. The Rust runner now includes a Codex-only app-server
 provider bridge with durable thread resume, cancellation, structured questions,
-and provider-neutral event normalization. No server code starts or invokes it.
+and provider-neutral event normalization. The root surface now also exposes an
+authenticated durable PRP authority for server-side use. It stores only
+bootstrap and reconnect credential digests, validates immutable run identity on
+every connection and event, and persists commands and cumulative event ACK
+state across server restarts.
 The package also publishes the canonical semantic action declarations and
 their input and output schemas. Its package-local dispatcher projects only
 bound, run-authorized actions and emits redacted semantic receipts. It does not
 add application bindings, a server adapter, or production Paperclip behavior.
 
 The first and only installed provider is Codex. Dynamic semantic tools remain
-undiscoverable because no production application binding or server authority
-has landed. Catalog membership alone does not grant authority. See
+undiscoverable unless the hidden server coordinator projects one of the five
+same-task read bindings for an already persisted native Codex run. Catalog
+membership alone does not grant authority, and no production adapter can create
+or start such a run yet. See
 [`SEMANTIC_ACTIONS.md`](SEMANTIC_ACTIONS.md) for the catalog boundary.
 
 The package has two initial public surfaces:
 
 - `@paperclipai/paperclip-runner` contains runtime contracts, validation,
-  replay/reducer logic, the semantic catalog, and the authorization dispatcher.
+  replay/reducer logic, the semantic catalog, the authorization dispatcher, and
+  the Node-only durable server authority.
 - `@paperclipai/paperclip-runner/testing` adds Node-only fixture loading and a
   provider-neutral semantic conformance kit for deterministic test adapters.
 
 No SDK, browser, React, eval, live-console, lab, or provider-experiment entry
-point is exported. The package remains private in this wave, and no production
-adapter starts it yet.
+point is exported. The package remains private in this wave. The server route
+at `/api/runner/v1/connect/:runId` has no authority until the hidden coordinator
+registers an exact existing run binding, and no production adapter starts it.
 
 Run the complete contract gate with:
 

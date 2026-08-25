@@ -216,8 +216,14 @@ finalization to one company, issue, and run. The database rejects mixed-owner
 evidence even when every referenced ID exists. Native source identities on
 `heartbeat_run_events` are nullable so legacy events remain readable without
 rewriting historical rows. Per-run native source identifiers are unique, while
-the existing legacy sequence behavior remains unchanged until an atomic event
-allocator is introduced with the native writer.
+the existing legacy sequence behavior remains unchanged. The hidden native
+coordinator serializes on its bound `heartbeat_runs` row, allocates
+`next_event_seq`, and commits a validated PRP event before the transport sends
+its cumulative ACK. Byte-equivalent source retries return the existing cursor;
+gaps and conflicting replays fail closed. Accepted structured results enter the
+finalization ledger, whose retry time and owner lease are checked under a row
+lock. None of these writes selects a runtime or changes a legacy run's execution
+path.
 
 Issue `status_version` advances only when `status` changes. The JavaScript backup
 path includes user-defined functions and triggers so a restored database keeps
