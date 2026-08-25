@@ -444,6 +444,45 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("reports server_stdio topology and the cli execution engine on every local spawn", async () => {
+    // The hot-restart classifier trusts these two fields to decide whether a
+    // run's process is safe to adopt after a server restart. They must come
+    // from what was actually wired into `spawn()` here, never from an
+    // adapter-name allowlist: every local child this function spawns has its
+    // stdout/stderr piped straight into this server process, so its only
+    // output channel dies with the server, and it is always a plain CLI
+    // process (the ACP engine never routes a spawn through here).
+    let spawnMeta: {
+      pid: number;
+      processGroupId: number | null;
+      startedAt: string;
+      processTopology?: "server_stdio" | "detached";
+      executionEngine?: "acp" | "cli";
+    } | null = null;
+
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write('ok');"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        onSpawn: async (meta) => {
+          spawnMeta = meta;
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(spawnMeta).toMatchObject({
+      processTopology: "server_stdio",
+      executionEngine: "cli",
+    });
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 

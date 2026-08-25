@@ -384,7 +384,13 @@ describe("shared ACPX engine runtime behavior", () => {
       paperclipWorkspace: { cwd: root },
     };
     const firstOnSpawn = vi.fn(async (meta: unknown) => {
-      expect(meta).toEqual({ pid: processPid, processGroupId: null, startedAt });
+      expect(meta).toEqual({
+        pid: processPid,
+        processGroupId: null,
+        startedAt,
+        executionEngine: "acp",
+        processTopology: "server_stdio",
+      });
       processIdentityPersisted = true;
     });
     const first = await execute({
@@ -405,7 +411,13 @@ describe("shared ACPX engine runtime behavior", () => {
     processIdentityPersisted = false;
     turnStartedBeforeProcessIdentity = false;
     const secondOnSpawn = vi.fn(async (meta: unknown) => {
-      expect(meta).toEqual({ pid: processPid, processGroupId: null, startedAt });
+      expect(meta).toEqual({
+        pid: processPid,
+        processGroupId: null,
+        startedAt,
+        executionEngine: "acp",
+        processTopology: "server_stdio",
+      });
       processIdentityPersisted = true;
     });
     const second = await execute({

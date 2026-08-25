@@ -3558,6 +3558,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               pid: meta.pid,
               processGroupId: null,
               startedAt: meta.startedAt,
+              // The ACPX runtime always drives this run over the ACP protocol
+              // via its own stdio-piped child; both fields are producer-derived
+              // from the engine actually in use here, not from adapterType.
+              executionEngine: "acp",
+              processTopology: "server_stdio",
             });
           },
           getRuntimeParentContext,
@@ -3691,6 +3696,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               pid: processIdentitySink.latest.pid,
               processGroupId: null,
               startedAt: processIdentitySink.latest.startedAt,
+              executionEngine: "acp",
+              processTopology: "server_stdio",
             });
           }
         } catch (err) {
