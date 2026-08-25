@@ -28,6 +28,17 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentConfigHistory } from "../components/AgentConfigHistory";
+import { formatAgentConfigValue, type AgentConfigChange } from "../lib/agent-config-changeset";
+import {
+  AgentConfigurationRail,
+  ConfigurationSection,
+  EffectiveConfigurationStrip,
+  buildEffectiveConfigurationChips,
+  filterAgentConfigurationSections,
+  resolveEffectiveConfiguration,
+  type AgentConfigurationSectionId,
+} from "../components/agent-configuration-shell";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -66,6 +77,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   CheckCircle2,
   XCircle,
@@ -85,6 +97,7 @@ import {
   HelpCircle,
   FolderOpen,
   AlertTriangle,
+  Lock,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -765,9 +778,12 @@ export function AgentDetail() {
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
   const shouldLoadHeartbeats = needsDashboardData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
+  const [configDirtyDetails, setConfigDirtyDetails] = useState<{ count: number; sections: string[] }>({ count: 0, sections: [] });
+  const [configChanges, setConfigChanges] = useState<AgentConfigChange[]>([]);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
+  const revertConfigChangeRef = useRef<(key: string) => void>(() => undefined);
   const { isMobile } = useSidebar();
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
@@ -782,6 +798,10 @@ export function AgentDetail() {
   const prepareAgentNavigation = useCallback(() => {
     return confirmAgentConfigNavigation(configDirty);
   }, [configDirty]);
+  const setConfigChangeset = useCallback((changes: AgentConfigChange[], revert: (key: string) => void) => {
+    setConfigChanges(changes);
+    revertConfigChangeRef.current = revert;
+  }, []);
 
   const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
@@ -1190,6 +1210,25 @@ export function AgentDetail() {
   const showConfigActionBar = (
     activeView === "configuration" || activeView === "instructions" || activeView === "secrets"
   ) && (configDirty || configSaving);
+  const reviewChangesPopover = configChanges.length > 0 ? (
+    <Popover>
+      <PopoverTrigger asChild><Button variant="ghost" size="sm">Review changes</Button></PopoverTrigger>
+      <PopoverContent align="end" className="w-96 max-w-(--pct-90)">
+        <div className="mb-2 text-sm font-medium">Changes to save</div>
+        <div className="max-h-80 divide-y divide-border overflow-y-auto">
+          {configChanges.map((change) => (
+            <div key={change.key} className="grid grid-cols-(--gtc-agent-config-review) gap-3 py-3">
+              <div className="min-w-0 space-y-1">
+                <div className="flex items-center gap-2"><span className="text-sm font-medium">{change.label}</span><span className="text-xs text-muted-foreground">{change.section}</span></div>
+                <div className="truncate font-mono text-xs text-muted-foreground">{formatAgentConfigValue(change.before)} → {formatAgentConfigValue(change.after)}</div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => revertConfigChangeRef.current(change.key)}>Revert</Button>
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  ) : null;
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
@@ -1429,13 +1468,15 @@ export function AgentDetail() {
       {!isMobile && showConfigActionBar && (
         <div className="fixed bottom-6 right-6 z-30">
           <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
+            <span className="text-xs text-muted-foreground">{configDirtyDetails.count} unsaved {configDirtyDetails.count === 1 ? "change" : "changes"}</span>
+            {reviewChangesPopover}
             <Button
               variant="ghost"
               size="sm"
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              Discard
             </Button>
             <Button
               size="sm"
@@ -1455,13 +1496,15 @@ export function AgentDetail() {
             className="flex items-center justify-end gap-2 px-3 py-2"
             style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
           >
+            <span className="mr-auto text-xs text-muted-foreground">{configDirtyDetails.count} unsaved {configDirtyDetails.count === 1 ? "change" : "changes"}</span>
+            {reviewChangesPopover}
             <Button
               variant="ghost"
               size="sm"
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              Discard
             </Button>
             <Button
               size="sm"
@@ -1476,6 +1519,8 @@ export function AgentDetail() {
 
       {/* View content */}
       {activeView === "dashboard" && (
+        <div className="space-y-8">
+        <AgentProfileCard agent={agent} companyId={resolvedCompanyId ?? undefined} />
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
@@ -1484,6 +1529,7 @@ export function AgentDetail() {
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
         />
+        </div>
       )}
 
       {activeView === "instructions" && (
@@ -1503,6 +1549,8 @@ export function AgentDetail() {
           agentId={agent.id}
           companyId={resolvedCompanyId ?? undefined}
           onDirtyChange={setConfigDirty}
+          onDirtyDetailsChange={setConfigDirtyDetails}
+          onChangesetChange={setConfigChangeset}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
@@ -1516,6 +1564,8 @@ export function AgentDetail() {
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
             onDirtyChange={setConfigDirty}
+            onDirtyDetailsChange={setConfigDirtyDetails}
+            onChangesetChange={setConfigChangeset}
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
@@ -1758,6 +1808,35 @@ function LatestRunCard({
 
 /* ---- Agent Overview (main single-page view) ---- */
 
+function AgentProfileCard({ agent, companyId }: { agent: AgentDetailRecord; companyId?: string }) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { pushToast } = useToastActions();
+  const updateAgent = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => agentsApi.update(agent.id, patch, companyId),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, "dashboard")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
+      pushToast({ title: "Profile saved", tone: "success" });
+    },
+  });
+  return (
+    <AgentConfigForm
+      mode="edit"
+      agent={agent}
+      onSave={(patch) => updateAgent.mutateAsync(patch)}
+      isSaving={updateAgent.isPending}
+      identityOnly
+      identitySectionTitle="Profile"
+      hidePromptTemplate
+      sectionLayout="cards"
+    />
+  );
+}
+
 function AgentOverview({
   agent,
   runs,
@@ -1953,6 +2032,8 @@ function AgentConfigurePage({
   agentId,
   companyId,
   onDirtyChange,
+  onDirtyDetailsChange,
+  onChangesetChange,
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
@@ -1962,6 +2043,8 @@ function AgentConfigurePage({
   agentId: string;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
+  onDirtyDetailsChange: (details: { count: number; sections: string[] }) => void;
+  onChangesetChange: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
@@ -1970,12 +2053,26 @@ function AgentConfigurePage({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
-  const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [dirtyDetails, setDirtyDetails] = useState<{ count: number; sections: string[] }>({ count: 0, sections: [] });
+  const visibleSections = useMemo(() => filterAgentConfigurationSections(filterQuery), [filterQuery]);
 
   const { data: configRevisions } = useQuery({
     queryKey: queryKeys.agents.configRevisions(agent.id),
     queryFn: () => agentsApi.listConfigRevisions(agent.id, companyId),
   });
+  const { data: keys = [] } = useQuery({
+    queryKey: queryKeys.agents.keys(agentId),
+    queryFn: () => agentsApi.listKeys(agentId, companyId),
+  });
+  const effectiveConfig = useMemo(
+    () => resolveEffectiveConfiguration(agent, keys.filter((key) => !key.revokedAt).length),
+    [agent, keys],
+  );
+  const handleDirtyDetailsChange = useCallback((details: { count: number; sections: string[] }) => {
+    setDirtyDetails(details);
+    onDirtyDetailsChange(details);
+  }, [onDirtyDetailsChange]);
 
   const rollbackConfig = useMutation({
     mutationFn: (revisionId: string) => agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
@@ -1988,11 +2085,24 @@ function AgentConfigurePage({
     },
   });
 
+  const effectiveChips = buildEffectiveConfigurationChips(effectiveConfig);
+
   return (
-    <div className="max-w-3xl space-y-6">
-      <ConfigurationTab
+    <div className="min-w-0 max-w-full space-y-5">
+      <EffectiveConfigurationStrip chips={effectiveChips} />
+      <div className="grid min-w-0 max-w-full gap-6 md:grid-cols-(--gtc-agent-configuration)">
+        <AgentConfigurationRail
+          query={filterQuery}
+          onQueryChange={setFilterQuery}
+          visibleSections={visibleSections}
+          dirtySections={new Set(dirtyDetails.sections)}
+        />
+        <div className="min-w-0 w-full max-w-3xl space-y-8">
+          <ConfigurationTab
         agent={agent}
         onDirtyChange={onDirtyChange}
+        onDirtyDetailsChange={handleDirtyDetailsChange}
+        onChangesetChange={onChangesetChange}
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         onSavingChange={onSavingChange}
@@ -2000,61 +2110,12 @@ function AgentConfigurePage({
         companyId={companyId}
         hidePromptTemplate
         hideInstructionsFile
+        visibleSections={visibleSections}
       />
-      <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
-        <KeysTab agentId={agentId} companyId={companyId} />
-      </div>
-
-      {/* Configuration Revisions — collapsible at the bottom */}
-      <div>
-        <button
-          className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
-          onClick={() => setRevisionsOpen((v) => !v)}
-        >
-          {revisionsOpen
-            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
-          Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
-        </button>
-        {revisionsOpen && (
-          <div className="mt-3">
-            {(configRevisions ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {(configRevisions ?? []).slice(0, 10).map((revision) => (
-                  <div key={revision.id} className="border border-border/70 rounded-md p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs text-muted-foreground">
-                        <span className="font-mono">{revision.id.slice(0, 8)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{formatDate(revision.createdAt)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{revision.source}</span>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2.5 text-xs"
-                        onClick={() => rollbackConfig.mutate(revision.id)}
-                        disabled={rollbackConfig.isPending}
-                      >
-                        Restore
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Changed:{" "}
-                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+      {visibleSections.has("history") ? <ConfigurationSection id="history" title="History" instant>
+        <AgentConfigHistory revisions={configRevisions ?? []} onRestore={(revisionId) => rollbackConfig.mutate(revisionId)} restoring={rollbackConfig.isPending} />
+      </ConfigurationSection> : null}
+        </div>
       </div>
     </div>
   );
@@ -2066,6 +2127,8 @@ function ConfigurationTab({
   agent,
   companyId,
   onDirtyChange,
+  onDirtyDetailsChange,
+  onChangesetChange,
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
@@ -2073,10 +2136,13 @@ function ConfigurationTab({
   hidePromptTemplate,
   hideInstructionsFile,
   content = "configuration",
+  visibleSections,
 }: {
   agent: AgentDetailRecord;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
+  onDirtyDetailsChange: (details: { count: number; sections: string[] }) => void;
+  onChangesetChange: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
@@ -2084,6 +2150,7 @@ function ConfigurationTab({
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
   content?: "configuration" | "secrets";
+  visibleSections?: Set<AgentConfigurationSectionId>;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -2171,6 +2238,113 @@ function ConfigurationTab({
             ? "Enabled by simple company-wide task assignment defaults."
             : "Disabled unless explicitly granted.";
 
+  const configurationShellAfterSchedule = content === "configuration" && visibleSections ? (
+    <>
+      {visibleSections.has("access") ? (
+        <ConfigurationSection id="access" title="Access & Governance" instant>
+          <TrustPresetSection
+            permissions={agent.permissions}
+            disabled={updatePermissions.isPending}
+            companyId={companyId}
+            projectCandidates={(boundaryProjects ?? []).map((project) => ({
+              id: project.id,
+              label: project.name,
+            }))}
+            issueCandidates={(boundaryIssues ?? []).map((issue) => ({
+              id: issue.id,
+              label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
+            }))}
+            candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
+            onChange={(nextPermissions) =>
+              updatePermissions.mutate({
+                canCreateAgents,
+                canCreateSkills,
+                canAssignTasks,
+                ...buildPermissionsForTrustPreset(
+                  nextPermissions,
+                  nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard",
+                ),
+              })
+            }
+          />
+          <div>
+            <h3 className="text-sm font-medium mb-3">Permissions</h3>
+            <div className="border border-border rounded-lg p-4 space-y-4">
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <div className="space-y-1">
+                  <div>Can create new agents</div>
+                  <p className="text-xs text-muted-foreground">
+                    Lets this agent create or hire agents. This also grants task assignment authority.
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={canCreateAgents}
+                  onCheckedChange={() =>
+                    updatePermissions.mutate({
+                      canCreateAgents: !canCreateAgents,
+                      canCreateSkills,
+                      canAssignTasks: !canCreateAgents ? true : canAssignTasks,
+                    })
+                  }
+                  disabled={updatePermissions.isPending}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <div className="space-y-1">
+                  <div>Can create/import skills</div>
+                  <p className="text-xs text-muted-foreground">
+                    Lets this agent install, import, create, and scan company skills without creating agents.
+                  </p>
+                </div>
+                <ToggleSwitch
+                  checked={canCreateSkills}
+                  onCheckedChange={() =>
+                    updatePermissions.mutate({
+                      canCreateAgents,
+                      canCreateSkills: !canCreateSkills,
+                      canAssignTasks,
+                    })
+                  }
+                  disabled={updatePermissions.isPending}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    <span>Can assign tasks</span>
+                    {taskAssignLocked ? (
+                      <Lock className="h-3 w-3 text-muted-foreground" aria-label="Derived — locked" />
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">{taskAssignHint}</p>
+                </div>
+                <ToggleSwitch
+                  checked={canAssignTasks}
+                  onCheckedChange={() =>
+                    updatePermissions.mutate({
+                      canCreateAgents,
+                      canCreateSkills,
+                      canAssignTasks: !canAssignTasks,
+                    })
+                  }
+                  disabled={updatePermissions.isPending || taskAssignLocked}
+                />
+              </div>
+            </div>
+          </div>
+        </ConfigurationSection>
+      ) : null}
+      {visibleSections.has("keys") ? (
+        <ConfigurationSection id="keys" title="API Keys" instant>
+          <p className="text-xs text-muted-foreground">
+            Long-lived keys for external processes acting as this agent. Runs receive short-lived tokens automatically.
+          </p>
+          <KeysTab agentId={agent.id} companyId={companyId} />
+        </ConfigurationSection>
+      ) : null}
+    </>
+  ) : null;
+
   return (
     <div className="space-y-6">
       <AgentConfigForm
@@ -2180,12 +2354,18 @@ function ConfigurationTab({
         isSaving={isConfigSaving}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
+        onDirtyDetailsChange={onDirtyDetailsChange}
+        onChangesetChange={onChangesetChange}
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         hideInlineSave
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
         content={content}
+        hideIdentity={content === "configuration"}
+        configurationShell={content === "configuration"}
+        visibleConfigurationSections={visibleSections}
+        configurationShellAfterSchedule={configurationShellAfterSchedule}
         sectionLayout="cards"
       />
       {content === "configuration" ? (
@@ -2193,92 +2373,6 @@ function ConfigurationTab({
           Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
         </p>
       ) : null}
-
-      {content === "configuration" ? <TrustPresetSection
-        permissions={agent.permissions}
-        disabled={updatePermissions.isPending}
-        companyId={companyId}
-        projectCandidates={(boundaryProjects ?? []).map((project) => ({
-          id: project.id,
-          label: project.name,
-        }))}
-        issueCandidates={(boundaryIssues ?? []).map((issue) => ({
-          id: issue.id,
-          label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
-        }))}
-        candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
-        onChange={(nextPermissions) =>
-          updatePermissions.mutate({
-            canCreateAgents,
-            canCreateSkills,
-            canAssignTasks,
-            ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
-          })
-        }
-      /> : null}
-
-      {content === "configuration" ? <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can create new agents</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents. This also grants task assignment authority.
-              </p>
-            </div>
-            <ToggleSwitch
-              checked={canCreateAgents}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents: !canCreateAgents,
-                  canCreateSkills,
-                  canAssignTasks: !canCreateAgents ? true : canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can create/import skills</div>
-              <p className="text-xs text-muted-foreground">
-                Lets this agent install, import, create, and scan company skills without creating agents.
-              </p>
-            </div>
-            <ToggleSwitch
-              checked={canCreateSkills}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents,
-                  canCreateSkills: !canCreateSkills,
-                  canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending}
-            />
-          </div>
-          <div className="flex items-center justify-between gap-4 text-sm">
-            <div className="space-y-1">
-              <div>Can assign tasks</div>
-              <p className="text-xs text-muted-foreground">
-                {taskAssignHint}
-              </p>
-            </div>
-            <ToggleSwitch
-              checked={canAssignTasks}
-              onCheckedChange={() =>
-                updatePermissions.mutate({
-                  canCreateAgents,
-                  canCreateSkills,
-                  canAssignTasks: !canAssignTasks,
-                })
-              }
-              disabled={updatePermissions.isPending || taskAssignLocked}
-            />
-          </div>
-        </div>
-      </div> : null}
     </div>
   );
 }
@@ -4467,26 +4561,39 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
           <h3 className="text-xs font-medium text-muted-foreground mb-2">
             Active Keys
           </h3>
-          <div className="border border-border rounded-lg divide-y divide-border">
-            {activeKeys.map((key: AgentKey) => (
-              <div key={key.id} className="flex items-center justify-between px-4 py-2.5">
-                <div>
-                  <span className="text-sm font-medium">{key.name}</span>
-                  <span className="text-xs text-muted-foreground ml-3">
-                    Created {formatDate(key.createdAt)}
-                  </span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive hover:text-destructive text-xs"
-                  onClick={() => revokeKey.mutate(key.id)}
-                  disabled={revokeKey.isPending}
-                >
-                  Revoke
-                </Button>
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-left">
+              <thead className="border-b border-border text-xs font-medium text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Name</th>
+                  <th className="px-4 py-2 font-medium">Created</th>
+                  <th className="px-4 py-2 font-medium">Last used</th>
+                  <th className="px-4 py-2"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {activeKeys.map((key: AgentKey) => (
+                  <tr key={key.id}>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-sm font-medium">{key.name}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-xs font-mono text-muted-foreground" title={key.lastUsedAt ? formatDate(key.lastUsedAt) : undefined}>
+                      {key.lastUsedAt ? relativeTime(key.lastUsedAt) : "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive text-xs"
+                        onClick={() => revokeKey.mutate(key.id)}
+                        disabled={revokeKey.isPending}
+                      >
+                        Revoke
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

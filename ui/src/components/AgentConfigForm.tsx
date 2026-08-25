@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -29,7 +29,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, AlertTriangle } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
@@ -51,6 +51,7 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
+import { CadenceField } from "./CadenceField";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
@@ -67,13 +68,14 @@ import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./envi
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
-import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import { hasLegacyWorkingDirectory, shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { agentConfigValuesEqual, buildAgentConfigChanges, originalValue, revertAgentConfigChange, type AgentConfigChange } from "../lib/agent-config-changeset";
 
 /* ---- Create mode values ---- */
 
@@ -87,6 +89,8 @@ import { Badge } from "@/components/ui/badge";
 
 type AgentConfigFormProps = {
   adapterModels?: AdapterModel[];
+  onDirtyDetailsChange?: (details: { count: number; sections: string[] }) => void;
+  onChangesetChange?: (changes: AgentConfigChange[], revert: (key: string) => void) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onSaveActionChange?: (save: (() => void) | null) => void;
   onCancelActionChange?: (cancel: (() => void) | null) => void;
@@ -107,6 +111,12 @@ type AgentConfigFormProps = {
   showAdapterTestEnvironmentButton?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
+  hideIdentity?: boolean;
+  identityOnly?: boolean;
+  identitySectionTitle?: string;
+  configurationShell?: boolean;
+  visibleConfigurationSections?: ReadonlySet<string>;
+  configurationShellAfterSchedule?: ReactNode;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
@@ -152,6 +162,37 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.runtime).length > 0 ||
     o.modelProfiles?.cheap !== undefined
   );
+}
+
+export function getAgentConfigDirtyDetails(o: AgentConfigOverlay): { count: number; sections: string[] } {
+  const sections = new Set<string>();
+  let count = 0;
+  const addGroup = (group: Record<string, unknown>, defaultSection: string) => {
+    for (const key of Object.keys(group)) {
+      count += 1;
+      if (key === "defaultEnvironmentId" || key === "env") sections.add("environment");
+      else if (
+        key === "cwd" ||
+        key === "dangerouslySkipPermissions" ||
+        key === "dangerouslyBypassSandbox" ||
+        key === "dangerouslyBypassApprovalsAndSandbox"
+      ) sections.add("danger");
+      else sections.add(defaultSection);
+    }
+  };
+  addGroup(o.identity, "runtime");
+  if (o.adapterType !== undefined) {
+    count += 1;
+    sections.add("runtime");
+  }
+  addGroup(o.adapterConfig, "runtime");
+  addGroup(o.heartbeat, "schedule");
+  addGroup(o.runtime, "runtime");
+  if (o.modelProfiles?.cheap !== undefined) {
+    count += 1;
+    sections.add("runtime");
+  }
+  return { count, sections: [...sections] };
 }
 
 /* ---- Shared input class ---- */
@@ -214,6 +255,11 @@ const kimiThinkingEffortOptions = [
   { id: "high", label: "High" },
   { id: "max", label: "Max" },
 ] as const;
+
+// Present thinking effort as a single-click segmented button group when the
+// option set is small (Recognition-over-Recall, Fitts — all choices visible),
+// and fall back to a dropdown only for adapters whose effort list is long.
+const THINKING_EFFORT_SEGMENTED_MAX_OPTIONS = 5;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
@@ -341,6 +387,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
+  const [environmentDraft, setEnvironmentDraft] = useState<Record<string, EnvBinding> | null>(null);
   const agentRef = useRef<Agent | null>(null);
 
   // Clear overlay when agent data refreshes (after save)
@@ -348,12 +395,36 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (!isCreate) {
       if (agentRef.current !== null && props.agent !== agentRef.current) {
         setOverlay({ ...emptyOverlay });
+        setEnvironmentDraft(null);
       }
       agentRef.current = props.agent;
     }
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isDirty = !isCreate && isOverlayDirty(overlay);
+  const reviewOverlay = useMemo<AgentConfigOverlay>(() => (
+    environmentDraft === null
+      ? overlay
+      : {
+          ...overlay,
+          adapterConfig: {
+            ...overlay.adapterConfig,
+            env: environmentDraft,
+          },
+        }
+  ), [environmentDraft, overlay]);
+  const isDirty = !isCreate && isOverlayDirty(reviewOverlay);
+  const dirtyDetails = useMemo(() => getAgentConfigDirtyDetails(reviewOverlay), [reviewOverlay]);
+  const changes = useMemo(
+    () => isCreate ? [] : buildAgentConfigChanges(props.agent, reviewOverlay),
+    [isCreate, reviewOverlay, !isCreate ? props.agent : undefined], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const revertChange = useCallback((key: string) => {
+    if (key === "adapterConfig.env") {
+      environmentVariablesEditorRef.current?.discardPendingDraft();
+      setEnvironmentDraft(null);
+    }
+    setOverlay((current) => revertAgentConfigChange(current, key));
+  }, []);
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
 
@@ -366,10 +437,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Mark field dirty in overlay */
   function mark(group: RecordOverlayGroup, field: string, value: unknown) {
-    setOverlay((prev) => ({
-      ...prev,
-      [group]: { ...prev[group], [field]: value },
-    }));
+    setOverlay((prev) => {
+      // Restoring a field to its saved value (e.g. toggling a danger switch off
+      // and back on) must not linger in the overlay — otherwise it counts as
+      // dirty and records a spurious `x -> x` no-op History row. Prune the entry
+      // instead of storing the round-trip. Create mode has no saved agent to
+      // compare against, so always store there.
+      if (!isCreate && agentConfigValuesEqual(value, originalValue(props.agent, group, field))) {
+        if (!(field in prev[group])) return prev;
+        const nextGroup = { ...prev[group] };
+        delete nextGroup[field];
+        return { ...prev, [group]: nextGroup };
+      }
+      return {
+        ...prev,
+        [group]: { ...prev[group], [field]: value },
+      };
+    });
   }
 
   function flushEnvironmentDraft() {
@@ -401,6 +485,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
+    environmentVariablesEditorRef.current?.discardPendingDraft();
+    setEnvironmentDraft(null);
     setOverlay({ ...emptyOverlay });
   }, []);
 
@@ -423,10 +509,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   useEffect(() => {
     if (!isCreate) {
       props.onDirtyChange?.(isDirty);
+      props.onDirtyDetailsChange?.(dirtyDetails);
+      props.onChangesetChange?.(changes, revertChange);
       props.onSaveActionChange?.(handleSave);
       props.onCancelActionChange?.(handleCancel);
     }
-  }, [isCreate, isDirty, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel]);
+  }, [isCreate, isDirty, dirtyDetails, changes, revertChange, props.onDirtyChange, props.onDirtyDetailsChange, props.onChangesetChange, props.onSaveActionChange, props.onCancelActionChange, handleSave, handleCancel]);
 
   useEffect(() => {
     if (isCreate) return;
@@ -434,8 +522,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       props.onSaveActionChange?.(null);
       props.onCancelActionChange?.(null);
       props.onDirtyChange?.(false);
+      props.onDirtyDetailsChange?.({ count: 0, sections: [] });
+      props.onChangesetChange?.([], () => undefined);
     };
-  }, [isCreate, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange]);
+  }, [isCreate, props.onDirtyChange, props.onDirtyDetailsChange, props.onChangesetChange, props.onSaveActionChange, props.onCancelActionChange]);
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
@@ -740,8 +830,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     hideInstructionsFile,
   };
 
-  // Section toggle state — advanced always starts collapsed
-  const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
@@ -1289,6 +1377,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     0,
     MAX_TURN_CONTINUATION_MAX_DELAY_SEC,
   );
+  const configurationShell = props.configurationShell === true;
+  const CardSectionHeading = configurationShell ? "h2" : "h3";
+  const sectionVisible = (section: string) =>
+    !props.identityOnly && (!props.visibleConfigurationSections || props.visibleConfigurationSections.has(section));
+  const advancedRuntimeKeys = [
+    adapterCommandField,
+    "extraArgs",
+    "engine",
+    "agentCommand",
+    "mode",
+    "permissionMode",
+    "stateDir",
+    "warmProcessIdleMs",
+    "timeoutSec",
+    "graceSec",
+    "chrome",
+  ];
+  const hasAdvancedRuntimeOverrides = !isCreate && advancedRuntimeKeys.some(
+    (key) => overlay.adapterConfig[key] !== undefined || config[key] !== undefined,
+  );
+  const [advancedRuntimeOpen, setAdvancedRuntimeOpen] = useState(hasAdvancedRuntimeOverrides);
+  useEffect(() => {
+    if (hasAdvancedRuntimeOverrides) setAdvancedRuntimeOpen(true);
+  }, [hasAdvancedRuntimeOverrides]);
+  const hasAdapterDangerFields =
+    adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "opencode_local";
+
+  // Legacy card visibility — derived from the *effective* (draft-aware) values
+  // so clearing a deprecated field hides the card immediately, and a clean
+  // agent never renders it at all (wireframe 07).
+  const legacyCwdValue = !isCreate && isLocal ? eff("adapterConfig", "cwd", String(config.cwd ?? "")) : "";
+  const legacyBootstrapValue = !isCreate
+    ? eff("adapterConfig", "bootstrapPromptTemplate", String(config.bootstrapPromptTemplate ?? ""))
+    : "";
+  const hasLegacyCwdValue = hasLegacyWorkingDirectory(legacyCwdValue);
+  const hasLegacyBootstrapValue = legacyBootstrapValue.trim().length > 0;
+  const showLegacyCard = hasLegacyCwdValue || hasLegacyBootstrapValue;
 
   function updateMaxTurnContinuation(patch: Record<string, unknown>) {
     mark("heartbeat", "maxTurnContinuation", {
@@ -1353,10 +1478,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Identity (edit only) ---- */}
-      {!isCreate && (
+      {!isCreate && !props.hideIdentity && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
+            ? <h3 className="text-sm font-medium mb-3">{props.identitySectionTitle ?? "Identity"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1430,74 +1555,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       )}
 
-      {/* ---- Execution ---- */}
-      {forcedKubernetes ? (
-        // Instance execution policy forces the managed Kubernetes sandbox
-        // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
-        // Render the environment read-only instead of the selectable picker.
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-          {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
-          }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field
-              label="Default environment"
-              hint="This instance runs all agents in the Kubernetes sandbox. Local execution is disabled."
-            >
-              {kubernetesEnvironment ? (
-                <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
-                  {kubernetesEnvironment.name} · Kubernetes sandbox
-                </div>
-              ) : (
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-                  This instance requires the Kubernetes sandbox, but no managed Kubernetes
-                  environment is available for this company yet. Configure one before creating
-                  agents; execution will not fall back to local.
-                </div>
-              )}
-            </Field>
-          </div>
-        </div>
-      ) : showEnvironmentOverrideControl ? (
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-          {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
-          }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field label="Environment override">
-              <div className="space-y-2">
-                <select
-                  className={inputClass}
-                  value={currentDefaultEnvironmentId}
-                  onChange={(event) => {
-                    const nextValue = event.target.value;
-                    if (isCreate) {
-                      set!({ defaultEnvironmentId: nextValue });
-                      return;
-                    }
-                    mark("identity", "defaultEnvironmentId", nextValue || null);
-                  }}
-                >
-                  <option value="">Default: {inheritedEnvironmentLabel}</option>
-                  {environmentOptions.map((environment) => (
-                    <option key={environment.id} value={environment.id}>
-                      {environmentDisplayLabel(environment)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </Field>
-          </div>
-        </div>
-      ) : null}
-
       {/* ---- Adapter ---- */}
-      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+      {sectionVisible("runtime") && <div id={configurationShell ? "config-runtime" : undefined} className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"), configurationShell && "scroll-mt-24")}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
+            ? <CardSectionHeading className="text-sm font-medium">{configurationShell ? "Runtime" : "Adapter"}</CardSectionHeading>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1600,7 +1662,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {/* Working directory */}
-          {showLegacyWorkingDirectoryField && (
+          {showLegacyWorkingDirectoryField && !configurationShell && (
             <Field label="Working directory (deprecated)" hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -1629,16 +1691,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
         </div>
 
-      </div>
+      </div>}
 
       {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
+      {sectionVisible("runtime") && isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
+            ? configurationShell
+              ? (
+                <button
+                  type="button"
+                  className="mb-3 flex w-full items-center justify-between text-sm font-medium"
+                  aria-expanded={advancedRuntimeOpen}
+                  onClick={() => setAdvancedRuntimeOpen((open) => !open)}
+                >
+                  <span>Advanced runtime</span>
+                  <ChevronDown className={cn("h-4 w-4 transition-transform", advancedRuntimeOpen && "rotate-180")} />
+                </button>
+              )
+              : <h3 className="text-sm font-medium mb-3">Permissions & Configuration</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          {(!configurationShell || advancedRuntimeOpen) && <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               <Field label="Command" hint={help.localCommand}>
                 <DraftInput
                   value={
@@ -1739,7 +1813,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
               {showThinkingEffort && (
                 <>
-                  <ThinkingEffortDropdown
+                  <ThinkingEffortControl
                     value={currentThinkingEffort}
                     options={thinkingEffortOptions}
                     onChange={(v) =>
@@ -1759,7 +1833,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
-              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+              {!configurationShell && !isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
                     <MarkdownEditor
@@ -1788,7 +1862,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
-              <uiAdapter.ConfigFields {...adapterFieldProps} />
+              <uiAdapter.ConfigFields {...adapterFieldProps} configurationSection="runtime" />
 
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
@@ -1807,7 +1881,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              <Field label="Environment variables" hint={help.envVars}>
+              {!configurationShell && <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
                   value={
@@ -1826,10 +1900,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? set!({ envBindings: env ?? {}, envVars: "" })
                       : mark("adapterConfig", "env", env)
                   }
+                  onDraftChange={isCreate ? undefined : setEnvironmentDraft}
                 />
-              </Field>
+              </Field>}
 
-              {/* Edit-only: timeout + grace period */}
+               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
                   <Field label="Timeout (sec)" hint={help.timeoutSec}>
@@ -1858,15 +1933,170 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   </Field>
                 </>
               )}
+          </div>}
+        </div>
+      )}
+
+      {/* ---- Execution environment (non-shell / create) ---- */}
+      {!configurationShell && sectionVisible("environment") && (forcedKubernetes ? (
+        // Instance execution policy forces the managed Kubernetes sandbox
+        // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
+        // Render the environment read-only instead of the selectable picker.
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+          {cards
+            ? <CardSectionHeading className="text-sm font-medium mb-3">Environment</CardSectionHeading>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            <Field
+              label="Default environment"
+              hint="This instance runs all agents in the Kubernetes sandbox. Local execution is disabled."
+            >
+              {kubernetesEnvironment ? (
+                <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
+                  {kubernetesEnvironment.name} · Kubernetes sandbox
+                </div>
+              ) : (
+                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                  This instance requires the Kubernetes sandbox, but no managed Kubernetes
+                  environment is available for this company yet. Configure one before creating
+                  agents; execution will not fall back to local.
+                </div>
+              )}
+            </Field>
           </div>
+        </div>
+      ) : showEnvironmentOverrideControl ? (
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+          {cards
+            ? <CardSectionHeading className="text-sm font-medium mb-3">Environment</CardSectionHeading>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            <Field label="Environment override">
+              <div className="space-y-2">
+                <select
+                  className={inputClass}
+                  value={currentDefaultEnvironmentId}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    if (isCreate) {
+                      set!({ defaultEnvironmentId: nextValue });
+                      return;
+                    }
+                    mark("identity", "defaultEnvironmentId", nextValue || null);
+                  }}
+                >
+                  <option value="">Default: {inheritedEnvironmentLabel}</option>
+                  {environmentOptions.map((environment) => (
+                    <option key={environment.id} value={environment.id}>
+                      {environmentDisplayLabel(environment)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </Field>
+          </div>
+        </div>
+      ) : null)}
+
+      {/* ---- Environment (configuration shell) ---- */}
+      {configurationShell && sectionVisible("environment") && (
+        <div id="config-environment" className="scroll-mt-24 space-y-4">
+          <CardSectionHeading className="text-sm font-medium mb-1">Environment</CardSectionHeading>
+
+          {/* Execution target — inherit vs override is always explicit; the
+              closed select names the inherited value (wireframe 04). */}
+          <div className="rounded-lg border border-border p-4 space-y-3">
+            <Field label="Execution environment" hint="Where runs execute.">
+              {forcedKubernetes ? (
+                kubernetesEnvironment ? (
+                  <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
+                    {kubernetesEnvironment.name} · Kubernetes sandbox
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                    This instance requires the Kubernetes sandbox, but no managed Kubernetes
+                    environment is available for this company yet.
+                  </div>
+                )
+              ) : showEnvironmentOverrideControl ? (
+                <select
+                  className={inputClass}
+                  value={currentDefaultEnvironmentId}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    if (isCreate) {
+                      set!({ defaultEnvironmentId: nextValue });
+                      return;
+                    }
+                    mark("identity", "defaultEnvironmentId", nextValue || null);
+                  }}
+                >
+                  <option value="">
+                    Inherit from company — {inheritedEnvironmentLabel}{instanceDefaultEnvironment ? "" : " (default)"}
+                  </option>
+                  {environmentOptions.map((environment) => (
+                    <option key={environment.id} value={environment.id}>
+                      Override — {environment.name} · {environment.driver}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className={cn(inputClass, "flex items-center text-muted-foreground")}>
+                  Inherit from company — {inheritedEnvironmentLabel}{instanceDefaultEnvironment ? "" : " (default)"}
+                </div>
+              )}
+            </Field>
+          </div>
+
+          {/* Variables & secrets — table of per-row source badges. Reserved
+              PAPERCLIP_* keys render as locked rows instead of being silently
+              stripped at run time (see PAP-14732). */}
+          {isLocal && (
+            <div className="rounded-lg border border-border p-4 space-y-3">
+              <div className="space-y-1">
+                <div className="text-sm">Environment variables &amp; secrets</div>
+                <p className="text-xs text-muted-foreground">
+                  Injected into the adapter process on every run. Bind secrets by reference — values never shown here.
+                </p>
+              </div>
+              <EnvironmentVariablesEditor
+                ref={environmentVariablesEditorRef}
+                value={
+                  isCreate
+                    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                    : eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                }
+                secrets={availableSecrets}
+                userSecretDefinitions={userSecretDefinitions}
+                onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
+                onChange={(env) =>
+                  isCreate
+                    ? set!({ envBindings: env ?? {}, envVars: "" })
+                    : mark("adapterConfig", "env", env)
+                }
+                onDraftChange={isCreate ? undefined : setEnvironmentDraft}
+              />
+              {!isCreate && (
+                <Field label="Secret access" hint={help.secretAccess}>
+                  <AgentSecretAccessEditor
+                    config={{ ...config, ...overlay.adapterConfig }}
+                    secrets={availableSecrets}
+                    onChange={applyAccessGrants}
+                  />
+                </Field>
+              )}
+            </div>
+          )}
         </div>
       )}
 
       {/* ---- Run Policy ---- */}
-      {isCreate && showCreateRunPolicySection ? (
-        <div className={cn(!cards && "border-b border-border")}>
+      {sectionVisible("schedule") && (isCreate && showCreateRunPolicySection ? (
+        <div id={configurationShell ? "config-schedule" : undefined} className={cn(!cards && "border-b border-border", configurationShell && "scroll-mt-24")}>
           {cards
-            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
+            ? <CardSectionHeading className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</CardSectionHeading>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1885,106 +2115,155 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : !isCreate ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div id={configurationShell ? "config-schedule" : undefined} className={cn(!cards && "border-b border-border", configurationShell && "scroll-mt-24")}>
           {cards
-            ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
+            ? <CardSectionHeading className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> {configurationShell ? "Schedule & Runs" : "Run Policy"}</CardSectionHeading>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
-            <div className={cn(cards ? "p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <ToggleWithNumber
-                label="Heartbeat on interval"
+          <div className={cn(cards ? "space-y-4" : "px-4 pb-3 space-y-4")}>
+            {/* Heartbeat — humanized cadence with a live runs/day preview.
+                Stored in seconds; the unit select is a display convenience. */}
+            <div className={cn(cards && "rounded-lg border border-border p-4")}>
+              <CadenceField
                 hint={help.heartbeatInterval}
-                checked={eff("heartbeat", "enabled", heartbeat.enabled === true)}
-                onCheckedChange={(v) => mark("heartbeat", "enabled", v)}
-                number={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
-                onNumberChange={(v) => mark("heartbeat", "intervalSec", v)}
-                numberLabel="sec"
-                numberPrefix="Run heartbeat every"
-                numberHint={help.intervalSec}
-                showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
+                enabled={eff("heartbeat", "enabled", heartbeat.enabled === true)}
+                onEnabledChange={(v) => mark("heartbeat", "enabled", v)}
+                intervalSec={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
+                onIntervalSecChange={(v) => mark("heartbeat", "intervalSec", v)}
               />
             </div>
-            <CollapsibleSection
-              title="Advanced Run Policy"
-              bordered={cards}
-              open={runPolicyAdvancedOpen}
-              onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
-            >
-            <div className="space-y-3">
+
+            {/* Waking & concurrency — first-class (the old "Advanced Run
+                Policy" collapse is dissolved per wireframe 05). */}
+            <div className={cn("space-y-3", cards && "rounded-lg border border-border p-4")}>
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Waking &amp; concurrency</div>
               <ToggleField
                 label="Wake on demand"
                 hint={help.wakeOnDemand}
-                checked={eff(
-                  "heartbeat",
-                  "wakeOnDemand",
-                  heartbeat.wakeOnDemand !== false,
-                )}
+                checked={eff("heartbeat", "wakeOnDemand", heartbeat.wakeOnDemand !== false)}
                 onChange={(v) => mark("heartbeat", "wakeOnDemand", v)}
               />
-              <Field label="Cooldown (sec)" hint={help.cooldownSec}>
-                <DraftNumberInput
-                  value={eff(
-                    "heartbeat",
-                    "cooldownSec",
-                    Number(heartbeat.cooldownSec ?? 10),
-                  )}
-                  onCommit={(v) => mark("heartbeat", "cooldownSec", v)}
-                  immediate
-                  className={inputClass}
-                />
-              </Field>
               <Field label="Max concurrent runs" hint={help.maxConcurrentRuns}>
                 <DraftNumberInput
-                  value={eff(
-                    "heartbeat",
-                    "maxConcurrentRuns",
-                    Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS),
-                  )}
+                  value={eff("heartbeat", "maxConcurrentRuns", Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS))}
                   onCommit={(v) => mark("heartbeat", "maxConcurrentRuns", v)}
                   immediate
                   className={inputClass}
                 />
               </Field>
-              <div className="rounded-md border border-border/70 px-3 py-2">
-                <ToggleField
-                  label="Continue after max-turn stop"
-                  hint={help.maxTurnContinuationEnabled}
-                  checked={maxTurnContinuationEnabled}
-                  onChange={(v) => updateMaxTurnContinuation({ enabled: v })}
+              <Field label="Cooldown between runs (sec)" hint={help.cooldownSec}>
+                <DraftNumberInput
+                  value={eff("heartbeat", "cooldownSec", Number(heartbeat.cooldownSec ?? 10))}
+                  onCommit={(v) => mark("heartbeat", "cooldownSec", v)}
+                  immediate
+                  className={inputClass}
                 />
-                {maxTurnContinuationEnabled ? (
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Field label="Continuation attempts" hint={help.maxTurnContinuationMaxAttempts}>
-                      <DraftNumberInput
-                        value={maxTurnContinuationMaxAttempts}
-                        onCommit={(v) =>
-                          updateMaxTurnContinuation({
-                            maxAttempts: clampInteger(v, 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
-                          })}
-                        immediate
-                        className={inputClass}
-                      />
-                    </Field>
-                    <Field label="Continuation delay (sec)" hint={help.maxTurnContinuationDelaySec}>
-                      <DraftNumberInput
-                        value={maxTurnContinuationDelaySec}
-                        onCommit={(v) =>
-                          updateMaxTurnContinuation({
-                            delayMs: clampDelayMsFromSeconds(v),
-                          })}
-                        immediate
-                        className={inputClass}
-                      />
-                    </Field>
-                  </div>
-                ) : null}
+              </Field>
+            </div>
+
+            {/* Continuation after max-turn stop — a distinct card; niche
+                behavior with inputs gated behind the enable toggle. */}
+            <div className={cn(cards ? "rounded-lg border border-border p-4" : "rounded-md border border-border/70 px-3 py-2")}>
+              <ToggleField
+                label="Continue after max-turn stop"
+                hint={help.maxTurnContinuationEnabled}
+                checked={maxTurnContinuationEnabled}
+                onChange={(v) => updateMaxTurnContinuation({ enabled: v })}
+              />
+              <div className={cn("mt-3 grid gap-3 sm:grid-cols-2", !maxTurnContinuationEnabled && "opacity-50")}>
+                <Field label="Attempts" hint={help.maxTurnContinuationMaxAttempts}>
+                  <DraftNumberInput
+                    value={maxTurnContinuationMaxAttempts}
+                    onCommit={(v) =>
+                      updateMaxTurnContinuation({
+                        maxAttempts: clampInteger(v, 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
+                      })}
+                    immediate
+                    disabled={!maxTurnContinuationEnabled}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label="Delay (sec)" hint={help.maxTurnContinuationDelaySec}>
+                  <DraftNumberInput
+                    value={maxTurnContinuationDelaySec}
+                    onCommit={(v) =>
+                      updateMaxTurnContinuation({
+                        delayMs: clampDelayMsFromSeconds(v),
+                      })}
+                    immediate
+                    disabled={!maxTurnContinuationEnabled}
+                    className={inputClass}
+                  />
+                </Field>
               </div>
             </div>
-          </CollapsibleSection>
           </div>
         </div>
-      ) : null}
+      ) : null)}
+
+      {configurationShell ? props.configurationShellAfterSchedule : null}
+
+      {configurationShell && sectionVisible("danger") && (
+        <div id="config-danger" className="scroll-mt-24 space-y-4">
+          <CardSectionHeading className="text-sm font-medium mb-1">Danger &amp; Legacy</CardSectionHeading>
+
+          {/* Danger zone — high-consequence toggles, isolated with a warm
+              border. Each enable requires a confirm-on-enable dialog. */}
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+              <h3 className="text-sm font-medium">Danger zone</h3>
+            </div>
+            {hasAdapterDangerFields ? (
+              <uiAdapter.ConfigFields {...adapterFieldProps} configurationSection="danger" />
+            ) : (
+              <p className="text-xs text-muted-foreground">This adapter has no permission or sandbox bypass settings.</p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Enabling either opens a confirm dialog stating the consequence. The change is part of the draft changeset, so it lands in History like everything else.
+            </p>
+          </div>
+
+          {/* Legacy settings — rendered ONLY when a deprecated field still
+              carries a value; each row is paired with a migration action. */}
+          {showLegacyCard && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+              <div>
+                <h3 className="text-sm font-medium">Legacy settings</h3>
+                <p className="text-xs text-muted-foreground">
+                  Deprecated fields that still carry a value. Migrate them off — a clean agent never sees this card.
+                </p>
+              </div>
+              {hasLegacyCwdValue && (
+                <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span>Working directory (deprecated)</span>
+                    </div>
+                    <p className="truncate font-mono text-xs text-muted-foreground" title={legacyCwdValue}>{legacyCwdValue}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 px-2.5 text-xs"
+                    onClick={() => (isCreate ? set!({ cwd: "" }) : mark("adapterConfig", "cwd", undefined))}
+                  >
+                    Clear — use workspaces
+                  </Button>
+                </div>
+              )}
+              {hasLegacyBootstrapValue && (
+                <LegacyBootstrapRow
+                  value={legacyBootstrapValue}
+                  onMove={() => mark("adapterConfig", "bootstrapPromptTemplate", undefined)}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
     </div>
   );
@@ -2811,6 +3090,34 @@ function SubmittedBrowserCodeLoginPanel({
   );
 }
 
+/**
+ * Legacy bootstrap-prompt row with a "Move to instructions…" migration action.
+ * Copies the prompt to the clipboard and clears the field from the draft; once
+ * cleared the surrounding Legacy card auto-hides (no deprecated value remains).
+ */
+function LegacyBootstrapRow({ value, onMove }: { value: string; onMove: () => void }) {
+  const charCount = value.trim().length;
+  async function handleMove() {
+    try {
+      await copyTextToClipboard(value);
+    } catch {
+      // Clipboard may be blocked (permissions/headless); still migrate off.
+    }
+    onMove();
+  }
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+      <div className="min-w-0 space-y-1">
+        <div className="text-sm">Bootstrap prompt (legacy)</div>
+        <p className="text-xs text-muted-foreground">{charCount} chars · sent only on fresh sessions</p>
+      </div>
+      <Button type="button" variant="outline" size="sm" className="h-7 shrink-0 px-2.5 text-xs" onClick={handleMove}>
+        Move to instructions…
+      </Button>
+    </div>
+  );
+}
+
 export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestResult }) {
   const statusLabel =
     result.status === "pass" ? "Passed" : result.status === "warn" ? "Warnings" : "Failed";
@@ -3303,6 +3610,97 @@ function CheapModelSection({
         </p>
       ) : null}
     </div>
+  );
+}
+
+function ThinkingEffortControl({
+  value,
+  options,
+  onChange,
+  open,
+  onOpenChange,
+}: {
+  value: string;
+  options: ReadonlyArray<{ id: string; label: string }>;
+  onChange: (id: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  // Small option sets render as a segmented group (matches the runtime
+  // wireframe); long lists stay a dropdown to avoid overflow.
+  if (options.length <= THINKING_EFFORT_SEGMENTED_MAX_OPTIONS) {
+    return <ThinkingEffortSegmented value={value} options={options} onChange={onChange} />;
+  }
+  return (
+    <ThinkingEffortDropdown
+      value={value}
+      options={options}
+      onChange={onChange}
+      open={open}
+      onOpenChange={onOpenChange}
+    />
+  );
+}
+
+function ThinkingEffortSegmented({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: ReadonlyArray<{ id: string; label: string }>;
+  onChange: (id: string) => void;
+}) {
+  const selected = options.find((option) => option.id === value) ?? options[0];
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const idx = options.findIndex((option) => option.id === selected?.id);
+    if (idx === -1) return;
+    let nextIdx: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIdx = (idx + 1) % options.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIdx = (idx - 1 + options.length) % options.length;
+    }
+    if (nextIdx !== null) {
+      event.preventDefault();
+      onChange(options[nextIdx].id);
+    }
+  };
+
+  return (
+    <Field label="Thinking effort" hint={help.thinkingEffort}>
+      <div
+        role="radiogroup"
+        aria-label="Thinking effort"
+        onKeyDown={handleKeyDown}
+        className="inline-flex w-full items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+      >
+        {options.map((option) => {
+          const isSelected = option.id === selected?.id;
+          return (
+            <button
+              key={option.id || "auto"}
+              type="button"
+              role="radio"
+              aria-checked={isSelected}
+              data-state={isSelected ? "checked" : "unchecked"}
+              tabIndex={isSelected ? 0 : -1}
+              onClick={() => onChange(option.id)}
+              className={cn(
+                "flex-1 rounded-sm px-2 py-1 text-sm whitespace-nowrap transition-colors",
+                "focus-visible:outline-1 focus-visible:outline-ring",
+                isSelected
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </Field>
   );
 }
 

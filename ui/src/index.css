@@ -2320,6 +2320,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-17: 1fr auto; /* Extracted from ui/src/components/ui/card.tsx (grid-cols-[1fr_auto]). */
   --gtc-18: auto minmax(0,1fr) minmax(12rem,0.65fr); /* Extracted from ui/src/pages/AgentDetail.tsx (grid-cols-[auto_minmax(0,1fr)_minmax(12rem,0.65fr)]). */
   --gtc-19: 260px minmax(0,1fr); /* Extracted from ui/src/pages/AgentDetail.tsx (grid-cols-[260px_minmax(0,1fr)]). */
+  --gtc-agent-configuration: 14rem minmax(0,1fr);
   /* --gtc-20 through --gtc-23 retired with the removed Cloud Upstream page. */
   --gtc-24: minmax(0,1.5fr) 120px 120px 180px; /* Extracted from ui/src/pages/CompanyAccess.tsx (grid-cols-[minmax(0,1.5fr)_120px_120px_180px]). */
   --gtc-25: 19rem minmax(0,1fr); /* Extracted from ui/src/pages/CompanyExport.tsx (grid-cols-[19rem_minmax(0,1fr)]). */

@@ -7,6 +7,7 @@ import {
   help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
+import { DangerToggleField } from "../../components/DangerToggleField";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 
 const inputClass =
@@ -26,7 +27,35 @@ export function ClaudeLocalConfigFields({
   mark,
   models,
   hideInstructionsFile,
+  configurationSection = "runtime",
 }: AdapterConfigFieldsProps) {
+  if (configurationSection === "danger") {
+    return (
+      <DangerToggleField
+        label="Skip permission prompts"
+        description="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        toggleTestId="danger-skip-permissions"
+        confirmTitle="Skip permission prompts?"
+        confirmBody="Runs unattended by auto-approving every adapter permission prompt. The agent can take any action its environment allows without asking."
+        confirmActionLabel="Skip permissions"
+        checked={
+          isCreate
+            ? values!.dangerouslySkipPermissions
+            : eff(
+                "adapterConfig",
+                "dangerouslySkipPermissions",
+                config.dangerouslySkipPermissions !== false,
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ dangerouslySkipPermissions: v })
+            : mark("adapterConfig", "dangerouslySkipPermissions", v)
+        }
+      />
+    );
+  }
+
   return (
     <>
       {!hideInstructionsFile && (
@@ -226,24 +255,6 @@ export function ClaudeLocalAdvancedFields({
           isCreate
             ? set!({ chrome: v })
             : mark("adapterConfig", "chrome", v)
-        }
-      />
-      <ToggleField
-        label="Skip permissions"
-        hint={help.dangerouslySkipPermissions}
-        checked={
-          isCreate
-            ? values!.dangerouslySkipPermissions
-            : eff(
-                "adapterConfig",
-                "dangerouslySkipPermissions",
-                config.dangerouslySkipPermissions !== false,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslySkipPermissions: v })
-            : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
       <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
