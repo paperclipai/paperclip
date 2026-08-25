@@ -204,6 +204,7 @@ interface AuthenticatedClient {
   sendCounter: bigint;
   receiveCounter: bigint;
   leaseToken: string | null;
+  welcome: Record<string, unknown>;
 }
 
 function authHello(
@@ -277,10 +278,12 @@ async function authenticate(
     sendCounter: 0n,
     receiveCounter: 0n,
     leaseToken: null,
+    welcome: {},
   };
   const welcome = await receiveSecure(client);
   if (welcome === null) return null;
   expect(welcome.kind).toBe("welcome");
+  client.welcome = welcome;
   const leaseToken = (welcome.payload as Record<string, unknown>)
     .connectionLeaseToken;
   client.leaseToken = typeof leaseToken === "string" ? leaseToken : null;
@@ -555,6 +558,57 @@ describe.sequential("DurablePrpControlPlane", () => {
       };
       sendSecure(client!, tampered);
       await expect(receiveSecure(client!)).resolves.toBeNull();
+      client?.socket.destroy();
+    } finally {
+      await recovered.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not acknowledge an event before the caller commits it", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-commit-order-"));
+    const first = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onSemanticToolInput: async () => ({ result: { ok: true } }),
+      onCommittedEvent: async () => {
+        throw new Error("database commit failed");
+      },
+    });
+    let leaseToken: string;
+    try {
+      await first.start();
+      const client = await authenticate(first, first.issueBootstrapTicket());
+      leaseToken = client!.leaseToken!;
+      sendSecure(client!, semanticInputEvent());
+      await expect(receiveSecure(client!)).resolves.toBeNull();
+    } finally {
+      await first.stop();
+    }
+
+    let committed = 0;
+    const recovered = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onSemanticToolInput: async () => ({ result: { ok: true } }),
+      onCommittedEvent: async () => {
+        committed += 1;
+      },
+    });
+    try {
+      await recovered.start();
+      const client = await authenticate(recovered, leaseToken!);
+      expect(client?.welcome.payload).toMatchObject({ ackedSourceSeq: 0 });
+      sendSecure(client!, semanticInputEvent());
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "ack",
+        payload: { ackedSourceSeq: 1 },
+      });
+      expect(committed).toBe(1);
       client?.socket.destroy();
     } finally {
       await recovered.stop();

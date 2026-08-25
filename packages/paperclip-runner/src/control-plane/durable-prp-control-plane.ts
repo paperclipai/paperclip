@@ -1547,13 +1547,27 @@ export class DurablePrpControlPlane {
         connection.close();
         return;
       }
+    } else if (sourceSeq !== this.#store.state.ackedSourceSeq + 1) {
+      connection.close();
+      return;
+    }
+
+    // The caller's durable commit is the acknowledgement authority. A crash
+    // after that idempotent commit but before the local cursor save is safe:
+    // the runner replays the event, the caller observes a duplicate, and only
+    // then do we advance the cumulative cursor. Reversing this order can make
+    // an uncommitted event disappear from the runner outbox permanently.
+    try {
+      await this.#onCommittedEvent?.(event);
+    } catch {
+      connection.close();
+      return;
+    }
+
+    if (existing !== undefined) {
       existing.deliveryCount += 1;
       this.#store.state.replayDeliveries += 1;
     } else {
-      if (sourceSeq !== this.#store.state.ackedSourceSeq + 1) {
-        connection.close();
-        return;
-      }
       this.#store.state.committedEvents.push({
         sourceSeq,
         sourceEventId,
@@ -1572,12 +1586,6 @@ export class DurablePrpControlPlane {
       this.#store.state.ackedSourceSeq = sourceSeq;
     }
     this.#store.save();
-    try {
-      await this.#onCommittedEvent?.(event);
-    } catch {
-      connection.close();
-      return;
-    }
 
     if (
       isSemanticInput &&
@@ -1627,7 +1635,9 @@ export class DurablePrpControlPlane {
           }
         };
         void this.#onSemanticToolInput(call)
-          .then((outcome) => queueResult(outcome.result, outcome.isError === true))
+          .then((outcome) =>
+            queueResult(outcome.result, outcome.isError === true),
+          )
           .catch(() =>
             queueResult({ code: "semantic_tool_bridge_failed" }, true),
           )
