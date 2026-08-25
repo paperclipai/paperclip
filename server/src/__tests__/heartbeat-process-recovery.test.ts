@@ -1840,6 +1840,98 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  // TSMC-21661 — the check-then-insert race the CTO review rejected the first
+  // implementation for. The caller selects the agent/issue, THEN inserts the
+  // retry. These tests change the bound state inside that exact window by
+  // intercepting the first db.transaction() call, which is deterministic: no
+  // sleeps, no timing assumptions.
+  async function raceStateChangeOnFirstTransaction(mutate: () => Promise<void>) {
+    const realTransaction = db.transaction.bind(db);
+    let fired = false;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: unknown[]) => {
+      if (!fired) {
+        fired = true;
+        await mutate();          // state changes AFTER the lookup, BEFORE the insert
+      }
+      return (realTransaction as unknown as (...a: unknown[]) => unknown)(...args);
+    }) as never);
+    return { spy, fired: () => fired };
+  }
+
+  it("suppresses a process-loss retry when the agent is paused between the lookup and the insert (TSMC-21661)", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const { spy, fired } = await raceStateChangeOnFirstTransaction(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    });
+    try {
+      await heartbeat.reapOrphanedRuns();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fired()).toBe(true);
+
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retries).toHaveLength(0);
+  });
+
+  it("suppresses a process-loss retry when the issue is blocked between the lookup and the insert (TSMC-21661)", async () => {
+    const { runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const { spy, fired } = await raceStateChangeOnFirstTransaction(async () => {
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    });
+    try {
+      await heartbeat.reapOrphanedRuns();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fired()).toBe(true);
+
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retries).toHaveLength(0);
+  });
+
+  it("still spawns the retry when nothing changes in that window (TSMC-21661 positive control)", async () => {
+    // Without this, both tests above would pass against a gate that suppressed
+    // unconditionally.
+    const { runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const { spy, fired } = await raceStateChangeOnFirstTransaction(async () => {
+      /* touch nothing — same interception, no state change */
+    });
+    try {
+      await heartbeat.reapOrphanedRuns();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fired()).toBe(true);
+
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retries).toHaveLength(1);
+  });
+
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",

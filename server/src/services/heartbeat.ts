@@ -5,6 +5,12 @@ import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+
+// TSMC-21661: statuses that must suppress an automatic retry at INSERT time.
+// Kept beside the gate so the two lists cannot drift apart from each other.
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+const RETRY_SUPPRESSING_AGENT_STATUSES = new Set(["paused", "terminated"]);
+const RETRY_SUPPRESSING_ISSUE_STATUSES = new Set(["blocked", "done", "cancelled"]);
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -13067,6 +13073,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  // TSMC-21661: re-read the retry spawn preconditions INSIDE the insert
+  // transaction, holding row locks.
+  //
+  // Both retry paths previously evaluated agent invokability against a row
+  // selected by their CALLER, then inserted afterwards. An agent could be
+  // paused — or the bound issue blocked/closed — in the window between that
+  // read and the insert, and the retry spawned anyway. That is exactly what
+  // happened on 2026-08-25: a lane's run was resurrected by the retry path
+  // after its card had been parked `blocked` and its agent `paused`.
+  //
+  // A check-then-insert guard guarantees nothing. The check has to happen in
+  // the same transaction as the write, against rows locked FOR UPDATE, or it
+  // is only ever advisory.
+  //
+  // Returns a suppression descriptor when the retry must NOT be inserted, or
+  // null when it may proceed.
+  async function retrySpawnSuppression(
+    tx: DbTransaction,
+    input: { companyId: string; agentId: string; issueId: string | null },
+  ): Promise<{ reason: string; details: Record<string, unknown> } | null> {
+    const currentAgent = await tx
+      .select({ id: agents.id, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!currentAgent) {
+      return { reason: "agent_missing", details: {} };
+    }
+    if (RETRY_SUPPRESSING_AGENT_STATUSES.has(currentAgent.status)) {
+      return { reason: `agent_${currentAgent.status}`, details: { agentStatus: currentAgent.status } };
+    }
+
+    if (input.issueId) {
+      const currentIssue = await tx
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      // A missing issue is left to each caller's own existing handling.
+      if (currentIssue && RETRY_SUPPRESSING_ISSUE_STATUSES.has(currentIssue.status)) {
+        return { reason: `issue_${currentIssue.status}`, details: { issueStatus: currentIssue.status } };
+      }
+    }
+    return null;
+  }
+
   async function enqueueMissingIssueCommentRetry(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -13116,6 +13170,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const now = new Date();
 
+    let commentRetrySuppression: { reason: string; details: Record<string, unknown> } | null = null;
     const retryRun = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
@@ -13127,6 +13182,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
         .then((rows) => rows[0] ?? null);
       if (!issue) return null;
+
+      // TSMC-21661: this path already locked the issue row, but never re-read
+      // the AGENT or the issue's STATUS. Both can change between the caller's
+      // invokability check and this insert.
+      commentRetrySuppression = await retrySpawnSuppression(tx, {
+        companyId: run.companyId,
+        agentId: run.agentId,
+        issueId: issue.id,
+      });
+      if (commentRetrySuppression) return null;
 
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
@@ -13198,7 +13263,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return queuedRun;
     });
 
-    if (!retryRun) return null;
+    if (!retryRun) {
+      // TSMC-21661: distinguish "the issue vanished" (silent, pre-existing) from
+      // "state changed under us" — the latter is the suppression this gate exists
+      // for and must leave evidence, or a suppressed retry is indistinguishable
+      // from one that never happened.
+      const suppression = commentRetrySuppression as { reason: string; details: Record<string, unknown> } | null;
+      if (suppression) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Missing-comment retry suppressed at insert time because the bound state changed after the recovery lookup",
+          payload: {
+            reason: suppression.reason,
+            ...suppression.details,
+          },
+        });
+      }
+      return null;
+    }
 
     publishLiveEvent({
       companyId: retryRun.companyId,
@@ -13394,7 +13478,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
+    // TSMC-21661: the invokability check above ran against a caller-selected
+    // row. Re-verify under lock inside the inserting transaction.
+    let spawnSuppression: { reason: string; details: Record<string, unknown> } | null = null;
     const queued = await db.transaction(async (tx) => {
+      spawnSuppression = await retrySpawnSuppression(tx, {
+        companyId: run.companyId,
+        agentId: run.agentId,
+        issueId,
+      });
+      if (spawnSuppression) return null;
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -13457,6 +13551,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       return retryRun;
     });
+
+    if (!queued) {
+      const suppression = spawnSuppression as { reason: string; details: Record<string, unknown> } | null;
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed at insert time because the bound state changed after the recovery lookup",
+        payload: {
+          reason: suppression?.reason ?? "unknown",
+          ...(suppression?.details ?? {}),
+        },
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
