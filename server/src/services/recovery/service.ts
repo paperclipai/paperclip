@@ -391,6 +391,16 @@ const PROVIDER_QUOTA_ERROR_RE =
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
+// Matches the canonical OpenClaw gateway wait timeout message.
+// These timeouts are ambiguous: the run may have completed on the remote side.
+// Fail closed — do not auto-retry.
+const OPENCLAW_GATEWAY_WAIT_TIMEOUT_RE = /OpenClaw gateway run timed out after \d+ms/i;
+
+function isOpenClawGatewayWaitTimeout(latestRun: LatestIssueRun): boolean {
+  if (!latestRun || latestRun.status !== "timed_out" || latestRun.errorCode !== "timeout") return false;
+  return OPENCLAW_GATEWAY_WAIT_TIMEOUT_RE.test(latestRun.error ?? "");
+}
+
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
   | { kind: "configuration_incomplete" }
@@ -519,6 +529,9 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
     };
   }
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  if (isOpenClawGatewayWaitTimeout(latestRun)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
   }
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
@@ -4568,6 +4581,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 "but it still has no live execution path. " +
                 "Moving it to `blocked` so it is visible for intervention.",
               title: "No live execution path",
+              tone: "danger",
+            },
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (isOpenClawGatewayWaitTimeout(latestRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                "Paperclip detected an ambiguous OpenClaw gateway wait timeout on this issue's assignment wake. " +
+                "Failing closed: skipping automatic retry and moving it to `blocked` so it is visible for intervention.",
+              title: "Ambiguous OpenClaw timeout",
               tone: "danger",
             },
           });
