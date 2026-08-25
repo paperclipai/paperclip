@@ -16,7 +16,9 @@
     "paperclip-mcp-server": "./dist/stdio.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./stdio": "./dist/stdio.js",
+    "./blind-judge-stdio": "./dist/blind-judge-stdio.js"
   },
   "publishConfig": {
     "access": "public",
@@ -27,7 +29,9 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
-      }
+      },
+      "./stdio": "./dist/stdio.js",
+      "./blind-judge-stdio": "./dist/blind-judge-stdio.js"
     },
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts"

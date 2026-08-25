@@ -110,6 +110,7 @@ describe("paperclip MCP tools", () => {
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
+      allowDuplicate: false,
     });
   });
 
@@ -396,5 +397,38 @@ describe("paperclip MCP tools", () => {
     });
 
     expect(response.content[0]?.text).toContain("must not contain '..'");
+  });
+
+  it("publishes only scoped tools for blind judges", () => {
+    const tools = createToolDefinitions(makeClient(), {
+      toolProfile: "blind_judge",
+      allowedReadIssueIds: ["RES-3"],
+      taskId: "judge-task-id",
+    });
+
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "paperclipGetDocument",
+      "paperclipListDocumentRevisions",
+      "paperclipUpdateIssue",
+      "paperclipAddComment",
+    ]);
+  });
+
+  it("prevents blind judges from reading unapproved issues or writing other tasks", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const tools = createToolDefinitions(makeClient(), {
+      toolProfile: "blind_judge",
+      allowedReadIssueIds: ["RES-3"],
+      taskId: "judge-task-id",
+    });
+    const getDocument = tools.find((tool) => tool.name === "paperclipGetDocument")!;
+    const addComment = tools.find((tool) => tool.name === "paperclipAddComment")!;
+
+    const readResponse = await getDocument.execute({ issueId: "RES-17", key: "owner-brief" });
+    const writeResponse = await addComment.execute({ issueId: "other-task", body: "no" });
+
+    expect(readResponse.content[0]?.text).toContain("may not read Paperclip issue RES-17");
+    expect(writeResponse.content[0]?.text).toContain("may only write to its current Paperclip task");
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

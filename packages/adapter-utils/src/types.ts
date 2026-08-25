@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { ResolvedRuntimeToolPolicy } from "./runtime-tool-policy.js";
 
 export interface AdapterAgent {
   id: string;
@@ -12,6 +13,7 @@ export interface AdapterAgent {
   name: string;
   adapterType: string | null;
   adapterConfig: unknown;
+  runtimeConfig?: unknown;
 }
 
 export interface AdapterRuntime {
@@ -146,6 +148,7 @@ export interface AdapterInvocationMeta {
   prompt?: string;
   promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
+  runtimeToolPolicy?: ResolvedRuntimeToolPolicy;
 }
 
 export interface AdapterRuntimeMcpServer {

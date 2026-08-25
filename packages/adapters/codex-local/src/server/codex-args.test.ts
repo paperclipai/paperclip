@@ -197,4 +197,49 @@ describe("buildCodexExecArgs", () => {
 
     expect(result.args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
   });
+
+  it("uses restricted flags without search, bypass, or resume for blind judges", () => {
+    const result = buildCodexExecArgs(
+      {
+        model: "gpt-5.5",
+        search: true,
+        dangerouslyBypassSandbox: true,
+      },
+      {
+        resumeSessionId: "session-1",
+        skipGitRepoCheck: true,
+        restricted: true,
+      },
+    );
+
+    expect(result.args).toEqual(expect.arrayContaining([
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--strict-config",
+      "--sandbox",
+      "read-only",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--disable",
+      "multi_agent",
+      "--disable",
+      "plugins",
+      "--disable",
+      "shell_tool",
+    ]));
+    expect(result.args).not.toContain("--search");
+    expect(result.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(result.args).not.toContain("resume");
+  });
+
+  it("rejects extra args in restricted mode", () => {
+    expect(() =>
+      buildCodexExecArgs(
+        { extraArgs: ["--ask-for-approval=never"] },
+        { restricted: true },
+      ),
+    ).toThrow("does not allow Codex adapter extraArgs");
+  });
 });

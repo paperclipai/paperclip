@@ -63,10 +63,29 @@ const agentModelProfileConfigSchema = z.object({
   adapterConfig: adapterConfigSchema,
 }).strict();
 
+const runtimeToolSurfaceSchema = z.union([
+  z.literal("web.search"),
+  z.literal("web.fetch"),
+  z.literal("browser.automation"),
+  z.literal("network.outbound"),
+  z.string().regex(/^mcp\.server:.+$/),
+  z.string().regex(/^connector:.+$/),
+  z.string().regex(/^plugin:.+$/),
+]);
+
+const runtimeToolPolicySchema = z.object({
+  profile: z.literal("blind_judge").optional(),
+  enforcement: z.enum(["required", "best_effort"]).optional(),
+  allow: z.array(runtimeToolSurfaceSchema).optional(),
+  deny: z.array(runtimeToolSurfaceSchema).optional(),
+  paperclipReadIssueIds: z.array(z.string().trim().min(1)).optional(),
+}).strict();
+
 export const agentRuntimeConfigSchema = z.object({
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
   }).strict().optional(),
+  runtimeToolPolicy: runtimeToolPolicySchema.optional(),
 }).catchall(z.unknown());
 
 export const createAgentSchema = z.object({

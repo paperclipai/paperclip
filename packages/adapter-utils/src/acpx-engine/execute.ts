@@ -12,6 +12,8 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import type { ResolvedRuntimeToolPolicy } from "../runtime-tool-policy.js";
+import { resolveRuntimeToolPolicy, runtimeToolPolicyDenies, summarizeRuntimeToolPolicy } from "../runtime-tool-policy.js";
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
@@ -439,6 +441,7 @@ interface AcpxPreparedRuntime {
   skillsIdentity: Record<string, unknown>;
   childStderrLogPath: string | null;
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
+  runtimeToolPolicy: ResolvedRuntimeToolPolicy;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
   mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
   // Per-step round-trip / provider-duration readers sourced from the sandbox
@@ -1287,6 +1290,7 @@ function buildSessionParams(input: {
 interface PaperclipClaudeSettingsResult {
   filePath: string;
   allow: string[];
+  deny: string[];
   additionalDirectories: string[];
   defaultMode: string;
   overrodeDontAsk: boolean;
@@ -1294,6 +1298,28 @@ interface PaperclipClaudeSettingsResult {
 
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))].sort();
+}
+
+function claudeDenyRulesForRuntimeToolPolicy(policy?: ResolvedRuntimeToolPolicy | null): string[] {
+  if (!policy?.restricted) return [];
+  return uniqueSorted([
+    runtimeToolPolicyDenies(policy, "web.fetch") ? "WebFetch" : null,
+    runtimeToolPolicyDenies(policy, "web.search") ? "WebSearch" : null,
+    runtimeToolPolicyDenies(policy, "browser.automation") ? "mcp__browser__*" : null,
+    runtimeToolPolicyDenies(policy, "network.outbound") ? "Bash" : null,
+    runtimeToolPolicyDenies(policy, "network.outbound") ? "WebFetch" : null,
+    runtimeToolPolicyDenies(policy, "network.outbound") ? "WebSearch" : null,
+    runtimeToolPolicyDenies(policy, "mcp.server:*") ? "mcp__*" : null,
+    runtimeToolPolicyDenies(policy, "connector:*") ? "ToolSearch" : null,
+    runtimeToolPolicyDenies(policy, "connector:*") ? "Skill" : null,
+    runtimeToolPolicyDenies(policy, "plugin:*") ? "ToolSearch" : null,
+    runtimeToolPolicyDenies(policy, "plugin:*") ? "Skill" : null,
+    "Agent",
+    "Task",
+    "SendMessage",
+    "PushNotification",
+    "RemoteTrigger",
+  ]);
 }
 
 // The Claude Code SDK that `claude-agent-acp` runs uses
@@ -1308,6 +1334,7 @@ async function writePaperclipClaudeSettings(input: {
   stateDir: string;
   agentHome: string;
   companyId: string;
+  runtimeToolPolicy?: ResolvedRuntimeToolPolicy | null;
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1317,13 +1344,17 @@ async function writePaperclipClaudeSettings(input: {
     input.agentHome,
     companyRoot,
   ]);
-  const paperclipAllow = uniqueSorted([
-    "Bash(curl:*)",
-    "Bash(env:*)",
-    "Bash(env)",
-    `Bash(${input.cwd}/scripts/paperclip-issue-update.sh:*)`,
-    `Bash(${input.cwd}/scripts/paperclip:*)`,
-  ]);
+  const restricted = input.runtimeToolPolicy?.profile === "blind_judge";
+  const paperclipAllow = restricted
+    ? []
+    : uniqueSorted([
+        "Bash(curl:*)",
+        "Bash(env:*)",
+        "Bash(env)",
+        `Bash(${input.cwd}/scripts/paperclip-issue-update.sh:*)`,
+        `Bash(${input.cwd}/scripts/paperclip:*)`,
+      ]);
+  const paperclipDeny = claudeDenyRulesForRuntimeToolPolicy(input.runtimeToolPolicy);
 
   let existing: Record<string, unknown> = {};
   const existingRaw = await fs.readFile(filePath, "utf8").catch(() => null);
@@ -1342,23 +1373,31 @@ async function writePaperclipClaudeSettings(input: {
   const existingAllow = Array.isArray(existingPerms.allow)
     ? (existingPerms.allow as unknown[]).filter((value): value is string => typeof value === "string")
     : [];
+  const existingDeny = Array.isArray(existingPerms.deny)
+    ? (existingPerms.deny as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
   const existingAdditionalDirectories = Array.isArray(existingPerms.additionalDirectories)
     ? (existingPerms.additionalDirectories as unknown[]).filter((value): value is string => typeof value === "string")
     : [];
   const mergedAllow = uniqueSorted([...existingAllow, ...paperclipAllow]);
+  const mergedDeny = uniqueSorted([...existingDeny, ...paperclipDeny]);
   const mergedAdditionalDirectories = uniqueSorted([
     ...existingAdditionalDirectories,
     ...paperclipAdditionalDirectories,
   ]);
   const existingDefaultMode =
     typeof existingPerms.defaultMode === "string" ? (existingPerms.defaultMode as string) : "";
-  const defaultMode =
-    existingDefaultMode && existingDefaultMode !== "dontAsk" ? existingDefaultMode : "default";
-  const overrodeDontAsk = existingDefaultMode === "dontAsk";
+  const defaultMode = restricted
+    ? "dontAsk"
+    : existingDefaultMode && existingDefaultMode !== "dontAsk"
+      ? existingDefaultMode
+      : "default";
+  const overrodeDontAsk = !restricted && existingDefaultMode === "dontAsk";
 
   const nextPermissions: Record<string, unknown> = {
     ...existingPerms,
     allow: mergedAllow,
+    deny: mergedDeny,
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
   };
@@ -1371,6 +1410,7 @@ async function writePaperclipClaudeSettings(input: {
   return {
     filePath,
     allow: mergedAllow,
+    deny: mergedDeny,
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
     overrodeDontAsk,
@@ -1614,6 +1654,20 @@ async function buildRuntime(input: {
   );
 
   const acpxAgent = normalizeAgent(config);
+  const runtimeToolPolicy = resolveRuntimeToolPolicy({
+    agentRuntimeConfig: agent.runtimeConfig,
+    context,
+  });
+  if (
+    acpxAgent === "claude" &&
+    runtimeToolPolicy.profile === "blind_judge" &&
+    runtimeToolPolicy.enforcement === "required"
+  ) {
+    throw new Error(
+      "runtimeToolPolicy blind_judge is unsupported for claude_local ACP: " +
+        "the ACP server cannot structurally suppress direct and delegated Claude tool surfaces. Use engine=cli on a remote/sandbox target or a different adapter.",
+    );
+  }
   // Run summaries always fail closed to the final output segment so internal
   // thought text and intermediate narration cannot become issue comments.
   const coalescePlaceholderToolUpdates = config.coalescePlaceholderToolUpdates === true;
@@ -1755,11 +1809,12 @@ async function buildRuntime(input: {
       stateDir,
       agentHome,
       companyId: agent.companyId,
+      runtimeToolPolicy,
     });
     skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
-      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
+      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s), +${paperclipClaudeSettings.deny.length} deny rule(s)).`,
     );
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
@@ -1883,10 +1938,12 @@ async function buildRuntime(input: {
     paperclipClaudeSettings: paperclipClaudeSettings
       ? {
           allow: paperclipClaudeSettings.allow,
+          deny: paperclipClaudeSettings.deny,
           additionalDirectories: paperclipClaudeSettings.additionalDirectories,
           defaultMode: paperclipClaudeSettings.defaultMode,
         }
       : null,
+    runtimeToolPolicy,
     mcpServers: mcpIdentity,
     secretManifestHash: shortHash(secretManifest),
     // Fold the resolved adapter env (all applied user-configured values —
@@ -2216,6 +2273,7 @@ async function buildRuntime(input: {
     },
     childStderrLogPath,
     paperclipClaudeSettings,
+    runtimeToolPolicy,
     mcpServers,
     mcpIdentity,
     stepMetrics,
@@ -3933,6 +3991,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             cwd: prepared.cwd,
             commandNotes: [
               `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
+              summarizeRuntimeToolPolicy(prepared.runtimeToolPolicy),
               `Effective ACPX permission mode: ${prepared.permissionMode}.`,
               ...(prepared.requestedModel
                 ? [
@@ -3954,6 +4013,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             prompt: runPrompt,
             promptMetrics,
             context: ctx.context,
+            runtimeToolPolicy: prepared.runtimeToolPolicy,
           });
         }
       };

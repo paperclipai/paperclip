@@ -84,6 +84,18 @@ export type {
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export type {
+  RuntimeToolPolicyInput,
+  RuntimeToolPolicyProfile,
+  RuntimeToolSurface,
+  ResolvedRuntimeToolPolicy,
+} from "./runtime-tool-policy.js";
+export {
+  resolveRuntimeToolPolicy,
+  runtimeToolPolicyAllows,
+  runtimeToolPolicyDenies,
+  summarizeRuntimeToolPolicy,
+} from "./runtime-tool-policy.js";
 export {
   ADAPTER_LOGIN_PANEL_MODES,
   ADAPTER_LOGIN_TIMEOUT_POLICIES,
