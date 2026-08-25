@@ -229,6 +229,7 @@ const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =
 
 type IssueWakeTarget = {
   id: string;
+  companyId: string;
   assigneeAgentId: string | null;
   assigneeUserId?: string | null;
   status: string;
@@ -673,7 +674,9 @@ function isCreatorHandoffOnResolveKind(kind: string, continuationPolicy: string,
  * open. A board approval on an agent-owned issue keeps its assignee untouched.
  */
 function shouldReturnResolvedInteractionToCreatorAgent(args: {
-  issue: IssueResolutionContext;
+  // Deliberately narrower than `IssueResolutionContext`: the eligibility rule reads
+  // assignment and status only, and the handoff's own issue read selects just those.
+  issue: Pick<IssueResolutionContext, "status" | "assigneeAgentId" | "assigneeUserId">;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
   resolvedStatus: string;
@@ -1624,7 +1627,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       })
       .from(issues)
       .where(eq(issues.id, args.issue.id))
-      .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null);
 
     if (!issueContext || issueContext.companyId !== args.issue.companyId) {
       throw notFound("Issue not found");
@@ -1640,9 +1643,22 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     }
 
     const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
-    // Non-null once the eligibility check above passed — it requires a user assignee.
+
+    // The eligibility rule admits two shapes, and each needs its own compare-and-swap
+    // guard. Pinning the human column unconditionally would silently never match the
+    // agent-owned review hand-back, turning it into a no-op instead of a handoff.
+    const judgedAssigneeAgentId = issueContext.assigneeAgentId;
     const judgedAssigneeUserId = issueContext.assigneeUserId;
-    if (!judgedAssigneeUserId) return null;
+    const assignmentGuard = judgedAssigneeAgentId
+      // The issue already belongs to the asking agent and only its status moves; pin
+      // the agent so a concurrent reassignment loses the race rather than being lost.
+      ? eq(issues.assigneeAgentId, judgedAssigneeAgentId)
+      : judgedAssigneeUserId
+        ? and(isNull(issues.assigneeAgentId), eq(issues.assigneeUserId, judgedAssigneeUserId))
+        : null;
+    // Unreachable while the eligibility check above holds; returning null keeps a
+    // future third shape from taking the unguarded write path by default.
+    if (!assignmentGuard) return null;
 
     // Compare-and-swap rather than an ID-only update: the read above is not locked,
     // so between it and this write a concurrent request can reassign the issue or
@@ -1678,11 +1694,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       .where(and(
         eq(issues.id, args.issue.id),
         eq(issues.status, issueContext.status),
-        isNull(issues.assigneeAgentId),
-        eq(issues.assigneeUserId, judgedAssigneeUserId),
+        assignmentGuard,
       ))
       .returning({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
@@ -1691,6 +1707,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     if (!returnedIssue) return null;
     return {
       id: returnedIssue.id,
+      companyId: returnedIssue.companyId,
       assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
       assigneeUserId: returnedIssue.assigneeUserId ?? null,
       status: returnedIssue.status,
@@ -2861,6 +2878,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           });
           createdWakeTargets.push({
             id: createdIssue.id,
+            companyId: createdIssue.companyId,
             assigneeAgentId: createdIssue.assigneeAgentId ?? null,
             status: createdIssue.status,
           });

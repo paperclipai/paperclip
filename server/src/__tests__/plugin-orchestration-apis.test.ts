@@ -6,12 +6,14 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   approvals,
   assets,
   companies,
   companyMemberships,
+  companySkills,
   costEvents,
   createDb,
   executionWorkspaces,
@@ -119,7 +121,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(companyMemberships);
+    // A dispatched wakeup stamps the agent's runtime state, and that row holds a
+    // foreign key to `agents` — without this the first test that produces a live
+    // wake target makes every later test in the file fail on teardown.
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -1181,7 +1188,11 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
   });
 
-  it("respondInteraction leaves no handoff activity when the issue keeps its assignee", async () => {
+  it("respondInteraction leaves no handoff activity when the agent is already working the issue", async () => {
+    // The negative control for the test above. `in_progress` is the case the
+    // eligibility rule refuses: the asking agent already holds the issue and is
+    // mid-flight on it, so a decline must not drag it back to `todo`. Only an
+    // `in_review` issue — where the agent is waiting, not working — hands back.
     const { companyId, agentId } = await seedCompanyAndAgent();
     const humanUserId = randomUUID();
     await db.insert(companyMemberships).values({
@@ -1189,7 +1200,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
     const issueId = randomUUID();
     await db.insert(issues).values({
-      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+      id: issueId, companyId, title: "Decision", status: "in_progress", priority: "medium", assigneeAgentId: agentId,
     });
     const interactionId = await seedInteraction(companyId, issueId, { createdByAgentId: agentId });
     const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());

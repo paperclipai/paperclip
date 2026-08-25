@@ -1885,20 +1885,23 @@ describe.sequential("issue thread interaction routes", () => {
       { state: "stalled", paths: [], reason: "review path consumed" },
     ]]));
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
-      id: "interaction-last-review-path",
-      companyId: "company-1",
-      issueId: issue.id,
-      kind: "request_confirmation",
-      status: "rejected",
-      continuationPolicy: "wake_assignee_on_accept",
-      idempotencyKey: null,
-      sourceCommentId: null,
-      sourceRunId: "run-last-review-path",
-      payload: { version: 1, prompt: "Approve this?" },
-      result: { version: 1, outcome: "rejected", reason: "Needs changes" },
-      createdAt: "2026-04-20T12:00:00.000Z",
-      updatedAt: "2026-04-20T12:05:00.000Z",
-      resolvedAt: "2026-04-20T12:05:00.000Z",
+      interaction: {
+        id: "interaction-last-review-path",
+        companyId: "company-1",
+        issueId: issue.id,
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-last-review-path",
+        payload: { version: 1, prompt: "Approve this?" },
+        result: { version: 1, outcome: "rejected", reason: "Needs changes" },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      continuationIssue: null,
     });
 
     const res = await request(await createApp())

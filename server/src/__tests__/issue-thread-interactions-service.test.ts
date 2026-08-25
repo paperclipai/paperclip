@@ -198,7 +198,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
       { agentId: addresseeAgentId, runId: addresseeRunId },
     );
-    expect(answered).toMatchObject({
+    expect(answered.interaction).toMatchObject({
       status: "answered",
       addresseeAgentId,
       resolvedByAgentId: addresseeAgentId,
@@ -2371,6 +2371,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     expect(accepted.continuationIssue).toEqual({
       id: issueId,
+      companyId,
       assigneeAgentId: agentId,
       assigneeUserId: null,
       status: "todo",
@@ -2418,6 +2419,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     expect(resumed.continuationIssue).toEqual({
       id: issueId,
+      companyId,
       assigneeAgentId: agentId,
       assigneeUserId: null,
       status: "todo",
@@ -2587,6 +2589,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(answered.interaction.status).toBe("answered");
       expect(answered.continuationIssue).toEqual({
         id: issueId,
+        companyId,
         assigneeAgentId: creatorAgentId,
         assigneeUserId: null,
         status: "todo",
@@ -2705,6 +2708,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(accepted.createdIssues).toHaveLength(1);
       expect(accepted.continuationIssue).toEqual({
         id: issueId,
+        companyId,
         assigneeAgentId: creatorAgentId,
         assigneeUserId: null,
         status: "todo",
@@ -2821,6 +2825,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         expect(rejected.interaction.status).toBe("rejected");
         expect(rejected.continuationIssue).toEqual({
           id: issueId,
+          companyId,
           assigneeAgentId: creatorAgentId,
           assigneeUserId: null,
           status: "todo",
@@ -2929,6 +2934,42 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         });
       });
 
+      it("moves an agent's own waiting issue back to todo when a board user declines", async () => {
+        // The issue already belongs to the asking agent, so nothing changes hands —
+        // but `in_review` means the agent is parked on the verdict, and a decline is
+        // the verdict. Without the status move it waits for a review that resolved.
+        //
+        // Regression guard: the eligibility rule admits this shape, but the handoff's
+        // compare-and-swap once pinned the human assignee column unconditionally, so
+        // the write matched nothing and the branch was a silent no-op.
+        const { companyId, issueId, owningAgentId } = await seedHandoffFixture({
+          assignee: "agent",
+        });
+        const created = await createConfirmation({ companyId, issueId, creatorAgentId: owningAgentId });
+
+        const rejected = await interactionsSvc.rejectInteraction({
+          id: issueId,
+          companyId,
+        }, created.id, { reason: "Different approach please" }, {
+          userId: "local-board",
+        });
+
+        expect(rejected.continuationIssue).toEqual({
+          id: issueId,
+          companyId,
+          assigneeAgentId: owningAgentId,
+          assigneeUserId: null,
+          status: "todo",
+        });
+
+        const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+        expect(updatedIssue).toMatchObject({
+          status: "todo",
+          assigneeAgentId: owningAgentId,
+          assigneeUserId: null,
+        });
+      });
+
       it("returns rejected suggest_tasks to the creating agent when a board user was the assignee", async () => {
         const { companyId, issueId, creatorAgentId } = await seedHandoffFixture();
         const created = await createSuggestedTasks({ companyId, issueId, creatorAgentId });
@@ -2943,6 +2984,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         expect(rejected.interaction.status).toBe("rejected");
         expect(rejected.continuationIssue).toEqual({
           id: issueId,
+          companyId,
           assigneeAgentId: creatorAgentId,
           assigneeUserId: null,
           status: "todo",
@@ -3000,6 +3042,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         expect(cancelled.interaction.status).toBe("cancelled");
         expect(cancelled.continuationIssue).toEqual({
           id: issueId,
+          companyId,
           assigneeAgentId: creatorAgentId,
           assigneeUserId: null,
           status: "todo",
@@ -3042,6 +3085,17 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       it("leaves the human owner in place when an agent declines its own confirmation", async () => {
         // No user resolved anything here, so there is no human hand-back to make.
         const { companyId, issueId, creatorAgentId, owningAgentId } = await seedHandoffFixture();
+        // `resolved_by_run_id` carries a foreign key to `heartbeat_runs`, so the run
+        // the agent resolves under has to exist before the rejection writes it.
+        const owningAgentRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: owningAgentRunId,
+          companyId,
+          agentId: owningAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date("2026-07-25T12:00:00.000Z"),
+        });
         const created = await createConfirmation({ companyId, issueId, creatorAgentId });
 
         const rejected = await interactionsSvc.rejectInteraction({
@@ -3049,6 +3103,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           companyId,
         }, created.id, { reason: "Superseded by my own finding" }, {
           agentId: owningAgentId,
+          runId: owningAgentRunId,
         });
 
         expect(rejected.continuationIssue).toBeNull();

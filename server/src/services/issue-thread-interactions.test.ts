@@ -26,18 +26,26 @@ function guardStringParams(predicate: unknown): string[] {
   return seen;
 }
 
-function createSelectChain(rows: SelectRow[]) {
+// Rows are resolved from the table passed to `.from()` rather than from a call
+// counter: the resolution paths read the interaction more than once (an unlocked
+// read, then a `FOR UPDATE` re-read), and an ordinal stub silently hands the second
+// read the wrong table's rows.
+function createSelectChain(resolve: (table: unknown) => SelectRow[]) {
   return {
-    from() {
-      return {
-        where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
+    from(table: unknown) {
+      const rows = resolve(table);
+      // Every builder step after `.from()` is optional and returns the same thenable:
+      // `.for("update")` on the paths that take a row lock, `.orderBy()`/`.limit()` on
+      // the review-policy lookup. Only the awaited rows matter to these tests.
+      const result: Record<string, unknown> = {
+        then(callback: (rows: SelectRow[]) => unknown) {
+          return Promise.resolve(callback(rows));
         },
       };
+      for (const step of ["where", "for", "orderBy", "limit", "innerJoin", "leftJoin", "groupBy"]) {
+        result[step] = () => result;
+      }
+      return result;
     },
   };
 }
@@ -57,7 +65,6 @@ function createFakeDb(args: {
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
   const handoffUpdates: Array<Record<string, unknown>> = [];
   const handoffGuards: unknown[] = [];
-  let selectCallCount = 0;
   // Defaults to an agent-owned issue so the creator-agent handoff stays out of the
   // way unless a test opts into a user-assigned one.
   const issueRow = args.issueRow === undefined
@@ -74,10 +81,13 @@ function createFakeDb(args: {
     select: vi.fn((columns?: Record<string, unknown>) => {
       // The handoff probe is the only select asking for the assignee columns.
       if (columns && "assigneeUserId" in columns) {
-        return createSelectChain(issueRow ? [issueRow] : []);
+        return createSelectChain(() => (issueRow ? [issueRow] : []));
       }
-      selectCallCount += 1;
-      return createSelectChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
+      return createSelectChain((table) => (
+        getTableName(table as never) === "issue_thread_interactions"
+          ? [interactionRow]
+          : (args.parentRows ?? [])
+      ));
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
@@ -212,7 +222,7 @@ describe("issueThreadInteractionService", () => {
     };
 
     const db: any = {
-      select: vi.fn(() => createSelectChain([existingRow])),
+      select: vi.fn(() => createSelectChain(() => [existingRow])),
       insert: vi.fn(),
       update: vi.fn(),
     };
