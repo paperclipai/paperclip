@@ -136,7 +136,6 @@ import {
   FolderOpen,
   FolderSearch,
   GitFork,
-  Github,
   Globe,
   HelpCircle,
   LayoutGrid,
@@ -164,6 +163,7 @@ import {
   X,
   XOctagon,
 } from "lucide-react";
+import { GithubIcon } from "../components/icons/github-icon";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
 
 type SkillTreeNode = {
@@ -265,7 +265,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "github":
       return isSkillsShManaged
         ? { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" }
-        : { icon: Github, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
+        : { icon: GithubIcon, label: sourceLabel ?? "GitHub", managedLabel: "GitHub managed" };
     case "url":
       return { icon: Link2, label: sourceLabel ?? "URL", managedLabel: "URL managed" };
     case "local":
@@ -3412,7 +3412,7 @@ export function SkillDetailPage({
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Source</div>
             {githubSource ? (
               <div className="flex items-start gap-2 text-sm">
-                <Github className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <GithubIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <div className="min-w-0">
                   <div className="text-foreground">{githubLabel}</div>
                   <a
