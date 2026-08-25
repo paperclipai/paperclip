@@ -71,6 +71,11 @@ function createFakeDb(options: {
         }),
       };
     },
+    // The role-default seeder reads its seed marker and the principal's
+    // membership standing in the same transaction it writes the grants in, so
+    // the double has to offer one. It runs the callback on itself: there is no
+    // isolation to model here, only the call shape (FAI-10190).
+    transaction: async (run: (tx: unknown) => unknown) => run(db),
   } as unknown as Db;
   return { db, insertedTables, deletedTables, selectWheres };
 }

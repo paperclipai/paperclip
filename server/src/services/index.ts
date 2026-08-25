@@ -113,6 +113,7 @@ export {
   backfillPrincipalAccessCompatibility,
   ensureHumanRoleDefaultGrants,
   insertMissingPrincipalGrants,
+  settleRoleDefaults,
   type PrincipalAccessCompatibilityBackfillStats,
 } from "./principal-access-compatibility.js";
 export { authorizationService } from "./authorization.js";
