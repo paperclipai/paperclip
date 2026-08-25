@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
-import { resolvePaperclipEnvPath } from "./paths.js";
+import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import {
   AUTH_BASE_URL_MODES,
@@ -24,6 +24,7 @@ import {
 } from "@paperclipai/shared";
 import {
   resolveDefaultBackupDir,
+  resolveDefaultConfigPath,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
@@ -113,9 +114,21 @@ function detectTailnetBindHost(): string | undefined {
 // run that inherited PAPERCLIP_IN_WORKTREE=true without a scoped PAPERCLIP_CONFIG).
 // In a non-worktree context, /tmp paths in key config fields indicate the production
 // config was overwritten by a test fixture — fail loud rather than boot the wrong instance.
-function checkConfigIntegrity(fileConfig: ReturnType<typeof readConfigFile>): void {
+function checkConfigIntegrity(
+  fileConfig: ReturnType<typeof readConfigFile>,
+  resolvedConfigPath: string,
+): void {
   if (!fileConfig) return;
   if (process.env.PAPERCLIP_IN_WORKTREE === "true") return;
+
+  // Only guard the canonical config path. An isolated instance (e.g. an e2e CLI
+  // test) that sets PAPERCLIP_CONFIG to its own scoped path is loading its own
+  // intentionally-scoped config — that is not production poisoning, and the guard
+  // must not block it. Apply the check only when the resolved config path matches
+  // the canonical default (i.e. PAPERCLIP_CONFIG was absent and no ancestor config
+  // was found — the production instance path). (KEWL-3960)
+  const canonicalConfigPath = resolveDefaultConfigPath();
+  if (resolvedConfigPath !== canonicalConfigPath) return;
 
   // Narrow to the pcvt-* vitest temp dir pattern from scripts/run-vitest-stable.mjs
   // (mkdtempSync with prefix `pcvt-${pid}-${invocationIndex}-`). Checking any /tmp path
@@ -158,8 +171,9 @@ function checkConfigIntegrity(fileConfig: ReturnType<typeof readConfigFile>): vo
 }
 
 export function loadConfig(): Config {
+  const resolvedConfigPath = resolvePaperclipConfigPath();
   const fileConfig = readConfigFile();
-  checkConfigIntegrity(fileConfig);
+  checkConfigIntegrity(fileConfig, resolvedConfigPath);
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 
