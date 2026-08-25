@@ -92,6 +92,13 @@ import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumenta
 /** Maximum time (ms) a plugin fetch request may take before being aborted. */
 const PLUGIN_FETCH_TIMEOUT_MS = 30_000;
 
+function resolvePluginFetchTimeoutMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return PLUGIN_FETCH_TIMEOUT_MS;
+  }
+  return Math.min(Math.max(Math.trunc(value), 1), PLUGIN_FETCH_TIMEOUT_MS);
+}
+
 /** Maximum time (ms) to wait for a DNS lookup before aborting. */
 const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
@@ -1584,7 +1591,7 @@ export function buildHostServices(
         const target = await validateAndResolveFetchUrl(params.url);
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);
+        const timeout = setTimeout(() => controller.abort(), resolvePluginFetchTimeoutMs(params.timeoutMs));
 
         try {
           const init = params.init as RequestInit | undefined;

@@ -487,6 +487,96 @@ describe("worker configChanged cross-tenant guard", () => {
   });
 });
 
+describe("worker HTTP timeout propagation", () => {
+  it("carries the plugin HTTP timeout through the worker RPC request", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+    let observedHttpRequest: unknown;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("probe", async () => {
+          const response = await ctx.http.fetch("https://weknora.example/api/v1", {
+            method: "GET",
+            timeoutMs: 1_234,
+          });
+          return response.status;
+        });
+      },
+    });
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message) || message.method !== "http.fetch") return;
+      observedHttpRequest = message.params;
+      hostToWorker.write(serializeMessage(createSuccessResponse(message.id, {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: "",
+      })));
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.http-timeout-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "HTTP timeout test",
+          description: "HTTP timeout test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["http.outbound"],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      });
+
+      await expect(callWorker("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {},
+      })).resolves.toBe(200);
+      expect(observedHttpRequest).toEqual({
+        url: "https://weknora.example/api/v1",
+        init: { method: "GET" },
+        timeoutMs: 1_234,
+      });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
 describe("worker provider tracer", () => {
   it("default plugin tracer is a no-op that starts and ends a span without throwing", async () => {
     const { NOOP_PLUGIN_TRACER } = await import("../src/types.js");

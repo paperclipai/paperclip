@@ -98,6 +98,7 @@ export class WeKnoraClient {
           ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
           redirect: "manual",
           signal: controller.signal,
+          timeoutMs: config.requestTimeoutMs,
         });
         if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
           throw new WeknoraPluginError("upstream", "WeKnora redirects are not allowed", false, response.status, requestId);

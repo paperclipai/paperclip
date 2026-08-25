@@ -238,6 +238,7 @@ export type {
   PluginJobsClient,
   PluginLaunchersClient,
   PluginHttpClient,
+  PluginHttpRequestInit,
   PluginSecretsClient,
   PluginActivityClient,
   PluginActivityLogEntry,

@@ -135,15 +135,18 @@ describe("WeKnora HTTP contract", () => {
 
   it("keeps the request timeout active while the response body is read", async () => {
     vi.useFakeTimers();
-    const stalledBodyClient = clientFor(async (_url, init) => ({
-      type: "default",
-      status: 200,
-      ok: true,
-      headers: new Headers({ "content-type": "application/json" }),
-      text: () => new Promise<string>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-      }),
-    }) as Response, { requestTimeoutMs: 1000 }).client;
+    const stalledBodyClient = clientFor(async (_url, init) => {
+      expect((init as RequestInit & { timeoutMs?: number }).timeoutMs).toBe(1000);
+      return {
+        type: "default",
+        status: 200,
+        ok: true,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: () => new Promise<string>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        }),
+      } as Response;
+    }, { requestTimeoutMs: 1000 }).client;
 
     const pending = stalledBodyClient.ingestManual("kb-1", { title: "Note", content: "Text" });
     const assertion = expect(pending).rejects.toMatchObject({ kind: "timeout" });

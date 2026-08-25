@@ -57,6 +57,7 @@ import type {
 } from "./define-plugin.js";
 import type {
   PluginContext,
+  PluginHttpRequestInit,
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
@@ -578,7 +579,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       http: {
-        async fetch(url: string, init?: RequestInit): Promise<Response> {
+        async fetch(url: string, init?: PluginHttpRequestInit): Promise<Response> {
           const serializedInit: Record<string, unknown> = {};
           if (init) {
             if (init.method) serializedInit.method = init.method;
@@ -606,6 +607,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           const result = await callHost("http.fetch", {
             url,
             init: Object.keys(serializedInit).length > 0 ? serializedInit : undefined,
+            ...(typeof init?.timeoutMs === "number" ? { timeoutMs: init.timeoutMs } : {}),
           });
 
           // Reconstruct a Response-like object from the serialized result

@@ -635,10 +635,20 @@ export interface PluginHttpClient {
    * this client exists for host-managed tracing and audit logging.
    *
    * @param url - Target URL
-   * @param init - Standard `RequestInit` options
+   * @param init - Standard `RequestInit` options plus an optional host-side timeout
    * @returns The response
    */
-  fetch(url: string, init?: RequestInit): Promise<Response>;
+  fetch(url: string, init?: PluginHttpRequestInit): Promise<Response>;
+}
+
+/**
+ * Request options for the host-managed plugin HTTP client.
+ *
+ * `timeoutMs` is carried over the worker RPC bridge so the host can stop
+ * buffering a response body at the same deadline as the plugin request.
+ */
+export interface PluginHttpRequestInit extends RequestInit {
+  timeoutMs?: number;
 }
 
 /**
