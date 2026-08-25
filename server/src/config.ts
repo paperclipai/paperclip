@@ -1,7 +1,6 @@
 import { readConfigFile } from "./config-file.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
@@ -118,31 +117,33 @@ function checkConfigIntegrity(fileConfig: ReturnType<typeof readConfigFile>): vo
   if (!fileConfig) return;
   if (process.env.PAPERCLIP_IN_WORKTREE === "true") return;
 
-  const osTmpdir = tmpdir();
-  // /tmp on macOS is a symlink to /private/tmp; check both.
-  const tmpPrefixes = ["/tmp/", `${osTmpdir}/`].filter((v, i, a) => a.indexOf(v) === i);
+  // Narrow to the pcvt-* vitest temp dir pattern from scripts/run-vitest-stable.mjs
+  // (mkdtempSync with prefix `pcvt-${pid}-${invocationIndex}-`). Checking any /tmp path
+  // is too broad: Docker and CI configs may legitimately use /tmp for data dirs; those
+  // are not the scenario this guard prevents. /private/tmp is macOS's real path for /tmp.
+  const PCVT_TMP_RE = /^(?:\/tmp|\/private\/tmp)\/pcvt-\d+-/;
 
-  function isTmpPath(value: string | undefined | null): boolean {
+  function isVitestTmpPath(value: string | undefined | null): boolean {
     if (!value) return false;
-    return tmpPrefixes.some((prefix) => value.startsWith(prefix));
+    return PCVT_TMP_RE.test(value);
   }
 
   const poisoned: string[] = [];
-  if (isTmpPath(fileConfig.database.embeddedPostgresDataDir))
+  if (isVitestTmpPath(fileConfig.database.embeddedPostgresDataDir))
     poisoned.push(`database.embeddedPostgresDataDir: ${fileConfig.database.embeddedPostgresDataDir}`);
-  if (isTmpPath(fileConfig.database.backup?.dir))
+  if (isVitestTmpPath(fileConfig.database.backup?.dir))
     poisoned.push(`database.backup.dir: ${fileConfig.database.backup?.dir}`);
-  if (isTmpPath(fileConfig.logging?.logDir))
+  if (isVitestTmpPath(fileConfig.logging?.logDir))
     poisoned.push(`logging.logDir: ${fileConfig.logging?.logDir}`);
-  if (isTmpPath(fileConfig.storage?.localDisk?.baseDir))
+  if (isVitestTmpPath(fileConfig.storage?.localDisk?.baseDir))
     poisoned.push(`storage.localDisk.baseDir: ${fileConfig.storage?.localDisk?.baseDir}`);
-  if (isTmpPath(fileConfig.secrets?.localEncrypted?.keyFilePath))
+  if (isVitestTmpPath(fileConfig.secrets?.localEncrypted?.keyFilePath))
     poisoned.push(`secrets.localEncrypted.keyFilePath: ${fileConfig.secrets?.localEncrypted?.keyFilePath}`);
 
   if (poisoned.length > 0) {
     const configPath = process.env.PAPERCLIP_CONFIG ?? "(default path)";
     const lines = [
-      "[KEWL-3955] FATAL: canonical Paperclip config contains /tmp paths.",
+      "[KEWL-3955] FATAL: canonical Paperclip config contains pcvt-* vitest temp paths.",
       "This means a test run likely overwrote the production config.",
       `Config: ${configPath}`,
       "Poisoned fields:",
