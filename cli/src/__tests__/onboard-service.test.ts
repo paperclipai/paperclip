@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleOnboardService, isInstallableReleaseVersion } from "../onboard-service.js";
+import { handleOnboardService, isInstallableReleaseVersion, shouldOfferForegroundStart } from "../onboard-service.js";
 
 function supportedDetection() {
   return {
@@ -136,5 +136,29 @@ describe("isInstallableReleaseVersion", () => {
     expect(isInstallableReleaseVersion("2026.818.0-beta.1")).toBe(true);
     expect(isInstallableReleaseVersion("0.3.1")).toBe(false);
     expect(isInstallableReleaseVersion("not-a-version")).toBe(false);
+  });
+});
+
+describe("shouldOfferForegroundStart", () => {
+  const base = { serviceInstalled: false, startAlreadyDecided: false, invokedByRun: false, interactive: true };
+
+  it("offers a foreground start on a plain interactive onboard", () => {
+    expect(shouldOfferForegroundStart(base)).toBe(true);
+  });
+
+  it("never prompts after the service was installed and started", () => {
+    expect(shouldOfferForegroundStart({ ...base, serviceInstalled: true })).toBe(false);
+  });
+
+  it("never prompts when the start decision was already made by flags", () => {
+    expect(shouldOfferForegroundStart({ ...base, startAlreadyDecided: true })).toBe(false);
+  });
+
+  it("never prompts when run itself invoked onboarding", () => {
+    expect(shouldOfferForegroundStart({ ...base, invokedByRun: true })).toBe(false);
+  });
+
+  it("never prompts without an interactive terminal", () => {
+    expect(shouldOfferForegroundStart({ ...base, interactive: false })).toBe(false);
   });
 });
