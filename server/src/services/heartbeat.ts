@@ -236,6 +236,10 @@ import {
   findReusableMetaIssue,
 } from "./meta-issue-dedup.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import { assertIssueCloseEvidenceSatisfied } from "./issue-close-evidence.js";
+import { resolveIssueRunForCloseGate } from "./issue-close-run-context.js";
+import { workProductService } from "./work-products.js";
+import { documentService } from "./documents.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -12213,13 +12217,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         let createdBlockerId: string | null = null;
         let reviewerAssigned: string | null = null;
         if (statedStatus === "done" || statedStatus === "cancelled") {
-          // TODO(TSMC-21479): run assertIssueCloseEvidenceSatisfied / evaluateCloseContractForDone gate here (extract to service layer)
-          const applied = await issuesSvc.update(issue.id, {
-            status: statedStatus,
-            actorAgentId: run.agentId,
-            actorUserId: null,
-          });
-          if (applied) appliedStatus = statedStatus;
+          // TSMC-21479: run the SAME close-evidence gate the HTTP route runs.
+          //
+          // `PATCH /issues/:id {status:"done"}` has been gated since TSMC-18738.
+          // This path — an agent stating `PAPERCLIP_DISPOSITION: done`, applied
+          // via `issue.disposition_applied` — was not, so every hollow close
+          // simply took the ungated door. Five fabricated or hollow closes were
+          // recorded in the 24h to 2026-08-25 (TSMC-21479, TSMC-21480,
+          // TSMC-21391, TSMC-21280, DP-4759); voiding them by hand did not hold,
+          // because a rule written on a card is a request and this is the
+          // enforcement.
+          //
+          // The gate itself no-ops for `cancelled` (it returns early unless
+          // nextStatus === "done"), so cancellation behaviour is unchanged.
+          let closeGateRefusal: string | null = null;
+          try {
+            const gateIssue = await issuesSvc.getById(issue.id);
+            if (gateIssue) {
+              await assertIssueCloseEvidenceSatisfied({
+                issue: gateIssue as Parameters<typeof assertIssueCloseEvidenceSatisfied>[0]["issue"],
+                nextStatus: statedStatus,
+                svc: issuesSvc,
+                workProductsSvc: workProductService(db),
+                documentsSvc: documentService(db),
+                // The stating run is the actor: it must not self-block, but it
+                // DOES count for acceptance-criteria freshness (TSMC-19840).
+                issueRun: await resolveIssueRunForCloseGate(db, gateIssue, getRun, {
+                  excludeRunId: run.id,
+                }),
+                actorRunId: run.id,
+              });
+            }
+          } catch (err) {
+            closeGateRefusal = err instanceof Error ? err.message : String(err);
+          }
+          if (closeGateRefusal) {
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "heartbeat",
+              agentId: run.agentId,
+              runId: run.id,
+              action: "issue.disposition_refused_close_evidence",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                label: "Disposition refused: close-evidence gate",
+                statedStatus,
+                appliedStatus: null,
+                priorStatus: issue.status,
+                dispositionSource: "paperclip_disposition_token",
+                refusalReason: closeGateRefusal,
+                sourceRunId: run.id,
+              },
+            });
+            await appendRunEvent(run, await nextRunEventSeq(run.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: `Disposition "${statedStatus}" refused by the close-evidence gate: ${closeGateRefusal}`,
+              payload: { issueId: issue.id, statedStatus, refusalReason: closeGateRefusal },
+            });
+          } else {
+            const applied = await issuesSvc.update(issue.id, {
+              status: statedStatus,
+              actorAgentId: run.agentId,
+              actorUserId: null,
+            });
+            if (applied) appliedStatus = statedStatus;
+          }
         } else if (statedStatus === "blocked" && statedVerifiedBlocker) {
           if (isTransientPaperclipControlPlaneWriteFailure(statedVerifiedBlocker)) {
             // The normal finalization path has either queued exactly one

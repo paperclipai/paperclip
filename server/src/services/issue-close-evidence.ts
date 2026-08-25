@@ -8,6 +8,7 @@ import {
   type IssueCloseContract,
 } from "@paperclipai/shared";
 import { resolvePaperclipCompanyWorkProductsDir } from "@paperclipai/shared/home-paths";
+import { unprocessable } from "../errors.js";
 
 type IssueCloseEvidenceContract = Extract<IssueCloseContract, { evidenceTarget: number }>;
 type IssueCloseExemptContract = Extract<IssueCloseContract, { mode: "exempt" }>;
@@ -510,4 +511,131 @@ export async function evaluateCloseContractForDone(input: {
   }
 
   return { outcome: "satisfied", measurement };
+}
+
+
+// ---------------------------------------------------------------------------
+// TSMC-21479: the close-evidence gate, extracted from routes/issues.ts.
+//
+// This gate lived ONLY on the HTTP route, so `PATCH /issues/:id {status:"done"}`
+// was checked and the heartbeat disposition path — where an agent states
+// `PAPERCLIP_DISPOSITION: done` — was not. That is the hole every hollow close
+// travelled through: `issue.disposition_applied` -> `issuesSvc.update` with no
+// evidence check at all. Five fabricated or hollow closes were recorded in the
+// 24h to 2026-08-25 (TSMC-21479, TSMC-21480, TSMC-21391, TSMC-21280, DP-4759).
+//
+// It is intentionally pure — every service it needs is injected — so both the
+// route and the heartbeat can call the SAME implementation. Two answers to
+// "may this close?" would drift silently, which is the failure this card exists
+// to end.
+// ---------------------------------------------------------------------------
+export async function assertIssueCloseEvidenceSatisfied(input: {
+  issue: {
+    id: string;
+    companyId: string;
+    title?: string | null;
+    labels?: Array<{ name?: string | null }> | null;
+    closeContract?: unknown;
+    executionRunId?: string | null;
+  };
+  nextStatus: string;
+  svc: {
+    listAttachments: (issueId: string) => Promise<unknown[]>;
+    listComments?: (
+      issueId: string,
+      opts?: { order?: "asc" | "desc"; limit?: number | null },
+    ) => Promise<Array<{ createdAt?: Date | string | null; authorType?: string | null; body?: string | null }>>;
+  };
+  workProductsSvc: { listForIssue: (issueId: string) => Promise<unknown[]> };
+  documentsSvc: {
+    listIssueDocuments: (
+      issueId: string,
+      options?: { includeSystem?: boolean },
+    ) => Promise<Array<{ key: string; updatedAt?: Date | string | null }>>;
+  };
+  /**
+   * Latest/active execution run context for this issue.
+   * Prefer an active OTHER run when present; otherwise the most recent run by startedAt
+   * (including the actor close-out run) for AC freshness — TSMC-19840.
+   * Self-exclusion applies only to the §2 active-run block.
+   */
+  issueRun?: {
+    id: string;
+    status: string;
+    startedAt?: Date | string | null;
+    createdAt?: Date | string | null;
+  } | null;
+  /** When set, an active run with this id is treated as the caller's own and does not block done. */
+  actorRunId?: string | null;
+}) {
+  if (input.nextStatus !== "done") return;
+
+  const issueRun = input.issueRun ?? null;
+  const actorRunId = input.actorRunId?.trim() || null;
+
+  // TSMC-18738 §2 — reject done while another execution run on this issue is still active.
+  // Do not self-block the agent run that is performing the close.
+  if (
+    issueRun
+    && isActiveHeartbeatRunStatusBlockingDone(issueRun.status)
+    && (!actorRunId || issueRun.id !== actorRunId)
+  ) {
+    throw unprocessable(
+      `Issue cannot enter done while execution run ${issueRun.id} is still ${issueRun.status}.`,
+      {
+        code: "invalid_issue_disposition",
+        reason: "active_run_in_progress",
+        runId: issueRun.id,
+        runStatus: issueRun.status,
+      },
+    );
+  }
+
+  // TSMC-18738 §3 — reject done when acceptance criteria changed after the last run started.
+  // Anchor to the resolved run (latest including actor close-out when that is the freshest).
+  const runStartedAt = issueRun?.startedAt ?? issueRun?.createdAt ?? null;
+  if (issueRun && runStartedAt) {
+    const documents = await input.documentsSvc.listIssueDocuments(input.issue.id, { includeSystem: true });
+    const acceptanceDoc = documents.find((doc) => doc.key === "acceptance-criteria") ?? null;
+    const comments = typeof input.svc.listComments === "function"
+      ? await input.svc.listComments(input.issue.id, { order: "desc", limit: 40 })
+      : [];
+    const acChange = acceptanceCriteriaChangedAfterRunStart({
+      runStartedAt,
+      acceptanceCriteriaDocumentUpdatedAt: acceptanceDoc?.updatedAt ?? null,
+      comments: comments.map((comment) => ({
+        createdAt: comment.createdAt,
+        authorType: comment.authorType,
+        body: comment.body,
+      })),
+    });
+    if (acChange.changed) {
+      throw unprocessable(
+        "Issue cannot enter done because acceptance criteria changed after the last execution run started; re-run before closing.",
+        {
+          code: "invalid_issue_disposition",
+          reason: "acceptance_criteria_stale_vs_run",
+          runId: issueRun.id,
+          runStartedAt: new Date(runStartedAt).toISOString(),
+          changedSource: acChange.source,
+          changedAt: acChange.changedAt,
+        },
+      );
+    }
+  }
+
+  const [attachments, workProducts] = await Promise.all([
+    input.svc.listAttachments(input.issue.id),
+    input.workProductsSvc.listForIssue(input.issue.id),
+  ]);
+  const evaluation = await evaluateCloseContractForDone({
+    companyId: input.issue.companyId,
+    issue: input.issue,
+    attachmentsCount: attachments.length,
+    workProductsCount: workProducts.length,
+  });
+
+  if (evaluation.outcome === "unmet") {
+    throw unprocessable(evaluation.message, evaluation.details);
+  }
 }

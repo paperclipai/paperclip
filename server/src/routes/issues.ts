@@ -233,11 +233,13 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import {
+  assertIssueCloseEvidenceSatisfied,
   evaluateCloseContractForDone,
   isActiveHeartbeatRunStatusBlockingDone,
   acceptanceCriteriaChangedAfterRunStart,
   selectFreshestCloseGateRun,
 } from "../services/issue-close-evidence.js";
+import { resolveIssueRunForCloseGate } from "../services/issue-close-run-context.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -747,227 +749,6 @@ async function assertIssueDoneVerificationSatisfied(input: {
   }
 }
 
-async function assertIssueCloseEvidenceSatisfied(input: {
-  issue: {
-    id: string;
-    companyId: string;
-    title?: string | null;
-    labels?: Array<{ name?: string | null }> | null;
-    closeContract?: unknown;
-    executionRunId?: string | null;
-  };
-  nextStatus: string;
-  svc: {
-    listAttachments: (issueId: string) => Promise<unknown[]>;
-    listComments?: (
-      issueId: string,
-      opts?: { order?: "asc" | "desc"; limit?: number | null },
-    ) => Promise<Array<{ createdAt?: Date | string | null; authorType?: string | null; body?: string | null }>>;
-  };
-  workProductsSvc: { listForIssue: (issueId: string) => Promise<unknown[]> };
-  documentsSvc: {
-    listIssueDocuments: (
-      issueId: string,
-      options?: { includeSystem?: boolean },
-    ) => Promise<Array<{ key: string; updatedAt?: Date | string | null }>>;
-  };
-  /**
-   * Latest/active execution run context for this issue.
-   * Prefer an active OTHER run when present; otherwise the most recent run by startedAt
-   * (including the actor close-out run) for AC freshness — TSMC-19840.
-   * Self-exclusion applies only to the §2 active-run block.
-   */
-  issueRun?: {
-    id: string;
-    status: string;
-    startedAt?: Date | string | null;
-    createdAt?: Date | string | null;
-  } | null;
-  /** When set, an active run with this id is treated as the caller's own and does not block done. */
-  actorRunId?: string | null;
-}) {
-  if (input.nextStatus !== "done") return;
-
-  const issueRun = input.issueRun ?? null;
-  const actorRunId = input.actorRunId?.trim() || null;
-
-  // TSMC-18738 §2 — reject done while another execution run on this issue is still active.
-  // Do not self-block the agent run that is performing the close.
-  if (
-    issueRun
-    && isActiveHeartbeatRunStatusBlockingDone(issueRun.status)
-    && (!actorRunId || issueRun.id !== actorRunId)
-  ) {
-    throw unprocessable(
-      `Issue cannot enter done while execution run ${issueRun.id} is still ${issueRun.status}.`,
-      {
-        code: "invalid_issue_disposition",
-        reason: "active_run_in_progress",
-        runId: issueRun.id,
-        runStatus: issueRun.status,
-      },
-    );
-  }
-
-  // TSMC-18738 §3 — reject done when acceptance criteria changed after the last run started.
-  // Anchor to the resolved run (latest including actor close-out when that is the freshest).
-  const runStartedAt = issueRun?.startedAt ?? issueRun?.createdAt ?? null;
-  if (issueRun && runStartedAt) {
-    const documents = await input.documentsSvc.listIssueDocuments(input.issue.id, { includeSystem: true });
-    const acceptanceDoc = documents.find((doc) => doc.key === "acceptance-criteria") ?? null;
-    const comments = typeof input.svc.listComments === "function"
-      ? await input.svc.listComments(input.issue.id, { order: "desc", limit: 40 })
-      : [];
-    const acChange = acceptanceCriteriaChangedAfterRunStart({
-      runStartedAt,
-      acceptanceCriteriaDocumentUpdatedAt: acceptanceDoc?.updatedAt ?? null,
-      comments: comments.map((comment) => ({
-        createdAt: comment.createdAt,
-        authorType: comment.authorType,
-        body: comment.body,
-      })),
-    });
-    if (acChange.changed) {
-      throw unprocessable(
-        "Issue cannot enter done because acceptance criteria changed after the last execution run started; re-run before closing.",
-        {
-          code: "invalid_issue_disposition",
-          reason: "acceptance_criteria_stale_vs_run",
-          runId: issueRun.id,
-          runStartedAt: new Date(runStartedAt).toISOString(),
-          changedSource: acChange.source,
-          changedAt: acChange.changedAt,
-        },
-      );
-    }
-  }
-
-  const [attachments, workProducts] = await Promise.all([
-    input.svc.listAttachments(input.issue.id),
-    input.workProductsSvc.listForIssue(input.issue.id),
-  ]);
-  const evaluation = await evaluateCloseContractForDone({
-    companyId: input.issue.companyId,
-    issue: input.issue,
-    attachmentsCount: attachments.length,
-    workProductsCount: workProducts.length,
-  });
-
-  if (evaluation.outcome === "unmet") {
-    throw unprocessable(evaluation.message, evaluation.details);
-  }
-}
-
-async function resolveIssueRunForCloseGate(
-  db: Db,
-  issue: { id: string; companyId: string; executionRunId?: string | null },
-  heartbeat: ReturnType<typeof heartbeatService>,
-  opts: { excludeRunId?: string | null } = {},
-): Promise<{ id: string; status: string; startedAt: Date | null; createdAt: Date | null } | null> {
-  const excludeRunId = opts.excludeRunId?.trim() || null;
-
-  // §2 active-run block: prefer any OTHER active run scoped to this issue (TSBC-1585 class).
-  // The caller's own live run must not self-block a terminal done transition —
-  // agents routinely PATCH done as the last action before the adapter exits.
-  // Self-exclusion is intentional here only; AC freshness below includes the actor.
-  const activeRows = await db
-    .select({
-      id: heartbeatRuns.id,
-      status: heartbeatRuns.status,
-      startedAt: heartbeatRuns.startedAt,
-      createdAt: heartbeatRuns.createdAt,
-    })
-    .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.companyId, issue.companyId),
-      inArray(heartbeatRuns.status, [...ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE_LIST]),
-      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-      excludeRunId ? sql`${heartbeatRuns.id} <> ${excludeRunId}` : undefined,
-    ))
-    .orderBy(desc(heartbeatRuns.createdAt))
-    .limit(1);
-  if (activeRows[0]) return activeRows[0];
-
-  // §3 AC freshness (TSMC-19840 / TSMC-18738): latest issue-scoped run by startedAt
-  // INCLUDING the actor close-out run. Excluding the actor forced freshness checks onto
-  // older pack-delivery runs and false-tripped on later board "Acceptance:" prose.
-  const latestRows = await db
-    .select({
-      id: heartbeatRuns.id,
-      status: heartbeatRuns.status,
-      startedAt: heartbeatRuns.startedAt,
-      createdAt: heartbeatRuns.createdAt,
-    })
-    .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.companyId, issue.companyId),
-      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-    ))
-    .orderBy(
-      desc(sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`),
-      desc(heartbeatRuns.createdAt),
-    )
-    .limit(1);
-  const latestScoped = latestRows[0] ?? null;
-
-  // Always consider the actor close-out run even when contextSnapshot.issueId is missing
-  // or lags; prefer whichever candidate is fresher by startedAt/createdAt.
-  let actorCandidate: {
-    id: string;
-    status: string;
-    startedAt: Date | null;
-    createdAt: Date | null;
-  } | null = null;
-  if (excludeRunId) {
-    if (latestScoped?.id === excludeRunId) {
-      actorCandidate = latestScoped;
-    } else {
-      const selfRun = await heartbeat.getRun(excludeRunId);
-      if (selfRun) {
-        actorCandidate = {
-          id: selfRun.id,
-          status: selfRun.status,
-          startedAt: selfRun.startedAt ?? null,
-          createdAt: selfRun.createdAt ?? null,
-        };
-      }
-    }
-  }
-
-  const freshest = selectFreshestCloseGateRun({
-    latestScoped,
-    actorRun: actorCandidate,
-  });
-  if (freshest) {
-    const toDate = (value: Date | string | null | undefined): Date | null => {
-      if (value == null) return null;
-      if (value instanceof Date) return value;
-      const parsed = new Date(value);
-      return Number.isFinite(parsed.getTime()) ? parsed : null;
-    };
-    return {
-      id: freshest.id,
-      status: freshest.status,
-      startedAt: toDate(freshest.startedAt ?? null),
-      createdAt: toDate(freshest.createdAt ?? null),
-    };
-  }
-
-  // Last resort: pinned executionRunId (may be stale relative to a fresher actor run;
-  // only reached when the issue-scoped index and actor lookup both miss).
-  if (issue.executionRunId && issue.executionRunId !== excludeRunId) {
-    const run = await heartbeat.getRun(issue.executionRunId);
-    if (run) {
-      return {
-        id: run.id,
-        status: run.status,
-        startedAt: run.startedAt ?? null,
-        createdAt: run.createdAt ?? null,
-      };
-    }
-  }
-  return null;
-}
 
 const ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE_LIST = ["queued", "running", "scheduled_retry"] as const;
 
@@ -11581,7 +11362,7 @@ export function issueRoutes(
       // excludeRunId applies only to §2 OTHER-active detection; §3 AC freshness includes
       // the actor close-out run (TSMC-19840). actorRunId still exempts self from §2 block.
       issueRun: nextStatus === "done"
-        ? await resolveIssueRunForCloseGate(db, existing, heartbeat, {
+        ? await resolveIssueRunForCloseGate(db, existing, heartbeat.getRun, {
             excludeRunId: actor.runId ?? null,
           })
         : null,
