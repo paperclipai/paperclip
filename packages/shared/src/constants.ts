@@ -832,7 +832,30 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
-export const COST_STATUSES = ["reported", "unpriced"] as const;
+/**
+ * Billing types that bill against a plan rather than per token. Their `cost_cents`
+ * is a genuine zero, so their spend is only visible as a rate-card equivalent.
+ *
+ * Shared deliberately: the aggregate queries decide which rows feed
+ * `subscriptionRateCardCents` from this list, and the UI decides from the same
+ * list whether to render a rate-card tag. Two copies of that answer would drift
+ * and the tag would go on the wrong rows.
+ */
+export const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
+
+export function isSubscriptionBillingType(billingType: BillingType): boolean {
+  return (SUBSCRIPTION_BILLING_TYPES as readonly string[]).includes(billingType);
+}
+
+/**
+ * How a cost event's money figures were arrived at.
+ * - `reported`: the provider gave a credible cost, or there was no token usage.
+ * - `derived`: the provider gave no credible cost (null, or 0 alongside real
+ *   tokens), so `rate_card_cents` was computed from tokens at list price.
+ * - `unpriced`: real tokens, no credible provider cost, and no rate-card entry
+ *   for the model — the spend is real but unquantified. Never silently 0.
+ */
+export const COST_STATUSES = ["reported", "derived", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [

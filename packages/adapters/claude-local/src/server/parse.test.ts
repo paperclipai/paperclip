@@ -481,7 +481,7 @@ describe("extractClaudeRetryNotBefore", () => {
 });
 
 describe("claudeModelUsageTotals", () => {
-  it("sums per-model usage across models and counts cache writes as input", () => {
+  it("sums per-model usage across models and surfaces cache writes separately", () => {
     const totals = claudeModelUsageTotals({
       "claude-fable-5": {
         inputTokens: 100,
@@ -498,10 +498,14 @@ describe("claudeModelUsageTotals", () => {
         costUSD: 0.05,
       },
     });
+    // Cache-creation tokens carry a write premium, so they are reported as
+    // cacheWriteTokens rather than folded into inputTokens (which would flatten
+    // the premium and double-count them downstream).
     expect(totals).toEqual({
-      inputTokens: 4_650,
+      inputTokens: 150,
       outputTokens: 77_000,
       cachedInputTokens: 260_000,
+      cacheWriteTokens: 4_500,
     });
   });
 
@@ -537,9 +541,10 @@ describe("parseClaudeStreamJson usage extraction", () => {
       })}\n`,
     );
     expect(parsed.usage).toEqual({
-      inputTokens: 2_090,
+      inputTokens: 90,
       outputTokens: 77_000,
       cachedInputTokens: 300_000,
+      cacheWriteTokens: 2_000,
     });
     expect(parsed.usageBasis).toBe("per_run");
     expect(parsed.costUsd).toBeCloseTo(1.25);
@@ -551,7 +556,29 @@ describe("parseClaudeStreamJson usage extraction", () => {
       inputTokens: 10,
       outputTokens: 1_800,
       cachedInputTokens: 20,
+      cacheWriteTokens: 0,
     });
     expect(parsed.usageBasis).toBe("per_run");
+  });
+
+  it("reads cache_creation_input_tokens on the fallback usage block", () => {
+    // This wire key was previously never read anywhere, so cache-write tokens
+    // vanished entirely whenever the CLI omitted modelUsage.
+    const parsed = parseClaudeStreamJson(
+      `${resultEvent({
+        usage: {
+          input_tokens: 10,
+          output_tokens: 1_800,
+          cache_read_input_tokens: 20,
+          cache_creation_input_tokens: 4_096,
+        },
+      })}\n`,
+    );
+    expect(parsed.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 1_800,
+      cachedInputTokens: 20,
+      cacheWriteTokens: 4_096,
+    });
   });
 });

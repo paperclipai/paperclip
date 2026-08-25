@@ -781,7 +781,12 @@ describe("claude execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect(result.usage).toEqual({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 });
+      expect(result.usage).toEqual({
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1,
+      });
       expect(result.usageBasis).toBe("per_run");
       expect(result.costUsd).toBeNull();
       expect(loggedCommand).toBe(commandPath);
