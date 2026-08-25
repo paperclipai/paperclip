@@ -788,7 +788,10 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(
+  db: Db,
+  deps: { enqueueWakeup: RecoveryWakeup; onRunTerminalized?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void> },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -6182,6 +6185,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       { runId: run.id, authority, previousStatus: run.status, terminalStatus, issueId, pid, processGroupId },
       "terminalized orphaned running heartbeat run in stale-lock sweep",
     );
+    if (deps.onRunTerminalized) {
+      await deps.onRunTerminalized(updated).catch((err) => {
+        logger.warn(
+          { err, runId: updated.id },
+          "onRunTerminalized hook failed after recovery backstop terminalized an orphaned run",
+        );
+      });
+    }
     return { terminalized: true, status: updated.status };
   }
 

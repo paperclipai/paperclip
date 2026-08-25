@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   agents,
   approvals,
@@ -8,6 +9,7 @@ import {
   companies,
   costEvents,
   createDb,
+  heartbeatRuns,
   projects,
 } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.ts";
@@ -342,6 +344,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     await db.delete(approvals);
     await db.delete(budgetPolicies);
     await db.delete(costEvents);
+    await db.delete(heartbeatRuns);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -390,6 +393,10 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     projectId?: string | null;
     costCents: number;
     occurredAt?: Date;
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    heartbeatRunId?: string | null;
   }) {
     const [event] = await db
       .insert(costEvents)
@@ -397,19 +404,33 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
         companyId: input.companyId,
         agentId: input.agentId,
         projectId: input.projectId ?? null,
+        heartbeatRunId: input.heartbeatRunId ?? null,
         provider: "openai",
         biller: "openai",
         billingType: "metered_api",
         model: "gpt-5-release-gate",
-        inputTokens: 100,
-        cachedInputTokens: 10,
-        outputTokens: 20,
+        inputTokens: input.inputTokens ?? 100,
+        cachedInputTokens: input.cachedInputTokens ?? 10,
+        outputTokens: input.outputTokens ?? 20,
         costCents: input.costCents,
         occurredAt: input.occurredAt ?? new Date(),
       })
       .returning();
 
     return event!;
+  }
+
+  async function insertHeartbeatRun(input: { companyId: string; agentId: string }) {
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "on_demand",
+        status: "succeeded",
+      })
+      .returning();
+    return run!;
   }
 
   it("raises one soft incident per window before hard-stopping and safely logging agent telemetry", async () => {
@@ -636,5 +657,226 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       pauseReason: null,
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
+  });
+
+  it("hard-stops an agent on a token_count budget policy and reports zero on an empty window", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "token_count",
+      windowKind: "calendar_month_utc",
+      amount: 300,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    const emptyWindowOverview = await service.overview(companyId);
+    expect(emptyWindowOverview.policies[0]).toMatchObject({
+      metric: "token_count",
+      observedAmount: 0,
+      status: "ok",
+    });
+
+    // 100 input + 10 cached + 20 output = 130 tokens per event.
+    const softEvent = await insertCostEvent({ companyId, agentId, costCents: 1 });
+    await service.evaluateCostEvent(softEvent);
+
+    let overview = await service.overview(companyId);
+    expect(overview.policies[0]).toMatchObject({ observedAmount: 130, status: "ok" });
+
+    const secondEvent = await insertCostEvent({ companyId, agentId, costCents: 1 });
+    await service.evaluateCostEvent(secondEvent);
+
+    overview = await service.overview(companyId);
+    expect(overview.policies[0]).toMatchObject({ observedAmount: 260, status: "warning" });
+
+    const thirdEvent = await insertCostEvent({ companyId, agentId, costCents: 1 });
+    await service.evaluateCostEvent(thirdEvent);
+
+    overview = await service.overview(companyId);
+    expect(overview.policies[0]).toMatchObject({
+      observedAmount: 390,
+      status: "hard_stop",
+      paused: true,
+      pauseReason: "budget",
+    });
+
+    const [agentAfterHardStop] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentAfterHardStop).toMatchObject({ status: "paused", pauseReason: "budget" });
+    expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "agent", scopeId: agentId });
+
+    const block = await service.getInvocationBlock(companyId, agentId);
+    expect(block).toEqual({
+      scopeType: "agent",
+      scopeId: agentId,
+      scopeName: "Budget Agent SECRET_TOKEN_SHOULD_NOT_LEAK",
+      reason: "Agent is paused because its budget hard-stop was reached.",
+    });
+  });
+
+  it("counts distinct heartbeat runs (not cost_events rows) for a run_count budget policy", async () => {
+    const { companyId, agentId, projectId } = await createBudgetFixture();
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(db, { cancelWorkForScope });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "project",
+      scopeId: projectId,
+      metric: "run_count",
+      windowKind: "lifetime",
+      amount: 2,
+      warnPercent: 50,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    const runOne = await insertHeartbeatRun({ companyId, agentId });
+    const runTwo = await insertHeartbeatRun({ companyId, agentId });
+
+    // Run one reports cost across two models (two cost_events rows, one run).
+    await insertCostEvent({ companyId, agentId, projectId, costCents: 1, heartbeatRunId: runOne.id });
+    const secondModelEvent = await insertCostEvent({
+      companyId,
+      agentId,
+      projectId,
+      costCents: 1,
+      heartbeatRunId: runOne.id,
+    });
+    await service.evaluateCostEvent(secondModelEvent);
+
+    let overview = await service.overview(companyId);
+    expect(overview.policies[0]).toMatchObject({
+      metric: "run_count",
+      observedAmount: 1,
+      status: "warning",
+      paused: false,
+    });
+
+    // A manually reported cost event with no heartbeat_run_id must not be counted as a run.
+    const manualEvent = await insertCostEvent({ companyId, agentId, projectId, costCents: 1, heartbeatRunId: null });
+    await service.evaluateCostEvent(manualEvent);
+    overview = await service.overview(companyId);
+    expect(overview.policies[0]).toMatchObject({ observedAmount: 1, status: "warning" });
+
+    const runTwoEvent = await insertCostEvent({
+      companyId,
+      agentId,
+      projectId,
+      costCents: 1,
+      heartbeatRunId: runTwo.id,
+    });
+    await service.evaluateCostEvent(runTwoEvent);
+
+    overview = await service.overview(companyId);
+    expect(overview.policies[0]).toMatchObject({
+      observedAmount: 2,
+      status: "hard_stop",
+      paused: true,
+      pauseReason: "budget",
+    });
+
+    const [projectAfterHardStop] = await db
+      .select({ pauseReason: projects.pauseReason })
+      .from(projects);
+    expect(projectAfterHardStop?.pauseReason).toBe("budget");
+    expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "project", scopeId: projectId });
+
+    expect(await service.getInvocationBlock(companyId, agentId, { projectId })).toEqual({
+      scopeType: "project",
+      scopeId: projectId,
+      scopeName: "Budget Project",
+      reason: "Project cannot start work because its budget hard-stop is still exceeded.",
+    });
+  });
+
+  it("leaves an existing billed_cents policy unaffected when a token_count policy exists on the same scope", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db);
+    await db.insert(budgetPolicies).values([
+      {
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: 500,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: true,
+        isActive: true,
+      },
+      {
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "token_count",
+        windowKind: "calendar_month_utc",
+        amount: 10_000,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: true,
+        isActive: true,
+      },
+    ]);
+
+    await insertCostEvent({ companyId, agentId, costCents: 40 });
+
+    const overview = await service.overview(companyId);
+    const billedPolicy = overview.policies.find((p) => p.metric === "billed_cents");
+    const tokenPolicy = overview.policies.find((p) => p.metric === "token_count");
+    expect(billedPolicy).toMatchObject({ observedAmount: 40, status: "ok" });
+    expect(tokenPolicy).toMatchObject({ observedAmount: 130, status: "ok" });
+
+    const [agentStatus] = await db.select({ status: agents.status }).from(agents);
+    expect(agentStatus?.status).toBe("active");
+  });
+
+  it("keeps historical cost_events counted toward a company budget after the agent that emitted them is deleted", async () => {
+    // Regression for the schema-level fix that changed cost_events.agent_id
+    // from ON DELETE CASCADE to ON DELETE SET NULL: a hard cascade there would
+    // silently erase real usage from company/project budget aggregates the
+    // moment an agent row is deleted, letting a company slip back under a cap
+    // it had already tripped. This drives the real FK against Postgres rather
+    // than asserting on the schema definition.
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db);
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    const event = await insertCostEvent({ companyId, agentId, costCents: 300 });
+
+    const beforeOverview = await service.overview(companyId);
+    const beforeCompanyPolicy = beforeOverview.policies.find((p) => p.scopeType === "company");
+    expect(beforeCompanyPolicy).toMatchObject({ observedAmount: 300, status: "ok" });
+
+    await db.delete(agents).where(eq(agents.id, agentId));
+
+    const [survivingEvent] = await db.select().from(costEvents).where(eq(costEvents.id, event.id));
+    expect(survivingEvent).toBeTruthy();
+    expect(survivingEvent?.agentId).toBeNull();
+    expect(survivingEvent?.costCents).toBe(300);
+
+    const afterOverview = await service.overview(companyId);
+    const afterCompanyPolicy = afterOverview.policies.find((p) => p.scopeType === "company");
+    expect(afterCompanyPolicy).toMatchObject({ observedAmount: 300, status: "ok" });
   });
 });

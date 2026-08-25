@@ -59,7 +59,10 @@ export interface UserProfileActivitySummary {
 }
 
 export interface UserProfileAgentUsage {
-  agentId: string;
+  // Cost events keep their agentId nullable so historical usage survives
+  // agent deletion (see cost_events.agent_id ON DELETE SET NULL); a null here
+  // means the events were emitted by an agent that no longer exists.
+  agentId: string | null;
   agentName: string | null;
   costCents: number;
   inputTokens: number;

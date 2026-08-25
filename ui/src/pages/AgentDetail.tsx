@@ -102,6 +102,7 @@ import {
   isUuidLike,
   type Agent,
   type AgentDetail as AgentDetailRecord,
+  type BudgetMetric,
   type BudgetPolicySummary,
   type HeartbeatRun,
   type HeartbeatRunEvent,
@@ -1010,11 +1011,12 @@ export function AgentDetail() {
   });
 
   const budgetMutation = useMutation({
-    mutationFn: (amount: number) =>
+    mutationFn: ({ amount, metric }: { amount: number; metric: BudgetMetric }) =>
       budgetsApi.upsertPolicy(resolvedCompanyId!, {
         scopeType: "agent",
         scopeId: agent?.id ?? routeAgentRef,
         amount,
+        metric,
         windowKind: "calendar_month_utc",
       }),
     onSuccess: () => {
@@ -1557,7 +1559,7 @@ export function AgentDetail() {
           <BudgetPolicyCard
             summary={agentBudgetSummary}
             isSaving={budgetMutation.isPending}
-            onSave={(amount) => budgetMutation.mutate(amount)}
+            onSave={(amount, metric) => budgetMutation.mutate({ amount, metric })}
             variant="plain"
           />
         </div>

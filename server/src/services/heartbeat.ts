@@ -104,7 +104,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
-import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { budgetService, type BudgetEnforcementScope, type BudgetServiceHooks } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -3913,6 +3913,82 @@ export async function resolveLedgerScopeForRun(
   };
 }
 
+// Every path that finalizes a heartbeat_runs row to a terminal status must
+// leave a matching cost_events row behind, even a zero-usage one, because
+// run_count budget policies count `distinct heartbeat_run_id` over
+// cost_events. The primary path (updateRuntimeState, below) always does this.
+// But a run can also reach a terminal status through teardown paths that never
+// call updateRuntimeState: environment-lease-release teardown, server-shutdown
+// interruption, and the recovery backstop for orphaned running runs. Each of
+// those calls this helper right after it commits the terminal status, so
+// run_count enforcement cannot be defeated by a run that never produced
+// billed cost or token usage. The existence check makes this idempotent, so
+// calling it more than once for the same run (or after updateRuntimeState
+// already ran) never double-counts.
+export async function ensureRunAccountedForCounting(
+  db: Db,
+  budgetHooks: BudgetServiceHooks,
+  companyId: string,
+  agentId: string,
+  run: typeof heartbeatRuns.$inferSelect,
+) {
+  const existing = await db
+    .select({ id: costEvents.id })
+    .from(costEvents)
+    .where(eq(costEvents.heartbeatRunId, run.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (existing) return;
+
+  const ledgerScope = await resolveLedgerScopeForRun(db, companyId, run);
+  const costs = costService(db, budgetHooks);
+  const zeroUsageEvent = {
+    heartbeatRunId: run.id,
+    agentId,
+    issueId: ledgerScope.issueId,
+    projectId: ledgerScope.projectId,
+    billingCode: ledgerScope.billingCode,
+    provider: "unknown",
+    biller: "unknown",
+    billingType: "unknown",
+    costStatus: "reported",
+    model: "unknown",
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    costCents: 0,
+    occurredAt: run.finishedAt ?? new Date(),
+  } as const;
+
+  // The run is already terminal by the time every call site reaches this
+  // helper, so a swallowed failure here has no other path back to counting
+  // this run — it would silently and permanently undercount run_count.
+  // Retry a bounded number of times against transient DB errors (the
+  // dominant real-world failure mode for a single-row insert) before giving
+  // up and logging loudly enough to page on, instead of a single best-effort
+  // attempt with a quiet warning.
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await costs.createEvent(companyId, zeroUsageEvent);
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) {
+        logger.error(
+          { err, runId: run.id, agentId, companyId, attempts: attempt },
+          "failed to record zero-usage cost event for terminalized run after retrying; run_count will undercount this run",
+        );
+        return;
+      }
+      logger.warn(
+        { err, runId: run.id, attempt },
+        "retrying zero-usage cost event insert for terminalized run",
+      );
+      await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+    }
+  }
+}
+
 type ResumeSessionRow = {
   sessionParamsJson: Record<string, unknown> | null;
   sessionDisplayId: string | null;
@@ -6837,7 +6913,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
-  const recovery = recoveryService(db, { enqueueWakeup });
+  const recovery = recoveryService(db, {
+    enqueueWakeup,
+    onRunTerminalized: (terminalizedRun) =>
+      ensureRunAccountedForCounting(db, budgetHooks, terminalizedRun.companyId, terminalizedRun.agentId, terminalizedRun),
+  });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -9131,6 +9211,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "failed to append run event for lease-release terminalization",
         );
       });
+      await ensureRunAccountedForCounting(db, budgetHooks, terminalRun.companyId, terminalRun.agentId, terminalRun);
     }
     return terminalRun ?? run;
   }
@@ -10828,6 +10909,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       if (!interruptedStatus.updated || !interruptedStatus.run) continue;
       let interrupted = interruptedStatus.run;
+      await ensureRunAccountedForCounting(db, budgetHooks, interrupted.companyId, interrupted.agentId, interrupted);
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: now,
         error: null,
@@ -13945,7 +14027,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const billingType = normalizeLedgerBillingType(result.billingType);
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
     const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
-    const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
       inputTokens,
@@ -13972,26 +14053,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .where(eq(agentRuntimeState.agentId, agent.id));
 
-    if (additionalCostCents > 0 || hasTokenUsage) {
-      const costs = costService(db, budgetHooks);
-      await costs.createEvent(agent.companyId, {
-        heartbeatRunId: run.id,
-        agentId: agent.id,
-        issueId: ledgerScope.issueId,
-        projectId: ledgerScope.projectId,
-        billingCode: ledgerScope.billingCode,
-        provider,
-        biller,
-        billingType,
-        costStatus,
-        model: result.model ?? "unknown",
-        inputTokens,
-        cachedInputTokens,
-        outputTokens,
-        costCents: additionalCostCents,
-        occurredAt: new Date(),
-      });
-    }
+    // Always emit a cost_events row per finalized run -- even when there is no
+    // billed cost and no token usage -- so run_count budget policies (and any
+    // other `count(distinct heartbeat_run_id)` aggregate over cost_events) see
+    // every run. Skipping the insert for zero-usage runs made those runs
+    // invisible to run_count enforcement (a hard-stop policy would under-count
+    // and never trip against a stream of no-op/zero-usage runs).
+    const costs = costService(db, budgetHooks);
+    await costs.createEvent(agent.companyId, {
+      heartbeatRunId: run.id,
+      agentId: agent.id,
+      issueId: ledgerScope.issueId,
+      projectId: ledgerScope.projectId,
+      billingCode: ledgerScope.billingCode,
+      provider,
+      biller,
+      billingType,
+      costStatus,
+      model: result.model ?? "unknown",
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      costCents: additionalCostCents,
+      occurredAt: new Date(),
+    });
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
@@ -16876,6 +16961,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               message,
             }).catch(() => undefined);
             const livenessRun = await classifyAndPersistRunLiveness(failedRun).catch(() => failedRun);
+            // Setup failures (thrown before adapter.execute, e.g. ensureRuntimeState or
+            // resolveWorkspaceForRun) are finalized as terminal right here, before the
+            // `finally` block's terminalizeRunOnLeaseRelease runs. That helper's
+            // early-return guard (`if (isHeartbeatRunTerminalStatus(run.status)) return run`)
+            // means it will never see this run as non-terminal and therefore never
+            // calls ensureRunAccountedForCounting for it — so a run_count budget policy
+            // would silently undercount setup failures. Emit the accounting row here,
+            // at the same terminal transition that owns this outcome.
+            await ensureRunAccountedForCounting(db, budgetHooks, livenessRun.companyId, livenessRun.agentId, livenessRun);
             const setupFailureIssueId = readNonEmptyString(parseObject(livenessRun.contextSnapshot).issueId);
             if (setupFailureIssueId) {
               await completeSkillTestRunForHeartbeatOutcome({
@@ -19622,6 +19716,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     terminalizeRunOnLeaseRelease,
 
     releaseEnvironmentLeasesForRun,
+
+    updateRuntimeState,
 
     sweepStaleIssueLocks,
 
