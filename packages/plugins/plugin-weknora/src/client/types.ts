@@ -61,9 +61,37 @@ export type UpstreamEnvelope<T> = {
 
 export type IngestResult = { id: string; status?: string; taskId?: string };
 
+export type KnowledgeBaseDetail = {
+  id: string;
+  name?: string;
+  type?: string;
+  status?: string;
+  knowledgeCount?: number;
+  chunkCount?: number;
+  processingCount?: number;
+  updatedAt?: string;
+};
+
+export type WikiStats = {
+  pages?: number;
+  published?: number;
+  documents?: number;
+  chunks?: number;
+  links?: number;
+  brokenLinks?: number;
+  updatedAt?: string;
+};
+
+export type WikiIssue = {
+  code: string;
+  slug?: string;
+  severity?: "info" | "warning" | "error";
+  line?: number;
+};
+
 export type WikiDiagnostics = {
-  stats?: Record<string, unknown>;
+  stats?: WikiStats;
   lintCounts?: Record<string, number>;
-  issues?: Array<Record<string, unknown>>;
+  issues?: WikiIssue[];
   warnings?: string[];
 };

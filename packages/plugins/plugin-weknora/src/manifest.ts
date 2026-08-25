@@ -135,7 +135,7 @@ const configSchema = {
 };
 
 function tool(name: string, displayName: string, description: string, properties: Record<string, unknown>, required: string[]) {
-  return { name, displayName, description, parametersSchema: { type: "object", properties, required } };
+  return { name, displayName, description, parametersSchema: { type: "object", properties: { companyId: { type: "string" }, ...properties }, required } };
 }
 
 const manifest: PaperclipPluginManifestV1 = {

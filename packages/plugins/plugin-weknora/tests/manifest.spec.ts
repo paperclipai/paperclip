@@ -16,6 +16,10 @@ describe("WeKnora manifest and config contract", () => {
     expect(manifest.localFolders).toBeUndefined();
     expect(manifest.tools?.map((tool) => tool.name)).toEqual(Object.values(TOOL_NAMES));
     expect(manifest.tools).toHaveLength(7);
+    for (const tool of manifest.tools ?? []) {
+      expect(tool.parametersSchema.properties).toHaveProperty("companyId", { type: "string" });
+      expect(tool.parametersSchema.required).toContain("companyId");
+    }
     expect(manifest.tools?.some((tool) => /ingest|fix|rebuild|write/i.test(tool.name))).toBe(false);
     expect(manifest.skills?.map((skill) => skill.skillKey)).toEqual([...SKILL_KEYS]);
     expect(manifest.agents?.every((agent) => agent.status === "paused")).toBe(true);

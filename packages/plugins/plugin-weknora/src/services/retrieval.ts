@@ -13,7 +13,14 @@ function positiveInt(value: unknown, fallback: number, max: number): number {
 export function createRetrievalService(client: WeKnoraClient, config: WeKnoraConfig) {
   return {
     async listKnowledgeBases() {
-      return client.listKnowledgeBases();
+      const result = await client.listKnowledgeBases();
+      const knowledgeBases = result.knowledgeBases.slice(0, config.maxResults);
+      const total = Math.max(result.total ?? 0, result.knowledgeBases.length);
+      return {
+        knowledgeBases,
+        total,
+        truncated: total > knowledgeBases.length,
+      };
     },
 
     async search(input: { query: string; knowledgeBaseIds?: string[]; knowledgeIds?: string[]; maxResults?: number }) {

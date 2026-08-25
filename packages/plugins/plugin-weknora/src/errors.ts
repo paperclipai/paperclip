@@ -53,6 +53,11 @@ export function asWeknoraError(error: unknown): WeknoraPluginError {
   return new WeknoraPluginError("unavailable", "WeKnora request failed", true);
 }
 
+export function isHealthFatal(error: unknown): boolean {
+  const normalized = asWeknoraError(error);
+  return normalized.kind === "invalid_config" || normalized.kind === "auth" || normalized.kind === "forbidden";
+}
+
 export function errorKindForStatus(status: number): { kind: WeknoraErrorKind; retryable: boolean } {
   if (status === 401) return { kind: "auth", retryable: false };
   if (status === 403) return { kind: "forbidden", retryable: false };
