@@ -129,6 +129,7 @@ describe("service health doctor checks", () => {
     const results = await serviceHealthChecks(config, {
       detect: vi.fn(async () => ({ supported: true as const, manager })),
       probe: vi.fn(async () => ({ ok: true, version: "1.2.3" })),
+      shimPresent: vi.fn(async () => true),
     });
 
     expect(results).toContainEqual(
@@ -138,5 +139,57 @@ describe("service health doctor checks", () => {
         message: expect.stringContaining("another Paperclip process"),
       }),
     );
+  });
+});
+
+describe("service runtime shim awareness", () => {
+  function inactiveManager() {
+    return {
+      platform: "launchd" as const,
+      instanceId: "default",
+      serviceName: "ing.paperclip.paperclipai",
+      definitionPath: "/tmp/nonexistent-definition.plist",
+      renderDefinition: () => "plist",
+      install: vi.fn(async () => ({ changed: false })),
+      uninstall: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      restart: vi.fn(async () => undefined),
+      status: vi.fn(async () => ({
+        platform: "launchd" as const,
+        serviceName: "ing.paperclip.paperclipai",
+        installed: true,
+        active: false,
+        enabled: true,
+        pid: null,
+        detail: "loaded",
+      })),
+      logs: vi.fn(async () => undefined),
+    };
+  }
+
+  it("blames the missing binary, not a port conflict, when the shim is gone", async () => {
+    const results = await serviceHealthChecks({} as never, {
+      detect: vi.fn(async () => ({ supported: true as const, manager: inactiveManager() as never })),
+      probe: vi.fn(async () => ({ ok: false, version: null, error: "fetch failed" })),
+      shimPresent: vi.fn(async () => false),
+    });
+    const runtime = results.find((r) => r.name === "Service runtime");
+    expect(runtime?.status).toBe("fail");
+    expect(runtime?.message).toContain("its binary is missing at");
+    expect(runtime?.repairHint).toContain("paperclipai install");
+  });
+
+  it("attributes a healthy foreign responder instead of reporting Healthy", async () => {
+    const results = await serviceHealthChecks({} as never, {
+      detect: vi.fn(async () => ({ supported: true as const, manager: inactiveManager() as never })),
+      probe: vi.fn(async () => ({ ok: true, version: "9.9.9" })),
+      shimPresent: vi.fn(async () => true),
+    });
+    const healthResult = results.find((r) => r.name === "Service health");
+    expect(healthResult?.status).toBe("warn");
+    expect(healthResult?.message).toContain("but not from ing.paperclip.paperclipai");
+    const runtime = results.find((r) => r.name === "Service runtime");
+    expect(runtime?.message).toContain("serving another Paperclip process");
   });
 });

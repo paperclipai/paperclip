@@ -48,7 +48,11 @@ describe("onboard service policy", () => {
 
     const installed = await handleOnboardService(
       { yes: true, installService: true },
-      { detect: vi.fn(async () => detection), isInteractive: () => false },
+      {
+        detect: vi.fn(async () => detection),
+        isInteractive: () => false,
+        ensureServiceShim: vi.fn(async () => ({ ok: true, installedNow: false })),
+      },
     );
 
     expect(installed).toBe(true);
@@ -61,7 +65,12 @@ describe("onboard service policy", () => {
 
     const installed = await handleOnboardService(
       {},
-      { detect: vi.fn(async () => detection), isInteractive: () => true, confirm },
+      {
+        detect: vi.fn(async () => detection),
+        isInteractive: () => true,
+        confirm,
+        ensureServiceShim: vi.fn(async () => ({ ok: true, installedNow: false })),
+      },
     );
 
     expect(confirm).toHaveBeenCalledOnce();
@@ -81,4 +90,41 @@ describe("onboard service policy", () => {
     expect(detect).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
   });
+
+  it("materializes the managed shim before installing the service", async () => {
+    const detection = supportedDetection();
+    const success = vi.fn();
+    const ensureServiceShim = vi.fn(async () => ({ ok: true, installedNow: true }));
+
+    const installed = await handleOnboardService(
+      { yes: true, installService: true },
+      { detect: vi.fn(async () => detection), isInteractive: () => false, ensureServiceShim, success },
+    );
+
+    expect(installed).toBe(true);
+    expect(ensureServiceShim).toHaveBeenCalledOnce();
+    expect(success).toHaveBeenCalledWith(expect.stringContaining("managed paperclipai payload"));
+    expect(detection.manager.install).toHaveBeenCalledWith({ startNow: true, startOnLogin: true });
+  });
+
+  it("declines instead of installing a service without a binary", async () => {
+    const detection = supportedDetection();
+    const warn = vi.fn();
+
+    const installed = await handleOnboardService(
+      { yes: true, installService: true },
+      {
+        detect: vi.fn(async () => detection),
+        isInteractive: () => false,
+        ensureServiceShim: vi.fn(async () => ({ ok: false, installedNow: false, reason: "npm exploded" })),
+        warn,
+      },
+    );
+
+    expect(installed).toBe(false);
+    expect(detection.manager.install).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("npm exploded"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("paperclipai install"));
+  });
+
 });
