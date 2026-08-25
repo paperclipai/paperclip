@@ -2625,6 +2625,22 @@ async function isGitCheckout(cwd: string | null | undefined) {
     .catch(() => false);
 }
 
+// A checkout can have a valid .git directory (passes hasGitMetadata) while
+// carrying zero commits — indistinguishable, by directory listing alone, from
+// a brand-new bare `git init`. That is fine for a project's genuine first use.
+// It is a distinct, dangerous case when a *previously persisted* execution
+// workspace resolves to this state: it means content that existed before is
+// gone now, and treating the empty checkout as equivalent to the real
+// workspace (TSMC-21545 incident, 2026-08-25) silently masks the loss instead
+// of surfacing it. See the paired check in assertGitSensitiveAdapterWorkspaceValid.
+async function hasGitCommits(cwd: string | null | undefined) {
+  const normalized = readNonEmptyString(cwd);
+  if (!normalized) return false;
+  return execFile("git", ["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: normalized })
+    .then((result) => Boolean(readNonEmptyString(result.stdout)))
+    .catch(() => false);
+}
+
 function sameResolvedPath(left: string | null | undefined, right: string | null | undefined) {
   const leftPath = readNonEmptyString(left);
   const rightPath = readNonEmptyString(right);
@@ -2966,6 +2982,28 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     fail(
       "missing_git_metadata",
       `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
+    );
+  }
+
+  // Fail closed rather than silently adopting an emptied-out shared workspace.
+  // Scoped tightly to avoid false positives on genuine first use: only fires
+  // when (a) this exact workspace has a prior persisted record — proof it
+  // held real state before — and (b) it is the shared primary workspace, not
+  // a fresh git_worktree checkout (which legitimately starts with no commits
+  // of its own beyond the base branch it forked from, and is validated by the
+  // branch-mismatch check below instead).
+  if (
+    workspaceExpectation &&
+    effectiveCwd &&
+    input.persistedExecutionWorkspace &&
+    input.executionWorkspace.strategy !== "git_worktree" &&
+    await hasGitMetadata(effectiveCwd) &&
+    !await hasGitCommits(effectiveCwd)
+  ) {
+    fail(
+      "empty_checkout_previously_used",
+      `Issue ${issue.identifier ?? issue.id} resolved shared project workspace "${effectiveCwd}" to a git checkout with zero commits, but a prior execution workspace record (${input.persistedExecutionWorkspace.id}) shows this workspace was used before. Refusing to treat an emptied-out checkout as the real workspace. Repair or intentionally reset the workspace, then retry.`,
+      { emptyCheckoutPreviouslyUsed: true, persistedExecutionWorkspaceId: input.persistedExecutionWorkspace.id },
     );
   }
 

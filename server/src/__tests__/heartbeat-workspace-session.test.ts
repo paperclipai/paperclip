@@ -518,6 +518,89 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  it("rejects a previously-used shared workspace that now resolves to an empty git checkout", async () => {
+    const repoRoot = await createGitCheckout({ withRemote: false });
+    try {
+      const input = buildWorkspaceValidationInput();
+      await expectWorkspaceValidationFailure(
+        buildWorkspaceValidationInput({
+          resolvedWorkspace: buildResolvedWorkspace({ cwd: repoRoot }),
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            baseCwd: repoRoot,
+            cwd: repoRoot,
+          },
+          persistedExecutionWorkspace: {
+            ...input.persistedExecutionWorkspace!,
+            cwd: repoRoot,
+          },
+        }),
+        "empty_checkout_previously_used",
+        "to a git checkout with zero commits",
+      );
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a previously-used shared workspace that still has real commit history", async () => {
+    const repoRoot = await createGitCheckout({ withRemote: false });
+    try {
+      await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
+      await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+      await fs.writeFile(path.join(repoRoot, "README.md"), "initial\n", "utf8");
+      await runGit(repoRoot, ["add", "README.md"]);
+      await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+
+      const input = buildWorkspaceValidationInput();
+      await expect(
+        assertGitSensitiveAdapterWorkspaceValid(
+          buildWorkspaceValidationInput({
+            resolvedWorkspace: buildResolvedWorkspace({ cwd: repoRoot }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              baseCwd: repoRoot,
+              cwd: repoRoot,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              cwd: repoRoot,
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows an empty checkout for a fresh git_worktree strategy even with a persisted record", async () => {
+    const repoRoot = await createGitCheckout({ withRemote: false });
+    try {
+      const input = buildWorkspaceValidationInput();
+      await expect(
+        assertGitSensitiveAdapterWorkspaceValid(
+          buildWorkspaceValidationInput({
+            resolvedWorkspace: buildResolvedWorkspace({ cwd: repoRoot }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              strategy: "git_worktree",
+              baseCwd: repoRoot,
+              cwd: repoRoot,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              strategyType: "git_worktree",
+              cwd: repoRoot,
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
     const input = buildWorkspaceValidationInput();
 
