@@ -233,7 +233,12 @@ async function loadAwsCredentials(region: string): Promise<AwsCredentialIdentity
   if (cached.pending) return cached.pending;
 
   cached.pending = (async () => {
-    const credentialSource = cached.client.config.credentials;
+    // @smithy/types 4.17 dropped `credentials` from S3ClientResolvedConfig's
+    // public type; the runtime property remains. Reach it structurally.
+    const credentialSource = (cached.client.config as { credentials?: unknown }).credentials as
+      | (() => Promise<{ accessKeyId?: string; secretAccessKey?: string; sessionToken?: string }>)
+      | { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string }
+      | undefined;
     const credentials = typeof credentialSource === "function"
       ? await credentialSource()
       : await credentialSource;

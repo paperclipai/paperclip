@@ -4,6 +4,8 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
+  type GetObjectCommandOutput,
+  type HeadObjectCommandOutput,
 } from "@aws-sdk/client-s3";
 import { Readable } from "node:stream";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
@@ -95,7 +97,8 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     async getObject(input): Promise<GetObjectResult> {
       const key = buildKey(prefix, input.objectKey);
       try {
-        const output = await client.send(
+        // Same overload collapse as headObject below — pin the concrete type.
+        const output: GetObjectCommandOutput = await client.send(
           new GetObjectCommand({
             Bucket: bucket,
             Key: key,
@@ -120,7 +123,9 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     async headObject(input): Promise<HeadObjectResult> {
       const key = buildKey(prefix, input.objectKey);
       try {
-        const output = await client.send(
+        // @smithy/types 4.17 collapses client.send's overloads to the full
+        // ServiceOutputTypes union here; pin the concrete output type.
+        const output: HeadObjectCommandOutput = await client.send(
           new HeadObjectCommand({
             Bucket: bucket,
             Key: key,

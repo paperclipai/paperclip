@@ -6743,7 +6743,26 @@ export function issueService(db: Db) {
       const pageQuery = offset > 0
         ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
-      const rows = (await pageQuery).map((row) => ({
+      // Board-action status is a live projection over interactions, approvals,
+      // and board-owned unblock descriptors. Apply that projection before
+      // pagination so an operator never receives an empty page merely because
+      // the matching issues appear after an unfiltered page boundary.
+      const boardActionRequired = filters?.boardActionRequired;
+      const candidateRows = await (boardActionRequired === undefined ? pageQuery : baseQuery);
+      const boardActionByIssueId = boardActionRequired === undefined
+        ? null
+        : await listIssueBoardActionRequirementMap(db, companyId, candidateRows);
+      const boardActionRows = boardActionByIssueId === null
+        ? candidateRows
+        : candidateRows.filter((row) =>
+          (boardActionByIssueId.get(row.id)?.state === "pending_board_decision") === boardActionRequired,
+        );
+      const pagedRows = boardActionByIssueId === null
+        ? boardActionRows
+        : (limit === undefined
+          ? boardActionRows.slice(offset)
+          : boardActionRows.slice(offset, offset + limit));
+      const rows = pagedRows.map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
