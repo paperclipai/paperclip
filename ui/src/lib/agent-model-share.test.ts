@@ -28,6 +28,20 @@ describe("agentModelShare", () => {
     expect(share.sharePct).toBe(100);
   });
 
+  // An overage row meters real cash on top of its rate-card value, and both
+  // feed the agent's shared basis (costCents sums every row, subscriptionRateCardCents
+  // sums subscription rows). The numerator has to include both too, or the
+  // row's share undercounts and a mixed agent's shares stop summing to 100%.
+  it("folds overage cash into the row's share, not just its rate card", () => {
+    const overageRow = { billingType: "subscription_overage" as const, costCents: 200, rateCardCents: 300 };
+    const agent = { costCents: 200, subscriptionRateCardCents: 300 };
+    const basis = agentShareBasis(agent);
+    expect(basis).toBe(500);
+
+    const share = agentModelShare(overageRow, basis);
+    expect(share.sharePct).toBe(100);
+  });
+
   // The regression this file exists for. An agent with both kinds of row used to
   // decide cash-vs-rate-card from its own aggregate: because the aggregate was
   // positive, every subscription row rendered "$0.00 (0%)" with no tag, so the

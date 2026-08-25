@@ -12,7 +12,11 @@ import { isSubscriptionBillingType, type BillingType } from "@paperclipai/shared
  */
 export interface AgentModelShareInput {
   billingType: BillingType;
-  /** cash metered for this row; 0 for subscription billing types by definition */
+  /**
+   * cash metered for this row. Always 0 for subscription_included; can be
+   * non-zero for subscription_overage, which meters real cash on top of its
+   * rate-card value once a run crosses the plan's included allowance.
+   */
   costCents: number;
   /** list-price value of this row's tokens */
   rateCardCents: number;
@@ -42,7 +46,12 @@ export function agentShareBasis(agent: { costCents: number; subscriptionRateCard
 
 export function agentModelShare(row: AgentModelShareInput, basis: number): AgentModelShare {
   const isSubscription = isSubscriptionBillingType(row.billingType);
-  const value = isSubscription ? row.rateCardCents : row.costCents;
+  // The denominator (agentShareBasis) sums costCents across every row plus
+  // rateCardCents across subscription rows only. A subscription_overage row
+  // feeds both sums, so its numerator has to include both too — using
+  // rateCardCents alone drops the metered overage cash and the row's share
+  // undercounts against that basis.
+  const value = isSubscription ? row.rateCardCents + row.costCents : row.costCents;
   return {
     isSubscription,
     rateCardTagCents: isSubscription ? row.rateCardCents : 0,
