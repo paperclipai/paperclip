@@ -101,6 +101,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -1975,7 +1976,12 @@ async function hasGitMetadata(cwd: string | null | undefined) {
 async function isGitCheckout(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
-  return execFile("git", ["rev-parse", "--show-toplevel"], { cwd: normalized })
+  return workspaceGitOperationScheduler.run({
+    workspacePath: normalized,
+    args: ["rev-parse", "--show-toplevel"],
+    operation: "heartbeat.workspace_preflight.checkout",
+    cacheTtlMs: 10_000,
+  })
     .then((result) => Boolean(readNonEmptyString(result.stdout)))
     .catch(() => false);
 }
@@ -1990,7 +1996,12 @@ function sameResolvedPath(left: string | null | undefined, right: string | null 
 async function hasGitPushRemote(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
-  const remoteNames = await execFile("git", ["remote"], { cwd: normalized })
+  const remoteNames = await workspaceGitOperationScheduler.run({
+    workspacePath: normalized,
+    args: ["remote"],
+    operation: "heartbeat.workspace_preflight.remotes",
+    cacheTtlMs: 10_000,
+  })
     .then((result) =>
       result.stdout
         .split(/\r?\n/)
@@ -2000,7 +2011,12 @@ async function hasGitPushRemote(cwd: string | null | undefined) {
     .catch(() => []);
 
   for (const remoteName of remoteNames) {
-    const pushUrl = await execFile("git", ["remote", "get-url", "--push", remoteName], { cwd: normalized })
+    const pushUrl = await workspaceGitOperationScheduler.run({
+      workspacePath: normalized,
+      args: ["remote", "get-url", "--push", remoteName],
+      operation: "heartbeat.workspace_preflight.push_remote",
+      cacheTtlMs: 10_000,
+    })
       .then((result) => readNonEmptyString(result.stdout))
       .catch(() => null);
     if (pushUrl) return true;
