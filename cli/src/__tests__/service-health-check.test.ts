@@ -217,6 +217,7 @@ describe("service runtime shim awareness", () => {
     expect(shimPresent).toHaveBeenCalledWith("/custom/bin/paperclipai");
     expect(runtime?.message).toContain("/custom/bin/paperclipai");
     expect(runtime?.repairHint).toContain("/custom/bin/paperclipai");
+    expect(runtime?.repairHint).toContain("unset PAPERCLIP_SHIM_PATH");
     expect(runtime?.repairHint).toContain("`paperclipai install` followed by `paperclipai service install`");
   });
 
