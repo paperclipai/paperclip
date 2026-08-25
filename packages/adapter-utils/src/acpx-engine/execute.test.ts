@@ -36,8 +36,6 @@ import {
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
-import { createDuplexBridgeBroker } from "../duplex-bridge-broker.js";
-import type { CommandManagedDuplexChannel } from "../command-managed-runtime.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -5734,56 +5732,55 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
   });
 });
 
-describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => {
+describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  // A minimal in-memory duplex channel. The test drives a channel exit to latch a
-  // real loss in a real broker, so the seam reads a real run disposition.
-  function createFakeDuplexChannel() {
-    let exitListener: ((exit: { exitCode: number | null }) => void) | null = null;
-    const channel: CommandManagedDuplexChannel = {
-      write(): void {},
-      onData(): void {},
-      onExit(listener: (exit: { exitCode: number | null }) => void): void {
-        exitListener = listener;
-      },
-      stop(): void {},
-      close(): Promise<void> {
-        return Promise.resolve();
-      },
-    };
-    return {
-      channel,
-      emitExit: (exit: { exitCode: number | null }) => exitListener?.(exit),
-    };
-  }
-
-  // Wrap a started real broker in a paperclip bridge handle. The handle exposes
-  // the same run-disposition surface the sandbox bridge exposes, so the seam runs
-  // against the real latch and the real orderly-completion mark.
-  async function bridgeOverBroker(fake: ReturnType<typeof createFakeDuplexChannel>) {
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
+  /**
+   * A minimal run-disposition latch. It reproduces the same ordering rule the
+   * bridge transport applies: the first ordered loss or orderly completion
+   * latches the terminal disposition, and a later call never overrides it.
+   * The test drives the latch directly, with no channel and no live process.
+   */
+  function createFakeBridgeHandle() {
+    let lossOrdered = false;
+    let lossReason: string | null = null;
+    let completionOrdered = false;
+    const readDisposition = () => ({ failed: lossOrdered, lossReason });
+    const markOrderlyCompletion = vi.fn(() => {
+      if (completionOrdered || lossOrdered) return;
+      completionOrdered = true;
     });
-    broker.start();
-    const markOrderlyCompletion = vi.fn(() => broker.markOrderlyCompletion());
-    const settleRunDisposition = vi.fn(() => broker.settleRunDisposition());
+    const settleRunDisposition = vi.fn(() => {
+      markOrderlyCompletion();
+      return readDisposition();
+    });
     const stop = vi.fn(async () => {});
     const handle = {
       env: {
         PAPERCLIP_API_URL: "http://127.0.0.1:1",
         PAPERCLIP_API_KEY: "bridge-token",
-        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
+        PAPERCLIP_API_BRIDGE_MODE: "http2_v1",
       },
-      readRunDisposition: () => broker.runDisposition,
+      readRunDisposition: () => readDisposition(),
       settleRunDisposition,
       markOrderlyCompletion,
       stop,
     };
-    return { broker, handle, markOrderlyCompletion, settleRunDisposition };
+    return {
+      handle,
+      markOrderlyCompletion,
+      settleRunDisposition,
+      readDisposition,
+      // Record the first ordered loss. A loss ordered after a completion, or a
+      // second loss, is a no-op — the same rule the real transport applies.
+      emitLoss: (reason: string) => {
+        if (lossOrdered || completionOrdered) return;
+        lossOrdered = true;
+        lossReason = reason;
+      },
+    };
   }
 
   // A runtime whose one turn completes cleanly. The `beforeResult` hook runs at
@@ -5888,14 +5885,13 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
     } as never);
   }
 
-  it("fails a completed run when the duplex channel was lost before the completion", async () => {
+  it("fails a completed run when the bridge channel was lost before the completion", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle, settleRunDisposition } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // Latch the loss before the ACP terminal resolves.
-    const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
+    const runtime = runtimeWithControlledResult(() => fake.emitLoss("provider_exit"));
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
     // The lost channel overrides the nominally completed terminal to a failure.
     expect(result.exitCode).not.toBe(0);
@@ -5905,65 +5901,62 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
     expect(result.resultJson).toMatchObject({ status: "failed" });
     // The seam read the disposition through the atomic settle step, and the
     // latched loss kept the failure, so no orderly completion ordered.
-    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
-    expect(broker.runDisposition.failed).toBe(true);
+    expect(fake.settleRunDisposition).toHaveBeenCalledTimes(1);
+    expect(fake.readDisposition().failed).toBe(true);
   });
 
   it("keeps a completed run a success when the channel stays live, and a later teardown loss is benign", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle, settleRunDisposition } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // No loss before the completion.
     const runtime = runtimeWithControlledResult();
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
     expect(result.exitCode).toBe(0);
     expect(result.errorCode ?? null).toBeNull();
     // The atomic settle step marked the orderly completion for the
     // success-eligible terminal.
-    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
+    expect(fake.settleRunDisposition).toHaveBeenCalledTimes(1);
     // A teardown loss ordered after the orderly completion is a normal teardown,
     // so the run disposition stays a success.
-    fake.emitExit({ exitCode: 0 });
-    expect(broker.runDisposition.failed).toBe(false);
+    fake.emitLoss("provider_exit");
+    expect(fake.readDisposition().failed).toBe(false);
   });
 
   it("does not let a later completion or activity clear the loss latch", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // Latch the loss before the ACP terminal resolves.
-    const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
+    const runtime = runtimeWithControlledResult(() => fake.emitLoss("provider_exit"));
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
     expect(result.exitCode).not.toBe(0);
     expect(result.errorCode).toBe("duplex_channel_lost");
     // A later orderly-completion mark and further channel activity cannot clear
     // the latched loss.
-    broker.markOrderlyCompletion();
-    fake.emitExit({ exitCode: 0 });
-    expect(broker.runDisposition.failed).toBe(true);
-    expect(broker.runDisposition.lossReason).toBe("provider_exit");
+    fake.markOrderlyCompletion();
+    fake.emitLoss("provider_exit");
+    expect(fake.readDisposition().failed).toBe(true);
+    expect(fake.readDisposition().lossReason).toBe("provider_exit");
   });
 
   it("marks an orderly completion on a failed terminal so the teardown loss emits no false loss", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle, markOrderlyCompletion } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // The turn fails, and no channel loss ordered before the finalization.
     const runtime = runtimeWithFailedResult();
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
-    // The failed terminal stays a failure, but not a duplex loss.
+    // The failed terminal stays a failure, but not a bridge-channel loss.
     expect(result.exitCode).not.toBe(0);
     expect(result.errorCode).not.toBe("duplex_channel_lost");
     // The non-success-eligible terminal marked the orderly completion, so the
-    // teardown channel_exit orders after the mark and does not latch a loss.
-    expect(markOrderlyCompletion).toHaveBeenCalledTimes(1);
-    fake.emitExit({ exitCode: 0 });
-    expect(broker.runDisposition.failed).toBe(false);
+    // teardown loss orders after the mark and does not latch a loss.
+    expect(fake.markOrderlyCompletion).toHaveBeenCalledTimes(1);
+    fake.emitLoss("provider_exit");
+    expect(fake.readDisposition().failed).toBe(false);
   });
 });

@@ -73,34 +73,15 @@ const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
 // The bridge modes the generated gateway supports. The file mode polls a
-// request/response queue on disk. The retired duplex mode forwarded one
-// request frame to stdout and resolved one response frame from stdin; the
-// generated gateway still defines it, but no mode dispatch selects it anymore
-// — the http2 mode replaced it as the active non-file transport. The http2
-// mode runs one Node HTTP/2 client session directly on stdin/stdout, after it
-// sends the one READY line the host readiness gate expects. The generated
-// `.mjs` selects the mode from `PAPERCLIP_API_BRIDGE_MODE`.
+// request/response queue on disk. The http2 mode runs one Node HTTP/2 client
+// session directly on stdin/stdout, after it sends the one READY line the
+// host readiness gate expects. The generated `.mjs` selects the mode from
+// `PAPERCLIP_API_BRIDGE_MODE`. The generated gateway rejects every other
+// value with a fixed startup error, including the retired duplex transport.
 // HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
 const SANDBOX_CALLBACK_BRIDGE_FILE_MODE = "queue_v1";
-export const SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE = "duplex_v1";
-/** The active non-file transport mode. It replaced {@link SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}
- * in the mode-selection path. */
+/** The active non-file transport mode. */
 export const SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE = "http2_v1";
-
-// The duplex gateway HTTP wait budget default. The gateway waits this long for a
-// response frame before it answers the local caller with a 502 timeout. The
-// value stays configurable through `PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS`, the
-// same environment key the file mode reads.
-const DEFAULT_DUPLEX_GATEWAY_WAIT_BUDGET_MS = 35_000;
-// How often the duplex gateway writes a heartbeat frame to stdout.
-const DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_INTERVAL_MS = 5_000;
-// The duplex gateway treats the channel as lost when no inbound frame arrives on
-// stdin within this window.
-const DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_TIMEOUT_MS = 20_000;
-// After a loss, the duplex gateway answers each new local request with a 503,
-// then exits when this grace ends. The grace gives the local caller time to read
-// the 409 for an outstanding request and a 503 for a new request.
-const DEFAULT_DUPLEX_GATEWAY_LOSS_EXIT_GRACE_MS = 1_000;
 
 /** Span name that wraps one Paperclip-API callback request — read the request,
  * write the response, and remove the request file. */
@@ -1847,9 +1828,8 @@ export async function startSandboxCallbackBridgeServer(input: {
 //
 // This gateway turns each local loopback request into one HTTP/2 stream to
 // the host server in `http2-bridge-server.ts`. It sits beside the file-mode
-// and duplex-mode gateways above; it changes neither of them, and no mode
-// dispatch selects it yet — a later phase wires it into the generated
-// in-sandbox entrypoint and the transport-selection path.
+// gateway above; it changes neither of them. The generated in-sandbox
+// entrypoint and the transport-selection path already select it.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1998,7 +1978,7 @@ function forwardOneHttp2Request(
  * local request the caller hands it (already checked against the bridge
  * token — see {@link SandboxHttp2BridgeGatewayRequest.receivedToken}) as one
  * HTTP/2 stream. It keeps the header allowlist on the sandbox side, exactly
- * as the file-mode and duplex-mode gateways do.
+ * as the file-mode gateway does.
  */
 export function createSandboxHttp2BridgeGateway(
   options: CreateSandboxHttp2BridgeGatewayOptions,
@@ -2306,36 +2286,18 @@ const bridgeToken = process.env.PAPERCLIP_BRIDGE_TOKEN;
 const host = process.env.PAPERCLIP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.PAPERCLIP_BRIDGE_PORT || "0");
 // The host assigns the loopback port and passes it through the launch
-// environment. The duplex gateway binds exactly this port; it never selects a
+// environment. The gateway binds exactly this port; it never selects a
 // different one. The host also passes one random per-open nonce here. The
 // gateway echoes it in the READY frame so the host correlates READY with this
 // channel open. The nonce is a liveness signal, not authentication.
 const bridgeNonce = process.env.PAPERCLIP_BRIDGE_NONCE || "";
 const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "100");
 const responseTimeoutMs = Number(
-  process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS ||
-    (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}"
-      ? "${DEFAULT_DUPLEX_GATEWAY_WAIT_BUDGET_MS}"
-      : "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}"),
+  process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}",
 );
 const maxQueueDepth = Number(process.env.PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH || "${DEFAULT_BRIDGE_MAX_QUEUE_DEPTH}");
 const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "${DEFAULT_BRIDGE_MAX_BODY_BYTES}");
-// The host passes the separate sandbox-process raw-decoder cap here. The in-sandbox
-// decoder enforces it locally under the "sandbox_process" scope; it never shares the
-// host aggregate byte ledger.
-const maxDuplexDecoderBytes = Number(
-  process.env.PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES || "${DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES}",
-);
-const heartbeatIntervalMs = Number(
-  process.env.PAPERCLIP_BRIDGE_HEARTBEAT_INTERVAL_MS || "${DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_INTERVAL_MS}",
-);
-const heartbeatTimeoutMs = Number(
-  process.env.PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS || "${DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_TIMEOUT_MS}",
-);
-const lossExitGraceMs = Number(
-  process.env.PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS || "${DEFAULT_DUPLEX_GATEWAY_LOSS_EXIT_GRACE_MS}",
-);
-// The header allowlist. Both the file gateway and the duplex gateway strip an
+// The header allowlist. Both the file gateway and the http2 gateway strip an
 // inbound request to these headers before they forward it. One copy serves both
 // modes. The route allowlist stays on the host: both modes forward a request to
 // the host, and the host enforces the same route allowlist for each.
@@ -2344,11 +2306,19 @@ const allowedHeaders = new Set(${JSON.stringify([...DEFAULT_SANDBOX_CALLBACK_BRI
 if (!bridgeToken) {
   throw new Error("PAPERCLIP_BRIDGE_TOKEN is required.");
 }
+// Closed allowlist for the bridge mode. The generated gateway supports exactly
+// two transports: http2 and the file-mode queue. Every other value, including
+// the retired duplex transport, fails startup at once instead of falling
+// through to a mode that never ran. This check runs before the queue-directory
+// check below, so an unsupported mode never reaches a state where a missing
+// queue directory masks the real problem.
 if (
-  bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}" &&
   bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE}" &&
-  !queueDir
+  bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}"
 ) {
+  throw new Error("Unsupported PAPERCLIP_API_BRIDGE_MODE: " + bridgeMode);
+}
+if (bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE}" && !queueDir) {
   throw new Error("PAPERCLIP_BRIDGE_QUEUE_DIR and PAPERCLIP_BRIDGE_TOKEN are required.");
 }
 
@@ -2598,350 +2568,6 @@ async function runFileGateway() {
   });
 }
 
-// Split one whole body buffer into body_chunk frames. The gateway buffers the
-// whole source body once, then splits it here. Each frame carries one fixed raw
-// slice as base64 text, except the final frame, which carries the remaining
-// bytes. A zero-length body yields no frame. Send-side true streaming is a
-// separate goal; this whole-body split is acceptable for this gateway.
-function splitDuplexBodyIntoChunks(id, body) {
-  const frames = [];
-  let seq = 0;
-  for (let offset = 0; offset < body.length; offset += DUPLEX_BODY_CHUNK_RAW_BYTES) {
-    const slice = body.subarray(offset, offset + DUPLEX_BODY_CHUNK_RAW_BYTES);
-    frames.push({
-      version: DUPLEX_FRAME_VERSION,
-      type: "body_chunk",
-      id: id,
-      seq: seq,
-      data: slice.toString("base64"),
-    });
-    seq += 1;
-  }
-  return frames;
-}
-
-function runDuplexGateway() {
-  // One outstanding local request per id. Each entry holds the HTTP resolver and
-  // the wait-budget timer.
-  const pending = new Map();
-  // One in-flight response reassembly per id. The host returns a response as an
-  // envelope frame that carries bodyByteCount, then the body_chunk frames that
-  // carry the body. The gateway reassembles the response body in memory here; it
-  // does not spill, because a production response body stays small.
-  const responseAssembly = new Map();
-  let unavailable = false;
-  let lossTriggered = false;
-  let lastInboundAt = Date.now();
-
-  function diag(message) {
-    // Diagnostics go to stderr only. Stdout carries frames.
-    process.stderr.write("[paperclip-bridge] " + message + "\\n");
-  }
-
-  function writeFrame(frame) {
-    process.stdout.write(encodeDuplexFrame(frame));
-  }
-
-  function stopTimers() {
-    clearInterval(heartbeatSendTimer);
-    clearInterval(heartbeatWatchTimer);
-  }
-
-  // Loss behavior. On stdin end, a close frame, or a heartbeat timeout, answer
-  // every outstanding request with a non-retryable 409 (the request may have
-  // reached the host), answer every new request with a retryable 503 (the
-  // request never left the gateway), then exit. The gateway never replays a
-  // request.
-  function triggerLoss(reason) {
-    if (lossTriggered) return;
-    lossTriggered = true;
-    unavailable = true;
-    diag("duplex channel lost: " + reason);
-    stopTimers();
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.resolve({
-        status: 409,
-        headers: {
-          "content-type": "application/json",
-          "x-paperclip-bridge-outcome": "indeterminate",
-        },
-        body: JSON.stringify({ error: "outcome_indeterminate" }),
-      });
-    }
-    pending.clear();
-    responseAssembly.clear();
-    const exitTimer = setTimeout(() => process.exit(0), lossExitGraceMs);
-    if (typeof exitTimer.unref === "function") exitTimer.unref();
-  }
-
-  // Fail one outstanding request with a bounded local 502. The gateway calls it
-  // when a response reassembly breaks: a reordered seq, a base64 that is not
-  // canonical, or a total that overruns the declared body size. The host is the
-  // response peer, so this is a defensive local error, not a channel loss.
-  function failRequest(id, message) {
-    responseAssembly.delete(id);
-    const entry = pending.get(id);
-    if (!entry) return;
-    pending.delete(id);
-    clearTimeout(entry.timer);
-    entry.resolve({
-      status: 502,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ error: message }),
-    });
-  }
-
-  function handleInboundFrame(frame) {
-    if (frame.type === "response") {
-      const entry = pending.get(frame.id);
-      if (!entry) return;
-      // Map an indeterminate outcome to a non-retryable 409, the same contract
-      // the file gateway applies through the outcome header.
-      const statusCode =
-        frame.outcome === "indeterminate" ? 409 : typeof frame.status === "number" ? frame.status : 200;
-      const headers = frame.headers || {};
-      if (frame.bodyByteCount === 0) {
-        // A zero-length body accepts no body_chunk, so the response completes now.
-        pending.delete(frame.id);
-        responseAssembly.delete(frame.id);
-        clearTimeout(entry.timer);
-        entry.resolve({ status: statusCode, headers: headers, body: "" });
-        return;
-      }
-      // The body rides body_chunk frames that share this id. Record the envelope
-      // and wait for the chunks.
-      responseAssembly.set(frame.id, {
-        status: statusCode,
-        headers: headers,
-        bodyByteCount: frame.bodyByteCount,
-        received: 0,
-        nextSeq: 0,
-        chunks: [],
-      });
-      return;
-    }
-    if (frame.type === "body_chunk") {
-      const asm = responseAssembly.get(frame.id);
-      if (!asm) return;
-      if (frame.seq !== asm.nextSeq) {
-        failRequest(frame.id, "duplex response body_chunk seq is out of order");
-        return;
-      }
-      const decoded = Buffer.from(frame.data, "base64");
-      if (decoded.toString("base64") !== frame.data) {
-        failRequest(frame.id, "duplex response body_chunk is not canonical base64");
-        return;
-      }
-      if (decoded.length === 0) {
-        failRequest(frame.id, "duplex response body_chunk is empty");
-        return;
-      }
-      if (asm.received + decoded.length > asm.bodyByteCount) {
-        failRequest(frame.id, "duplex response body overruns the declared size");
-        return;
-      }
-      const isFinal = asm.received + decoded.length === asm.bodyByteCount;
-      if (
-        decoded.length > DUPLEX_BODY_CHUNK_RAW_BYTES ||
-        (!isFinal && decoded.length !== DUPLEX_BODY_CHUNK_RAW_BYTES)
-      ) {
-        failRequest(frame.id, "duplex response body_chunk has the wrong size");
-        return;
-      }
-      asm.nextSeq += 1;
-      asm.received += decoded.length;
-      asm.chunks.push(decoded);
-      if (asm.received === asm.bodyByteCount) {
-        const entry = pending.get(frame.id);
-        responseAssembly.delete(frame.id);
-        if (!entry) return;
-        pending.delete(frame.id);
-        clearTimeout(entry.timer);
-        entry.resolve({
-          status: asm.status,
-          headers: asm.headers,
-          body: Buffer.concat(asm.chunks).toString("utf8"),
-        });
-      }
-      return;
-    }
-    if (frame.type === "close") {
-      triggerLoss("host sent a close frame");
-      return;
-    }
-    // A heartbeat, ready, error, or request frame proves liveness but needs no
-    // local action here.
-  }
-
-  const decoder = new DuplexFrameDecoder({ maxAggregateBytes: maxDuplexDecoderBytes });
-  process.stdin.on("data", (chunk) => {
-    lastInboundAt = Date.now();
-    for (const result of decoder.push(chunk)) {
-      if (!result.ok) {
-        diag("dropped an inbound frame: " + result.error.code);
-        continue;
-      }
-      handleInboundFrame(result.frame);
-    }
-  });
-  process.stdin.on("end", () => triggerLoss("stdin reached end of file"));
-  process.stdin.on("error", (error) =>
-    triggerLoss("stdin error: " + (error && error.message ? error.message : String(error))),
-  );
-
-  const heartbeatSendTimer = setInterval(() => {
-    writeFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
-  }, heartbeatIntervalMs);
-  const heartbeatWatchTimer = setInterval(() => {
-    if (Date.now() - lastInboundAt > heartbeatTimeoutMs) {
-      triggerLoss("no inbound frame within the heartbeat timeout");
-    }
-  }, Math.max(200, Math.floor(heartbeatTimeoutMs / 4)));
-
-  const server = createServer(async (req, res) => {
-    try {
-      const auth = req.headers.authorization || "";
-      const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
-      if (!tokensMatch(receivedToken)) {
-        writeJsonResponse(res, 401, { error: "Invalid bridge token." });
-        return;
-      }
-      if (unavailable) {
-        writeJsonResponse(res, 503, { error: "bridge_unavailable" });
-        return;
-      }
-      if (pending.size >= maxQueueDepth) {
-        writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
-        return;
-      }
-      const url = new URL(req.url || "/", "http://127.0.0.1");
-      const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
-      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
-        writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
-        return;
-      }
-      const requestId = randomUUID();
-      const requestBodyBuffer = Buffer.from(await readBody(req), "utf8");
-      if (unavailable) {
-        writeJsonResponse(res, 503, { error: "bridge_unavailable" });
-        return;
-      }
-      // The request body rides body_chunk frames. The envelope carries only the
-      // raw byte count, so the envelope stays small and the body splits into
-      // fixed-size slices that each stay under the frame bound.
-      const requestFrame = {
-        version: DUPLEX_FRAME_VERSION,
-        type: "request",
-        id: requestId,
-        method: req.method || "GET",
-        path: url.pathname,
-        query: url.search,
-        headers: normalizeHeaders(req.headers),
-        bodyByteCount: requestBodyBuffer.length,
-      };
-      const encodedRequest = encodeDuplexFrameChecked(requestFrame);
-      if (!encodedRequest.ok) {
-        writeJsonResponse(res, 413, { error: "request_too_large" });
-        return;
-      }
-      // Pre-encode every body_chunk frame and enforce the frame size bound on
-      // each. A fixed raw slice never exceeds the bound, so this guard is
-      // defensive. On a rejection, fail this one local request with a clean 413.
-      // The frames never leave the gateway, so no other in-flight request is
-      // affected and the channel stays open.
-      const chunkFrames = splitDuplexBodyIntoChunks(requestId, requestBodyBuffer);
-      const encodedChunks = [];
-      let chunkTooLarge = false;
-      for (const chunk of chunkFrames) {
-        const encodedChunk = encodeDuplexFrameChecked(chunk);
-        if (!encodedChunk.ok) {
-          chunkTooLarge = true;
-          break;
-        }
-        encodedChunks.push(encodedChunk.line);
-      }
-      if (chunkTooLarge) {
-        writeJsonResponse(res, 413, { error: "request_too_large" });
-        return;
-      }
-      const response = await new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          responseAssembly.delete(requestId);
-          if (pending.delete(requestId)) {
-            resolve({
-              status: 502,
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ error: "Timed out waiting for host bridge response." }),
-            });
-          }
-        }, responseTimeoutMs);
-        pending.set(requestId, { resolve: resolve, timer: timer });
-        process.stdout.write(encodedRequest.line);
-        for (const line of encodedChunks) process.stdout.write(line);
-      });
-      res.statusCode = typeof response.status === "number" ? response.status : 200;
-      for (const [key, value] of Object.entries(response.headers || {})) {
-        if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
-        res.setHeader(key, value);
-      }
-      res.end(typeof response.body === "string" ? response.body : "");
-    } catch (error) {
-      writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-
-  process.on("SIGINT", () => {
-    try {
-      server.close();
-    } catch (error) {
-      diag("server close error: " + (error && error.message ? error.message : String(error)));
-    }
-    process.exit(0);
-  });
-  process.on("SIGTERM", () => {
-    try {
-      server.close();
-    } catch (error) {
-      diag("server close error: " + (error && error.message ? error.message : String(error)));
-    }
-    process.exit(0);
-  });
-
-  // Bind-or-exit. The host assigns a positive loopback port. The gateway binds
-  // exactly that port. On a non-positive assigned port or a bind failure it
-  // writes a diagnostic and exits with a nonzero code. It never selects a
-  // different port, so no untrusted workload can steer the endpoint.
-  if (!Number.isInteger(port) || port <= 0) {
-    diag("duplex gateway requires a positive assigned PAPERCLIP_BRIDGE_PORT; got " + String(port));
-    process.exit(1);
-  }
-  server.on("error", (error) => {
-    diag("duplex gateway could not bind port " + String(port) + ": " + (error && error.message ? error.message : String(error)));
-    process.exit(1);
-  });
-  server.listen(port, host, () => {
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      diag("duplex gateway did not expose a TCP address");
-      process.exit(1);
-      return;
-    }
-    // The gateway sends READY only after the listener binds. READY is a liveness
-    // signal: it carries the frame version and the echoed nonce, and no address
-    // data. The host builds the endpoint from its own stored port. Stdout carries
-    // only frames.
-    writeFrame({
-      version: DUPLEX_FRAME_VERSION,
-      type: "ready",
-      nonce: bridgeNonce,
-    });
-    // READY is on the wire, so the host will adopt this process. From here on
-    // an uncaught fault must not kill the listener.
-    gatewayReady = true;
-  });
-}
-
 // ---------------------------------------------------------------------------
 // http2_v1: run one Node HTTP/2 client session directly on stdin/stdout.
 //
@@ -3160,15 +2786,14 @@ function runHttp2Gateway() {
   });
 }
 
+// The startup check above already rejected every value except http2 and
+// queue, so this dispatch names both modes explicitly and never falls
+// through to the queue gateway for an unsupported mode.
 if (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE}") {
   runHttp2Gateway();
-} else if (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}") {
-  // No host selection path sets this mode anymore (http2_v1 replaced it), but
-  // the generated gateway keeps the mode reachable: it stays defined here,
-  // unchanged, so nothing that still spawns the gateway directly with this
-  // mode name breaks.
-  runDuplexGateway();
-} else {
+} else if (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}") {
   await runFileGateway();
+} else {
+  throw new Error("Unsupported PAPERCLIP_API_BRIDGE_MODE: " + bridgeMode);
 }`;
 }

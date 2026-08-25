@@ -10,15 +10,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  getSandboxCallbackBridgeServerSource,
-  getSandboxDuplexGatewayCodecSource,
-} from "./sandbox-callback-bridge.js";
+import { getSandboxDuplexGatewayCodecSource } from "./sandbox-callback-bridge.js";
 
 import {
   __duplexReadinessTesting,
   __http2PrefaceScanTesting,
-  buildDuplexGatewayLaunchArgv,
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
   adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
@@ -62,21 +58,10 @@ import {
   DUPLEX_FRAME_VERSION,
   decodeDuplexLine,
   encodeDuplexFrame,
-  type DuplexRequestFrame,
   type DuplexResponseFrame,
 } from "./duplex-frame-codec.js";
-import { splitBodyIntoChunkFrames } from "./duplex-body-spool.js";
+import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "./bridge-transport-contract.js";
 import {
-  assertNestedDuplexBrokerBudgets,
-  createDuplexBridgeBroker,
-  DUPLEX_CHANNEL_LOST_ERROR_CODE,
-  type DuplexBrokerForwardResult,
-  type DuplexBrokerLossRecord,
-  type DuplexBrokerRequestRecord,
-  type DuplexBrokerState,
-} from "./duplex-bridge-broker.js";
-import {
-  createDuplexObservability,
   DUPLEX_AGGREGATE_BYTE_LEDGER_METRIC_NAMES,
   DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL,
   DUPLEX_COUNTER_AGGREGATE_BYTE_RESERVATION_REJECTIONS_TOTAL,
@@ -88,6 +73,7 @@ import {
   DUPLEX_SPAN_CHANNEL_OPEN,
   DUPLEX_SPAN_REQUEST,
   DUPLEX_TRANSPORT_EVENT,
+  type DuplexLossReason,
   type DuplexObservabilityCounterRecord,
   type DuplexObservabilityDimensions,
   type DuplexObservabilityEventRecord,
@@ -96,51 +82,6 @@ import {
 } from "./duplex-observability.js";
 
 const execFileAsync = promisify(execFile);
-
-/**
- * Emit one duplex request the way the sandbox gateway sends it under the chunked
- * body protocol: the envelope frame that carries `bodyByteCount`, then the
- * `body_chunk` frames that carry the body. A non-empty body rides one or more
- * `body_chunk` frames that share the envelope id; an empty body sends no chunk.
- */
-function emitDuplexRequest(
-  control: { emitData: (chunk: string) => void },
-  frame: Omit<DuplexRequestFrame, "bodyByteCount">,
-  bodyText: string,
-): void {
-  const body = Buffer.from(bodyText, "utf8");
-  control.emitData(encodeDuplexFrame({ ...frame, bodyByteCount: body.length }));
-  for (const chunk of splitBodyIntoChunkFrames(frame.id, body, DUPLEX_FRAME_VERSION)) {
-    control.emitData(encodeDuplexFrame(chunk));
-  }
-}
-
-/**
- * Send one duplex response the way the host broker sends it under the chunked
- * body protocol: the envelope frame that carries `bodyByteCount`, then the
- * `body_chunk` frames that carry the body. The gateway reassembles the body from
- * the chunk frames before it writes the HTTP response.
- */
-function sendDuplexResponse(
-  send: (frame: Record<string, unknown>) => void,
-  response: { id: string | undefined; status: number; headers: Record<string, string>; outcome?: string },
-  bodyText: string,
-): void {
-  const id = response.id ?? "";
-  const body = Buffer.from(bodyText, "utf8");
-  send({
-    version: DUPLEX_FRAME_VERSION,
-    type: "response",
-    id,
-    status: response.status,
-    headers: response.headers,
-    bodyByteCount: body.length,
-    ...(response.outcome !== undefined ? { outcome: response.outcome } : {}),
-  });
-  for (const chunk of splitBodyIntoChunkFrames(id, body, DUPLEX_FRAME_VERSION)) {
-    send(chunk as unknown as Record<string, unknown>);
-  }
-}
 
 type RecordedSpan = { name: string; parentName: string | null; ended: boolean };
 
@@ -5981,21 +5922,6 @@ describe("sandbox adapter execution targets", () => {
 
 });
 
-// One decoded stdout frame from the generated duplex gateway. The gateway writes
-// newline-delimited JSON frames to stdout, so the test parses each line.
-interface DecodedGatewayFrame {
-  version?: number;
-  type?: string;
-  id?: string;
-  method?: string;
-  path?: string;
-  query?: string;
-  headers?: Record<string, string>;
-  body?: string;
-  nonce?: string;
-  __unparsed?: string;
-}
-
 // One decode result from the embedded codec. The shape mirrors the host codec:
 // a valid frame or a protocol error with a code.
 interface EmbeddedDecodeResult {
@@ -6052,220 +5978,12 @@ interface DuplexFrameFixture {
   encodeVectors: DuplexEncodeVector[];
 }
 
-describe("sandbox duplex gateway", () => {
-  const duplexCleanupDirs: string[] = [];
-  const duplexChildren: Array<ReturnType<typeof spawn>> = [];
-
-  afterEach(async () => {
-    while (duplexChildren.length > 0) {
-      const child = duplexChildren.pop();
-      if (!child) continue;
-      child.kill("SIGKILL");
-    }
-    while (duplexCleanupDirs.length > 0) {
-      const dir = duplexCleanupDirs.pop();
-      if (!dir) continue;
-      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    }
-  });
-
-  it("launches the gateway with `exec env`, so a POSIX shell runs the environment-assignment prefix", async () => {
-    // A POSIX shell accepts an environment-assignment prefix only on a plain
-    // command, never on `exec`. The form `exec NAME=value command` exits with
-    // status 127, so the gateway never starts. The launch argv must use
-    // `exec env NAME=value command`. This test runs the generated script in a real
-    // `sh` against a stub entrypoint that echoes one launch env var, so it fails on
-    // the old `exec NAME=value` form and passes on the `exec env` form.
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-launch-"));
-    duplexCleanupDirs.push(rootDir);
-    const stub = path.join(rootDir, "stub-entrypoint.sh");
-    // The stub stands in for the node gateway. It prints a READY frame that echoes
-    // the launch nonce, so the test proves the environment assignment reached the
-    // process the launch replaced the shell with.
-    await writeFile(
-      stub,
-      '#!/bin/sh\nprintf \'{"version":2,"type":"ready","nonce":"%s"}\\n\' "$PAPERCLIP_BRIDGE_NONCE"\n',
-      "utf8",
-    );
-    const argv = buildDuplexGatewayLaunchArgv({
-      shellCommand: "sh",
-      remoteEntrypoint: stub,
-      // Run the stub with `sh`, so the test needs no node runtime. The launch form
-      // is `exec env NAME=value 'sh' '<stub>'`, which exercises the exec-env fix.
-      nodeCommand: "sh",
-      env: { PAPERCLIP_BRIDGE_NONCE: "abc123def456", PAPERCLIP_BRIDGE_PORT: "40404" },
-    });
-    const [shell, ...shellArgs] = argv;
-    const { stdout } = await execFileAsync(shell, shellArgs, { encoding: "utf8" });
-    const decoded = decodeDuplexLine(stdout.trim());
-    expect(decoded.ok).toBe(true);
-    if (decoded.ok) {
-      expect(decoded.frame.type).toBe("ready");
-      if (decoded.frame.type === "ready") {
-        expect(decoded.frame.nonce).toBe("abc123def456");
-      }
-    }
-  });
-
-  interface DuplexGatewayHandle {
-    baseUrl: string;
-    frames: DecodedGatewayFrame[];
-    stderr: () => string;
-    waitForFrame: (
-      predicate: (frame: DecodedGatewayFrame) => boolean,
-      timeoutMs?: number,
-    ) => Promise<DecodedGatewayFrame>;
-    sendFrame: (frame: Record<string, unknown>) => void;
-    sendRaw: (text: string) => void;
-    endStdin: () => void;
-    exited: Promise<number | null>;
-    stop: () => Promise<void>;
-  }
-
-  // Reserve a free loopback port. The host assigns a positive port to the duplex
-  // gateway; the gateway binds exactly that port. The test opens an ephemeral
-  // listener, reads its port, then closes it, so the number is very likely free
-  // when the gateway binds it a moment later.
-  async function reserveLoopbackPort(): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
-      const probe = net.createServer();
-      probe.once("error", reject);
-      probe.listen(0, "127.0.0.1", () => {
-        const address = probe.address();
-        if (!address || typeof address === "string") {
-          probe.close(() => reject(new Error("Could not reserve a loopback port.")));
-          return;
-        }
-        const reserved = address.port;
-        probe.close(() => resolve(reserved));
-      });
-    });
-  }
-
-  // Start the generated gateway `.mjs` in duplex mode as a real child process.
-  // The test writes response frames to the child stdin and reads request frames
-  // from the child stdout, so it stands in for the host side of the channel.
-  // The host assigns the port and the nonce; the test builds the base URL from
-  // the assigned port, never from the READY frame.
-  async function startDuplexGateway(
-    env: Record<string, string>,
-    options: { port?: number; nonce?: string } = {},
-  ): Promise<DuplexGatewayHandle> {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-gateway-"));
-    duplexCleanupDirs.push(rootDir);
-    const entrypoint = path.join(rootDir, "gateway.mjs");
-    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
-
-    const assignedPort = options.port ?? (await reserveLoopbackPort());
-    const nonce = options.nonce ?? "d0c1b2a3e4f5061728394a5b6c7d8e9f";
-    const child = spawn(process.execPath, [entrypoint], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
-        PAPERCLIP_BRIDGE_HOST: "127.0.0.1",
-        PAPERCLIP_BRIDGE_PORT: String(assignedPort),
-        PAPERCLIP_BRIDGE_NONCE: nonce,
-        ...env,
-      },
-    });
-    duplexChildren.push(child);
-
-    const frames: DecodedGatewayFrame[] = [];
-    const waiters: Array<{
-      predicate: (frame: DecodedGatewayFrame) => boolean;
-      resolve: (frame: DecodedGatewayFrame) => void;
-    }> = [];
-    let stdoutBuffer = "";
-    let stderrText = "";
-
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      stdoutBuffer += chunk;
-      let newlineIndex = stdoutBuffer.indexOf("\n");
-      while (newlineIndex !== -1) {
-        const line = stdoutBuffer.slice(0, newlineIndex);
-        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        if (line.length > 0) {
-          let frame: DecodedGatewayFrame;
-          try {
-            frame = JSON.parse(line) as DecodedGatewayFrame;
-          } catch {
-            frame = { __unparsed: line };
-          }
-          frames.push(frame);
-          for (const waiter of [...waiters]) {
-            if (waiter.predicate(frame)) {
-              waiters.splice(waiters.indexOf(waiter), 1);
-              waiter.resolve(frame);
-            }
-          }
-        }
-        newlineIndex = stdoutBuffer.indexOf("\n");
-      }
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      stderrText += chunk;
-    });
-
-    const exited = new Promise<number | null>((resolve) => {
-      child.on("exit", (code) => resolve(code));
-    });
-
-    const waitForFrame = (
-      predicate: (frame: DecodedGatewayFrame) => boolean,
-      timeoutMs = 5000,
-    ): Promise<DecodedGatewayFrame> => {
-      const existing = frames.find(predicate);
-      if (existing) return Promise.resolve(existing);
-      return new Promise<DecodedGatewayFrame>((resolve, reject) => {
-        const waiter = {
-          predicate,
-          resolve: (frame: DecodedGatewayFrame) => {
-            clearTimeout(timer);
-            resolve(frame);
-          },
-        };
-        const timer = setTimeout(() => {
-          const index = waiters.indexOf(waiter);
-          if (index !== -1) waiters.splice(index, 1);
-          reject(new Error(`Timed out waiting for a gateway frame. stderr: ${stderrText}`));
-        }, timeoutMs);
-        waiters.push(waiter);
-      });
-    };
-
-    const handle: DuplexGatewayHandle = {
-      baseUrl: "",
-      frames,
-      stderr: () => stderrText,
-      waitForFrame,
-      sendFrame: (frame) => {
-        child.stdin?.write(`${JSON.stringify(frame)}\n`);
-      },
-      sendRaw: (text) => {
-        child.stdin?.write(text);
-      },
-      endStdin: () => {
-        child.stdin?.end();
-      },
-      exited,
-      stop: async () => {
-        child.kill("SIGKILL");
-        await exited.catch(() => null);
-      },
-    };
-
-    const ready = await waitForFrame((frame) => frame.type === "ready");
-    // READY carries the echoed nonce and no address data. The host builds the
-    // origin from the port it assigned, never from the frame.
-    expect(ready.nonce).toBe(nonce);
-    expect((ready as Record<string, unknown>).address).toBeUndefined();
-    handle.baseUrl = `http://127.0.0.1:${assignedPort}`;
-    return handle;
-  }
-
+// This describe block covers the zero-dependency codec every generated
+// gateway embeds (`DUPLEX_GATEWAY_CODEC_SOURCE`), and the sandbox-process
+// decoder byte cap. The `http2_v1` gateway embeds the same codec source to
+// send its one READY line, so this coverage stays live for the active
+// transport.
+describe("embedded sandbox gateway codec", () => {
   it("embedded gateway codec passes every vector in the shared fixture", async () => {
     const codecFactory = new Function(
       `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, encodeDuplexFrameChecked, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES, DUPLEX_DECODER_SCOPE, DEFAULT_MAX_DUPLEX_DECODER_BYTES };`,
@@ -6422,751 +6140,12 @@ describe("sandbox duplex gateway", () => {
     expect(ledger.bytesInUse).toBe(0);
     expect(ledger.liveTokenCount).toBe(0);
   });
-
-  it("returns the same HTTP response as the file gateway for a forwarded request", async () => {
-    const token = "duplex-token-forward";
-    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
-
-    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me?view=compact`, {
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/json",
-        "if-none-match": '"cache-key"',
-        "x-bridge-debug": "drop-me",
-      },
-    });
-    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
-    expect(requestFrame.method).toBe("GET");
-    expect(requestFrame.path).toBe("/api/agents/me");
-    expect(requestFrame.query).toBe("?view=compact");
-    // Only allowlisted headers forward; the bearer and the debug header drop.
-    expect(requestFrame.headers).toEqual({
-      accept: "application/json",
-      "if-none-match": '"cache-key"',
-    });
-
-    sendDuplexResponse(
-      gateway.sendFrame,
-      {
-        id: requestFrame.id,
-        status: 200,
-        headers: { "content-type": "application/json", etag: '"rev-1"', "content-length": "999" },
-        outcome: "completed",
-      },
-      JSON.stringify({ ok: true }),
-    );
-    const response = await responsePromise;
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("application/json");
-    expect(response.headers.get("etag")).toBe('"rev-1"');
-    await expect(response.json()).resolves.toEqual({ ok: true });
-
-    // An indeterminate outcome maps to a non-retryable 409, the same contract the
-    // file gateway applies through the outcome header.
-    const indeterminatePromise = fetch(`${gateway.baseUrl}/api/issues/issue-1`, {
-      method: "PATCH",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ status: "in_progress" }),
-    });
-    const patchFrame = await gateway.waitForFrame(
-      (frame) => frame.type === "request" && frame.id !== requestFrame.id,
-    );
-    sendDuplexResponse(
-      gateway.sendFrame,
-      {
-        id: patchFrame.id,
-        status: 200,
-        headers: { "content-type": "application/json" },
-        outcome: "indeterminate",
-      },
-      JSON.stringify({ error: "outcome_indeterminate" }),
-    );
-    const indeterminate = await indeterminatePromise;
-    expect(indeterminate.status).toBe(409);
-
-    await gateway.stop();
-  }, 20000);
-
-  it("fails a request over the body size limit locally and keeps the channel open", async () => {
-    const token = "duplex-token-oversize-request";
-    // The chunked body protocol splits a large body into fixed-size body_chunk
-    // frames that each stay under the frame bound, so a body never exceeds the
-    // frame bound on its own. The operative local guard for a request too large to
-    // deliver is now the body size limit. Set it to 1,000,000 bytes here.
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_MAX_BODY_BYTES: "1000000",
-    });
-
-    // A body over the body size limit is rejected locally. The gateway must fail
-    // this one local request cleanly and forward no frame.
-    const oversizeBody = JSON.stringify({ body: "x".repeat(1_100_000) });
-    const tooLarge = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: oversizeBody,
-    });
-    expect(tooLarge.status).toBe(502);
-    await expect(tooLarge.json()).resolves.toEqual({
-      error: "Bridge request body exceeded the configured size limit.",
-    });
-
-    // The oversized request forwarded no frame. It never left the gateway.
-    expect(gateway.frames.filter((frame) => frame.type === "request")).toHaveLength(0);
-    // The gateway did not lose the channel: no close frame and the process runs.
-    expect(gateway.frames.some((frame) => frame.type === "close")).toBe(false);
-
-    // The channel stays open, so a normal request after the oversized one still
-    // forwards and completes.
-    const okPromise = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
-    sendDuplexResponse(
-      gateway.sendFrame,
-      {
-        id: requestFrame.id,
-        status: 200,
-        headers: { "content-type": "application/json" },
-        outcome: "completed",
-      },
-      JSON.stringify({ ok: true }),
-    );
-    const okResponse = await okPromise;
-    expect(okResponse.status).toBe(200);
-    await expect(okResponse.json()).resolves.toEqual({ ok: true });
-
-    await gateway.stop();
-  }, 20000);
-
-  it("enforces the bearer check, JSON-only rule, body limit, and depth limit", async () => {
-    const token = "duplex-token-contract";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH: "1",
-      PAPERCLIP_BRIDGE_MAX_BODY_BYTES: "16",
-    });
-
-    const badAuth = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: "Bearer wrong-token" },
-    });
-    expect(badAuth.status).toBe(401);
-    await expect(badAuth.json()).resolves.toEqual({ error: "Invalid bridge token." });
-
-    const nonJson = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" },
-      body: "not json",
-    });
-    expect(nonJson.status).toBe(415);
-    await expect(nonJson.json()).resolves.toEqual({
-      error: "Bridge only accepts JSON request bodies.",
-    });
-
-    const oversizeBody = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ body: "x".repeat(64) }),
-    });
-    expect(oversizeBody.status).toBe(502);
-    await expect(oversizeBody.json()).resolves.toEqual({
-      error: "Bridge request body exceeded the configured size limit.",
-    });
-
-    // No request frame forwarded so far: the guards rejected before forwarding.
-    const framesBeforeDepth = gateway.frames.filter((frame) => frame.type === "request").length;
-    expect(framesBeforeDepth).toBe(0);
-
-    // One outstanding request fills the single depth slot; the host never
-    // responds, so the slot stays used.
-    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    void outstanding.catch(() => undefined);
-    await gateway.waitForFrame((frame) => frame.type === "request");
-
-    const queueFull = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(queueFull.status).toBe(503);
-    await expect(queueFull.json()).resolves.toEqual({ error: "Bridge request queue is full." });
-
-    // Only the outstanding request forwarded a frame; the queue-full request did
-    // not.
-    const framesAfterDepth = gateway.frames.filter((frame) => frame.type === "request").length;
-    expect(framesAfterDepth).toBe(1);
-
-    await gateway.stop();
-  }, 20000);
-
-  it("answers outstanding requests 409 and new requests 503 on stdin EOF, then exits", async () => {
-    const token = "duplex-token-eof";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
-    });
-
-    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    await gateway.waitForFrame((frame) => frame.type === "request");
-    gateway.endStdin();
-
-    const lossResponse = await outstanding;
-    expect(lossResponse.status).toBe(409);
-    expect(lossResponse.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
-    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
-
-    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(afterLoss.status).toBe(503);
-    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
-
-    const exitCode = await gateway.exited;
-    expect(exitCode).toBe(0);
-  }, 20000);
-
-  it("applies the same loss behavior on a heartbeat timeout", async () => {
-    const token = "duplex-token-heartbeat";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "400",
-      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
-      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "30000",
-    });
-
-    // Never send an inbound frame: inbound silence trips the heartbeat timeout.
-    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    await gateway.waitForFrame((frame) => frame.type === "request");
-
-    const lossResponse = await outstanding;
-    expect(lossResponse.status).toBe(409);
-    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
-
-    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(afterLoss.status).toBe(503);
-    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
-
-    const exitCode = await gateway.exited;
-    expect(exitCode).toBe(0);
-  }, 20000);
-
-  it("keeps diagnostics off stdout; stdout carries only frames", async () => {
-    const token = "duplex-token-stdout";
-    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
-
-    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
-
-    // Feed a malformed inbound line and an unknown response id. Both force a
-    // diagnostic path; none of it may reach stdout.
-    gateway.sendRaw("this is not a frame\n");
-    sendDuplexResponse(
-      gateway.sendFrame,
-      { id: "unknown-id", status: 200, headers: {}, outcome: "completed" },
-      "",
-    );
-    sendDuplexResponse(
-      gateway.sendFrame,
-      {
-        id: requestFrame.id,
-        status: 200,
-        headers: { "content-type": "application/json" },
-        outcome: "completed",
-      },
-      "{}",
-    );
-
-    const response = await responsePromise;
-    expect(response.status).toBe(200);
-
-    // Every stdout line parsed as a frame; none was diagnostic text.
-    expect(gateway.frames.some((frame) => frame.__unparsed !== undefined)).toBe(false);
-    expect(
-      gateway.frames.every(
-        (frame) => typeof frame.version === "number" && typeof frame.type === "string",
-      ),
-    ).toBe(true);
-    const allowedTypes = new Set(["ready", "heartbeat", "request"]);
-    expect(gateway.frames.every((frame) => allowedTypes.has(String(frame.type)))).toBe(true);
-
-    // The malformed inbound line produced a stderr diagnostic, not a stdout one.
-    expect(gateway.stderr()).toContain("dropped an inbound frame");
-
-    await gateway.stop();
-  }, 20000);
-
-  it("defaults the wait budget to 35 s and honors the environment key override", async () => {
-    // The generated source carries the 35 s default.
-    expect(getSandboxCallbackBridgeServerSource()).toContain("35000");
-
-    const token = "duplex-token-budget";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "150",
-      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "30000",
-    });
-
-    const started = Date.now();
-    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toEqual({
-      error: "Timed out waiting for host bridge response.",
-    });
-    expect(Date.now() - started).toBeLessThan(4000);
-
-    await gateway.stop();
-  }, 20000);
 });
-
-/**
- * A scripted fake duplex channel. The test drives the read path with
- * `emitData`/`emitExit`, and reads the frames the broker wrote through `written`.
- * The `writeError` and `closeBehavior` hooks let a test force a stream failure
- * and a close timeout.
- */
-function createFakeDuplexChannel(): {
-  channel: CommandManagedDuplexChannel;
-  emitData: (chunk: string) => void;
-  emitExit: (exit: { exitCode: number | null }) => void;
-  written: Array<DuplexResponseFrame & { body: string }>;
-  writtenTypes: string[];
-  stopped: () => number;
-  setWriteError: (error: Error | null) => void;
-  setCloseBehavior: (behavior: "resolve" | "hang" | "reject") => void;
-} {
-  let dataListener: ((chunk: Uint8Array) => void) | null = null;
-  let exitListener: ((exit: { exitCode: number | null }) => void) | null = null;
-  let writeError: Error | null = null;
-  let closeBehavior: "resolve" | "hang" | "reject" = "resolve";
-  let stopCount = 0;
-  // The broker writes a response as one envelope frame that carries
-  // `bodyByteCount`, then the `body_chunk` frames that carry the body. Reassemble
-  // the body so a test reads the response the same way it did with the one-frame
-  // model.
-  const written: Array<DuplexResponseFrame & { body: string }> = [];
-  const writtenTypes: string[] = [];
-  const responseAssembly = new Map<
-    string,
-    { frame: DuplexResponseFrame; received: number; chunks: Buffer[] }
-  >();
-
-  const channel: CommandManagedDuplexChannel = {
-    write(data: Uint8Array): void {
-      if (writeError) throw writeError;
-      const decoded = decodeDuplexLine(Buffer.from(data).toString("utf8").replace(/\n$/, ""));
-      if (!decoded.ok) return;
-      const frame = decoded.frame;
-      writtenTypes.push(frame.type);
-      if (frame.type === "response") {
-        if (frame.bodyByteCount === 0) {
-          written.push({ ...frame, body: "" });
-        } else {
-          responseAssembly.set(frame.id, { frame, received: 0, chunks: [] });
-        }
-      } else if (frame.type === "body_chunk") {
-        const assembly = responseAssembly.get(frame.id);
-        if (!assembly) return;
-        const decodedChunk = Buffer.from(frame.data, "base64");
-        assembly.received += decodedChunk.length;
-        assembly.chunks.push(decodedChunk);
-        if (assembly.received >= assembly.frame.bodyByteCount) {
-          responseAssembly.delete(frame.id);
-          written.push({
-            ...assembly.frame,
-            body: Buffer.concat(assembly.chunks).toString("utf8"),
-          });
-        }
-      }
-    },
-    onData(listener: (chunk: Uint8Array) => void): void {
-      dataListener = listener;
-    },
-    onExit(listener: (exit: { exitCode: number | null }) => void): void {
-      exitListener = listener;
-    },
-    stop(): void {
-      stopCount += 1;
-    },
-    close(): Promise<void> {
-      if (closeBehavior === "resolve") return Promise.resolve();
-      if (closeBehavior === "reject") return Promise.reject(new Error("close rejected"));
-      return new Promise<void>(() => {});
-    },
-  };
-
-  return {
-    channel,
-    emitData: (chunk: string) => dataListener?.(new TextEncoder().encode(chunk)),
-    emitExit: (exit: { exitCode: number | null }) => exitListener?.(exit),
-    written,
-    writtenTypes,
-    stopped: () => stopCount,
-    setWriteError: (error: Error | null) => {
-      writeError = error;
-    },
-    setCloseBehavior: (behavior: "resolve" | "hang" | "reject") => {
-      closeBehavior = behavior;
-    },
-  };
-}
-
-/**
- * Build one request as its envelope line (carrying `bodyByteCount`) plus its
- * `body_chunk` lines, so the fake channel emits a whole request in one write. The
- * broker reassembles the body from the chunk frames before it forwards.
- */
-function requestFrameLine(
-  overrides: Partial<Omit<DuplexRequestFrame, "bodyByteCount">> & { id: string },
-  bodyText: string = JSON.stringify({ body: "hello" }),
-): string {
-  const body = Buffer.from(bodyText, "utf8");
-  const frame: DuplexRequestFrame = {
-    version: DUPLEX_FRAME_VERSION,
-    type: "request",
-    id: overrides.id,
-    method: overrides.method ?? "POST",
-    path: overrides.path ?? "/api/issues/PAP-1/comments",
-    query: overrides.query ?? "",
-    headers: overrides.headers ?? { authorization: "Bearer bridge-token" },
-    bodyByteCount: body.length,
-  };
-  let line = encodeDuplexFrame(frame);
-  for (const chunk of splitBodyIntoChunkFrames(frame.id, body, DUPLEX_FRAME_VERSION)) {
-    line += encodeDuplexFrame(chunk);
-  }
-  return line;
-}
 
 /** Wait for the pending microtasks and macrotasks to settle. */
 function flushMacrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
-
-describe("createDuplexBridgeBroker", () => {
-  it("forwards a decoded request to the handler and writes the handler response back", async () => {
-    const fake = createFakeDuplexChannel();
-    const received: DuplexRequestFrame[] = [];
-    // The forward handler owns the token replacement and the run attribution. The
-    // broker passes the decoded request straight through, so the sandbox request
-    // still carries only the bridge token here, and the handler applies the real
-    // token and the signed run identifier on the existing forward path.
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async (request): Promise<DuplexBrokerForwardResult> => {
-        received.push(request);
-        expect(request.headers.authorization).toBe("Bearer bridge-token");
-        expect(request.headers["x-paperclip-run-id"]).toBeUndefined();
-        return {
-          status: 201,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ok: true }),
-        };
-      },
-    });
-
-    broker.start();
-    fake.emitData(requestFrameLine({ id: "req-1" }));
-    await flushMacrotasks();
-
-    expect(received).toHaveLength(1);
-    expect(received[0].id).toBe("req-1");
-    expect(fake.written).toHaveLength(1);
-    expect(fake.written[0]).toMatchObject({
-      type: "response",
-      id: "req-1",
-      status: 201,
-      outcome: "completed",
-    });
-    expect(JSON.parse(fake.written[0].body)).toEqual({ ok: true });
-
-    await broker.close();
-  });
-
-  it("moves through opening, open, closing, closed in order", async () => {
-    const fake = createFakeDuplexChannel();
-    const states: DuplexBrokerState[] = [];
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-      onStateChange: (state) => states.push(state),
-    });
-
-    expect(broker.state).toBe("opening");
-    broker.start();
-    expect(broker.state).toBe("open");
-    await broker.close();
-    expect(broker.state).toBe("closed");
-    expect(states).toEqual(["open", "closing", "closed"]);
-    expect(fake.writtenTypes).toContain("close");
-  });
-
-  it.each([
-    {
-      name: "channel exit",
-      reason: "channel_exit" as const,
-      trigger: (fake: ReturnType<typeof createFakeDuplexChannel>) =>
-        fake.emitExit({ exitCode: 1 }),
-    },
-    {
-      name: "protocol failure",
-      reason: "protocol_failure" as const,
-      trigger: (fake: ReturnType<typeof createFakeDuplexChannel>) =>
-        fake.emitData("this is not json\n"),
-    },
-    {
-      name: "stream failure",
-      reason: "stream_failure" as const,
-      trigger: (fake: ReturnType<typeof createFakeDuplexChannel>) => {
-        fake.setWriteError(new Error("broken pipe"));
-        fake.emitData(requestFrameLine({ id: "req-stream" }));
-      },
-    },
-  ])("enters lost on $name", async ({ reason, trigger }) => {
-    const fake = createFakeDuplexChannel();
-    const losses: DuplexBrokerLossRecord[] = [];
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-      onLoss: (record) => losses.push(record),
-    });
-    broker.start();
-
-    trigger(fake);
-    await flushMacrotasks();
-
-    expect(broker.state).toBe("lost");
-    expect(broker.lossRecord?.reason).toBe(reason);
-    expect(losses).toHaveLength(1);
-  });
-
-  it("enters lost on a close timeout", async () => {
-    const fake = createFakeDuplexChannel();
-    fake.setCloseBehavior("hang");
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-      closeTimeoutMs: 20,
-    });
-    broker.start();
-
-    await broker.close();
-
-    expect(broker.state).toBe("lost");
-    expect(broker.lossRecord?.reason).toBe("close_timeout");
-  });
-
-  it("stops the heartbeat, marks the run bridge ended, and dispatches nothing after loss", async () => {
-    const fake = createFakeDuplexChannel();
-    const forwarded: string[] = [];
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async (request) => {
-        forwarded.push(request.id);
-        return { status: 200 };
-      },
-    });
-    broker.start();
-
-    fake.emitExit({ exitCode: 1 });
-    await flushMacrotasks();
-    expect(broker.state).toBe("lost");
-    expect(broker.lossRecord).not.toBeNull();
-
-    // A request that arrives after loss reaches nothing. The broker never
-    // reconnects and never replays a request.
-    fake.emitData(requestFrameLine({ id: "after-loss" }));
-    await flushMacrotasks();
-    expect(forwarded).toEqual([]);
-  });
-
-  it("forwards one request id one time, so a repeated frame never reaches the API twice", async () => {
-    const fake = createFakeDuplexChannel();
-    const forwarded: string[] = [];
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async (request) => {
-        forwarded.push(request.id);
-        return { status: 200, body: "ok" };
-      },
-    });
-    broker.start();
-
-    fake.emitData(requestFrameLine({ id: "dup" }));
-    await flushMacrotasks();
-    fake.emitData(requestFrameLine({ id: "dup" }));
-    await flushMacrotasks();
-
-    expect(forwarded).toEqual(["dup"]);
-    expect(fake.written).toHaveLength(1);
-
-    await broker.close();
-  });
-
-  it("captures the dispatch-start point per request for metrics only", async () => {
-    const fake = createFakeDuplexChannel();
-    const records: DuplexBrokerRequestRecord[] = [];
-    let clock = 1000;
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-      now: () => clock,
-      onRequestRecord: (record) => records.push(record),
-    });
-    broker.start();
-
-    clock = 2500;
-    fake.emitData(requestFrameLine({ id: "metric-1", method: "GET", path: "/api/agents/me" }));
-    await flushMacrotasks();
-
-    expect(records).toEqual([
-      { id: "metric-1", method: "GET", path: "/api/agents/me", dispatchStartMs: 2500 },
-    ]);
-    // The record never reaches the channel. The broker writes only a response.
-    expect(fake.writtenTypes).not.toContain("request");
-
-    await broker.close();
-  });
-
-  it("latches a failure when a loss orders before an orderly completion and names the typed reason", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-    });
-    broker.start();
-
-    // The channel dies mid-turn, before any orderly completion.
-    fake.emitExit({ exitCode: 1 });
-    await flushMacrotasks();
-    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
-
-    // A later orderly completion cannot clear the latch. A delayed activity
-    // callback cannot clear the latch either, because the broker dispatches
-    // nothing after loss.
-    broker.markOrderlyCompletion();
-    fake.emitData(requestFrameLine({ id: "after-loss" }));
-    await flushMacrotasks();
-    expect(broker.runDisposition).toEqual({ failed: true, lossReason: "provider_exit" });
-  });
-
-  it("keeps a success when a loss orders after a host-observed orderly completion, and emits no loss event", async () => {
-    const events: DuplexObservabilityEventRecord[] = [];
-    const counters: DuplexObservabilityCounterRecord[] = [];
-    const recorder: DuplexObservabilityRecorder = {
-      recordSpan() {},
-      incrementCounter(record) {
-        counters.push(record);
-      },
-      emitEvent(record) {
-        events.push(record);
-      },
-    };
-    const fake = createFakeDuplexChannel();
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-      telemetry: createDuplexObservability({ recorder, providerKey: "daytona" }),
-    });
-    broker.start();
-
-    // The agent completes its turn, then the channel ends during the teardown.
-    broker.markOrderlyCompletion();
-    fake.emitExit({ exitCode: 0 });
-    await flushMacrotasks();
-
-    expect(broker.runDisposition).toEqual({ failed: false, lossReason: null });
-    // A normal teardown is not a loss: no loss event and no loss counter.
-    expect(events.some((e) => e.dimensions.loss_reason !== undefined)).toBe(false);
-    expect(counters.some((c) => c.metric === DUPLEX_COUNTER_LOSS_TOTAL)).toBe(false);
-  });
-
-  it("carries the typed loss_reason on the transport loss event and keeps a sentinel message off every sink", async () => {
-    const spans: DuplexObservabilitySpanRecord[] = [];
-    const counters: DuplexObservabilityCounterRecord[] = [];
-    const events: DuplexObservabilityEventRecord[] = [];
-    const recorder: DuplexObservabilityRecorder = {
-      recordSpan(record) {
-        spans.push(record);
-      },
-      incrementCounter(record) {
-        counters.push(record);
-      },
-      emitEvent(record) {
-        events.push(record);
-      },
-    };
-    const logLines: string[] = [];
-    const fake = createFakeDuplexChannel();
-    const sentinel = "SENTINEL-PROVIDER-TEXT-1a2b3c";
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-      telemetry: createDuplexObservability({ recorder, providerKey: "daytona" }),
-      logger: (message) => logLines.push(message),
-    });
-    broker.start();
-
-    // A stream write failure carries a raw provider message. It maps to the typed
-    // `write_error`; the raw message must reach no sink.
-    fake.setWriteError(new Error(sentinel));
-    fake.emitData(requestFrameLine({ id: "req-sentinel" }));
-    await flushMacrotasks();
-
-    const lossEvent = events.find((e) => e.dimensions.loss_reason !== undefined);
-    expect(lossEvent?.dimensions.loss_reason).toBe("write_error");
-    expect(lossEvent?.dimensions).toMatchObject({ transport: "duplex", outcome: "error" });
-
-    // The sentinel provider text reaches no telemetry sink and no log line.
-    const serializedSinks = JSON.stringify({ spans, counters, events });
-    expect(serializedSinks).not.toContain(sentinel);
-    expect(logLines.join("\n")).not.toContain(sentinel);
-  });
-
-  it("rejects a configuration where an inner budget is not smaller than its outer budget", async () => {
-    expect(() =>
-      assertNestedDuplexBrokerBudgets({
-        forwardTimeoutMs: 32_000,
-        responseBudgetMs: 32_000,
-        gatewayWaitMs: 35_000,
-      }),
-    ).toThrow(/forward budget/);
-    expect(() =>
-      assertNestedDuplexBrokerBudgets({
-        forwardTimeoutMs: 30_000,
-        responseBudgetMs: 35_000,
-        gatewayWaitMs: 35_000,
-      }),
-    ).toThrow(/response budget/);
-    // The async broker construction validates budgets before its first await, so
-    // an invalid budget set surfaces as a rejected promise.
-    await expect(
-      createDuplexBridgeBroker({
-        channel: createFakeDuplexChannel().channel,
-        forwardRequest: async () => ({ status: 200 }),
-        budgets: { forwardTimeoutMs: 40_000 },
-      }),
-    ).rejects.toThrow(/forward budget/);
-    // The default budget set holds the nested order.
-    expect(() =>
-      assertNestedDuplexBrokerBudgets({
-        forwardTimeoutMs: 30_000,
-        responseBudgetMs: 32_000,
-        gatewayWaitMs: 35_000,
-      }),
-    ).not.toThrow();
-  });
-});
-
 describe("sandbox target spec parse: enableSandboxDuplexBridge", () => {
   // The minimal serialized sandbox target the host stamps and the adapter parses.
   // A test overrides one field per case to prove the fail-closed parse.
@@ -7228,33 +6207,56 @@ describe("sandbox target spec parse: enableSandboxDuplexBridge", () => {
   });
 });
 
+/**
+ * A minimal run-disposition latch for the seam tests below. It reproduces the
+ * same ordering rule the real bridge transport applies: the first ordered
+ * loss or orderly completion latches the terminal disposition, and a later
+ * call never overrides it. `emitExit` stands in for a transport-level channel
+ * exit — the real transport treats every channel exit as a loss candidate,
+ * mapped to the typed `provider_exit` reason.
+ */
+function createFakeBridgeTransport() {
+  let lossOrdered = false;
+  let lossReason: DuplexLossReason | null = null;
+  let completionOrdered = false;
+  const markOrderlyCompletion = (): void => {
+    if (completionOrdered || lossOrdered) return;
+    completionOrdered = true;
+  };
+  return {
+    get runDisposition() {
+      return { failed: lossOrdered, lossReason };
+    },
+    settleRunDisposition() {
+      markOrderlyCompletion();
+      return { failed: lossOrdered, lossReason };
+    },
+    markOrderlyCompletion,
+    emitExit(): void {
+      if (lossOrdered || completionOrdered) return;
+      lossOrdered = true;
+      lossReason = "provider_exit";
+    },
+  };
+}
+
 describe("settleRunDisposition atomic read and mark", () => {
   it("marks the orderly completion and reports a success for a healthy channel", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-    });
-    broker.start();
+    const broker = createFakeBridgeTransport();
 
     // The one atomic step marks the orderly completion and reads the success.
     expect(broker.settleRunDisposition()).toEqual({ failed: false, lossReason: null });
     // A later teardown loss orders after the mark, so it stays a normal teardown.
-    fake.emitExit({ exitCode: 0 });
+    broker.emitExit();
     await flushMacrotasks();
     expect(broker.runDisposition).toEqual({ failed: false, lossReason: null });
   });
 
   it("reports the failure and does not mark for a latched loss", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-    });
-    broker.start();
+    const broker = createFakeBridgeTransport();
 
     // A loss ordered before any orderly completion latches the failure.
-    fake.emitExit({ exitCode: 1 });
+    broker.emitExit();
     await flushMacrotasks();
     // The atomic step reads the failure and no-ops the mark, so a later
     // completion cannot clear the latch.
@@ -7290,20 +6292,10 @@ describe("CLI-lane run-disposition seam", () => {
     } as AdapterSandboxExecutionTarget;
   }
 
-  async function startBroker(fake: ReturnType<typeof createFakeDuplexChannel>) {
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
-    });
-    broker.start();
-    return broker;
-  }
-
-  it("fails a clean CLI completion closed when the duplex channel was lost mid-turn", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await startBroker(fake);
+  it("fails a clean CLI completion closed when the bridge channel was lost mid-turn", async () => {
+    const broker = createFakeBridgeTransport();
     // The control channel dies mid-turn, before the CLI process exits.
-    fake.emitExit({ exitCode: 1 });
+    broker.emitExit();
     await flushMacrotasks();
 
     const runner = mockRunner({ ...CLEAN_RESULT });
@@ -7324,8 +6316,7 @@ describe("CLI-lane run-disposition seam", () => {
   });
 
   it("keeps a clean CLI completion a success when the channel stays healthy, and a teardown loss stays benign", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await startBroker(fake);
+    const broker = createFakeBridgeTransport();
 
     const runner = mockRunner({ ...CLEAN_RESULT });
     const result = await runAdapterExecutionTargetProcess("run-cli-ok", sandboxTarget(runner), "agent-cli", [], {
@@ -7342,17 +6333,16 @@ describe("CLI-lane run-disposition seam", () => {
     // The seam's atomic settle marked the orderly completion at agent
     // completion. A teardown loss ordered after it is a normal teardown, so the
     // run stays a success without any manual mark here.
-    fake.emitExit({ exitCode: 0 });
+    broker.emitExit();
     await flushMacrotasks();
     expect(broker.runDisposition.failed).toBe(false);
   });
 
   it("keeps a clean CLI completion a success when the gateway exits during the run-log tail finish", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await startBroker(fake);
+    const broker = createFakeBridgeTransport();
 
     // A run-log tail whose finish emits a gateway exit. This reproduces the
-    // race where the duplex gateway dies after the clean process completion but
+    // race where the bridge gateway dies after the clean process completion but
     // before the host reads the disposition. The seam settles the disposition
     // synchronously before this finish await, so the mark orders first and the
     // teardown exit stays benign.
@@ -7361,7 +6351,7 @@ describe("CLI-lane run-disposition seam", () => {
         wrapCommand: (command, args) => ({ command, args }),
         start: () => {},
         finish: async () => {
-          fake.emitExit({ exitCode: 1 });
+          broker.emitExit();
           await flushMacrotasks();
         },
         abort: async () => {},
@@ -7388,10 +6378,9 @@ describe("CLI-lane run-disposition seam", () => {
   });
 
   it("cannot clear the loss latch with a later completion", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await startBroker(fake);
+    const broker = createFakeBridgeTransport();
     // The loss latches before the CLI process exits.
-    fake.emitExit({ exitCode: 1 });
+    broker.emitExit();
     await flushMacrotasks();
     // A later orderly completion cannot clear the latch.
     broker.markOrderlyCompletion();
@@ -7411,10 +6400,9 @@ describe("CLI-lane run-disposition seam", () => {
   });
 
   it("leaves an already-failed CLI result unchanged and never settles the disposition", async () => {
-    const fake = createFakeDuplexChannel();
-    const broker = await startBroker(fake);
+    const broker = createFakeBridgeTransport();
     // The control channel is lost, but the process itself also exited non-zero.
-    fake.emitExit({ exitCode: 1 });
+    broker.emitExit();
     await flushMacrotasks();
 
     let settleCalls = 0;

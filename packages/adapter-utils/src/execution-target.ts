@@ -51,7 +51,7 @@ import {
   DUPLEX_CHANNEL_LOST_ERROR_CODE,
   isSafeBridgeMethod,
   type DuplexBrokerRunDisposition,
-} from "./duplex-bridge-broker.js";
+} from "./bridge-transport-contract.js";
 import { decodeDuplexLine, DEFAULT_MAX_DUPLEX_FRAME_BYTES } from "./duplex-frame-codec.js";
 import type { ReassembledBody } from "./duplex-body-spool.js";
 import {

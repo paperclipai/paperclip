@@ -2941,6 +2941,71 @@ describe("sandbox callback bridge", () => {
     expect(stderr).toContain("EADDRINUSE");
   }, 15_000);
 
+  it("exits nonzero for the retired duplex_v1 mode instead of starting the queue gateway", async () => {
+    // The closed mode allowlist rejects `duplex_v1` before the queue-directory
+    // check, so a stale `duplex_v1` launch environment fails startup instead
+    // of silently falling through to the queue gateway.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-mode-duplex-"));
+    cleanupDirs.push(rootDir);
+    const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
+    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+    const queueDir = path.join(rootDir, "queue");
+    await mkdir(queueDir, { recursive: true });
+
+    const child = spawn(process.execPath, [entrypoint], {
+      env: {
+        ...process.env,
+        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
+        PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+        PAPERCLIP_BRIDGE_TOKEN: "test-token",
+        PAPERCLIP_BRIDGE_PORT: "0",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exitCode = await new Promise<number | null>((resolve) => {
+      child.on("close", resolve);
+    });
+
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Unsupported PAPERCLIP_API_BRIDGE_MODE: duplex_v1");
+  }, 15_000);
+
+  it("exits nonzero for an unknown bridge mode instead of starting the queue gateway", async () => {
+    // The closed mode allowlist rejects every value it does not name, not
+    // only the retired duplex transport.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-mode-unknown-"));
+    cleanupDirs.push(rootDir);
+    const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
+    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+    const queueDir = path.join(rootDir, "queue");
+    await mkdir(queueDir, { recursive: true });
+
+    const child = spawn(process.execPath, [entrypoint], {
+      env: {
+        ...process.env,
+        PAPERCLIP_API_BRIDGE_MODE: "totally_unknown_mode",
+        PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+        PAPERCLIP_BRIDGE_TOKEN: "test-token",
+        PAPERCLIP_BRIDGE_PORT: "0",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exitCode = await new Promise<number | null>((resolve) => {
+      child.on("close", resolve);
+    });
+
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Unsupported PAPERCLIP_API_BRIDGE_MODE: totally_unknown_mode");
+  }, 15_000);
+
   it("test_http2_gateway_writes_no_frame_between_ready_and_the_preface", async () => {
     // Spawn the real generated gateway in http2_v1 mode and read its raw
     // stdout bytes. The only frame-codec write on this path is the READY
