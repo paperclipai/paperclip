@@ -26,7 +26,11 @@ import {
 import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
-import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
+import {
+  hasClaudeSdkAuthEnv,
+  prepareSandboxClaudeProbeRuntime,
+  readSharedClaudeOAuthEnv,
+} from "./claude-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
@@ -107,6 +111,27 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+
+  const authProbeEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...env }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  if (!targetIsRemote && !hasClaudeSdkAuthEnv(authProbeEnv)) {
+    // Read credentials only from the trusted host config. The adapter's
+    // caller-provided CLAUDE_CONFIG_DIR must not become an arbitrary host-file
+    // read primitive during an environment test.
+    const oauth = await readSharedClaudeOAuthEnv(process.env);
+    if (oauth) {
+      Object.assign(env, oauth.env);
+      checks.push({
+        code: "claude_shared_oauth_loaded",
+        level: "info",
+        message: "Loaded Claude OAuth credentials from shared Claude config for local probe.",
+      });
+    }
+  }
+
   // For a local probe, resolve the trusted `claude` executable and a
   // deny-by-default child env from the shared builder, so a hostile caller
   // value can neither select the executable nor reach the child. A remote

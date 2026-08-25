@@ -73,8 +73,10 @@ import {
   isClaudeModelNotFoundError,
 } from "./parse.js";
 import {
+  hasClaudeSdkAuthEnv,
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
+  readSharedClaudeOAuthEnv,
   resolveManagedClaudeRuntimeStateDir,
   resolveSharedClaudeConfigDir,
   writePaperclipClaudeMcpConfig,
@@ -301,6 +303,25 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
+  }
+
+  const authProbeEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...env }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  if (!executionTargetIsRemote && !hasClaudeSdkAuthEnv(authProbeEnv)) {
+    // The source directory must come from the trusted server environment. An
+    // adapter-config CLAUDE_CONFIG_DIR may shape the child runtime, but it must
+    // not authorize reading an arbitrary host credentials file.
+    const oauth = await readSharedClaudeOAuthEnv(process.env);
+    if (oauth) {
+      Object.assign(env, oauth.env);
+      await onLog(
+        "stdout",
+        `[paperclip] Loaded Claude OAuth credentials from shared Claude config for local SDK auth.\n`,
+      );
+    }
   }
 
   const runtimeEnv = Object.fromEntries(

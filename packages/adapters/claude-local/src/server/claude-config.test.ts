@@ -22,7 +22,12 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-import { prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
+import {
+  hasClaudeSdkAuthEnv,
+  prepareClaudeConfigSeed,
+  prepareSandboxClaudeProbeRuntime,
+  readSharedClaudeOAuthEnv,
+} from "./claude-config.js";
 
 describe("prepareClaudeConfigSeed", () => {
   const cleanupDirs: string[] = [];
@@ -220,5 +225,71 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
       errorClass: "Error",
     });
     warnSpy.mockRestore();
+  });
+});
+
+describe("readSharedClaudeOAuthEnv", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("reads Claude Code SDK OAuth env from shared credentials", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-oauth-env-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        scopes: ["user:profile", "user:inference"],
+        clientId: "client-id",
+      },
+    }), "utf8");
+
+    await expect(readSharedClaudeOAuthEnv({ CLAUDE_CONFIG_DIR: sourceDir }))
+      .resolves.toEqual({
+        sourcePath: path.join(sourceDir, ".credentials.json"),
+        env: {
+          CLAUDE_CODE_OAUTH_TOKEN: "access-token",
+          CLAUDE_CODE_OAUTH_REFRESH_TOKEN: "refresh-token",
+          CLAUDE_CODE_OAUTH_SCOPES: "user:profile user:inference",
+          CLAUDE_CODE_OAUTH_CLIENT_ID: "client-id",
+        },
+      });
+  });
+
+  it("returns null when shared credentials do not contain an access token", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-oauth-empty-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: {
+        refreshToken: "refresh-token",
+        scopes: ["user:profile"],
+      },
+    }), "utf8");
+
+    await expect(readSharedClaudeOAuthEnv({ CLAUDE_CONFIG_DIR: sourceDir }))
+      .resolves.toBeNull();
+  });
+});
+
+describe("hasClaudeSdkAuthEnv", () => {
+  it("detects supported Claude SDK auth inputs", () => {
+    expect(hasClaudeSdkAuthEnv({})).toBe(false);
+    expect(hasClaudeSdkAuthEnv({ ANTHROPIC_API_KEY: "sk-ant-test" })).toBe(true);
+    expect(hasClaudeSdkAuthEnv({ ANTHROPIC_AUTH_TOKEN: "auth-token" })).toBe(true);
+    expect(hasClaudeSdkAuthEnv({ CLAUDE_CODE_OAUTH_TOKEN: "oauth-token" })).toBe(true);
+    expect(hasClaudeSdkAuthEnv({ CLAUDE_CODE_SESSION_ACCESS_TOKEN: "session-token" })).toBe(true);
+    expect(hasClaudeSdkAuthEnv({ CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR: "3" })).toBe(true);
+    expect(hasClaudeSdkAuthEnv({ CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: "4" })).toBe(true);
   });
 });
