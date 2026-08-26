@@ -3813,10 +3813,9 @@ export function agentRoutes(
       await assertBoardCanConfigureAgentsForCompany(req, existing.companyId);
     }
 
-    const { permissionKey, enabled, scope } = req.body as {
+    const { permissionKey, enabled } = req.body as {
       permissionKey: PermissionKey;
       enabled: boolean;
-      scope?: Record<string, unknown> | null;
     };
 
     await access.ensureMembership(existing.companyId, "agent", existing.id, "member", "active");
@@ -3827,7 +3826,10 @@ export function agentRoutes(
       permissionKey,
       enabled,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
-      scope ?? null,
+      // Deliberately never accepts a caller-supplied scope here: see the
+      // updateAgentGrantSchema doc comment for why an open scope record on
+      // this route would be a privilege-widening hazard.
+      null,
     );
 
     const actor = getActorInfo(req);

@@ -2033,6 +2033,47 @@ describe.sequential("agent permission routes", () => {
       expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
     });
 
+    it("ignores a caller-supplied scope object instead of persisting it unscoped", async () => {
+      // Regression guard: scopeAllows() in authorization.ts treats any
+      // unrecognized scope key as unconstrained, so accepting an arbitrary
+      // scope record on this route would let a malformed/attacker scope
+      // silently widen a sensitive grant like agents:configure to
+      // unrestricted company-wide access. This route must always call
+      // setPrincipalPermission with scope: null, regardless of request body.
+      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action === "agents:configure",
+        reason: "allow_test_grant",
+        explanation: "Allowed by test grant",
+      }));
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-admin",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${agentId}/grants`)
+        .send({
+          permissionKey: "agents:configure",
+          enabled: true,
+          scope: { unrecognizedKey: "anything" },
+        }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+        companyId,
+        "agent",
+        agentId,
+        "agents:configure",
+        true,
+        "board-admin",
+        null,
+      );
+    });
+
     it("lists current grants for an agent principal to a board caller with agents:configure", async () => {
       mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
         allowed: input.action === "agents:configure",
