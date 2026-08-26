@@ -1765,9 +1765,14 @@ export async function readSshEnvLabFixtureState(
   statePath: string,
 ): Promise<SshEnvLabFixtureState | null> {
   try {
-    const raw = JSON.parse(await fs.readFile(statePath, "utf8")) as SshEnvLabFixtureState;
+    // Resolve a relative statePath against the current working directory
+    // before use. The state validator below only accepts absolute paths, and
+    // a relative statePath must resolve to the same absolute directory every
+    // time a caller reads it, no matter the process working directory.
+    const resolvedStatePath = path.resolve(statePath);
+    const raw = JSON.parse(await fs.readFile(resolvedStatePath, "utf8")) as SshEnvLabFixtureState;
     if (!raw || raw.kind !== "ssh_openbsd") return null;
-    if (!isValidSshEnvLabFixtureState(raw, path.dirname(statePath))) return null;
+    if (!isValidSshEnvLabFixtureState(raw, path.dirname(resolvedStatePath))) return null;
     return raw;
   } catch {
     return null;
@@ -1858,7 +1863,12 @@ export async function startSshEnvLabFixture(input: {
   // real 10 second wait.
   readinessTimeoutMs?: number;
 }): Promise<SshEnvLabFixtureState> {
-  const existing = await readSshEnvLabFixtureState(input.statePath);
+  // Resolve a relative statePath against the current working directory once,
+  // up front. Every derived path (rootDir and the persisted statePath field)
+  // must be absolute, so the state validator in readSshEnvLabFixtureState
+  // accepts the file that this function writes.
+  const statePath = path.resolve(input.statePath);
+  const existing = await readSshEnvLabFixtureState(statePath);
   if (existing && await isSshEnvLabFixtureProcess(existing)) {
     return existing;
   }
@@ -1877,7 +1887,7 @@ export async function startSshEnvLabFixture(input: {
 
   const bindHost = input.bindHost ?? "127.0.0.1";
   const host = input.host ?? bindHost;
-  const rootDir = path.dirname(input.statePath);
+  const rootDir = path.dirname(statePath);
   await fs.mkdir(rootDir, { recursive: true });
 
   const username = os.userInfo().username;
@@ -1949,7 +1959,7 @@ export async function startSshEnvLabFixture(input: {
     username,
     rootDir,
     workspaceDir,
-    statePath: input.statePath,
+    statePath,
     pid: child.pid ?? 0,
     createdAt: new Date().toISOString(),
     clientPrivateKeyPath,
@@ -1975,7 +1985,7 @@ export async function startSshEnvLabFixture(input: {
       const config = await buildSshEnvLabFixtureConfig(state);
       await ensureSshWorkspaceReady(config);
     }, { timeoutMs: input.readinessTimeoutMs ?? 10_000, intervalMs: 250 });
-    await fs.writeFile(input.statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+    await fs.writeFile(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
     return state;
   } catch (error) {
     // No state file exists on this path yet, so a later stopSshEnvLabFixture

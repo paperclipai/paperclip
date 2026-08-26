@@ -194,6 +194,56 @@ describe("ssh env-lab fixture", () => {
     expect(stopped.running).toBe(false);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("resolves a relative statePath to the same absolute state across start, status, and stop", async () => {
+    const rootDir = await createFixtureRootDir();
+    const absoluteStatePath = path.join(rootDir, "state.json");
+    // A path relative to the test process's own working directory. This is
+    // the shape a caller outside this file's own resolveEnvLabSshStatePath
+    // helper can pass; startSshEnvLabFixture must resolve it up front so the
+    // persisted state and every derived path stay absolute.
+    const relativeStatePath = path.relative(process.cwd(), absoluteStatePath);
+
+    if (sshEnvLabUnsupportedReason) {
+      console.warn(`Skipping relative statePath test: ${sshEnvLabUnsupportedReason}`);
+      return;
+    }
+    const support = await getSshEnvLabSupport();
+    if (!support.supported) {
+      sshEnvLabUnsupportedReason = support.reason ?? "unsupported environment";
+      console.warn(`Skipping relative statePath test: ${sshEnvLabUnsupportedReason}`);
+      return;
+    }
+
+    const entry = fixtureTeardowns.find((candidate) => candidate.rootDir === rootDir);
+    if (!entry) {
+      throw new Error(`No fixture teardown entry for ${rootDir}.`);
+    }
+
+    let state: SshEnvLabFixtureState;
+    try {
+      state = await startSshEnvLabFixture({ statePath: relativeStatePath });
+    } catch (error) {
+      sshEnvLabUnsupportedReason = error instanceof Error ? error.message : String(error);
+      console.warn(`Skipping relative statePath test: ${sshEnvLabUnsupportedReason}`);
+      return;
+    }
+    entry.state = state;
+
+    expect(state.statePath).toBe(absoluteStatePath);
+    expect(state.rootDir).toBe(rootDir);
+
+    const running = await readSshEnvLabFixtureStatus(relativeStatePath);
+    expect(running.running).toBe(true);
+    expect(running.state?.statePath).toBe(absoluteStatePath);
+
+    const stopped = await stopSshEnvLabFixture(relativeStatePath);
+    expect(stopped).toBe(true);
+    entry.state = null;
+
+    const afterStop = await readSshEnvLabFixtureStatus(relativeStatePath);
+    expect(afterStop.running).toBe(false);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
   it("forwards stdin to remote SSH commands", async () => {
     const rootDir = await createFixtureRootDir();
     const statePath = path.join(rootDir, "state.json");
