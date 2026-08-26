@@ -91,7 +91,7 @@ npx paperclipai onboard --yes --bind lan
 npx paperclipai run --bind tailnet
 ```
 
-The reachability and authentication choices made during onboarding are saved in the instance `config.json`. A later `paperclipai run` reads that saved configuration, including when a background service starts Paperclip without reachability flags. You do not need to repeat a Tailnet or authenticated/private selection on every start. Use a flag again only when you want to override or reconfigure the saved setting.
+The reachability and authentication choices made during onboarding are saved in the instance `config.json`. A later `paperclipai run` reads that saved configuration, including when a background service starts Paperclip without reachability flags. You do not need to repeat a Tailnet or authenticated/private selection on every start. Use `configure --section server` when you want to reconfigure the saved setting.
 
 `configure --section server` follows the same interactive behavior and saves the updated server configuration.
 
