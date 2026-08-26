@@ -141,6 +141,19 @@ describe("teardownBrowserErrorMonitoring", () => {
     expect(mocks.setClient).toHaveBeenCalledWith(undefined);
   });
 
+  it("detaches the client from the current scope even when close() rejects", async () => {
+    const mocks = mockSentryPackage();
+    mocks.close.mockRejectedValueOnce(new Error("close timed out"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+
+    await teardownBrowserErrorMonitoring();
+
+    expect(mocks.setClient).toHaveBeenCalledWith(undefined);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
   it("stops captureBrowserException from reaching the client", async () => {
     const mocks = mockSentryPackage();
     const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring, captureBrowserException } =

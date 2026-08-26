@@ -92,10 +92,11 @@ export function teardownBrowserErrorMonitoring(): Promise<void> {
       // Awaiting matters: the client flushes buffered events to Sentry
       // during close; detaching before it settles silently drops them.
       await Sentry.close(2_000);
-      Sentry.getCurrentScope().setClient(undefined);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Sentry teardownBrowserErrorMonitoring failed", err);
+    } finally {
+      Sentry.getCurrentScope().setClient(undefined);
     }
   });
 }
