@@ -385,9 +385,8 @@ describe("claude sandbox hello probe diagnostics", () => {
   it("never copies a thrown CLI probe error into a check or the log", async () => {
     // A spawn or transport failure can throw an error whose text carries a
     // credential. Inject an opaque credential marker and a proxy marker through
-    // the thrown error. The CLI lane has no catch around the hello probe call,
-    // so the thrown error propagates to the caller, which owns it. No check and
-    // no console.warn call inside this lane repeats either marker.
+    // the thrown error. The shared probe function maps that to an allowlisted
+    // warn check and never repeats raw text in the result or log.
     const opaqueCredMarker = "OPAQUECREDMARKERnoshape";
     const proxyMarker = "http://user:pass@proxy.corp.internal:3128";
     probeResult.throwError = new Error(
@@ -395,17 +394,18 @@ describe("claude sandbox hello probe diagnostics", () => {
     );
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // The current contract propagates the thrown error. The lane builds no
-    // Test-result check from the error, so the raw text cannot reach a check.
-    await expect(
-      testEnvironment({
-        companyId: "company-1",
-        adapterType: "claude_local",
-        config: { engine: "cli", command: "claude" },
-        executionTarget: sandboxTarget,
-        environmentName: "Daytona",
-      }),
-    ).rejects.toThrow(opaqueCredMarker);
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_failed")).toBe(true);
+    const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
+    expect(failed?.level).toBe("warn");
 
     // The lane never routes the raw error text to the server log. No
     // console.warn call repeats either marker.

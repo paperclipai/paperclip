@@ -66,6 +66,7 @@ type FakeRuntimeTurn = {
 const tempRoots: string[] = [];
 const originalNodeVersion = process.version;
 const originalEnv: Record<string, string | undefined> = {
+  PATH: process.env.PATH,
   PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
   PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID,
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
@@ -416,15 +417,24 @@ describe("claude_local ACP lane", () => {
   it("reports ACP prerequisites for the ACP lane", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-env-");
     const commandPath = path.join(root, "bin", "claude-agent-acp");
+    const claudePath = path.join(root, "bin", "claude");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
+    await fs.writeFile(
+      claudePath,
+      [
+        "#!/bin/sh",
+        "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"fixture\"}'",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.chmod(claudePath, 0o755);
+    process.env.PATH = `${path.dirname(claudePath)}${path.delimiter}${process.env.PATH ?? ""}`;
     setNodeVersion("v24.11.0");
 
-    // The ACP lane now verifies auth: without a credential the lane runs a real
-    // host login probe, so its status depends on the host login state. Give the
-    // config a Bedrock credential to make the auth path deterministic. Bedrock
-    // gates off the host login probe, so the result reflects only the ACP
-    // prerequisites, and a valid credential lets the lane report a pass.
+    // Every auth lane now has to complete the same provider hello round trip.
+    // The local fixture proves the Bedrock branch no longer passes from
+    // credential-shape detection alone.
     const result = await testClaudeAcpEnvironment({
       adapterType: "claude_local",
       companyId: "company-1",
@@ -452,6 +462,12 @@ describe("claude_local ACP lane", () => {
     expect(result.checks).toContainEqual(
       expect.objectContaining({
         code: "claude_acp_bedrock_auth",
+        level: "info",
+      }),
+    );
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "claude_hello_probe_passed",
         level: "info",
       }),
     );
