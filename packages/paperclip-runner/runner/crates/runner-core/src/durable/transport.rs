@@ -594,6 +594,7 @@ struct AuthChallenge {
     runner_version: String,
     runner_digest: String,
     selected_version: u64,
+    credential_expires_at: String,
     credential_expires_at_unix_ms: u64,
     credential_lease_id: Option<String>,
     revocation_epoch: u64,
@@ -680,33 +681,58 @@ fn validate_challenge(
 }
 
 fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
-    let lease_id = challenge.credential_lease_id.as_deref().unwrap_or("");
-    [
-        challenge.credential_id.as_str(),
-        challenge.credential_kind.as_str(),
-        challenge.client_nonce.as_str(),
-        challenge.server_nonce.as_str(),
-        challenge.runner_instance_id.as_str(),
-        challenge.environment_lease_id.as_str(),
-        challenge.run_id.as_str(),
-        challenge.normalized_session_id.as_str(),
-        challenge.turn_id.as_str(),
-        challenge.item_id.as_str(),
-        challenge.runner_version.as_str(),
-        challenge.runner_digest.as_str(),
-        lease_id,
-    ]
-    .iter()
-    .fold(Vec::new(), |mut output, part| {
-        output.extend_from_slice(&(part.len() as u64).to_be_bytes());
-        output.extend_from_slice(part.as_bytes());
-        output
-    })
-    .into_iter()
-    .chain(challenge.selected_version.to_be_bytes())
-    .chain(challenge.credential_expires_at_unix_ms.to_be_bytes())
-    .chain(challenge.revocation_epoch.to_be_bytes())
-    .collect()
+    canonical_json(&json!({
+        "credentialId": challenge.credential_id,
+        "credentialKind": challenge.credential_kind,
+        "clientNonce": challenge.client_nonce,
+        "serverNonce": challenge.server_nonce,
+        "runnerInstanceId": challenge.runner_instance_id,
+        "environmentLeaseId": challenge.environment_lease_id,
+        "runId": challenge.run_id,
+        "normalizedSessionId": challenge.normalized_session_id,
+        "turnId": challenge.turn_id,
+        "itemId": challenge.item_id,
+        "runnerVersion": challenge.runner_version,
+        "runnerDigest": challenge.runner_digest,
+        "selectedVersion": challenge.selected_version,
+        "credentialLeaseId": challenge.credential_lease_id,
+        "credentialExpiresAt": challenge.credential_expires_at,
+        "credentialExpiresAtUnixMs": challenge.credential_expires_at_unix_ms,
+        "revocationEpoch": challenge.revocation_epoch,
+    }))
+    .into_bytes()
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_owned(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).expect("serialize JSON string"),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            format!(
+                "{{{}}}",
+                keys.iter()
+                    .map(|key| format!(
+                        "{}:{}",
+                        serde_json::to_string(key).expect("serialize JSON key"),
+                        canonical_json(&values[*key])
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+    }
 }
 
 fn validate_welcome(
@@ -952,8 +978,8 @@ pub(crate) fn current_unix_ms() -> Result<u64, DurableRunnerError> {
 
 fn digest_domain(domain: &str, parts: &[&[u8]]) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update((domain.len() as u64).to_be_bytes());
     digest.update(domain.as_bytes());
+    digest.update([0]);
     for part in parts {
         digest.update((part.len() as u64).to_be_bytes());
         digest.update(part);
@@ -964,8 +990,8 @@ fn digest_domain(domain: &str, parts: &[&[u8]]) -> [u8; 32] {
 fn hmac_domain(key: &[u8], domain: &str, parts: &[&[u8]]) -> [u8; 32] {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts keys of every length");
-    mac.update(&(domain.len() as u64).to_be_bytes());
     mac.update(domain.as_bytes());
+    mac.update(&[0]);
     for part in parts {
         mac.update(&(part.len() as u64).to_be_bytes());
         mac.update(part);
@@ -982,8 +1008,8 @@ fn verify_hmac_hex(
     let expected = hex_decode(expected)?;
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts keys of every length");
-    mac.update(&(domain.len() as u64).to_be_bytes());
     mac.update(domain.as_bytes());
+    mac.update(&[0]);
     for part in parts {
         mac.update(&(part.len() as u64).to_be_bytes());
         mac.update(part);
@@ -997,7 +1023,7 @@ fn hex_encode(input: &[u8]) -> String {
 }
 
 fn hex_decode(input: &str) -> Result<Vec<u8>, DurableRunnerError> {
-    if !input.len().is_multiple_of(2) {
+    if input.len() % 2 != 0 {
         return Err(DurableRunnerError::invalid("hex value has an odd length"));
     }
     input
@@ -1091,6 +1117,7 @@ mod tests {
             runner_version: config.runner_version.clone(),
             runner_digest: config.runner_digest.clone(),
             selected_version: PROTOCOL_VERSION,
+            credential_expires_at: "test-expiry".to_owned(),
             credential_expires_at_unix_ms: server_credential.expires_at_unix_ms,
             credential_lease_id: server_credential.lease_id.map(str::to_owned),
             revocation_epoch: server_credential.revocation_epoch,
@@ -1122,6 +1149,7 @@ mod tests {
                     "runnerVersion": &challenge.runner_version,
                     "runnerDigest": &challenge.runner_digest,
                     "selectedVersion": challenge.selected_version,
+                    "credentialExpiresAt": &challenge.credential_expires_at,
                     "credentialExpiresAtUnixMs": challenge.credential_expires_at_unix_ms,
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
@@ -1305,6 +1333,7 @@ mod tests {
                 runner_version: server_config.runner_version.clone(),
                 runner_digest: server_config.runner_digest.clone(),
                 selected_version: PROTOCOL_VERSION,
+                credential_expires_at: "test-expiry".to_owned(),
                 credential_expires_at_unix_ms: expires,
                 credential_lease_id: None,
                 revocation_epoch: 0,
@@ -1336,6 +1365,7 @@ mod tests {
                         "runnerVersion": challenge.runner_version,
                         "runnerDigest": challenge.runner_digest,
                         "selectedVersion": challenge.selected_version,
+                        "credentialExpiresAt": challenge.credential_expires_at,
                         "credentialExpiresAtUnixMs": challenge.credential_expires_at_unix_ms,
                         "credentialLeaseId": challenge.credential_lease_id,
                         "revocationEpoch": challenge.revocation_epoch,

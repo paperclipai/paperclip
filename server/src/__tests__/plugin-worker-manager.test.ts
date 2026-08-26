@@ -9,6 +9,24 @@ import {
   type HostServices,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
+
+// Mock the shared logger, so a test reads the exact calls the manager makes
+// when it logs a route event. The child logger returns the same mock object,
+// so `log.warn`/`log.error` inside the manager are this mock's `warn`/`error`.
+vi.mock("../middleware/logger.js", () => {
+  const mockLogger: Record<string, unknown> = {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn(() => mockLogger),
+  };
+  return { logger: mockLogger, httpLogger: vi.fn() };
+});
+
+import { logger } from "../middleware/logger.js";
 import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
@@ -1340,6 +1358,531 @@ describe("plugin worker manager setup-token pty route gate", () => {
       await expect(
         handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
       ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Login pseudo-terminal pre-bind queue (GH #12122 / PAP-5132)
+// ---------------------------------------------------------------------------
+// The host reads the worker pipe and `readline` dispatches every line of one
+// chunk synchronously. The route only becomes `open` inside the `await`
+// continuation of the `loginPtyOpen` reply, which runs as a microtask after
+// the whole synchronous line loop. So a worker that batches an output or an
+// exit notification with the open reply floods the host before the bind. The
+// tests below prove the host queues these pre-bind records and replays them
+// through the live router right after the bind, instead of dropping them.
+// The host holds every pre-bind record — output and exit alike — in one
+// arrival-ordered queue, and it replays each record through the live router
+// in that exact order. A replayed exit that carries the bound worker session
+// identifier settles the route, so a record that arrived behind it — a real
+// worker process cannot emit output after it exits, so this only matters for
+// a forged or a queued record — replays into a route that already settled
+// and is dropped.
+
+describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
+  it("queues and replays a coalesced output notification that arrives before the bind", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The fixture writes the open reply and the output notification in one
+      // stdout write, so the host reads both before the route binds.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "batched-output" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The bind already replayed the queued record into `buffered`, so
+      // `onData` drains it synchronously with no wait.
+      expect(chunks).toEqual(["batched-output"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers a coalesced output before the coalesced exit settles the wait", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "batched-output" }],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // Both the output and the exit arrived before the bind and queued in
+      // order. The replay preserves that order, so the output reaches the
+      // listener before the wait settles.
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["batched-output"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the wait with a valid pre-bind exit that a later mismatched exit cannot displace", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches a valid exit for the real worker session id, then a
+      // second exit for a forged worker session id, both before the open
+      // reply. The bind still verifies the real session id, so the held valid
+      // exit settles the wait, and the mismatched exit that arrived after it
+      // never displaces it.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          extraExits: [{ exitCode: 1, sid: "ws-EVIL" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers a pre-bind output, then the exit, and drops output that arrives behind the exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches an output, then a valid exit, then a further
+      // output, all before the open reply. The host replays the three held
+      // records in this exact arrival order. The exit settles the route
+      // right after the first output, so the record behind the exit finds a
+      // route that already settled and never reaches the listener.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "before-exit" }],
+          exitCode: 0,
+          outputsAfterExit: [{ chunk: "after-exit" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["before-exit"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops output that arrives behind a valid pre-bind exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          // The worker batched this output behind the exit. The replay sends
+          // the exit first, in arrival order, which settles the route. The
+          // output record behind it then finds a route that is no longer
+          // `open`, the same drop the live path applies to output a real
+          // worker process could never emit after its own exit.
+          outputsAfterExit: [{ chunk: "late-output" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual([]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the wait with the valid exit code and drops output behind it, even past the total-chars bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxTotalChars: 10, maxPreBindFrames: 1000, maxPreBindChars: 1000 },
+    });
+    try {
+      await handle.start();
+      // The worker batches a valid exit with the open reply, then an output
+      // record that would push the cumulative delivered total past the
+      // 10-character bound. The replay sends the exit first, in arrival
+      // order. The exit settles the route, so the replay drops the output
+      // record behind it before the total-chars check ever runs — the
+      // bound violation the check exists to catch never reaches it, because
+      // a real worker process could never emit that output in the first
+      // place.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          outputsAfterExit: [{ chunk: "aaaaaaaaaaaa" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual([]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers output that arrived behind a mismatched pre-bind exit and settles with the later valid exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches a mismatched exit, then a genuine output, then
+      // the valid exit, all before the open reply. The mismatched exit
+      // arrives first, but the exact-match gate fails it, so it changes no
+      // state and the replay continues. The output that follows it still
+      // reaches the listener, and the valid exit that follows the output
+      // settles the wait.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          sequence: [
+            { type: "exit", exitCode: 1, sid: "ws-EVIL" },
+            { type: "output", chunk: "genuine-output" },
+            { type: "exit", exitCode: 0 },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["genuine-output"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a forged pre-bind worker session id sent before the valid bind", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "forged", sid: "ws-EVIL" },
+            { chunk: "good" },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // Both records queued before the bind, since the host cannot yet check
+      // a worker session id against a route that has not bound one. The
+      // replay applies the exact-match gate against the real bind ("ws-A"),
+      // so the forged record never reaches the listener.
+      expect(chunks).toEqual(["good"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when batched pre-bind records pass the frame-count bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindFrames: 2 },
+    });
+    try {
+      await handle.start();
+      // The worker batches three output notifications with the open reply, so
+      // all three arrive, and queue, before the bind. The third record passes
+      // the frame-count bound, so the host terminalizes the route before the
+      // bind can complete, and the open call itself fails.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            outputs: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when batched pre-bind output passes the character bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            // 5 + 5 = 10 admits; the third record brings the queued total to
+            // 15, past the 10-character bound, so the host terminalizes the
+            // route before the bind can complete.
+            outputs: [{ chunk: "aaaaa" }, { chunk: "bbbbb" }, { chunk: "ccccc" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("charges the retained worker session id characters on the pre-bind output path", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      // A 6-character worker session id and one 5-character chunk charge 11
+      // characters against the 10-character bound on the very first record,
+      // even though the chunk alone is under the bound. Without the identifier
+      // charge, this single record would pass.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            workerSessionId: "ABCDEF",
+            outputs: [{ chunk: "aaaaa" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when batched pre-bind exit notifications with a large worker session id pass the character bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            // An exit record carries no chunk, but it still retains the worker
+            // session id. This 5-character id makes 5 + 5 = 10 admit the first
+            // two exits; the third brings the queued total to 15, past the
+            // 10-character bound, so the host terminalizes the route before
+            // the bind can complete.
+            workerSessionId: "AAAAA",
+            sequence: [
+              { type: "exit", exitCode: 1 },
+              { type: "exit", exitCode: 2 },
+              { type: "exit", exitCode: 3 },
+            ],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles with the first exit code against a repeated pre-bind exit for the same session, behind a filled output queue", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindFrames: 50 },
+    });
+    try {
+      await handle.start();
+      // Fill the pre-bind queue with 40 output records, then repeat the exit
+      // for the same worker session id after more output arrives. The first
+      // exit settles the route during the replay, so the repeat exit and the
+      // output around it never reach the listener.
+      const fillerOutputs = Array.from({ length: 40 }, (_, index) => ({
+        type: "output" as const,
+        chunk: `filler-${index}`,
+      }));
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          sequence: [
+            ...fillerOutputs,
+            { type: "exit", exitCode: 1 },
+            { type: "output", chunk: "between-exits" },
+            { type: "exit", exitCode: 2 },
+            { type: "output", chunk: "after-repeat" },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The wait settles with the FIRST exit code, and the exit drops every
+      // output that arrived behind it, so neither "between-exits" nor
+      // "after-repeat" reaches the listener.
+      await expect(session.wait()).resolves.toEqual({ exitCode: 1 });
+      expect(chunks).toEqual(fillerOutputs.map((entry) => entry.chunk));
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles with the first exit code against N repeated pre-bind exits for the same session", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker sends five repeat exits for the same session before the
+      // bind. The first exit settles the route during the replay, so every
+      // repeat drops there and the wait still settles with the first code.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 1,
+          extraExits: [
+            { exitCode: 2 },
+            { exitCode: 3 },
+            { exitCode: 4 },
+            { exitCode: 5 },
+          ],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: 1 });
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("clears the pre-bind queue on a malformed open reply", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The malformed reply carries no worker session id, so the host cannot
+      // bind. It terminalizes the route and clears the queued output before
+      // it ever reaches a listener.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            mode: "malformed-open",
+            batchWithOpenReply: true,
+            outputs: [{ chunk: "leaked" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+      // A later open on the same worker starts a fresh route and receives
+      // only its own scripted output, never the cleared queue.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal", outputs: [{ chunk: "fresh" }] }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await vi.waitFor(() => expect(chunks).toContain("fresh"));
+      expect(chunks).not.toContain("leaked");
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("clears the pre-bind queue when the worker exits during the open window", async () => {
+    const handle = makeLoginPtyHandle({ autoRestart: false });
+    try {
+      await handle.start();
+      // The fixture emits one output notification, then exits before it ever
+      // sends the open reply. The route never binds. The worker-exit path
+      // must clear the queued output along with the route.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            mode: "exit-before-open-reply",
+            outputs: [{ chunk: "queued-before-exit" }],
+          }),
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes at replay when the queued output would pass the cumulative total-chars bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxTotalChars: 10, maxPreBindFrames: 1000, maxPreBindChars: 1000 },
+    });
+    try {
+      await handle.start();
+      // The generous pre-bind bounds admit all three records at intake, so
+      // the bind completes and the replay runs. The replay sends each record
+      // through the same live router an open route uses, so the cumulative
+      // `maxTotalChars` gate still applies: the third record would bring the
+      // delivered total to 15, past the 10-character bound, so the replay
+      // terminalizes the route partway through. The directive carries no exit
+      // notification, so only a mid-replay terminalize can settle the wait;
+      // without the cumulative gate applying during replay, this call would
+      // hang.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          outputs: [{ chunk: "aaaaa" }, { chunk: "bbbbb" }, { chunk: "ccccc" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      // The terminalize clears `route.buffered` by design (a terminalized
+      // login route settles with a null exit code, so buffered data has no
+      // consumer), so even the two records the replay delivered before the
+      // bound tripped never reach the listener.
+      expect(chunks).toEqual([]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("never logs the raw chunk content, including on the pre-bind overflow path", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindFrames: 1 },
+    });
+    const secretMarker = "super-secret-login-code-must-never-reach-a-log-line";
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    vi.mocked(logger.info).mockClear();
+    vi.mocked(logger.debug).mockClear();
+    try {
+      await handle.start();
+      // The first record admits, then the second passes the frame-count
+      // bound and terminalizes the route. The overflow path logs a fixed
+      // warning that must never carry the chunk text.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            outputs: [{ chunk: secretMarker }, { chunk: "overflow" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+      const loggedText = [
+        ...vi.mocked(logger.warn).mock.calls,
+        ...vi.mocked(logger.error).mock.calls,
+        ...vi.mocked(logger.info).mock.calls,
+        ...vi.mocked(logger.debug).mock.calls,
+      ]
+        .flat()
+        .map((arg) => JSON.stringify(arg))
+        .join("\n");
+      expect(loggedText).not.toContain(secretMarker);
     } finally {
       await handle.stop().catch(() => undefined);
     }

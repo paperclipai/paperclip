@@ -9,6 +9,7 @@ import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGat
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
+import { CloudManagedPageGate } from "./components/CloudManagedPageGate";
 import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
 import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { Cases } from "./pages/Cases";
@@ -115,19 +116,31 @@ function boardRoutes() {
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
-      <Route path="company/settings/members" element={<CompanyAccess />} />
-      <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      <Route path="company/settings/invites" element={<CompanyInvites />} />
-      <Route
-        path="company/export/*"
-        element={(
-          <Suspense fallback={<PaperclipLoading />}>
-            <CompanyExport />
-          </Suspense>
-        )}
-      />
-      <Route path="company/import" element={<CompanyImport />} />
-      <Route path="company/settings/secrets" element={<Secrets />} />
+      <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
+        <Route path="company/settings/members" element={<CompanyAccess />} />
+        <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="company.invites" />}>
+        <Route path="company/settings/invites" element={<CompanyInvites />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="company.export" />}>
+        <Route
+          path="company/export/*"
+          element={(
+            <Suspense fallback={<PaperclipLoading />}>
+              <CompanyExport />
+            </Suspense>
+          )}
+        />
+      </Route>
+      <Route element={<CloudManagedPageGate />}>
+        <Route element={<HiddenSettingsPageGate pageKey="company.import" />}>
+          <Route path="company/import" element={<CompanyImport />} />
+        </Route>
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="company.secrets" />}>
+        <Route path="company/settings/secrets" element={<Secrets />} />
+      </Route>
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />

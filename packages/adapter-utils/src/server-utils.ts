@@ -323,7 +323,13 @@ function buildManagedSkillOrigin(): Pick<
   };
 }
 
-function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
+/**
+ * True when a runtime skill entry's files are unavailable (failed
+ * materialization, deleted version snapshot). Adapters must skip these at
+ * mount time: their `source` path does not exist, so symlinking produces a
+ * dangling link and content hashing throws.
+ */
+export function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
   return entry.sourceStatus === "missing";
 }
 
@@ -3029,6 +3035,33 @@ export function resolvePaperclipDesiredSkillNames(
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
   return Array.from(new Set(desiredSkills));
+}
+
+/**
+ * Legacy adapters call the Paperclip API through the operational skill. Keep
+ * that skill mounted even when an agent predates skill preferences or carries
+ * an explicit empty desired set. Native runners provide the same authority
+ * through their protocol and must continue to use the configurable-only
+ * resolver above.
+ */
+export const PAPERCLIP_OPERATIONAL_SKILL_KEY = "paperclipai/paperclip/paperclip";
+
+export function resolveLegacyPaperclipDesiredSkillNames(
+  config: Record<string, unknown>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
+): string[] {
+  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const operationalEntry = availableEntries.find(
+    (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  );
+  if (!operationalEntry) return desiredSkills;
+
+  return [
+    operationalEntry.key,
+    ...desiredSkills.filter(
+      (key) => key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    ),
+  ];
 }
 
 export function writePaperclipSkillSyncPreference(

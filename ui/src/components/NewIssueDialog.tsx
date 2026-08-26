@@ -61,6 +61,7 @@ import {
   Paperclip,
   FileText,
   Flag,
+  PauseCircle,
   Loader2,
   ListTree,
   X,
@@ -76,6 +77,7 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
+import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
@@ -586,7 +588,11 @@ export function NewIssueDialog() {
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null;
+  const selectedAssigneeAgent = useMemo(
+    () => (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId) ?? null,
+    [agents, selectedAssigneeAgentId],
+  );
+  const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -2328,6 +2334,15 @@ export function NewIssueDialog() {
             <span className="leading-snug">
               Assigning implies executable intent - leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
             </span>
+          </div>
+        ) : null}
+
+        {selectedAssigneeAgent?.status === "paused" ? (
+          <div data-testid="new-issue-paused-assignee-note" className="mx-4 mb-2">
+            <InlineBanner tone="warning" icon={PauseCircle} compact>
+              <span className="font-medium">{selectedAssigneeAgent.name}</span> is paused and will not start work on this task until it is resumed
+              {selectedAssigneeAgent.pauseReason === "import" ? " — it arrived paused from a company import" : ""}. You can resume it from the task page after creating the task.
+            </InlineBanner>
           </div>
         ) : null}
 

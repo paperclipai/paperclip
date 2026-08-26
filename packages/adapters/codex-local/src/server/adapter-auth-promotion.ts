@@ -224,6 +224,7 @@ export async function promoteDeviceLoginCredential(
     keptLine: "[paperclip] Codex device-login promotion: kept the company credential home (the login is not a seed or a strictly-newer same-identity credential).",
     tempPrefix: "auth.json.promotion-home",
     errorLabel: "codex device-login promotion",
+    env,
   });
 
   // A kept home has two very different meanings. The writer keeps the home when
@@ -258,7 +259,7 @@ export async function promoteDeviceLoginCredential(
   if (isCodexAuthCacheEnabled(env)) {
     try {
       const cacheEntryPath = await ensureCodexAuthCacheEntryDir(env, accountId, companyId);
-      await writeCodexAuthCacheEntry({ sandboxAuthBytes: authBytes, cacheEntryPath, log });
+      await writeCodexAuthCacheEntry({ sandboxAuthBytes: authBytes, cacheEntryPath, log, env });
     } catch {
       await log(
         "[paperclip] Codex device-login promotion: the per-identity cache write failed; the company credential home is durable, so the login stays successful.",

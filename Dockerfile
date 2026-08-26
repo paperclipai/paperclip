@@ -63,6 +63,9 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends cargo rustc \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app /app
 COPY . .
 
@@ -87,6 +90,7 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 # same ARG again for the runtime fallback; an ARG goes out of scope at the
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
 ARG PAPERCLIP_BUILD_COMMIT=""
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm --filter @paperclipai/server build
 
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
@@ -95,6 +99,7 @@ RUN test -f packages/adapter-utils/dist/index.js \
   && test -f packages/google-sheets-mcp-server/dist/stdio.js \
   && test -f packages/kv-demo-mcp-server/dist/main.js \
   || (echo "ERROR: required package build output missing" && exit 1)
+RUN rm -rf packages/paperclip-runner/runner/target
 
 FROM base AS production
 ARG USER_UID=1000

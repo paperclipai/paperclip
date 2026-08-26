@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
 import {
@@ -26,6 +26,8 @@ export interface NativeRunStoreBinding {
   readonly runnerSourceInstanceId: string;
   readonly completionContractId: string;
   readonly completionContractSha256: string;
+  readonly completionContractRevision: string;
+  readonly completionContractCriterionIds: readonly string[];
 }
 
 export interface CompleteNativeRunInput {
@@ -52,19 +54,61 @@ function sha256(value: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 }
 
-function assertTerminal(value: PrpTerminalState): void {
+function assertTerminal(value: unknown): asserts value is PrpTerminalState {
+  const terminal = value as Partial<PrpTerminalState> | null;
   if (
-    value.schema !== "paperclip.prp.terminal.v1" ||
+    typeof value !== "object" ||
+    terminal === null ||
+    Array.isArray(value) ||
+    terminal.schema !== "paperclip.prp.terminal.v1" ||
+    typeof terminal.turnTerminalState !== "string" ||
     !["completed", "failed", "interrupted", "cancelled"].includes(
-      value.turnTerminalState,
+      terminal.turnTerminalState,
     ) ||
-    !["succeeded", "failed", "cancelled"].includes(value.runTerminalState) ||
+    typeof terminal.runTerminalState !== "string" ||
+    !["succeeded", "failed", "cancelled"].includes(terminal.runTerminalState) ||
+    typeof terminal.reportedWorkDisposition !== "string" ||
     !["done", "blocked", "needs_review", "yielded"].includes(
-      value.reportedWorkDisposition,
+      terminal.reportedWorkDisposition,
     )
   ) {
     throw new Error("native_terminal_schema_invalid");
   }
+}
+
+function validateBoundCompletion(
+  binding: NativeRunStoreBinding,
+  result: unknown,
+  terminal: unknown,
+): { result: PrpStructuredRunResult; terminal: PrpTerminalState } {
+  const validated = validatePrpStructuredRunResult(result);
+  if (!validated.ok) throw new Error("native_result_schema_invalid");
+  assertTerminal(terminal);
+  if (
+    validated.result.completionClaim.contractRevision !==
+    binding.completionContractRevision
+  ) {
+    throw new Error("native_result_completion_contract_mismatch");
+  }
+  const reportedCriterionIds = validated.result.completionClaim.criteria.map(
+    (criterion) => criterion.criterionId,
+  );
+  if (
+    reportedCriterionIds.length !== binding.completionContractCriterionIds.length
+    || reportedCriterionIds.some(
+      (criterionId, index) =>
+        criterionId !== binding.completionContractCriterionIds[index],
+    )
+  ) {
+    throw new Error("native_result_completion_contract_mismatch");
+  }
+  if (
+    validated.result.reportedWorkDisposition !==
+    terminal.reportedWorkDisposition
+  ) {
+    throw new Error("native_result_terminal_disposition_mismatch");
+  }
+  return { result: validated.result, terminal };
 }
 
 /** Durable DB boundary used by the hidden PRP coordinator. */
@@ -75,6 +119,79 @@ export class NativeRunCoordinatorStore {
   constructor(db: Db, binding: NativeRunStoreBinding) {
     this.#db = db;
     this.#binding = structuredClone(binding);
+  }
+
+  async readCompletedRun(): Promise<{
+    readonly result: PrpStructuredRunResult;
+    readonly terminal: PrpTerminalState;
+    readonly turnId?: string;
+  } | null> {
+    const [row] = await this.#db
+      .select({ resultJson: nativeRunResults.resultJson })
+      .from(nativeRunResults)
+      .where(
+        and(
+          eq(nativeRunResults.companyId, this.#binding.companyId),
+          eq(nativeRunResults.issueId, this.#binding.issueId),
+          eq(nativeRunResults.runId, this.#binding.runId),
+          eq(nativeRunResults.schemaStatus, "accepted"),
+        ),
+      )
+      .limit(1);
+    if (!row) return null;
+    const envelope = row.resultJson as Record<string, unknown>;
+    if (!("result" in envelope) || !("terminal" in envelope)) {
+      throw new Error("native_result_envelope_invalid");
+    }
+    const validated = validateBoundCompletion(
+      this.#binding,
+      envelope.result,
+      envelope.terminal,
+    );
+    if (envelope.turnId !== null && envelope.turnId !== undefined && typeof envelope.turnId !== "string") {
+      throw new Error("native_result_envelope_invalid");
+    }
+    return {
+      ...validated,
+      ...(envelope.turnId ? { turnId: envelope.turnId } : {}),
+    };
+  }
+
+  async readProviderSessionId(): Promise<string | null> {
+    const rows = await this.#db
+      .select({ payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.runId, this.#binding.runId),
+        eq(heartbeatRunEvents.sourceInstanceId, this.#binding.runnerSourceInstanceId),
+        inArray(heartbeatRunEvents.eventType, [
+          "session.started",
+          "session.resumed",
+          "session.reconciled",
+        ]),
+      ))
+      .orderBy(desc(heartbeatRunEvents.sourceSeq))
+      .limit(3);
+    for (const row of rows) {
+      const event = (row.payload as Record<string, unknown> | null)?.prpEvent;
+      const payload = typeof event === "object" && event !== null && !Array.isArray(event)
+        ? (event as Record<string, unknown>).payload
+        : null;
+      const providerSessionId = typeof payload === "object"
+        && payload !== null
+        && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).providerSessionId
+        : null;
+      if (
+        typeof providerSessionId === "string"
+        && providerSessionId.length > 0
+        && providerSessionId.length <= 240
+        && ![...providerSessionId].some((character) => /[\u0000-\u001f\u007f]/.test(character))
+      ) {
+        return providerSessionId;
+      }
+    }
+    return null;
   }
 
   async appendEvent(value: PrpEvent): Promise<{
@@ -205,18 +322,10 @@ export class NativeRunCoordinatorStore {
     readonly disposition: "committed" | "duplicate";
     readonly resultId: string;
   }> {
-    const validated = validatePrpStructuredRunResult(input.result);
-    if (!validated.ok) throw new Error("native_result_schema_invalid");
-    assertTerminal(input.terminal);
-    if (
-      validated.result.reportedWorkDisposition !==
-      input.terminal.reportedWorkDisposition
-    ) {
-      throw new Error("native_result_terminal_disposition_mismatch");
-    }
+    const validated = validateBoundCompletion(this.#binding, input.result, input.terminal);
     const canonical = {
       result: validated.result,
-      terminal: input.terminal,
+      terminal: validated.terminal,
       turnId: input.turnId ?? null,
     };
     const canonicalSha256 = sha256(canonical);

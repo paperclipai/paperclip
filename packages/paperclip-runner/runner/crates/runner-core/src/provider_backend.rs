@@ -23,6 +23,13 @@ const PROVIDER_STATE_FILE: &str = "codex-provider-state.json";
 const MAX_PROVIDER_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_EVENTS_PER_POLL: usize = 128;
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct CompletionContractBinding {
+    revision: String,
+    criterion_ids: Vec<String>,
+}
+
 fn initial_provider_event_seq() -> u64 {
     1
 }
@@ -36,6 +43,112 @@ fn provider_event_sequence(event_id: &str) -> Option<u64> {
     (provider_event_id(sequence) == event_id).then_some(sequence)
 }
 
+fn completion_contract(
+    payload: &Value,
+) -> Result<Option<CompletionContractBinding>, DurableRunnerError> {
+    let Some(value) = payload.get("completionContract") else {
+        return Ok(None);
+    };
+    let binding: CompletionContractBinding =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            DurableRunnerError::invalid(format!(
+                "run.prepare completionContract is invalid: {error}"
+            ))
+        })?;
+    if binding.revision.is_empty()
+        || binding.revision.len() > 120
+        || binding.criterion_ids.is_empty()
+        || binding.criterion_ids.len() > 256
+        || binding.criterion_ids.iter().any(|criterion| {
+            criterion.is_empty() || criterion.len() > 240 || criterion.chars().any(char::is_control)
+        })
+    {
+        return Err(DurableRunnerError::invalid(
+            "run.prepare completionContract is malformed or oversized",
+        ));
+    }
+    Ok(Some(binding))
+}
+
+fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<NormalizedProviderEvent> {
+    let Some(contract) = state.completion_contract.as_ref() else {
+        return Vec::new();
+    };
+    let succeeded = event_type == "turn.completed";
+    let cancelled = matches!(event_type, "turn.cancelled" | "turn.interrupted");
+    let disposition = if succeeded { "done" } else { "needs_review" };
+    let summary = state.last_agent_message.clone().unwrap_or_else(|| {
+        if succeeded {
+            "Codex completed the requested work.".to_owned()
+        } else if cancelled {
+            "The Codex run stopped before it completed.".to_owned()
+        } else {
+            "The Codex run failed before it completed.".to_owned()
+        }
+    });
+    let evidence_ref = "provider:codex:agent-message";
+    let criteria = contract
+        .criterion_ids
+        .iter()
+        .map(|criterion_id| {
+            json!({
+                "criterionId": criterion_id,
+                "status": if succeeded { "satisfied" } else { "unknown" },
+                "evidenceRefs": if succeeded { vec![evidence_ref] } else { Vec::<&str>::new() },
+            })
+        })
+        .collect::<Vec<_>>();
+    let result = json!({
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": disposition,
+        "summary": summary,
+        "completionClaim": {
+            "contractRevision": contract.revision,
+            "objectiveSatisfied": succeeded,
+            "criteria": criteria,
+            "remainingWork": if succeeded { Vec::<Value>::new() } else { vec![json!({
+                "description": "Review the stopped Codex run and continue the task.",
+                "blocksCompletion": true,
+            })] },
+        },
+        "evidence": if succeeded { vec![json!({ "ref": evidence_ref })] } else { Vec::<Value>::new() },
+        "verification": [],
+        "attentionRequests": if succeeded { Vec::<Value>::new() } else { vec![json!({
+            "kind": "review",
+            "summary": "Review the stopped Codex run before continuing.",
+            "ownerClass": "human",
+        })] },
+        "artifacts": [],
+    });
+    let turn_terminal_state = if succeeded {
+        "completed"
+    } else if event_type == "turn.interrupted" {
+        "interrupted"
+    } else if cancelled {
+        "cancelled"
+    } else {
+        "failed"
+    };
+    let terminal = json!({
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": turn_terminal_state,
+        "runTerminalState": if succeeded { "succeeded" } else if cancelled { "cancelled" } else { "failed" },
+        "reportedWorkDisposition": disposition,
+    });
+    vec![
+        NormalizedProviderEvent {
+            event_type: "run.result.proposed".to_owned(),
+            priority: EventPriority::P0,
+            payload: result,
+        },
+        NormalizedProviderEvent {
+            event_type: "run.terminal".to_owned(),
+            priority: EventPriority::P0,
+            payload: terminal,
+        },
+    ]
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct CodexProviderState {
@@ -43,11 +156,15 @@ struct CodexProviderState {
     lifecycle: String,
     config: CodexProviderConfig,
     #[serde(default)]
+    completion_contract: Option<CompletionContractBinding>,
+    #[serde(default)]
     thread_id: Option<String>,
     #[serde(default)]
     provider_session_id: Option<String>,
     #[serde(default)]
     active_provider_turn_id: Option<String>,
+    #[serde(default)]
+    last_agent_message: Option<String>,
     #[serde(default)]
     pending_events: VecDeque<PolledEvent>,
     #[serde(default = "initial_provider_event_seq")]
@@ -55,14 +172,20 @@ struct CodexProviderState {
 }
 
 impl CodexProviderState {
-    fn new(config: CodexProviderConfig) -> Self {
+    fn new(
+        config: CodexProviderConfig,
+        completion_contract: Option<CompletionContractBinding>,
+    ) -> Self {
+        let thread_id = config.provider_session_id.clone();
         Self {
             schema: PROVIDER_STATE_SCHEMA.to_owned(),
             lifecycle: "prepared".to_owned(),
             config,
-            thread_id: None,
+            completion_contract,
+            thread_id,
             provider_session_id: None,
             active_provider_turn_id: None,
+            last_agent_message: None,
             pending_events: VecDeque::new(),
             next_provider_event_seq: initial_provider_event_seq(),
         }
@@ -90,6 +213,21 @@ impl CodexProviderState {
                 .active_provider_turn_id
                 .as_ref()
                 .is_some_and(|value| value.is_empty() || value.len() > 240)
+            || self.completion_contract.as_ref().is_some_and(|contract| {
+                contract.revision.is_empty()
+                    || contract.revision.len() > 120
+                    || contract.criterion_ids.is_empty()
+                    || contract.criterion_ids.len() > 256
+                    || contract.criterion_ids.iter().any(|criterion| {
+                        criterion.is_empty()
+                            || criterion.len() > 240
+                            || criterion.chars().any(char::is_control)
+                    })
+            })
+            || self
+                .last_agent_message
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 1_000_000)
             || (self.thread_id.is_none()
                 && (self.provider_session_id.is_some()
                     || self.active_provider_turn_id.is_some()
@@ -100,7 +238,7 @@ impl CodexProviderState {
                 "prepared" | "session_open" | "closed"
             ) && self.active_provider_turn_id.is_some())
             || self.next_provider_event_seq == 0
-            || self.pending_events.len() > MAX_EVENTS_PER_POLL + 1
+            || self.pending_events.len() > MAX_EVENTS_PER_POLL + 3
             || self.pending_events.iter().any(|event| {
                 provider_event_sequence(&event.executor_event_id)
                     .is_none_or(|sequence| sequence >= self.next_provider_event_seq)
@@ -318,10 +456,11 @@ impl CodexCommandExecutor {
         config
             .validate()
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        let completion_contract = completion_contract(payload)?;
         if let Some(state) = &self.state {
-            if state.config != config {
+            if state.config != config || state.completion_contract != completion_contract {
                 return Err(DurableRunnerError::invalid(
-                    "Codex provider configuration changed across the durable run",
+                    "Codex provider or completion contract changed across the durable run",
                 ));
             }
             if state.lifecycle == "closed" {
@@ -330,7 +469,7 @@ impl CodexCommandExecutor {
                 ));
             }
         } else {
-            self.state = Some(CodexProviderState::new(config));
+            self.state = Some(CodexProviderState::new(config, completion_contract));
             self.save_state()?;
         }
         Ok(CommandExecution::result(json!({
@@ -467,6 +606,7 @@ impl CodexCommandExecutor {
             .as_mut()
             .expect("Codex state exists after turn start");
         state.active_provider_turn_id = Some(provider_turn_id.clone());
+        state.last_agent_message = None;
         state.lifecycle = "turn_active".to_owned();
         self.save_state()?;
         Ok(CommandExecution {
@@ -600,15 +740,41 @@ impl CodexCommandExecutor {
             match event {
                 CodexProviderEvent::Notification { method, params } => {
                     let normalized = normalize_codex_notification(&method, &params);
+                    let terminal_event_type = normalized
+                        .iter()
+                        .find(|event| event.event_type.starts_with("turn."))
+                        .map(|event| event.event_type.clone())
+                        .filter(|event_type| {
+                            matches!(
+                                event_type.as_str(),
+                                "turn.completed"
+                                    | "turn.failed"
+                                    | "turn.cancelled"
+                                    | "turn.interrupted"
+                            )
+                        });
                     let state = self
                         .state
                         .as_mut()
                         .expect("Codex state remains available while polling");
+                    if method == "item/completed" {
+                        let item = params.get("item").unwrap_or(&params);
+                        if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+                            state.last_agent_message = item
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                                .map(|text| text.chars().take(1_000_000).collect());
+                        }
+                    }
                     if method == "turn/completed" {
                         state.active_provider_turn_id = None;
                         state.lifecycle = "session_open".to_owned();
                     }
                     state.extend_events(normalized)?;
+                    if let Some(event_type) = terminal_event_type {
+                        state.extend_events(terminal_events(state, &event_type))?;
+                    }
                     self.save_state()?;
                 }
                 CodexProviderEvent::RuntimeRequest {
@@ -767,15 +933,49 @@ mod tests {
                     .to_string_lossy()
                     .into_owned(),
                 model: None,
+                provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
             },
+            completion_contract: None,
             thread_id: Some("thread-1".to_owned()),
             provider_session_id: None,
             active_provider_turn_id: None,
+            last_agent_message: None,
             pending_events: VecDeque::new(),
             next_provider_event_seq: initial_provider_event_seq(),
         };
         assert!(state.validate().is_err());
+    }
+
+    #[test]
+    fn emits_a_structured_result_before_the_terminal_event() {
+        let mut state = CodexProviderState::new(
+            CodexProviderConfig {
+                provider: "codex".to_owned(),
+                driver: "codex_app_server".to_owned(),
+                provider_version: "test".to_owned(),
+                command: PathBuf::from("codex"),
+                args: vec!["app-server".to_owned()],
+                cwd: std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                model: None,
+                provider_session_id: None,
+                instructions: String::new(),
+                approval_policy: "never".to_owned(),
+            },
+            Some(CompletionContractBinding {
+                revision: "1".to_owned(),
+                criterion_ids: vec!["objective".to_owned()],
+            }),
+        );
+        state.last_agent_message = Some("Finished the requested work.".to_owned());
+        let events = terminal_events(&state, "turn.completed");
+        assert_eq!(events[0].event_type, "run.result.proposed");
+        assert_eq!(events[0].payload["summary"], "Finished the requested work.");
+        assert_eq!(events[1].event_type, "run.terminal");
+        assert_eq!(events[1].payload["runTerminalState"], "succeeded");
     }
 }

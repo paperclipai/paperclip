@@ -32,6 +32,8 @@ pub struct CodexProviderConfig {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
+    pub provider_session_id: Option<String>,
+    #[serde(default)]
     pub instructions: String,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
@@ -73,6 +75,15 @@ impl CodexProviderConfig {
             .is_some_and(|model| model.is_empty() || model.len() > 240)
         {
             return Err(LocalRunnerError::invalid("Codex model is invalid"));
+        }
+        if self.provider_session_id.as_ref().is_some_and(|session_id| {
+            session_id.is_empty()
+                || session_id.len() > 240
+                || session_id.chars().any(char::is_control)
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "Codex providerSessionId is invalid",
+            ));
         }
         if self.instructions.len() > MAX_INSTRUCTIONS_BYTES {
             return Err(LocalRunnerError::invalid(

@@ -2598,7 +2598,17 @@ function CatalogDetailPane({
   );
 }
 
-function InstallPreviewDialog({
+// Installing only adds a skill to the company library; an agent can use it only
+// once it is also enabled for that agent. Pre-select every agent that can
+// receive the skill so "install" defaults to a state where the skill is
+// actually usable, instead of a library row no agent has.
+export function defaultInstallAgentSelection(
+  agents: Array<Pick<AttachAgentOption, "id" | "supportsSkills" | "required">>,
+): Set<string> {
+  return new Set(agents.filter((agent) => agent.supportsSkills && !agent.required).map((agent) => agent.id));
+}
+
+export function InstallPreviewDialog({
   open,
   onOpenChange,
   skill,
@@ -2608,6 +2618,7 @@ function InstallPreviewDialog({
   defaultSlug,
   defaultForce,
   defaultAction,
+  agents,
   isPending,
   error,
   onConfirm,
@@ -2621,13 +2632,21 @@ function InstallPreviewDialog({
   defaultSlug: string | null;
   defaultForce: boolean;
   defaultAction: "install" | "update" | "replace";
+  agents: AttachAgentOption[];
   isPending: boolean;
   error: string | null;
-  onConfirm: (input: { slug: string | null; force: boolean }) => void;
+  onConfirm: (input: { slug: string | null; force: boolean; agentIds: string[] }) => void;
 }) {
   const [slug, setSlug] = useState<string>("");
   const [force, setForce] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
+  // Whether the user changed the agent selection this open. Until then the
+  // selection keeps tracking the default: the agents query may resolve after
+  // the dialog opens, and a one-shot seed would freeze an empty selection and
+  // install the skill for nobody.
+  const [selectionTouched, setSelectionTouched] = useState(false);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -2635,6 +2654,18 @@ function InstallPreviewDialog({
     setForce(defaultForce);
     setAdvancedOpen(defaultAction === "replace" || defaultForce);
   }, [open, defaultSlug, defaultForce, defaultAction]);
+
+  useEffect(() => {
+    if (open && !wasOpenRef.current) setSelectionTouched(false);
+    wasOpenRef.current = open;
+  }, [open]);
+
+  // Track the default selection while the dialog is open and untouched; the
+  // user's first change takes over and background refetches never clobber it.
+  useEffect(() => {
+    if (!open || selectionTouched) return;
+    setSelectedAgentIds(defaultAction === "install" ? defaultInstallAgentSelection(agents) : new Set());
+  }, [open, selectionTouched, defaultAction, agents]);
 
   if (!skill) return null;
 
@@ -2720,6 +2751,33 @@ function InstallPreviewDialog({
             </div>
           ) : null}
 
+          {defaultAction === "install" ? (
+            <div className="rounded-md border border-border p-3">
+              <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">Enable for agents</div>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Installing adds the skill to the company library. Agents can only use it once it is enabled for them.
+              </p>
+              <AgentMultiSelect
+                agents={agents}
+                selectedAgentIds={selectedAgentIds}
+                onChange={(next) => {
+                  setSelectionTouched(true);
+                  setSelectedAgentIds(next);
+                }}
+                showSelectionPreview={false}
+                emptyMessage="No agents in this company support skills yet."
+                isAgentDisabled={(agent) => {
+                  const option = agent as AttachAgentOption;
+                  return option.required || !option.supportsSkills;
+                }}
+                getDescription={(agent) => {
+                  const option = agent as AttachAgentOption;
+                  return `${option.adapterType}${option.required ? " · required" : ""}${!option.supportsSkills ? " · skills not supported" : ""}`;
+                }}
+              />
+            </div>
+          ) : null}
+
           <button
             type="button"
             onClick={() => setAdvancedOpen((value) => !value)}
@@ -2754,7 +2812,13 @@ function InstallPreviewDialog({
           </Button>
           <Button
             variant={confirmVariant}
-            onClick={() => onConfirm({ slug: slug.trim().length > 0 ? slug.trim() : null, force })}
+            onClick={() =>
+              onConfirm({
+                slug: slug.trim().length > 0 ? slug.trim() : null,
+                force,
+                agentIds: defaultAction === "install" ? Array.from(selectedAgentIds) : [],
+              })
+            }
             disabled={isPending}
           >
             {confirmLabel}
@@ -5179,13 +5243,29 @@ export function CompanySkills() {
     return counts;
   }, [installedSkills]);
   const installCatalog = useMutation({
-    mutationFn: (payload: { catalogSkillId: string; slug: string | null; force: boolean }) =>
+    mutationFn: (payload: { catalogSkillId: string; slug: string | null; force: boolean; agentIds: string[] }) =>
       companySkillsApi.installCatalog(selectedCompanyId!, {
         catalogSkillId: payload.catalogSkillId,
         slug: payload.slug,
         force: payload.force,
       }),
-    onSuccess: async (result) => {
+    onSuccess: async (result, payload) => {
+      // Enable the skill for the agents chosen in the install dialog before any
+      // invalidation, so the refetched skill detail already reflects the
+      // attachments. Mode "add" appends to each agent's desired set without
+      // clobbering concurrent edits. A per-agent failure must not fail the
+      // install itself — the skill is in the library either way.
+      const enableTargets = result.action === "created" ? payload.agentIds : [];
+      let enabledCount = 0;
+      let enableFailures = 0;
+      for (const agentId of enableTargets) {
+        try {
+          await agentsApi.syncSkills(agentId, [{ key: result.skill.key, versionId: null }], "add", selectedCompanyId ?? undefined);
+          enabledCount += 1;
+        } catch {
+          enableFailures += 1;
+        }
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, result.skill.id) }),
@@ -5194,8 +5274,19 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: result.action === "created" ? "Skill installed" : result.action === "updated" ? "Skill updated" : "Skill is up to date",
-        body: result.skill.name,
+        body: result.action === "created"
+          ? enabledCount > 0
+            ? `${result.skill.name} — enabled for ${enabledCount} agent${enabledCount === 1 ? "" : "s"}.`
+            : `${result.skill.name} is in the library but not enabled for any agent yet. Use "Add to agent" to enable it.`
+          : result.skill.name,
       });
+      if (enableFailures > 0) {
+        pushToast({
+          tone: "warn",
+          title: "Skill installed, but enabling failed",
+          body: `Could not enable ${result.skill.name} for ${enableFailures} agent${enableFailures === 1 ? "" : "s"}. Use "Add to agent" on the skill page.`,
+        });
+      }
       if (result.warnings[0]) {
         pushToast({ tone: "warn", title: "Install warnings", body: result.warnings[0] });
       }
@@ -5820,14 +5911,16 @@ export function CompanySkills() {
         defaultSlug={installDialogState.defaultSlug}
         defaultForce={installDialogState.defaultForce}
         defaultAction={installDialogState.defaultAction}
+        agents={eligibleAgentsForAttach}
         isPending={installCatalog.isPending}
         error={installDialogState.error}
-        onConfirm={({ slug, force }) => {
+        onConfirm={({ slug, force, agentIds }) => {
           if (!installDialogState.catalogSkill) return;
           installCatalog.mutate({
             catalogSkillId: installDialogState.catalogSkill.id,
             slug,
             force,
+            agentIds,
           });
         }}
       />
