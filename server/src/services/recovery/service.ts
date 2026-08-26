@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -1458,7 +1458,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
-      "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
+      "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processPid" | "processGroupId" | "processStartedAt" | "startedAt" | "createdAt"
     >,
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
@@ -1466,9 +1466,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
     ]);
-    const silenceStartedAt = silenceStartedAtForRun(run);
-    const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
-    const level = run.status !== "running"
+    const isPidlessWithoutOutput = run.processPid == null && run.processGroupId == null && run.lastOutputAt == null;
+    const silenceStartedAt = isPidlessWithoutOutput ? null : silenceStartedAtForRun(run);
+    const silenceAgeMs = run.status === "running" && !isPidlessWithoutOutput ? silenceAgeMsForRun(run, now) : null;
+    const level = run.status !== "running" || isPidlessWithoutOutput
       ? "not_applicable"
       : quietUntilDecision
         ? "snoozed"
@@ -2307,6 +2308,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
+          or(
+            isNotNull(heartbeatRuns.processPid),
+            isNotNull(heartbeatRuns.processGroupId),
+            isNotNull(heartbeatRuns.lastOutputAt),
+          ),
           sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
         ),
       )

@@ -288,6 +288,64 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
+  it("does not escalate stale pid-less runs with no output while preserving stalled-process alerts", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const stale = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    await db.update(heartbeatRuns).set({
+      processStartedAt: new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
+      processPid: null,
+      processGroupId: null,
+      lastOutputAt: null,
+    }).where(eq(heartbeatRuns.id, stale.runId));
+
+    const stalledRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: stalledRunId,
+      companyId: stale.companyId,
+      agentId: stale.coderId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
+      processStartedAt: new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
+      processPid: process.pid,
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      contextSnapshot: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId: stale.companyId });
+
+    expect(result).toMatchObject({ scanned: 1, created: 1, escalated: 0 });
+    const [pidlessRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stale.runId));
+    expect(pidlessRun).toMatchObject({
+      status: "running",
+      processPid: null,
+      processGroupId: null,
+      lastOutputAt: null,
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+    await expect(recovery.buildRunOutputSilence(pidlessRun!, now)).resolves.toMatchObject({
+      level: "not_applicable",
+      silenceStartedAt: null,
+      silenceAgeMs: null,
+    });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, stale.companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.originId).toBe(stalledRunId);
+
+    const [stalledRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stalledRunId));
+    await expect(recovery.buildRunOutputSilence(stalledRun!, now)).resolves.toMatchObject({ level: "suspicious" });
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
