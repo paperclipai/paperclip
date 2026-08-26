@@ -1559,7 +1559,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       agentId: coach.id,
     });
 
-    const rejected = await interactionsSvc.rejectInteraction(
+    const { interaction: rejected } = await interactionsSvc.rejectInteraction(
       { id: proposalIssueId, companyId },
       rejectedProposal.id,
       { reason: "Not the right rule." },

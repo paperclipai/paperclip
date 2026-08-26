@@ -917,7 +917,9 @@ Resolver governance:
 Rules:
 
 - `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
-- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed. Under `continuationPolicy: "wake_assignee"` (not `_on_accept`) a rejection *does* wake, since the asking agent has to revise its proposal.
+- If the issue is assigned to a *user* when the interaction resolves, the server hands it back to the creating agent (`assigneeUserId` cleared, `assigneeAgentId` set to the creator, status returned to `todo`, or kept at `blocked`) so the continuation wake has a live target. Issues already assigned to an agent are never reassigned. The handoff is best-effort under concurrency: it is applied with a guarded update, so if the issue is reassigned or closed at the same moment, the interaction still resolves but the handoff is skipped rather than overwriting the newer state.
+- The handoff fires on exactly the resolutions that queue a continuation wake, and on no others: an answered or cancelled `ask_user_questions`, an accepted or rejected `suggest_tasks`, and an accepted or rejected `request_confirmation`/`request_checkbox_confirmation`. `continuationPolicy: "none"` never hands off — the issue stays with its human owner. Neither does a rejection under `wake_assignee_on_accept`, which by definition queues no wake: handing the issue over would park it on an agent nobody wakes.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.

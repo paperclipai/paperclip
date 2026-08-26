@@ -1074,7 +1074,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       await releaseIssueLock();
     }
 
-    await expect(rejection).resolves.toMatchObject({ status: "rejected" });
+    await expect(rejection).resolves.toMatchObject({ interaction: { status: "rejected" } });
   });
 
   it("waits on the issue before locking a proposal execution result", async () => {

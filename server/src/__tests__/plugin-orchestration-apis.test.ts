@@ -6,12 +6,14 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   approvals,
   assets,
   companies,
   companyMemberships,
+  companySkills,
   costEvents,
   createDb,
   executionWorkspaces,
@@ -119,7 +121,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(companyMemberships);
+    // A dispatched wakeup stamps the agent's runtime state, and that row holds a
+    // foreign key to `agents` — without this the first test that produces a live
+    // wake target makes every later test in the file fail on teardown.
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -1097,6 +1104,118 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       expect(row?.status).toBe("pending");
     },
   );
+
+  /**
+   * `queuePluginInteractionContinuationWakeup` fires the wake with `void
+   * heartbeat.wakeup(...)`, so the request row — and the heartbeat run that
+   * references it — land after `respondInteraction` has already returned.
+   *
+   * Tests that produce a live wake target have to wait for both before ending,
+   * otherwise the writes race `afterEach` and it fails on the `agents` /
+   * `agent_wakeup_requests` foreign keys. Deleting the rows here instead is not
+   * an option: the run references the request, so only the established cleanup
+   * order can remove them. Returns the queued requests so callers can assert
+   * who was woken.
+   */
+  async function settleQueuedWakeup(agentId: string) {
+    let requests: Array<typeof agentWakeupRequests.$inferSelect> = [];
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      requests = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      if (requests.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (requests.length === 0) return requests;
+
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      if (runs.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return requests;
+  }
+
+  it("respondInteraction records the creator-agent handoff as its own issue.updated activity", async () => {
+    // The handoff reassigns the issue from a human to an agent and moves its
+    // status. Logging only `issue.thread_interaction_rejected` would leave that
+    // ownership change unexplained in the activity history — the HTTP path emits
+    // a separate `issue.updated`, and the plugin path has to match it.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium",
+      assigneeUserId: humanUserId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId, { createdByAgentId: agentId });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    const result = await services.issues.respondInteraction({
+      issueId, interactionId, companyId, action: "reject", actorUserId: humanUserId, reason: "Needs a rethink",
+    });
+    expect(result.applied).toBe(true);
+
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issueRow).toMatchObject({
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    // Before the handoff the issue carried no assignee agent, so this wake had
+    // no target at all and was silently dropped.
+    const wakeups = await settleQueuedWakeup(agentId);
+    expect(wakeups).toHaveLength(1);
+
+    const entries = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)));
+    const handoff = entries.find((entry) => entry.action === "issue.updated");
+    expect(handoff?.details).toMatchObject({
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      source: "request_confirmation_reject",
+      interactionId,
+      _previous: {
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: humanUserId,
+      },
+    });
+  });
+
+  it("respondInteraction leaves no handoff activity when the agent is already working the issue", async () => {
+    // The negative control for the test above. `in_progress` is the case the
+    // eligibility rule refuses: the asking agent already holds the issue and is
+    // mid-flight on it, so a decline must not drag it back to `todo`. Only an
+    // `in_review` issue — where the agent is waiting, not working — hands back.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_progress", priority: "medium", assigneeAgentId: agentId,
+    });
+    const interactionId = await seedInteraction(companyId, issueId, { createdByAgentId: agentId });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    await services.issues.respondInteraction({
+      issueId, interactionId, companyId, action: "reject", actorUserId: humanUserId, reason: "No",
+    });
+    await settleQueuedWakeup(agentId);
+
+    const entries = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)));
+    expect(entries.some((entry) => entry.action === "issue.updated")).toBe(false);
+  });
 
   it("respondInteraction converges (applied:false) when the interaction is already resolved", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
