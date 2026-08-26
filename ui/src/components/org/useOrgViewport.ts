@@ -73,6 +73,16 @@ export function useOrgViewport({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [dragging, setDragging] = useState(false);
+  // Live mirrors of pan/zoom, plus the exact values of the last auto-fit. The
+  // debounced resize handler reads these to tell whether the user has moved the
+  // view away from the fit since (refs stay current inside its closure; state
+  // would be stale). Any pan/zoom/pinch changes pan or zoom to a different value,
+  // so an exact match means "still on the fit view" without a manual flag.
+  const panRef = useRef(pan);
+  panRef.current = pan;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const lastFitRef = useRef<{ zoom: number; x: number; y: number } | null>(null);
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const touchGesture = useRef<TouchGesture>({
     mode: null,
@@ -117,11 +127,13 @@ export function useOrgViewport({
     const chartW = contentBounds.width * fitZoom;
     const chartH = contentBounds.height * fitZoom;
 
-    setZoom(fitZoom);
-    setPan({
+    const fitPan = {
       x: (containerW - chartW) / 2,
       y: (containerH - chartH) / 2,
-    });
+    };
+    setZoom(fitZoom);
+    setPan(fitPan);
+    lastFitRef.current = { zoom: fitZoom, x: fitPan.x, y: fitPan.y };
   }, [ready, contentBounds, fitKey]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -184,9 +196,52 @@ export function useOrgViewport({
     const fitZoom = Math.min(scaleX, scaleY, 1);
     const chartW = contentBounds.width * fitZoom;
     const chartH = contentBounds.height * fitZoom;
+    const fitPan = { x: (cW - chartW) / 2, y: (cH - chartH) / 2 };
     setZoom(fitZoom);
-    setPan({ x: (cW - chartW) / 2, y: (cH - chartH) / 2 });
+    setPan(fitPan);
+    lastFitRef.current = { zoom: fitZoom, x: fitPan.x, y: fitPan.y };
   }, [contentBounds]);
+
+  // Re-fit when the CONTAINER itself resizes — e.g. the desktop sidebar collapses
+  // or expands, or the window is resized. Content identity and dimensions are
+  // unchanged in that case, so the signature-gated effect above never fires and
+  // the old fit (computed for the previous width) leaves the chart clipped or
+  // off-center.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    let seenInitial = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      // The first delivery reports the current size, which the signature effect
+      // has already fitted; only react to genuine later resizes.
+      if (!seenInitial) {
+        seenInitial = true;
+        return;
+      }
+      // A drag-resize (e.g. the sidebar resize handle) emits a burst of
+      // callbacks — coalesce them into a single fit once the size settles.
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!ready) return;
+        // Don't clobber a view the user has panned/zoomed away from the fit;
+        // any interaction moves pan/zoom off the recorded fit values, and the
+        // explicit "Fit to screen" control is their way back.
+        const lastFit = lastFitRef.current;
+        const onFitView =
+          lastFit !== null &&
+          zoomRef.current === lastFit.zoom &&
+          panRef.current.x === lastFit.x &&
+          panRef.current.y === lastFit.y;
+        if (onFitView) fitToScreen();
+      }, 180);
+    });
+    observer.observe(container);
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [ready, fitToScreen]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
     if (e.touches.length >= 2 && containerRef.current) {
