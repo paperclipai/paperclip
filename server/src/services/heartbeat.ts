@@ -14949,6 +14949,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const suppressedProjectExecutionWorkspacePolicyWarning =
       describeSuppressedProjectExecutionWorkspacePolicy({
         projectPolicy: parsedProjectExecutionWorkspacePolicy,
+        // The ungated settings on purpose: the comparison runs in the flag-on world, where the gate
+        // would have restored these alongside the policy.
+        issueSettings: parsedIssueExecutionWorkspaceSettings,
         legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
         agentConfig: config,
         lowTrustReview,
@@ -14957,6 +14960,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           mode: requestedExecutionWorkspaceMode,
           source: resolvedWorkspace.source,
           baseCwdFallback: resolvedWorkspace.baseCwdFallback,
+          // `shouldRestoreExistingWorkspace` is `requestedShouldReuseExisting` verbatim, so the
+          // restore decision is already final here even though provisioning runs below.
+          restoredWorkspaceMode: reusableExistingExecutionWorkspace
+            ? issueExecutionWorkspaceModeForPersistedWorkspace(reusableExistingExecutionWorkspace.mode)
+            : null,
         },
       });
     if (suppressedProjectExecutionWorkspacePolicyWarning) {
@@ -14972,8 +14980,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectWorkspaceStrategyType:
             parsedProjectExecutionWorkspacePolicy?.workspaceStrategy?.type ?? null,
           requestedExecutionWorkspaceMode,
+          issueExecutionWorkspaceMode: parsedIssueExecutionWorkspaceSettings?.mode ?? null,
           resolvedWorkspaceSource: resolvedWorkspace.source,
           resolvedWorkspaceBaseCwdFallback: resolvedWorkspace.baseCwdFallback,
+          restoredExecutionWorkspaceId: reusableExistingExecutionWorkspace?.id ?? null,
+          restoredExecutionWorkspaceMode: reusableExistingExecutionWorkspace?.mode ?? null,
         },
         "Project execution workspace policy is configured but not applied; isolated workspaces are disabled for this instance",
       );

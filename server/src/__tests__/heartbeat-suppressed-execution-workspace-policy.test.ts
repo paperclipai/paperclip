@@ -24,6 +24,7 @@ import {
   projectWorkspaces,
   workspaceOperations,
 } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -450,5 +451,93 @@ describeEmbeddedPostgres("project execution workspace policy suppressed by the i
     // checkout. The main checkout is the first line, so two issues means three lines.
     const worktreeList = await readGit(repoRoot, ["worktree", "list"]);
     expect(worktreeList.split("\n")).toHaveLength(issueIds.length + 1);
+  }, 90_000);
+
+  // Turning the instance flag off does not unbind an issue from a workspace an earlier run created:
+  // reuse is driven by the issue's own `executionWorkspaceId` and `reuse_existing` preference, which
+  // this gate never reads. So the run still executes in the isolated worktree while the anchor
+  // resolved before provisioning still reads as the shared project checkout. Naming that anchor
+  // would send an operator to a directory this run never opened — the exact misdirection the
+  // warning exists to prevent.
+  it("names the restored worktree when the flag goes off after an issue is bound to one", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const agentFixedCwd = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-agent-fixed-cwd-")));
+    tempRoots.push(agentFixedCwd);
+
+    const { agentId, issueId } = await seedPolicyProjectRun({
+      db,
+      repoRoot,
+      agentFixedCwd,
+      // On, so the first run actually provisions the worktree and binds the issue to it.
+      isolatedWorkspacesEnabled: true,
+    });
+
+    const adapterWorkspaces: ReturnType<typeof readAdapterWorkspace>[] = [];
+    adapterExecute.mockImplementation(async (adapterInput: unknown) => {
+      adapterWorkspaces.push(readAdapterWorkspace(adapterInput));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Suppressed policy test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const firstRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    expect(firstRun).not.toBeNull();
+    expect((await waitForRunToFinish(heartbeat, firstRun!.id))?.status).toBe("succeeded");
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const worktreeCwd = adapterWorkspaces.at(-1)?.cwd;
+    expect(worktreeCwd).toBeDefined();
+    expect(worktreeCwd).not.toBe(repoRoot);
+
+    // The binding the gate cannot see. Asserted rather than assumed: it is the whole premise of
+    // this test, and without it the second run would simply land on the shared checkout.
+    const [boundIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(boundIssue?.executionWorkspaceId).toBeTruthy();
+    expect(boundIssue?.executionWorkspacePreference).toBe("reuse_existing");
+
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    adapterWorkspaces.length = 0;
+
+    // Dispatch throttles re-waking the same issue for two minutes after a run that recorded no
+    // issue progress, and this fixture's adapter records none. Age the first run out of that
+    // window instead of sleeping through it.
+    await db
+      .update(heartbeatRuns)
+      .set({ finishedAt: new Date(Date.now() - 10 * 60_000) })
+      .where(eq(heartbeatRuns.agentId, agentId));
+
+    const secondRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    expect(secondRun).not.toBeNull();
+    const finishedSecondRun = await waitForRunToFinish(heartbeat, secondRun!.id);
+    expect(finishedSecondRun?.status).toBe("succeeded");
+
+    // Reuse survives the flag: the adapter reopens the worktree, not the shared checkout.
+    expect(adapterWorkspaces.at(0)?.cwd).toBe(worktreeCwd);
+
+    // ...so the warning has to say so. Naming the shared project workspace here would be a lie
+    // about where this run's work went.
+    const secondRunOutput = finishedSecondRun?.stdoutExcerpt ?? "";
+    expect(secondRunOutput).toContain("This project configures an execution workspace policy");
+    expect(secondRunOutput).toContain("an isolated workspace restored from an earlier run");
+    expect(secondRunOutput).not.toContain("uses the shared project workspace");
   }, 90_000);
 });

@@ -245,6 +245,16 @@ export type ResolvedRunWorkspaceDescriptor = {
   source: "project_primary" | "task_session" | "agent_home";
   /** `resolvedWorkspace.baseCwdFallback`: project workspaces existed but none could be used. */
   baseCwdFallback: boolean;
+  /**
+   * Mode of a persisted execution workspace this run actually restored, or null when it provisioned
+   * against the resolved anchor instead.
+   *
+   * Reuse is bound by issue columns (`executionWorkspaceId` plus a `reuse_existing` preference) that
+   * this gate never reads, so disabling the instance flag does not unbind a run from a workspace an
+   * earlier run created. Restoring replaces the adapter's cwd wholesale, which makes every other
+   * field here describe an anchor the run stopped using.
+   */
+  restoredWorkspaceMode: ParsedExecutionWorkspaceMode | null;
 };
 
 /**
@@ -255,6 +265,14 @@ export type ResolvedRunWorkspaceDescriptor = {
  * and a run that opted out of the project workspace never went near the shared checkout.
  */
 function describeResolvedRunWorkspace(workspace: ResolvedRunWorkspaceDescriptor): string {
+  // A restored workspace outranks every anchor signal below, including the fallback: the anchor is
+  // what this run *would* have used, and restoring moved the adapter somewhere else entirely.
+  if (workspace.restoredWorkspaceMode === "isolated_workspace") {
+    return "an isolated workspace restored from an earlier run";
+  }
+  if (workspace.restoredWorkspaceMode === "operator_branch") {
+    return "an operator branch workspace restored from an earlier run";
+  }
   // `source` stays "project_primary" for a fallback anchor, so this flag has to be read first.
   if (workspace.baseCwdFallback) {
     return "the agent home fallback directory, because no project workspace could be used";
@@ -282,9 +300,12 @@ function describeResolvedRunWorkspace(workspace: ResolvedRunWorkspaceDescriptor)
  * - A policy persisting accepted defaults (`defaultMode: "shared_workspace"`,
  *   `sharedWorkspaceConcurrency: "auto"`, empty sub-objects) resolves identically either way and
  *   stays silent.
- * - Issue-level settings are held at the value the run actually has — dropped, since the same gate
- *   drops them — on *both* sides. Varying them too would let an isolation request that came from
- *   the issue be reported as though the project policy caused it.
+ * - Issue-level settings are held equal on *both* sides, at their ungated value. Varying them too
+ *   would let an isolation request that came from the issue be reported as though the project
+ *   policy caused it. They are held *ungated* because the comparison asks what enabling the flag
+ *   would change, and enabling it restores the issue settings alongside the policy: an issue that
+ *   overrides the policy back to the shared workspace neutralizes it, and an issue that asks for
+ *   isolation can still be relying on the policy for the strategy that isolation runs under.
  *
  * The workspace it names comes from resolution, not from the requested mode, so it survives an
  * `agent_default` override, a low-trust review run, and a shared-workspace run that fell back to
@@ -296,6 +317,8 @@ function describeResolvedRunWorkspace(workspace: ResolvedRunWorkspaceDescriptor)
 export function describeSuppressedProjectExecutionWorkspacePolicy(input: {
   /** The parsed, *ungated* project policy — the one the gate is about to discard. */
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  /** The parsed, *ungated* issue settings — held equal on both sides of the comparison. */
+  issueSettings: IssueExecutionWorkspaceSettings | null;
   legacyUseProjectWorkspace: boolean | null;
   agentConfig: Record<string, unknown>;
   lowTrustReview: boolean;
@@ -310,10 +333,10 @@ export function describeSuppressedProjectExecutionWorkspacePolicy(input: {
     legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
     agentConfig: input.agentConfig,
     lowTrustReview: input.lowTrustReview,
-    // Gated out for this run, so both sides of the comparison see them gated out.
-    issueSettings: null,
+    issueSettings: input.issueSettings,
   };
-  // What the run would get with the flag on, against what it is actually getting with it off.
+  // Both sides sit in the flag-on world, varying only the project policy, so a difference is
+  // attributable to the policy alone rather than to everything else the gate drops with it.
   const applied = resolveExecutionWorkspaceControl({ ...shared, projectPolicy: input.projectPolicy });
   const suppressed = resolveExecutionWorkspaceControl({ ...shared, projectPolicy: null });
   if (
@@ -487,9 +510,12 @@ export function defaultIssueExecutionWorkspaceSettingsForProject(
   };
 }
 
+// Returns a *parsed* mode rather than the raw settings union: every branch below resolves to a
+// concrete workspace, so "inherit" and "reuse_existing" are unreachable and callers should not have
+// to re-narrow them.
 export function issueExecutionWorkspaceModeForPersistedWorkspace(
   mode: string | null | undefined,
-): IssueExecutionWorkspaceSettings["mode"] {
+): ParsedExecutionWorkspaceMode {
   if (mode === null || mode === undefined) {
     return "agent_default";
   }
