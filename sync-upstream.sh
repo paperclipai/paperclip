@@ -54,9 +54,10 @@ fi
 
 echo "=== Installing dependencies ==="
 # Node 24 required since upstream #11792; pnpm lives in the metricgator profile bin.
+# cargo required since upstream added packages/paperclip-runner (Rust binary, ~2026-08-26).
 # CI=1 avoids an interactive "remove node_modules and reinstall?" prompt that
 # aborts non-tty runs and leaves the tree half-installed.
-export PATH="/root/.nvm/versions/node/v24.15.0/bin:/root/.hermes/profiles/metricgator/node/bin:$PATH"
+export PATH="/root/.nvm/versions/node/v24.15.0/bin:/root/.hermes/profiles/metricgator/node/bin:/root/.cargo/bin:$PATH"
 export CI=1
 pnpm install --frozen-lockfile
 
