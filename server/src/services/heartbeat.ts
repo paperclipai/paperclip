@@ -9431,6 +9431,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
         originKind: issues.originKind,
+        originId: issues.originId,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -9602,10 +9603,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .select({ id: routines.id })
           .from(routines)
           .where(
-            and(
-              eq(routines.companyId, issue.companyId),
-              eq(routines.parentIssueId, issue.id),
-              eq(routines.status, "active"),
+            or(
+              // A routine explicitly anchored to this issue as its static parent container.
+              and(
+                eq(routines.companyId, issue.companyId),
+                eq(routines.parentIssueId, issue.id),
+                eq(routines.status, "active"),
+              ),
+              // AGE-1766: this issue IS a routine_execution instance, and its own
+              // origin routine is still active with a concurrency policy
+              // (coalesce_if_active/skip_if_active) that intentionally reuses this
+              // same execution issue across future triggers instead of creating a
+              // new one. Without this branch, every recurring routine execution
+              // issue that finishes and (by design) stays in_progress waiting for
+              // its next scheduled trigger falsely tripped the missing-disposition
+              // handoff, because `routines.parentIssueId` only ever matches a
+              // routine's configured parent container issue, never the per-firing
+              // execution issue id.
+              issue.originKind === "routine_execution" && issue.originId
+                ? and(
+                  eq(routines.companyId, issue.companyId),
+                  eq(routines.id, issue.originId),
+                  eq(routines.status, "active"),
+                  notInArray(routines.concurrencyPolicy, ["always_enqueue"]),
+                )
+                : sql`false`,
             ),
           )
           .limit(1)

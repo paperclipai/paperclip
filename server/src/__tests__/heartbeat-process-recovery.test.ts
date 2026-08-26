@@ -41,6 +41,7 @@ import {
   plugins,
   projects,
   projectWorkspaces,
+  routines,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -401,6 +402,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -3725,6 +3727,69 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
+  });
+
+  it("AGE-1766: skips the missing-disposition handoff for a recurring routine_execution issue whose own routine is still active", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const routineId = randomUUID();
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Chief of Agents \u2014 board unstick watchdog",
+      assigneeAgentId: agentId,
+      status: "active",
+      // skip_if_active is the whole point: the routine intentionally reuses
+      // this same execution issue in_progress across future 15-min triggers
+      // instead of creating a new one each time.
+      concurrencyPolicy: "skip_if_active",
+    });
+
+    await db
+      .update(issues)
+      .set({ originKind: "routine_execution", originId: routineId })
+      .where(eq(issues.id, issueId));
+
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Swept the board; nothing to unstick. Leaving in_progress per spec for the next 15-min trigger.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Swept the board; nothing to unstick. Leaving in_progress per spec for the next 15-min trigger.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    // The synchronous, durable side effect of the missing-disposition handoff
+    // firing is this activity-log entry, written in the same post-run pipeline
+    // step that computes the decision. Poll for it the same way the sibling
+    // "queues one finish-handoff wake" test polls for the wakeup row, since the
+    // activity write lands slightly after the source run itself reaches a
+    // terminal status.
+    await waitForHeartbeatIdle(db, 5_000);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(false);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
   });
 
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
