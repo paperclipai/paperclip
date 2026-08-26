@@ -50,6 +50,13 @@ function attachErrorContext(
   }
 }
 
+/** Report a server-side crash to every error sink. */
+function reportCrash(error: Error): void {
+  const tc = getTelemetryClient();
+  if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
+  captureException(error);
+}
+
 function getPaperclipDb(req: Request): Db | null {
   const locals = req.app?.locals as { paperclipDb?: Db; db?: Db } | undefined;
   return locals?.paperclipDb ?? locals?.db ?? null;
@@ -108,9 +115,7 @@ export function errorHandler(
         { message: err.message, stack: err.stack, name: err.name, details: err.details },
         err,
       );
-      const tc = getTelemetryClient();
-      if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
-      captureException(err);
+      reportCrash(err);
     }
     res.status(err.status).json({
       error: err.message,
@@ -149,9 +154,7 @@ export function errorHandler(
     rootError,
   );
 
-  const tc = getTelemetryClient();
-  if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
-  captureException(rootError);
+  reportCrash(rootError);
 
   res.status(500).json({
     error: "Internal server error",
