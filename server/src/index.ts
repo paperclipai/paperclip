@@ -1957,6 +1957,21 @@ export async function startServer(): Promise<StartedServer> {
     });
   }
 
+  // Workspace-operation logs reuse the run-log sweeper. Opt-in like the other
+  // retention jobs. No default archive: the durable record for these operations
+  // is the workspace_operations row (status, excerpts, byte counts); the .ndjson
+  // files are full-output spillover, and empty ones are no longer created at all.
+  const workspaceOperationLogRetentionDays = Number(process.env.PAPERCLIP_WORKSPACE_OPERATION_LOG_RETENTION_DAYS);
+  if (Number.isFinite(workspaceOperationLogRetentionDays) && workspaceOperationLogRetentionDays > 0) {
+    startRunLogRetention({
+      basePath: process.env.WORKSPACE_OPERATION_LOG_BASE_PATH
+        ?? resolve(resolvePaperclipInstanceRoot(), "data", "workspace-operation-logs"),
+      archivePath: process.env.PAPERCLIP_WORKSPACE_OPERATION_LOG_ARCHIVE_PATH?.trim() || undefined,
+      retentionDays: workspaceOperationLogRetentionDays,
+      batchSize: 2_000,
+    });
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.

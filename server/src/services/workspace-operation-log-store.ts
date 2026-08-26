@@ -50,15 +50,12 @@ function resolveWithin(basePath: string, relativePath: string) {
   return resolved;
 }
 
-function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceOperationLogStore {
-  async function ensureDir(relativeDir: string) {
-    const dir = resolveWithin(basePath, relativeDir);
-    await fs.mkdir(dir, { recursive: true });
-  }
-
+export function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceOperationLogStore {
   async function readFileRange(filePath: string, offset: number, limitBytes: number): Promise<WorkspaceOperationLogReadResult> {
     const stat = await fs.stat(filePath).catch(() => null);
-    if (!stat) throw notFound("Workspace operation log not found");
+    // Log files are created lazily on first append, so a missing file is an
+    // operation that never produced output — an empty log, not an error.
+    if (!stat) return { content: "" };
 
     const start = Math.max(0, Math.min(offset, stat.size));
     const end = Math.max(start, Math.min(start + limitBytes - 1, stat.size - 1));
@@ -94,14 +91,14 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
 
   return {
     async begin(input) {
+      // Deliberately touches nothing on disk: most operations never produce
+      // output, and an eager per-operation file (plus a dir per company ever
+      // seen) is an unbounded inode sink. The file and its directory are
+      // created by the first append instead (TSMC-21945).
       const [companyId] = safeSegments(input.companyId);
       const operationId = safeSegments(input.operationId)[0]!;
-      const relDir = companyId;
-      const relPath = path.join(relDir, `${operationId}.ndjson`);
-      await ensureDir(relDir);
-
-      const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      const relPath = path.join(companyId, `${operationId}.ndjson`);
+      resolveWithin(basePath, relPath);
 
       return { store: "local_file", logRef: relPath };
     },
@@ -114,6 +111,7 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
         stream: event.stream,
         chunk: event.chunk,
       });
+      await fs.mkdir(path.dirname(absPath), { recursive: true });
       await fs.appendFile(absPath, `${line}\n`, "utf8");
     },
 
@@ -123,7 +121,8 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
       }
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);
-      if (!stat) throw notFound("Workspace operation log not found");
+      // Never-appended log: nothing was written, so there is nothing to hash.
+      if (!stat) return { bytes: 0, compressed: false };
 
       const hash = await sha256File(absPath);
       return {
