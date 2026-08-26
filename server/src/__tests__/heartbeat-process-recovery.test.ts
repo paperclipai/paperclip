@@ -1968,27 +1968,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("suppresses a missing-comment retry when the agent is paused between the lookup and the insert (TSMC-21661)", async () => {
     const { agentId, runId } = await seedQueuedIssueRunFixture();
+    // No summary/result/message field: buildHeartbeatRunIssueComment (see
+    // heartbeat-run-summary.ts) returns null for an empty resultJson, so the
+    // run-completion handler posts no fallback comment. A non-empty summary
+    // here would itself get auto-posted as the run's issue comment (the
+    // FALLBACK_WITHHELD_COMMENT / summary passthrough), which satisfies the
+    // comment policy and defeats the very "no comment posted" scenario this
+    // test needs to reach the missing-comment retry path.
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
       timedOut: false,
       errorMessage: null,
-      summary: "Did some work but posted no issue comment.",
       resultJson: {},
       provider: "test",
       model: "test-model",
     });
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, runId, 5_000);
-    await waitForHeartbeatIdle(db, 5_000);
-    const finalRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null);
-    console.log("DEBUG run", JSON.stringify({ status: finalRun?.status, issueCommentStatus: finalRun?.issueCommentStatus, errorCode: finalRun?.errorCode, contextSnapshot: finalRun?.contextSnapshot }));
-    const allEvents = await db.select({ message: heartbeatRunEvents.message }).from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
-    console.log("DEBUG all events", JSON.stringify(allEvents.map((e) => e.message)));
-    console.log("DEBUG adapter calls", mockAdapterExecute.mock.calls.length);
-    expect(true).toBe(true);
+    const { spy, fired } = await raceStateChangeOnCommentRetryTransaction(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    });
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 30_000);
+      await waitForHeartbeatIdle(db, 30_000);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fired()).toBe(true);
 
     const retries = await db
       .select()
@@ -2004,16 +2012,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       event.message.includes("Missing-comment retry suppressed at insert time"),
     );
     expect(suppressionEvent?.payload).toMatchObject({ reason: "agent_paused", agentStatus: "paused" });
-  }, 20_000);
+  }, 45_000);
 
   it("suppresses a missing-comment retry when the issue is blocked between the lookup and the insert (TSMC-21661)", async () => {
     const { issueId, runId } = await seedQueuedIssueRunFixture();
+    // See the paused-agent test above: an empty resultJson (no summary/result/
+    // message) is required so no fallback comment gets auto-posted, which
+    // would otherwise satisfy the comment policy before this path is reached.
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
       timedOut: false,
       errorMessage: null,
-      summary: "Did some work but posted no issue comment.",
       resultJson: {},
       provider: "test",
       model: "test-model",
@@ -2025,8 +2035,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     try {
       await heartbeat.resumeQueuedRuns();
-      await waitForRunToSettle(heartbeat, runId, 5_000);
-      await waitForHeartbeatIdle(db, 5_000);
+      await waitForRunToSettle(heartbeat, runId, 30_000);
+      await waitForHeartbeatIdle(db, 30_000);
     } finally {
       spy.mockRestore();
     }
@@ -2046,6 +2056,185 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       event.message.includes("Missing-comment retry suppressed at insert time"),
     );
     expect(suppressionEvent?.payload).toMatchObject({ reason: "issue_blocked", issueStatus: "blocked" });
+  }, 45_000);
+
+  // TSMC-21880 (CTO review's third named boundary, still open after the
+  // process-loss and missing-comment fixes above): promoteScheduledRetryRun
+  // reads the gate with evaluateScheduledRetryGate, then — in a SEPARATE,
+  // later statement — writes the "queued" update. A card can be parked
+  // blocked or its agent paused in that window and the scheduled/timeout
+  // retry is promoted anyway, the same failure class TSMC-21661 fixed for
+  // the other two spawn paths. retrySpawnSuppression is now called inside
+  // promoteScheduledRetryRun's own transaction (closure captures
+  // `scheduledRetrySuppression`), so intercept that specific transaction the
+  // same way the missing-comment tests intercept `commentRetrySuppression`.
+  async function raceStateChangeOnScheduledRetryPromotionTransaction(mutate: () => Promise<void>) {
+    const realTransaction = db.transaction.bind(db);
+    let fired = false;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: unknown[]) => {
+      const callback = args[0];
+      if (!fired && typeof callback === "function" && callback.toString().includes("scheduledRetrySuppression")) {
+        fired = true;
+        await mutate(); // state changes AFTER the gate check, BEFORE the promotion write
+      }
+      return (realTransaction as unknown as (...a: unknown[]) => unknown)(...args);
+    }) as never);
+    return { spy, fired: () => fired };
+  }
+
+  async function seedDueScheduledRetryFixture() {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+    const now = new Date("2026-03-19T00:10:00.000Z");
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: now,
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        error: "workspace validation failed before dispatch",
+        errorCode: "workspace_validation_failed",
+        resultJson: {},
+        finishedAt: now,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+          retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({ status: "in_review", executionRunId: runId })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    });
+    if (scheduled.outcome !== "scheduled") {
+      throw new Error(`expected scheduleBoundedRetry to schedule, got ${scheduled.outcome}`);
+    }
+
+    return { heartbeat, agentId, issueId, runId, scheduledRunId: scheduled.run.id, dueAt: scheduled.dueAt };
+  }
+
+  it("suppresses a scheduled/timeout retry promotion when the agent is paused between the gate check and the write (TSMC-21880)", async () => {
+    const { heartbeat, agentId, runId, scheduledRunId, dueAt } = await seedDueScheduledRetryFixture();
+
+    const { spy, fired } = await raceStateChangeOnScheduledRetryPromotionTransaction(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    });
+    let promotion;
+    try {
+      promotion = await heartbeat.promoteDueScheduledRetries(dueAt);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fired()).toBe(true);
+    expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+    // The scheduled-retry row is created by scheduleBoundedRetry BEFORE promotion
+    // ever runs, so it always carries retryOfRunId = runId. Promotion only ever
+    // flips its status to "queued" — it never inserts a second row. The
+    // suppression contract under test is that this status flip did NOT happen,
+    // not that no row with retryOfRunId exists (unlike the process-loss and
+    // missing-comment boundaries, which insert their retry row at promotion time).
+    const stillScheduled = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduledRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(stillScheduled?.status).toBe("scheduled_retry");
+
+    const events = await db
+      .select({ message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, scheduledRunId));
+    const suppressionEvent = events.find((event) =>
+      event.message.includes("Scheduled retry suppressed at promotion time"),
+    );
+    expect(suppressionEvent?.payload).toMatchObject({ reason: "agent_paused", agentStatus: "paused" });
+  }, 20_000);
+
+  it("suppresses a scheduled/timeout retry promotion when the issue is blocked between the gate check and the write (TSMC-21880)", async () => {
+    const { heartbeat, issueId, runId, scheduledRunId, dueAt } = await seedDueScheduledRetryFixture();
+
+    const { spy, fired } = await raceStateChangeOnScheduledRetryPromotionTransaction(async () => {
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    });
+    let promotion;
+    try {
+      promotion = await heartbeat.promoteDueScheduledRetries(dueAt);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fired()).toBe(true);
+    expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+    const stillScheduled = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduledRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(stillScheduled?.status).toBe("scheduled_retry");
+
+    const events = await db
+      .select({ message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, scheduledRunId));
+    const suppressionEvent = events.find((event) =>
+      event.message.includes("Scheduled retry suppressed at promotion time"),
+    );
+    expect(suppressionEvent?.payload).toMatchObject({ reason: "issue_blocked", issueStatus: "blocked" });
+  }, 20_000);
+
+  it("still promotes a scheduled/timeout retry when nothing changes in that window (TSMC-21880 positive control)", async () => {
+    // Without this, both suppression tests above would pass against a gate
+    // that suppressed promotion unconditionally.
+    const { heartbeat, runId, scheduledRunId, dueAt } = await seedDueScheduledRetryFixture();
+
+    const { spy, fired } = await raceStateChangeOnScheduledRetryPromotionTransaction(async () => {
+      /* touch nothing — same interception, no state change */
+    });
+    let promotion;
+    try {
+      promotion = await heartbeat.promoteDueScheduledRetries(dueAt);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fired()).toBe(true);
+    expect(promotion).toEqual({ promoted: 1, runIds: [scheduledRunId] });
+
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retries).toHaveLength(1);
   }, 20_000);
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {

@@ -1751,6 +1751,230 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 20_000);
 
+  // TSMC-21661 — the missing-comment retry path re-reads the agent and issue
+  // inside the SAME transaction that inserts the retry, under row locks
+  // (server/src/services/heartbeat.ts, retrySpawnSuppression /
+  // enqueueMissingIssueCommentRetry). These tests drive a real run through the
+  // controlled gateway to reach that transaction, then mutate the bound agent
+  // or issue in the exact window between the lookup and the insert by
+  // intercepting the db.transaction() call whose callback source references
+  // retrySpawnSuppression — deterministic, no sleeps or timing assumptions.
+  async function raceStateChangeOnCommentRetryTransaction(mutate: () => Promise<void>) {
+    const realTransaction = db.transaction.bind(db);
+    let fired = false;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: unknown[]) => {
+      const callback = args[0];
+      if (
+        !fired &&
+        typeof callback === "function" &&
+        callback.toString().includes("commentRetrySuppression")
+      ) {
+        fired = true;
+        await mutate();
+      }
+      return (realTransaction as unknown as (...a: unknown[]) => unknown)(...args);
+    }) as never);
+    return { spy, fired: () => fired };
+  }
+
+  it("suppresses a missing-comment retry when the agent is paused between the lookup and the insert (TSMC-21661)", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    let spy: ReturnType<typeof vi.spyOn> | null = null;
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Require a comment",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const race = await raceStateChangeOnCommentRetryTransaction(async () => {
+        await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      });
+      spy = race.spy;
+
+      gateway.releaseFirstWait();
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        return runs.length === 1 && runs[0]?.status === "succeeded" && race.fired();
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(runs).toHaveLength(1);
+      expect(race.fired()).toBe(true);
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runs[0]!.id));
+      const suppressionEvent = events.find(
+        (event) =>
+          typeof event.message === "string" &&
+          event.message.includes("Missing-comment retry suppressed at insert time"),
+      );
+      expect(suppressionEvent?.payload).toMatchObject({ reason: "agent_paused" });
+    } finally {
+      spy?.mockRestore();
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
+  it("suppresses a missing-comment retry when the issue is blocked between the lookup and the insert (TSMC-21661)", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    let spy: ReturnType<typeof vi.spyOn> | null = null;
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Require a comment",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const race = await raceStateChangeOnCommentRetryTransaction(async () => {
+        await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+      });
+      spy = race.spy;
+
+      gateway.releaseFirstWait();
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        return runs.length === 1 && runs[0]?.status === "succeeded" && race.fired();
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(runs).toHaveLength(1);
+      expect(race.fired()).toBe(true);
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runs[0]!.id));
+      const suppressionEvent = events.find(
+        (event) =>
+          typeof event.message === "string" &&
+          event.message.includes("Missing-comment retry suppressed at insert time"),
+      );
+      expect(suppressionEvent?.payload).toMatchObject({ reason: "issue_blocked" });
+    } finally {
+      spy?.mockRestore();
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
   it("defers mentioned-agent wakes while another agent is actively executing the same issue", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
