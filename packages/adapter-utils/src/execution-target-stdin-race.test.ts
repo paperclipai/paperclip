@@ -1280,6 +1280,25 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       for (const site of killCallSites) {
         expect(site).toBe("child.kill(");
       }
+
+      // Regression coverage for PAP-5336: the shared tail must carry the
+      // session-identity latch, not the old counter it replaced. A counter
+      // that a successful `readdir` reset to zero let an attacker who
+      // recreated a deleted control directory keep the wrapper alive
+      // forever. Both wrapper variants append the same shared tail, so this
+      // check runs once per variant and fails if a future edit lands the
+      // latch in only one of them.
+      expect(src).not.toContain("missingSessionDirStreak");
+      const identityLatchDeclarations = code.match(/\blet identityLost = false;/g) ?? [];
+      expect(identityLatchDeclarations.length).toBe(1);
+      const identityCaptureCallSites = code.match(/\bcaptureSessionIdentity\(\)/g) ?? [];
+      expect(identityCaptureCallSites.length).toBeGreaterThan(0);
+      const identityVerifyCallSites = code.match(/\bverifySessionIdentity\(\)/g) ?? [];
+      expect(identityVerifyCallSites.length).toBeGreaterThan(0);
+      // The capture must run before the first poll cycle: its call site must
+      // precede the `pollStdin()` call site in the emitted source.
+      expect(code.indexOf("await captureSessionIdentity();")).toBeGreaterThan(0);
+      expect(code.indexOf("await captureSessionIdentity();")).toBeLessThan(code.indexOf("void pollStdin()"));
     }
   });
 
@@ -1413,4 +1432,173 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     const removeScript = scripts.find((script) => script.trim().startsWith("rm -rf"));
     expect(removeScript).toBeDefined();
   }, 10_000);
+
+  // Regression coverage for PAP-5336: the finding this test reproduces is a
+  // sandbox control-plane integrity failure, not a timing quirk. During
+  // `stop()`, a sandbox peer with access to the session directory can (1)
+  // delete the real `shutdown` control file before the wrapper ever reads
+  // it, (2) forge a `shutdownAck` event so the host's wait ends early, and
+  // (3) recreate `sessionDir/stdin` right after the host removes
+  // `sessionDir`. On the parent commit, a successful `readdir` on the
+  // recreated directory reset the wrapper's only terminal counter to zero,
+  // so the wrapper (and its child) polled forever.
+  //
+  // The fix replaces the counter with an identity captured at startup: the
+  // device number, the inode number, and the inode's own creation time. All
+  // three matter for this test to be a real regression check, not a check
+  // that passes by luck. Recreating a directory at the same path right after
+  // removal, with nothing else on the filesystem in between, can reissue the
+  // exact same device and inode numbers on common filesystems (this test's
+  // recreate step does exactly that): a device/inode-only identity would
+  // then wrongly read as unchanged. The creation time does not have this
+  // gap, because it is set fresh on every inode allocation even when the
+  // allocator reissues an old inode number.
+  it("T15 latches on a lost session identity: a recreated control directory cannot keep the wrapper or its child alive", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lost-identity-"));
+    cleanupDirs.push(rootDir);
+    const pidFile = path.join(rootDir, "t15-child.pid");
+    const childPath = path.join(rootDir, "t15-child.mjs");
+    await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+    let sessionDir = "";
+    let stdinDir = "";
+    let eventsDir = "";
+    let shutdownFileDeleted = false;
+    let shutdownAckForged = false;
+    let stdinDirRecreated = false;
+    const scripts: string[] = [];
+    let counter = 0;
+
+    const syntheticSuccess: RunProcessResult = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    };
+
+    // Run every script for real on the local filesystem (matching T2/T4/T5's
+    // harness), so a real wrapper process and a real child process come up,
+    // with two exceptions that make the attack deterministic instead of a
+    // race against the wrapper's own 50 ms poll:
+    //
+    // 1. With no stdin data ever sent, the host's shutdown control message
+    //    always targets stdin file 000000000002.json (file 1 is stdinEnd).
+    //    Never let that write's script pipeline actually run: this is
+    //    equivalent to an attacker who deletes the file before the wrapper
+    //    ever reads it, but with no window in which the wrapper could win a
+    //    race and read it first.
+    // 2. Perform the sessionDir removal and the sessionDir/stdin,
+    //    sessionDir/events recreation as direct filesystem calls in this
+    //    same async step, instead of spawning a real `rm -rf` subprocess.
+    //    That removes an external process's scheduling latency from the
+    //    window the wrapper's next poll cycle has to observe the recreated
+    //    directory.
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }): Promise<RunProcessResult> => {
+        counter += 1;
+        const script = input.args?.[1] ?? "";
+        scripts.push(script);
+
+        const shutdownFilePath = stdinDir ? path.posix.join(stdinDir, "000000000002.json") : null;
+        if (shutdownFilePath && script.includes(shutdownFilePath)) {
+          if (!shutdownFileDeleted) {
+            shutdownFileDeleted = true;
+            await writeFile(
+              path.join(eventsDir, "999999999999.json"),
+              `${JSON.stringify({ type: "shutdownAck" })}\n`,
+              "utf8",
+            ).catch(() => undefined);
+            shutdownAckForged = true;
+          }
+          return syntheticSuccess;
+        }
+
+        // Match the removal of sessionDir itself, not the host's own
+        // per-file event cleanup (which also runs `rm -rf` on a path that
+        // has sessionDir as a substring).
+        if (!stdinDirRecreated && sessionDir && script.trim() === `rm -rf '${sessionDir}'`) {
+          stdinDirRecreated = true;
+          await rm(sessionDir, { recursive: true, force: true }).catch(() => undefined);
+          await mkdir(stdinDir, { recursive: true }).catch(() => undefined);
+          await mkdir(eventsDir, { recursive: true }).catch(() => undefined);
+          return syntheticSuccess;
+        }
+
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        return runChildProcess(`lost-identity-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+      },
+    };
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-lost-identity",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    const mkdirScript = scripts.find((script) => script.startsWith("mkdir -p"));
+    const dirsMatch = /mkdir -p '([^']+)' '([^']+)'/.exec(mkdirScript ?? "");
+    expect(dirsMatch).not.toBeNull();
+    stdinDir = dirsMatch![1];
+    eventsDir = dirsMatch![2];
+    sessionDir = path.posix.dirname(stdinDir);
+
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).trim().length > 0, 8_000);
+    const pid = Number.parseInt((await readFile(pidFile, "utf8")).trim(), 10);
+    expect(isPidAlive(pid)).toBe(true);
+    const wrapperScriptSubstring = path.posix.join(rootDir, ".paperclip-runtime", "acpx", "process-sessions");
+    await waitFor(async () => (await findLivePidsByArgvSubstring(wrapperScriptSubstring)).length > 0, 4_000);
+
+    await bridge!.stop();
+
+    // Both the attacker's forged shutdownAck and its directory recreation
+    // ran; this is the full chain the finding describes, not a partial one.
+    expect(shutdownFileDeleted).toBe(true);
+    expect(shutdownAckForged).toBe(true);
+    expect(stdinDirRecreated).toBe(true);
+
+    // The wrapper process and its child process both exit within a bounded
+    // time, even though the wrapper never read a real shutdown message and
+    // the host's wait ended early on a forged hint. Only the wrapper's own
+    // identity latch can explain this: it observes the recreated directory
+    // carries a different identity than the one captured at startup.
+    await waitFor(() => !isPidAlive(pid), 8_000);
+    expect(isPidAlive(pid)).toBe(false);
+    await waitFor(async () => (await findLivePidsByArgvSubstring(wrapperScriptSubstring)).length === 0, 8_000);
+  }, 15_000);
 });

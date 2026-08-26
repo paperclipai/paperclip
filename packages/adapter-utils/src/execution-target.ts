@@ -2233,12 +2233,16 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       );
       stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
       await shutdownWrite.catch(() => undefined);
-      // Wait a bounded budget for proof the wrapper stopped: only the
-      // `shutdownAck` event counts. An `exit` or `error` event is untrusted
-      // telemetry from inside the sandbox; it never shortens this wait or
-      // suppresses the warning below. This proof only ends the wait early;
-      // it never gates, shortens, or replaces the removal further down,
-      // which runs unconditionally.
+      // Wait a bounded budget for a hint that the wrapper stopped: only the
+      // `shutdownAck` event counts; an `exit` or `error` event is untrusted
+      // telemetry from inside the sandbox and never shortens this wait or
+      // suppresses the warning below. `shutdownAck` itself is ALSO an
+      // untrusted hint, not proof: any process that shares the sandbox can
+      // write the same event under this session's event directory. It can
+      // only shorten this wait and suppress the warning below; it never
+      // gates, shortens, or replaces the unconditional removal further down.
+      // What actually makes the wrapper's own termination deterministic is
+      // the wrapper-side session-identity latch, not this event.
       let acknowledgedInTime = false;
       readShutdownAckUntil(Date.now() + DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
       await Promise.race([
@@ -2384,32 +2388,113 @@ async function terminate() {
     }, terminateGraceMs);
     killTimer.unref?.();
   }
+  // This event is an untrusted latency hint, not proof. Any process that can
+  // reach this session's event directory can write the same event type. It
+  // can only shorten the host's shutdown wait and suppress the host's
+  // timeout warning; it is never evidence that this wrapper's lifecycle
+  // completed, and the host's cleanup never depends on it. The identity
+  // latch below is what makes this wrapper's own termination deterministic.
   await writeEvent({ type: "shutdownAck" });
 }
 
-// Count consecutive cycles where the stdin directory read fails with a
-// missing-directory error code. The host removes sessionDir only after this
-// wrapper's shutdown acknowledgement or the host's own bounded wait, so two
-// consecutive misses mean the directory is truly gone (the host tore it down
-// without this wrapper ever seeing a shutdown message), not a transient read
-// racing a rename. Every other error code is transient: keep the current
-// behavior of an empty cycle, and do not count it toward the streak.
-let missingSessionDirStreak = 0;
+// A sandbox peer can delete sessionDir and stdinDir, then recreate a
+// directory at the same pathname. A pathname does not prove identity: any
+// process that shares the sandbox can write it. So this wrapper captures the
+// OS-level identity of both paths once at startup, before the first poll
+// cycle, and checks it on every later cycle.
+//
+// The identity is the device number, the inode number, AND the inode's own
+// creation time. The device/inode pair alone is not enough: a filesystem can
+// reissue the exact inode number a just-removed directory held to the very
+// next directory created at the same path, with no attacker action needed
+// beyond the recreate the finding already describes. The creation time does
+// not have this gap: it is set fresh on every inode allocation, even when the
+// allocator reissues an old inode number, so a recreated directory always
+// carries a different creation time. The creation time alone is not enough
+// either, on a filesystem or kernel too old to report it, so this wrapper
+// keeps the device/inode pair as a second signal rather than relying on
+// either alone. Ordinary use of stdinDir (the host writing and this wrapper
+// deleting individual stdin files) changes that directory's OWN change time,
+// but never its creation time, so the creation time is safe to latch on
+// without producing a false positive on every stdin message.
+let sessionDirIdentity = null;
+let stdinDirIdentity = null;
+// The latch. Once set, it never clears. This replaces a counter that a
+// successful read reset to zero: an attacker who recreated the directory
+// before the counter reached its threshold kept the wrapper polling forever.
+// A latch has no threshold to race and no reset path.
+let identityLost = false;
+
+async function statPathIdentity(candidatePath) {
+  const stats = await fs.lstat(candidatePath);
+  if (stats.isSymbolicLink()) {
+    const error = new Error("Refusing a symbolic link on a process session control path.");
+    error.code = "EPAPERCLIP_SYMLINK";
+    throw error;
+  }
+  if (!stats.isDirectory()) {
+    const error = new Error("A process session control path is not a directory.");
+    error.code = "ENOTDIR";
+    throw error;
+  }
+  return { dev: stats.dev, ino: stats.ino, birthtimeMs: stats.birthtimeMs };
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs;
+}
+
+async function latchAndTerminate() {
+  if (identityLost) return;
+  identityLost = true;
+  await terminate();
+}
+
+// Runs once, before the first poll cycle. A failed capture fails closed: the
+// wrapper has no verified identity to check on later cycles, so it
+// terminates now instead of polling a control path it never verified.
+async function captureSessionIdentity() {
+  try {
+    sessionDirIdentity = await statPathIdentity(sessionDir);
+    stdinDirIdentity = await statPathIdentity(stdinDir);
+  } catch (error) {
+    await latchAndTerminate();
+  }
+}
+
+// Runs on every poll cycle, before the wrapper reads stdinDir. Terminate (and
+// latch) on any proof the control path is no longer the one this wrapper
+// captured at startup: a missing path, a path that is no longer a directory,
+// a symbolic link, or a directory whose identity changed. Every other lstat
+// error (for example a permission error) is transient: keep the current
+// cycle empty and do not latch.
+async function verifySessionIdentity() {
+  if (identityLost) return false;
+  try {
+    const session = await statPathIdentity(sessionDir);
+    const stdin = await statPathIdentity(stdinDir);
+    if (!sameIdentity(session, sessionDirIdentity) || !sameIdentity(stdin, stdinDirIdentity)) {
+      await latchAndTerminate();
+      return false;
+    }
+    return true;
+  } catch (error) {
+    const code = error && typeof error === "object" ? error.code : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EPAPERCLIP_SYMLINK") {
+      await latchAndTerminate();
+    }
+    return false;
+  }
+}
 
 async function readStdinDirNames() {
+  if (!(await verifySessionIdentity())) return [];
   try {
-    const names = await fs.readdir(stdinDir);
-    missingSessionDirStreak = 0;
-    return names;
+    return await fs.readdir(stdinDir);
   } catch (error) {
     const code = error && typeof error === "object" ? error.code : undefined;
     if (code === "ENOENT" || code === "ENOTDIR") {
-      missingSessionDirStreak += 1;
-      if (missingSessionDirStreak >= 2) {
-        await terminate();
-      }
-    } else {
-      missingSessionDirStreak = 0;
+      await latchAndTerminate();
     }
     return [];
   }
@@ -2501,6 +2586,8 @@ async function pollStdin() {
     if (!shuttingDown) await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+await captureSessionIdentity();
 
 void pollStdin().catch((error) => void writeEvent({ type: "error", message: error instanceof Error ? error.message : String(error) }));
 `;
