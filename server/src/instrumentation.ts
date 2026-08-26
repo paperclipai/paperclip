@@ -655,14 +655,16 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     process.once("SIGTERM", () => void shutdownInstrumentation());
     process.once("SIGINT", () => void shutdownInstrumentation());
   } catch (err) {
-    // OTel packages not installed, or dynamic import failed. Fall through
-    // with a single diagnostic so the opt-in path is self-documenting.
+    // The exact-version gate above already confirmed every checked package is
+    // installed at the declared version, so only a load failure after that
+    // point reaches this block: a bad build, a broken native binding, or a
+    // package that throws during its own module init. Fall through with a
+    // single diagnostic so the opt-in path is self-documenting.
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] OTEL_EXPORTER_OTLP_ENDPOINT is set but the @opentelemetry/* " +
-        `packages are not installed. Install @opentelemetry/sdk-node, ` +
-        `@opentelemetry/auto-instrumentations-node, ${exporterPackage}, ` +
-        `@opentelemetry/resources, and @opentelemetry/semantic-conventions to enable tracing.`,
+      "[paperclip] OTEL_EXPORTER_OTLP_ENDPOINT is set and the @opentelemetry/* " +
+        "packages passed the version check, but one of them failed to load. " +
+        "Continuing without tracing.",
       err,
     );
   }

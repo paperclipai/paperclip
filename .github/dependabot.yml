@@ -16,8 +16,8 @@ updates:
       - "dependencies"
     # Dependabot's npm parser reads only dependencies, devDependencies, and
     # optionalDependencies — never peerDependencies. It cannot see the
-    # optional OpenTelemetry and Sentry peer dependencies in
-    # server/package.json, so it never bumps their declared versions.
+    # optional OpenTelemetry peer dependencies in server/package.json, so it
+    # never bumps their declared versions.
     ignore:
       # @types/node describes the APIs available in the supported Node runtime.
       # Runtime major upgrades are deliberate compatibility changes, so keep
