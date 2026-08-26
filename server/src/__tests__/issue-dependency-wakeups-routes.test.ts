@@ -33,6 +33,10 @@ const mockIssueService = vi.hoisted(() => ({
   // Mock-gap fill: the PATCH path filters requested blockers down to the
   // unresolved ones; these tests only exercise already-resolved blockers.
   listUnresolvedBlockerIssueIds: vi.fn(async () => []),
+  // TSMC-21870 follow-up: the clear is now a shared service method so the PATCH path,
+  // the comment path and the heartbeat disposition path cannot drift apart.
+  clearResolvedBlockedDependents: vi.fn(async (_blockerId, dependents) =>
+    (dependents ?? []).filter((d) => d.status === "blocked").map((d) => d.id)),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -274,9 +278,9 @@ describe("issue dependency wakeups in issue routes", () => {
     expect(res.status).toBe(200);
 
     await vi.waitFor(() => {
-      expect(mockIssueService.update).toHaveBeenCalledWith(
-        "issue-2",
-        expect.objectContaining({ status: "todo" }),
+      expect(mockIssueService.clearResolvedBlockedDependents).toHaveBeenCalledWith(
+        "issue-1",
+        expect.arrayContaining([expect.objectContaining({ id: "issue-2", status: "blocked" })]),
       );
     });
     // The wake must still fire — clearing the status is the addition, not a replacement.
@@ -313,10 +317,9 @@ describe("issue dependency wakeups in issue routes", () => {
     await vi.waitFor(() => {
       expect(mockWakeup).toHaveBeenCalledWith("agent-2", expect.anything());
     });
-    expect(mockIssueService.update).not.toHaveBeenCalledWith(
-      "issue-2",
-      expect.objectContaining({ status: "todo" }),
-    );
+    // The helper is still called; it is the helper that declines a non-blocked dependent.
+    const cleared = await mockIssueService.clearResolvedBlockedDependents.mock.results.at(-1)?.value;
+    expect(cleared ?? []).not.toContain("issue-2");
   });
 
   it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {

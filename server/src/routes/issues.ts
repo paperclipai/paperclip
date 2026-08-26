@@ -12481,64 +12481,14 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
-          // TSMC-21870: CLEAR THE STATUS AT THE SAME MOMENT WE EMIT THE WAKE.
-          //
-          // `listWakeableBlockedDependents` already applies the unified readiness
-          // check, so reaching here means every blocker of this dependent is done
-          // and finalized. We then woke the assignee and left the card `blocked`.
-          //
-          // The wake says "there is work"; the status says "no work is possible".
-          // Two facts about the same card at the same instant, disagreeing — and the
-          // status is the one the lane acts on. The agent wakes, sees `blocked`,
-          // exits without a disposition, and the card stays blocked forever because
-          // nothing else will ever re-evaluate it. Nothing re-fires: the wake is
-          // idempotency-keyed on (dependent, blockers), so it does not repeat for
-          // the same blocker set.
-          //
-          // Measured 2026-08-26: 320 `issue.blockers_resolved_wake_emitted` in 30h,
-          // and 671 of 2,475 runs (27%) landed on cards that were still `blocked` —
-          // real dispatch and real tokens against cards that could not progress.
-          // Three TSMC cards found blocked behind a terminal blocker for 18.7h,
-          // 0.7h and 491.9h; `stranded-recovery` had been red for 26 consecutive
-          // runs reporting exactly this class fleet-wide.
-          //
-          // Intent was always that the woken agent notices and self-transitions.
-          // That is instruction, not enforcement (TSKB0055). The platform knows the
-          // blockers are clear — it just proved it — so it should say so itself.
-          //
-          // Deliberately narrow: only `blocked` -> `todo`, only when readiness has
-          // already been confirmed, and never touching a card in any other status.
-          if (dependent.status === "blocked") {
-            try {
-              await svc.update(dependent.id, {
-                status: "todo",
-                actorAgentId: null,
-                actorUserId: null,
-              });
-              await logActivity(db, {
-                companyId: issue.companyId,
-                actorType: "system",
-                actorId: "issue_update",
-                agentId: dependent.assigneeAgentId,
-                runId: actor.runId,
-                agentApiKeyId: actor.agentApiKeyId,
-                action: "issue.blocked_cleared_on_blockers_resolved",
-                entityType: "issue",
-                entityId: dependent.id,
-                details: {
-                  label: "Cleared blocked status because every blocker reached a terminal state",
-                  resolvedBlockerIssueId: issue.id,
-                  blockerIssueIds: dependent.blockerIssueIds,
-                },
-              });
-            } catch (err) {
-              // Never let this stop the wake: the wake is the load-bearing half.
-              logger.warn(
-                { err, issueId: dependent.id, blockerIssueId: issue.id },
-                "failed to clear blocked status after blockers resolved",
-              );
-            }
-          }
+          // TSMC-21870: clear the status at the same moment we emit the wake.
+          // The wake says "there is work"; a still-`blocked` status says "none is
+          // possible", and the status is what the lane acts on. Implementation is
+          // shared (svc.clearResolvedBlockedDependents) so the PATCH path, the
+          // comment path and the heartbeat disposition path cannot drift — gating
+          // one path and missing another is the TSMC-21479/21607 mistake, and the
+          // first cut of THIS fix repeated it (TSM-7055 stayed blocked behind a
+          // done child closed via PAPERCLIP_DISPOSITION).
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
@@ -12548,6 +12498,7 @@ export function issueRoutes(
             mutation: "blocker_done",
           });
         }
+        await clearAndLogResolvedDependents(issue.id, dependents, issue.companyId, actor.runId ?? null);
       }
 
       const restoredBlockedReadyDependency =
@@ -13003,6 +12954,37 @@ export function issueRoutes(
     });
     res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, comments));
   });
+
+  // TSMC-21870: one place that clears blocked dependents and records it, so every
+  // "blocker became done" site behaves identically. See services/issues.ts
+  // clearResolvedBlockedDependents for why this is shared rather than inlined.
+  async function clearAndLogResolvedDependents(
+    blockerIssueId: string,
+    dependents: Array<{ id: string; status: string; blockerIssueIds: string[] }>,
+    companyId: string,
+    runId: string | null,
+  ) {
+    try {
+      const cleared = await svc.clearResolvedBlockedDependents(blockerIssueId, dependents);
+      for (const dependentIssueId of cleared) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "issue_update",
+          runId,
+          action: "issue.blocked_cleared_on_blockers_resolved",
+          entityType: "issue",
+          entityId: dependentIssueId,
+          details: {
+            label: "Cleared blocked status because every blocker reached a terminal state",
+            resolvedBlockerIssueId: blockerIssueId,
+          },
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, blockerIssueId }, "failed to clear blocked dependents after blockers resolved");
+    }
+  }
 
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
@@ -14777,6 +14759,11 @@ export function issueRoutes(
             blockerIssueIds: dependent.blockerIssueIds,
           });
         }
+        // TSMC-21870: same clear as the PATCH path — this site woke dependents but
+        // left them `blocked`, so the wake landed on a card the lane could not act on.
+        await clearAndLogResolvedDependents(
+          currentIssue.id, dependents, currentIssue.companyId, actor.runId ?? null,
+        );
       }
 
       const becameTerminal =
