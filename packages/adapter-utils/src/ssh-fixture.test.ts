@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -245,6 +245,73 @@ describe("ssh env-lab fixture", () => {
     expect(restarted.pid).not.toBe(process.pid);
 
     await stopSshEnvLabFixture(restarted);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("rejects a forged state file and cannot signal an unrelated local process", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    // A process this test does not own. A forged state must never be able
+    // to target it for SIGTERM or SIGKILL.
+    const bystander = spawn("sleep", ["30"], { stdio: "ignore" });
+    const bystanderPid = bystander.pid;
+    if (!bystanderPid) {
+      throw new Error("Failed to spawn the bystander process for this regression test.");
+    }
+
+    try {
+      const baseState = {
+        kind: "ssh_openbsd" as const,
+        bindHost: "127.0.0.1",
+        host: "127.0.0.1",
+        port: 0,
+        username: os.userInfo().username,
+        rootDir,
+        workspaceDir: path.join(rootDir, "workspace"),
+        statePath,
+        createdAt: new Date().toISOString(),
+        clientPrivateKeyPath: path.join(rootDir, "client_key"),
+        clientPublicKeyPath: path.join(rootDir, "client_key.pub"),
+        hostPrivateKeyPath: path.join(rootDir, "host_key"),
+        hostPublicKeyPath: path.join(rootDir, "host_key.pub"),
+        authorizedKeysPath: path.join(rootDir, "authorized_keys"),
+        knownHostsPath: path.join(rootDir, "known_hosts"),
+        sshdConfigPath: path.join(rootDir, "sshd_config"),
+        sshdLogPath: path.join(rootDir, "sshd.log"),
+      };
+
+      const forgedVariants = [
+        // An empty sshdConfigPath used to defeat the identity check: an
+        // empty string is a substring of every command line.
+        { ...baseState, pid: bystanderPid, sshdConfigPath: "" },
+        // A sshdConfigPath outside the fixture root.
+        { ...baseState, pid: bystanderPid, sshdConfigPath: "/etc/ssh/sshd_config" },
+        // A non-positive pid.
+        { ...baseState, pid: 0 },
+        { ...baseState, pid: -1 },
+      ];
+
+      for (const forged of forgedVariants) {
+        await writeFile(statePath, JSON.stringify(forged, null, 2), { mode: 0o600 });
+
+        const status = await readSshEnvLabFixtureStatus(statePath);
+        expect(status.running).toBe(false);
+        expect(status.state).toBeNull();
+
+        const stopped = await stopSshEnvLabFixture(statePath);
+        expect(stopped).toBe(false);
+      }
+
+      // No forged state ever reached the identity check or a signal call,
+      // so the bystander process is still alive.
+      expect(() => process.kill(bystanderPid, 0)).not.toThrow();
+    } finally {
+      try {
+        process.kill(bystanderPid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("stops the fixture listener and frees its loopback port", async () => {

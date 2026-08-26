@@ -1704,12 +1704,70 @@ export async function ensureSshWorkspaceReady(
   };
 }
 
+const SSH_ENV_LAB_FIXTURE_PATH_FIELDS = [
+  "rootDir",
+  "workspaceDir",
+  "statePath",
+  "clientPrivateKeyPath",
+  "clientPublicKeyPath",
+  "hostPrivateKeyPath",
+  "hostPublicKeyPath",
+  "authorizedKeysPath",
+  "knownHostsPath",
+  "sshdConfigPath",
+  "sshdLogPath",
+] as const satisfies readonly (keyof SshEnvLabFixtureState)[];
+
+// True when candidate is an absolute path equal to rootDir or nested under
+// it. Used to reject a state file whose paths point outside the fixture
+// root it was read from.
+function isPathRootedAt(candidate: string, rootDir: string): boolean {
+  if (!path.isAbsolute(candidate)) return false;
+  if (candidate === rootDir) return true;
+  const relative = path.relative(rootDir, candidate);
+  return (
+    relative.length > 0 &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+// The state file is untrusted input: any local process running as the same
+// user can write one. A forged pid or an empty sshdConfigPath would weaken
+// isSshEnvLabFixtureProcess's identity check — an empty string is a
+// substring of every command line, so it would match any running process.
+// Reject a state file that fails this check before any identity check or
+// signal runs against it.
+function isValidSshEnvLabFixtureState(
+  raw: SshEnvLabFixtureState,
+  expectedRootDir: string,
+): boolean {
+  if (!Number.isSafeInteger(raw.pid) || raw.pid <= 0) return false;
+  if (raw.rootDir !== expectedRootDir) return false;
+
+  for (const field of SSH_ENV_LAB_FIXTURE_PATH_FIELDS) {
+    const value = raw[field];
+    if (typeof value !== "string" || !isPathRootedAt(value, expectedRootDir)) {
+      return false;
+    }
+  }
+
+  const expectedSshdConfigPath = path.join(expectedRootDir, "sshd_config");
+  if (raw.sshdConfigPath.length === 0 || raw.sshdConfigPath !== expectedSshdConfigPath) {
+    return false;
+  }
+
+  return true;
+}
+
 export async function readSshEnvLabFixtureState(
   statePath: string,
 ): Promise<SshEnvLabFixtureState | null> {
   try {
     const raw = JSON.parse(await fs.readFile(statePath, "utf8")) as SshEnvLabFixtureState;
     if (!raw || raw.kind !== "ssh_openbsd") return null;
+    if (!isValidSshEnvLabFixtureState(raw, path.dirname(statePath))) return null;
     return raw;
   } catch {
     return null;
