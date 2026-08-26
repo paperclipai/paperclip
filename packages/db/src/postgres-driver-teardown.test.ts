@@ -93,18 +93,15 @@ describe("postgres driver teardown race", () => {
 
     // Late query on the dead reserved connection: unpatched, this buffered
     // its frame and scheduled the deferred flush that crashed the process
-    // one tick later.
-    const late = reserved`select 1`.catch((error: unknown) => error);
-
-    // Let the deferred flush (setImmediate) run.
-    await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
-
-    // Tear down the pool; this settles the dangling query through the normal
-    // CONNECTION_DESTROYED path instead of a process-level TypeError.
-    await sql!.end({ timeout: 1 });
-    const settled = await late;
+    // one tick later. Patched, execute() refuses it up front, so it settles
+    // immediately — no pool shutdown required.
+    const settled = await reserved`select 1`.catch((error: unknown) => error);
     expect(settled).toBeInstanceOf(Error);
-    expect(String((settled as Error).message)).toContain("CONNECTION_DESTROYED");
+    expect(String((settled as Error).message)).toContain("CONNECTION_CLOSED");
+
+    // Let any stray deferred flush run before the test ends, so a regression
+    // in the nextWrite guard still fails this test via the unhandled error.
+    await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
 
     reserved.release();
   });
