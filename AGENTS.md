@@ -436,3 +436,41 @@ unblock itself by modifying the lease directory.
 - **Storyboard in STILLS before rendering video.** An image costs 200,000,000 ticks; a video costs 4,000,000,000 — **20×**. Run `deck/storyboard-frames.sh` to see every shot, review the contact sheet, mark `approved: true`, then convert survivors with `deck/fill-broll-gaps.sh --from-frames`, which passes the approved frame to the video call as `image_url` so the clip inherits the look that was signed off. ⛔ Rendering video straight from text is how a "1971 Boeing 727" prompt returned a modern widebody twice at full price; naming the three tail engines explicitly fixed it for 0.2 of one video's cost. `approved: null` is unreviewed, and unreviewed is not approved.
 - **Storyboard frames cost nothing — render them.** `deck/storyboard-frames.sh` defaults to the **ChatGPT/Codex subscription** (`deck/gen-image-codex.py`) — off the Grok video allowance and off the Studio; `IMAGE_PROVIDER=xai` only when the frame must pass to the video call as `image_url`. ⛔ **No local/on-device image generation on the Studio** — FLUX on MLX peaked at 8.46 GB on the box running the live fleet and was removed; if we want it, it goes on the Mini. Review with `deck/review-frames.sh --approve 1,4,7`. ⛔ Every clip entering a library goes through `deck/clip-qa.sh` first — it catches burned-in garbage text, watermark residue, wrong aspect, a stray generated audio track and frozen footage, all of which have shipped before. Use `--kind ui_capture` when readable text is the proof rather than the defect. For Stack Lab's `ui_capture` beats use `deck/ui-capture.py`, which drives a real browser through real pages; ⛔ never log in and never capture anything behind a credential.
 <!-- END THINKSTACK OPS RULE: episode-pipeline-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: ceiling-disposition-block -->
+## Gate CEIL1 — read WHICH ceiling was hit before you touch a stalled card
+
+A card rejected *before model dispatch* can be in four states that look identical on the board
+— `blocked`, going nowhere — and they need four different repairs. ⛔ **A status bounce to
+`todo` is the wrong answer to all four**, and it is the one most often reached for: tried on
+39 cards 2026-08-26, it would have fixed 14 and looked like a clean sweep.
+
+Read the rejection comment, then act:
+
+- **"already used 25 generation runs since the last board/user comment"** → a **board comment
+  resets the counter**. Post one, then give the card a real disposition — often the work is
+  already done and it should simply close.
+- **"already recorded N weighted aggregate input tokens"** → past the 1M ceiling. **Now check
+  the `This run` line on the rejection**, because there are two shapes and only one is fixed by
+  a re-cut:
+  - *no single run is near the cap* → **re-cut**; the fresh budget buys real headroom.
+  - *`This run` alone exceeds the threshold* → ⛔ **a re-cut is useless.** The successor gets a
+    clean 1M and its first run spends it. Bricks every time, forever, one full run per attempt.
+    Seen: 1.82M in a single run on a re-cut whose description was 1,457 chars, so nothing was
+    inherited. **Bound what the run reads, split the scope, or route the deterministic half to
+    a script.** A card already labelled "re-cut #2" that bricks again is this shape by
+    definition — stop cutting.
+- **`origin_kind: routine_execution` and blocked** → that instance is the routine's
+  **concurrency anchor**. While it sits there the routine cannot mint a new one and keeps
+  reporting `active`. **Cancel it** — never re-cut, the routine is its own carrier. Measured:
+  DP's `fallback-swap-back` dead six weeks, TSM's `Mission Control Inbound` dead four days,
+  both showing `active` throughout.
+- **`blocked` with every blocker terminal and no ceiling** → status correction only. The
+  platform now does this itself when blockers resolve; anything older needs clearing by hand.
+
+⛔ **Approval does not revive a ceiling-bricked card.** Only a fresh card or a real
+`board_token_exceptions` entry changes the counter. Asking the board to "approve more budget"
+on the bricked card is a no-op that costs a round trip.
+
+Full taxonomy and evidence: **TSKB0493**.
+<!-- END THINKSTACK OPS RULE: ceiling-disposition-block -->
