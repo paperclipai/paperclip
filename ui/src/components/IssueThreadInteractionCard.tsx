@@ -43,6 +43,8 @@ import { Badge } from "@/components/ui/badge";
 import { ProposalJustification } from "../pages/secrets/proposal-review";
 import { t } from "@/i18n";
 
+const NS = "app.issueThreadInteractionCard.";
+
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
 /**
@@ -136,9 +138,9 @@ function resolveActorLabel(args: {
     return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   }
   if (userId) {
-    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
+    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? t(NS + "board", { defaultValue: "Board" });
   }
-  return "Unknown";
+  return t(NS + "unknown", { defaultValue: "Unknown" });
 }
 
 /**
@@ -170,19 +172,19 @@ function getAdministrativeReason(interaction: IssueThreadInteraction): string | 
 function statusLabel(status: IssueThreadInteraction["status"]) {
   switch (status) {
     case "pending":
-      return "Pending";
+      return t(NS + "statusPending", { defaultValue: "Pending" });
     case "accepted":
-      return "Accepted";
+      return t(NS + "statusAccepted", { defaultValue: "Accepted" });
     case "rejected":
-      return "Rejected";
+      return t(NS + "statusRejected", { defaultValue: "Rejected" });
     case "answered":
-      return "Answered";
+      return t(NS + "statusAnswered", { defaultValue: "Answered" });
     case "cancelled":
-      return "Cancelled";
+      return t(NS + "statusCancelled", { defaultValue: "Cancelled" });
     case "expired":
-      return "Expired";
+      return t(NS + "statusExpired", { defaultValue: "Expired" });
     case "failed":
-      return "Failed";
+      return t(NS + "statusFailed", { defaultValue: "Failed" });
     default:
       return status;
   }
@@ -191,15 +193,15 @@ function statusLabel(status: IssueThreadInteraction["status"]) {
 function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
   switch (kind) {
     case "suggest_tasks":
-      return "Suggested tasks";
+      return t(NS + "kindSuggestedTasks", { defaultValue: "Suggested tasks" });
     case "ask_user_questions":
-      return "Ask user questions";
+      return t(NS + "kindAskUserQuestions", { defaultValue: "Ask user questions" });
     case "request_confirmation":
-      return "Confirmation";
+      return t(NS + "kindConfirmation", { defaultValue: "Confirmation" });
     case "request_checkbox_confirmation":
-      return "Checkbox confirmation";
+      return t(NS + "kindCheckboxConfirmation", { defaultValue: "Checkbox confirmation" });
     case "request_item_verdicts":
-      return "Item verdicts";
+      return t(NS + "kindItemVerdicts", { defaultValue: "Item verdicts" });
     default:
       return kind;
   }
@@ -828,7 +830,7 @@ function SuggestTasksCard({
             "mt-1 leading-6",
             !interaction.result?.rejectionReason && "text-rose-900/75",
           )}>
-            {interaction.result?.rejectionReason || "No reason provided."}
+            {interaction.result?.rejectionReason || t(NS + "noReasonProvided", { defaultValue: "No reason provided." })}
           </p>
         </div>
       ) : null}
@@ -839,12 +841,12 @@ function SuggestTasksCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>
                 {selectedCount === totalTasks
-                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
-                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`}
+                  ? t(NS + "allDraftIssuesSelected", { defaultValue: "已选中全部 {{total}} 个草稿{{noun}}", total: totalTasks, noun: totalTasks === 1 ? t(NS + "issue", { defaultValue: "issue" }) : t(NS + "issues", { defaultValue: "issues" })})
+                  : t(NS + "ofDraftIssuesSelected", { defaultValue: "已选中 {{total}} 个草稿中的 {{selected}} 个({{noun}})", selected: selectedCount, total: totalTasks, noun: totalTasks === 1 ? t(NS + "issue", { defaultValue: "issue" }) : t(NS + "issues", { defaultValue: "issues" })})}
               </span>
               {selectedCount < totalTasks ? (
                 <span>
-                  {totalTasks - selectedCount} will be skipped if you accept this interaction.
+                  {t(NS + "remainingWillBeSkipped", { defaultValue: "{{count}} will be skipped if you accept this interaction.", count: totalTasks - selectedCount })}
                 </span>
               ) : null}
             </div>
@@ -858,7 +860,7 @@ function SuggestTasksCard({
                 {working === "accept" ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Accepting...
+                    {t(NS + "accepting", { defaultValue: "Accepting..." })}
                   </>
                 ) : (
                   selectedCount === totalTasks ? t("app.issueThreadInteractionCard.acceptDrafts", { defaultValue: "Accept drafts" }) : t("app.issueThreadInteractionCard.acceptSelectedDrafts", { defaultValue: "Accept selected drafts" })
@@ -899,10 +901,10 @@ function SuggestTasksCard({
                   {working === "reject" ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Saving...
+                      {t(NS + "saving", { defaultValue: "Saving..." })}
                     </>
                   ) : (
-                    "Save rejection"
+                    t(NS + "saveRejection", { defaultValue: "Save rejection" })
                   )}
                 </Button>
               </div>
@@ -1264,10 +1266,10 @@ function AskUserQuestionsCard({
                   {cancelling ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Cancelling...
+                      {t(NS + "cancelling", { defaultValue: "Cancelling..." })}
                     </>
                   ) : (
-                    "Cancel question"
+                    t(NS + "cancelQuestion", { defaultValue: "Cancel question" })
                   )}
                   </Button>
                 ) : null}
@@ -1279,10 +1281,10 @@ function AskUserQuestionsCard({
                 {working ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Submitting...
+                    {t(NS + "submitting", { defaultValue: "Submitting..." })}
                   </>
                 ) : (
-                  interaction.payload.submitLabel ?? "Submit answers"
+                  interaction.payload.submitLabel ?? t(NS + "submitAnswers", { defaultValue: "Submit answers" })
                 )}
               </Button>
             </div>
@@ -1320,7 +1322,7 @@ function AskUserQuestionsCard({
           <p className="mt-1">
             {interaction.result?.outcome === "issue_closed"
               ? t("app.issueThreadInteractionCard.thisQuestionRequestExpiredAutomaticallyWhenTheIssueReachedATerminalState", { defaultValue: "This question request expired automatically when the issue reached a terminal state." })
-              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
+              : t(NS + "expiredByCommentExplanation", { defaultValue: "A later board/user comment superseded this question request. Create a fresh request if answers are still needed." })}
           </p>
           {interaction.result?.commentId ? (
             <a
@@ -1686,9 +1688,9 @@ function ToolActionResolution({
         <div className="flex items-start gap-2 leading-6">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <div className="font-medium">Executed · approved by {who}{whenSuffix}</div>
+            <div className="font-medium">{t(NS + "executedApprovedBy", { defaultValue: "Executed · approved by {{who}}{{when}}", who, when: whenSuffix })}</div>
             <p className="text-green-900/80 dark:text-green-100/80">
-              {requestedByLabel} was resumed with this result.
+              {t(NS + "resumedWithThisResult", { defaultValue: "{{who}} was resumed with this result.", who: requestedByLabel })}
             </p>
           </div>
         </div>
@@ -1703,7 +1705,7 @@ function ToolActionResolution({
           <Button asChild size="sm" variant="outline" className="h-7 px-2">
             <a href={href} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-              View result
+              {t(NS + "viewResult", { defaultValue: "View result" })}
             </a>
           </Button>
         ) : null}
@@ -1722,10 +1724,10 @@ function ToolActionResolution({
         <div className="flex items-start gap-2 leading-6">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
           <div>
-            <div className="font-medium">Failed · approved by {who}{whenSuffix}</div>
+            <div className="font-medium">{t(NS + "failedApprovedBy", { defaultValue: "Failed · approved by {{who}}{{when}}", who, when: whenSuffix })}</div>
             <p className="text-amber-900/80 dark:text-amber-100/80">
-              You approved it and it ran, but the connector returned an error.{" "}
-              {requestedByLabel} was resumed with this error.
+              {t(NS + "connectorReturnedError", { defaultValue: "You approved it and it ran, but the connector returned an error." })}{" "}
+              {t(NS + "resumedWithThisError", { defaultValue: "{{who}} was resumed with this error.", who: requestedByLabel })}
             </p>
           </div>
         </div>
@@ -1894,10 +1896,10 @@ function RequestToolActionCard({
                 {working === "accept" ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Approving…
+                    {t(NS + "approving", { defaultValue: "Approving…" })}
                   </>
                 ) : (
-                  "Approve & run"
+                  t(NS + "approveAndRun", { defaultValue: "Approve & run" })
                 )}
               </Button>
               <Button
@@ -1936,7 +1938,7 @@ function RequestToolActionCard({
                         Declining…
                       </>
                     ) : (
-                      "Decline"
+                      t(NS + "decline", { defaultValue: "Decline" })
                     )}
                   </Button>
                 </div>
@@ -2190,19 +2192,19 @@ function RequestSecretProposalCard({
       <ProposalJustification justification={payload.justification} />
       <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
         <Clock className="h-3.5 w-3.5" />
-        Expires {formatDateTime(payload.expiresAt)}
+        {t(NS + "expiresAt", { defaultValue: "Expires {{time}}", time: formatDateTime(payload.expiresAt) })}
       </div>
 
       {isPending ? (
         <ConfirmationActionRow
           resetKey={`${interaction.id}:${interaction.status}`}
-          approveLabel={interaction.payload.acceptLabel ?? "Approve & bind"}
-          reviseLabel="Add reason…"
-          rejectLabel={interaction.payload.rejectLabel ?? "Reject"}
+          approveLabel={interaction.payload.acceptLabel ?? t(NS + "approveAndBind", { defaultValue: "Approve & bind" })}
+          reviseLabel={t(NS + "addReason", { defaultValue: "Add reason…" })}
+          rejectLabel={interaction.payload.rejectLabel ?? t(NS + "reject", { defaultValue: "Reject" })}
           approveVariant="cta"
           allowRevise={interaction.payload.allowDeclineReason !== false}
           rejectRequiresReason={interaction.payload.rejectRequiresReason === true}
-          reasonPlaceholder={interaction.payload.declineReasonPlaceholder ?? "Optional: explain why this binding should not be created."}
+          reasonPlaceholder={interaction.payload.declineReasonPlaceholder ?? t(NS + "optionalExplainWhyNotCreateBinding", { defaultValue: "Optional: explain why this binding should not be created." })}
           working={working}
           actionError={actionError}
           canApprove={Boolean(onAcceptInteraction)}
@@ -2230,9 +2232,9 @@ function RequestSecretProposalCard({
  * producers may still override the accept/reject labels for domain-specific
  * confirmations (e.g. "Delete selected"), but the shape stays consistent.
  */
-const CONFIRMATION_APPROVE_LABEL = "Approve";
-const CONFIRMATION_REVISE_LABEL = "Revise…";
-const CONFIRMATION_REJECT_LABEL = "Reject";
+const CONFIRMATION_APPROVE_LABEL = t(NS + "approve", { defaultValue: "Approve" });
+const CONFIRMATION_REVISE_LABEL = t(NS + "revise", { defaultValue: "Revise…" });
+const CONFIRMATION_REJECT_LABEL = t(NS + "reject", { defaultValue: "Reject" });
 
 /**
  * The one action control every confirmation card renders (PAP-418), collapsing
@@ -2335,7 +2337,7 @@ function ConfirmationActionRow({
           {working === "accept" ? (
             <>
               <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-              Approving…
+              {t(NS + "approving", { defaultValue: "Approving…" })}
             </>
           ) : (
             approveLabel
@@ -2410,7 +2412,7 @@ function ConfirmationActionRow({
               {working === "reject" ? (
                 <>
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  Sending…
+                  {t(NS + "sending", { defaultValue: "Sending…" })}
                 </>
               ) : (
                 "Send revision"
@@ -2461,9 +2463,9 @@ function RequestConfirmationCard({
   const allowRevise = interaction.payload.allowDeclineReason !== false;
   const reasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
-    ?? (interaction.payload.acceptLabel === "Approve plan"
-      ? "Optional: what would you like revised?"
-      : "Optional: tell the agent what you'd change.");
+    ?? (interaction.payload.acceptLabel === t(NS + "approvePlan", { defaultValue: "Approve plan" })
+      ? t(NS + "optionalWhatWouldYouLikeRevised", { defaultValue: "Optional: what would you like revised?" })
+      : t(NS + "optionalTellAgentWhatYouWouldChange", { defaultValue: "Optional: tell the agent what you'd change." }));
 
   useEffect(() => {
     setActionError(null);
@@ -2487,7 +2489,7 @@ function RequestConfirmationCard({
       }
       if (uploaded.length > 0) setShots((current) => [...current, ...uploaded]);
     } catch {
-      setUploadError("Couldn't upload that image. Try again.");
+      setUploadError(t(NS + "couldntUploadImageTryAgain", { defaultValue: "Couldn't upload that image. Try again." }));
     } finally {
       setUploading(false);
     }
@@ -2613,12 +2615,12 @@ function RequestConfirmationCard({
                   {uploading ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Uploading...
+                      {t(NS + "uploading", { defaultValue: "Uploading..." })}
                     </>
                   ) : (
                     <>
                       <ImagePlus className="mr-2 h-3.5 w-3.5" />
-                      Attach screenshots
+                      {t(NS + "attachScreenshots", { defaultValue: "Attach screenshots" })}
                     </>
                   )}
                 </Button>
@@ -2808,7 +2810,7 @@ function RequestCheckboxConfirmationCard({
   const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
   const allowRevise = interaction.payload.allowDeclineReason !== false;
   const reasonPlaceholder =
-    interaction.payload.declineReasonPlaceholder ?? "Optional: tell the agent what you'd change.";
+    interaction.payload.declineReasonPlaceholder ?? t(NS + "optionalTellAgentWhatYouWouldChange", { defaultValue: "Optional: tell the agent what you'd change." });
 
   const selectedCount = selectedOptionIds.size;
   const totalOptions = options.length;
@@ -2977,16 +2979,16 @@ function RequestCheckboxConfirmationCard({
 // --- Per-item verdicts (C3) ---------------------------------------------
 
 const VERDICT_LABEL: Record<RequestItemVerdictValue, string> = {
-  approve: "Approve",
-  reject: "Reject",
-  defer: "Defer",
+  approve: t(NS + "approve", { defaultValue: "Approve" }),
+  reject: t(NS + "reject", { defaultValue: "Reject" }),
+  defer: t(NS + "defer", { defaultValue: "Defer" }),
 };
 
 /** Present-tense past-participle label for a resolved verdict chip. */
 const VERDICT_RESOLVED_LABEL: Record<RequestItemVerdictValue, string> = {
-  approve: "Approved",
-  reject: "Rejected",
-  defer: "Deferred",
+  approve: t(NS + "approved", { defaultValue: "Approved" }),
+  reject: t(NS + "rejected", { defaultValue: "Rejected" }),
+  defer: t(NS + "deferred", { defaultValue: "Deferred" }),
 };
 
 function verdictChipClasses(verdict: RequestItemVerdictValue) {
@@ -3076,7 +3078,7 @@ function ItemVerdictSegmentedControl({
             variant={variant}
             disabled={disabled}
             aria-pressed={active}
-            aria-label={`${VERDICT_LABEL[verdict]} this item`}
+            aria-label={t(NS + "verdictThisItem", { defaultValue: "{{verdict}} this item", verdict: VERDICT_LABEL[verdict] })}
             className="min-h-11 min-w-24"
             onClick={() => onSelect(verdict)}
             data-verdict={verdict}
@@ -3314,12 +3316,12 @@ function RequestItemVerdictsCard({
                   ) : applying ? (
                     <span className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-muted/40 px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                       <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden />
-                      Applying…
+                      {t(NS + "applying", { defaultValue: "Applying…" })}
                     </span>
                   ) : isTerminal ? (
                     <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-muted/30 px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                       <CircleDashed className="h-3.5 w-3.5" aria-hidden />
-                      Not decided
+                      {t(NS + "notDecided", { defaultValue: "Not decided" })}
                     </span>
                   ) : (
                     <ItemVerdictSegmentedControl
@@ -3354,7 +3356,7 @@ function RequestItemVerdictsCard({
                     )}
                   />
                   {attempted && invalidDraftIds.has(item.id) ? (
-                    <p className="text-xs text-destructive">A reason is required to {VERDICT_LABEL[draft.verdict].toLowerCase()} this item.</p>
+                    <p className="text-xs text-destructive">{t(NS + "reasonRequiredToVerdict", { defaultValue: "A reason is required to {{action}} this item.", action: VERDICT_LABEL[draft.verdict].toLowerCase() })}</p>
                   ) : null}
                 </div>
               ) : null}
@@ -3406,7 +3408,7 @@ function RequestItemVerdictsCard({
               {working ? (
                 <>
                   <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
-                  Applying…
+                  {t(NS + "applying", { defaultValue: "Applying…" })}
                 </>
               ) : (
                 applyLabel

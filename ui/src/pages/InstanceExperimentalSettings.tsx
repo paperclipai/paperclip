@@ -467,7 +467,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableApps"
         managed={managedKeys.enableApps}
-        ariaLabel="Toggle apps experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleApps", { defaultValue: "Toggle apps experimental setting" })}
       />
 
       <Card className="block p-5">
@@ -562,7 +562,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="autoRestartDevServerWhenIdle"
         managed={managedKeys.autoRestartDevServerWhenIdle}
-        ariaLabel="Toggle guarded dev-server auto-restart"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleGuardedDevServerAutoRestart", { defaultValue: "Toggle guarded dev-server auto-restart" })}
       />
 
       <ExperimentalToggleCard
@@ -573,7 +573,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableBetaSkills"
         managed={managedKeys.enableBetaSkills}
-        ariaLabel="Toggle beta skills experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleBetaSkills", { defaultValue: "Toggle beta skills experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -584,7 +584,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableBuiltInAgents"
         managed={managedKeys.enableBuiltInAgents}
-        ariaLabel="Toggle built-in agents experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleBuiltInAgents", { defaultValue: "Toggle built-in agents experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -596,7 +596,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableCases"
         managed={managedKeys.enableCases}
-        ariaLabel="Toggle cases experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleCases", { defaultValue: "Toggle cases experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -608,7 +608,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableClassicTaskInterface"
         managed={managedKeys.enableClassicTaskInterface}
-        ariaLabel="Toggle classic task interface experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleClassicTaskInterface", { defaultValue: "Toggle classic task interface experimental setting" })}
       />
 
       {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (
@@ -620,7 +620,7 @@ export function InstanceExperimentalSettings() {
           disabled={toggleMutation.isPending}
           settingKey="enableConferenceRoomChat"
           managed={managedKeys.enableConferenceRoomChat}
-          ariaLabel="Toggle conference room chat experimental setting"
+          ariaLabel={t("app.instanceExperimentalSettings.ariaToggleConferenceRoomChat", { defaultValue: "Toggle conference room chat experimental setting" })}
         />
       ) : null}
 
@@ -632,7 +632,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableDecisions"
         managed={managedKeys.enableDecisions}
-        ariaLabel="Toggle decisions experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleDecisions", { defaultValue: "Toggle decisions experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -643,7 +643,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableEnvironments"
         managed={managedKeys.enableEnvironments}
-        ariaLabel="Toggle environments experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleEnvironments", { defaultValue: "Toggle environments experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -654,7 +654,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableExternalObjects"
         managed={managedKeys.enableExternalObjects}
-        ariaLabel="Toggle external objects experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleExternalObjects", { defaultValue: "Toggle external objects experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -665,7 +665,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableIsolatedWorkspaces"
         managed={managedKeys.enableIsolatedWorkspaces}
-        ariaLabel="Toggle isolated workspaces experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleIsolatedWorkspaces", { defaultValue: "Toggle isolated workspaces experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -676,7 +676,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableExperimentalFileViewer"
         managed={managedKeys.enableExperimentalFileViewer}
-        ariaLabel="Toggle experimental file viewer setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleExperimentalFileViewer", { defaultValue: "Toggle experimental file viewer setting" })}
       />
 
       <ExperimentalToggleCard
@@ -687,7 +687,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableGoalsSidebarLink"
         managed={managedKeys.enableGoalsSidebarLink}
-        ariaLabel="Toggle goals sidebar link experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleGoalsSidebarLink", { defaultValue: "Toggle goals sidebar link experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -698,7 +698,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableManagedSandboxOnly"
         managed={managedKeys.enableManagedSandboxOnly}
-        ariaLabel="Toggle managed environment only experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleManagedEnvironmentOnly", { defaultValue: "Toggle managed environment only experimental setting" })}
       />
 
       {inWorktree ? (
@@ -762,7 +762,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableServerInfoDebugView"
         managed={managedKeys.enableServerInfoDebugView}
-        ariaLabel="Toggle server info debug view experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleServerInfoDebugView", { defaultValue: "Toggle server info debug view experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -775,7 +775,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableSimplifiedEnglishInteractions"
         managed={managedKeys.enableSimplifiedEnglishInteractions}
-        ariaLabel="Toggle simplified english interactions experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleSimplifiedEnglishInteractions", { defaultValue: "Toggle simplified english interactions experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -786,7 +786,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableSmokeLab"
         managed={managedKeys.enableSmokeLab}
-        ariaLabel="Toggle smoke lab experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleSmokeLab", { defaultValue: "Toggle smoke lab experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -804,7 +804,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending || statusCardsBlockedByManagedSummaries}
         settingKey="enableStatusCards"
         managed={managedKeys.enableStatusCards}
-        ariaLabel="Toggle status cards experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleStatusCards", { defaultValue: "Toggle status cards experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -822,7 +822,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending || summariesRequiredByManagedStatusCards}
         settingKey="enableSummaries"
         managed={managedKeys.enableSummaries}
-        ariaLabel="Toggle summaries experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleSummaries", { defaultValue: "Toggle summaries experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -833,7 +833,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableIssuePlanDecompositions"
         managed={managedKeys.enableIssuePlanDecompositions}
-        ariaLabel="Toggle task plan decomposition panel experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleTaskPlanDecompositionPanel", { defaultValue: "Toggle task plan decomposition panel experimental setting" })}
       />
 
       <ExperimentalToggleCard
@@ -844,7 +844,7 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         settingKey="enableTaskWatchdogs"
         managed={managedKeys.enableTaskWatchdogs}
-        ariaLabel="Toggle task watchdogs experimental setting"
+        ariaLabel={t("app.instanceExperimentalSettings.ariaToggleTaskWatchdogs", { defaultValue: "Toggle task watchdogs experimental setting" })}
       />
 
       {previewDialogOpen && !autoRecoveryManaged ? (
