@@ -88,12 +88,14 @@ async function closeServer(server: Server | null): Promise<void> {
 
 describeEmbeddedPostgres("native Codex server vertical slice", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let db: ReturnType<typeof createDb> | null = null;
   let runtimeRoot: string | null = null;
   let server: Server | null = null;
 
   beforeAll(async () => {
     ensureRunnerTestBinaries();
     temporary = await startEmbeddedPostgresTestDatabase("native-codex-vertical-slice-");
+    db = createDb(temporary.connectionString);
     runtimeRoot = await mkdtemp(resolve(tmpdir(), "native-codex-runtime-"));
     server = createServer();
     await new Promise<void>((resolveListen) => server!.listen(0, "127.0.0.1", resolveListen));
@@ -107,13 +109,13 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();
     await closeServer(server);
+    await db?.$client?.end?.({ timeout: 0 });
     await temporary?.cleanup();
     if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
   });
 
   it("returns a durable result and resumes the provider session on the next run", async () => {
-    if (!temporary || !runtimeRoot) throw new Error("Vertical-slice fixture was not initialized");
-    const db = createDb(temporary.connectionString);
+    if (!temporary || !runtimeRoot || !db) throw new Error("Vertical-slice fixture was not initialized");
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
