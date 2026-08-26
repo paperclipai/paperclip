@@ -2133,7 +2133,7 @@ function normalizeHeaders(headers) {
   return out;
 }
 
-async function readBody(req) {
+async function readBodyBytes(req) {
   const chunks = [];
   let totalBytes = 0;
   for await (const chunk of req) {
@@ -2144,7 +2144,11 @@ async function readBody(req) {
       throw new Error("Bridge request body exceeded the configured size limit.");
     }
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req) {
+  return (await readBodyBytes(req)).toString("utf8");
 }
 
 function tokensMatch(received) {
@@ -2475,7 +2479,7 @@ function runHttp2Gateway() {
         writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
         return;
       }
-      const requestBodyBuffer = Buffer.from(await readBody(req), "utf8");
+      const requestBodyBuffer = await readBodyBytes(req);
       let response;
       try {
         response = await forwardOverHttp2({

@@ -693,12 +693,13 @@ describe("company-and-environment setup-token route — object-level authorizati
     expect(transport.records).toEqual([]);
   });
 
-  it("starts a setup-token login for a third adapter that declares the capability", async () => {
-    // A third adapter, not the Claude adapter, declares the pseudo-terminal
-    // setup-token capability with the stored-session claim. The guard reads the
-    // capability, not the adapter name, so the adapter passes the guard and
-    // starts a session. This proves no adapter-name branch remains in the guard
-    // path. The start response reads the panel mode from the capability.
+  it("rejects a third adapter that declares the capability but is not the served adapter", async () => {
+    // A third adapter, not the Claude adapter, declares the same pseudo-terminal
+    // setup-token capability with the stored-session claim. The five follow-up
+    // routes and the reaper both read only the one served adapter type, so the
+    // guard must reject this adapter even though its capability matches. It
+    // rejects with the same fixed 400 as the capability-mismatch case, before
+    // any sandbox assertion, lease, durable row, or pseudo-terminal.
     mockFindActiveServerAdapter.mockImplementation((type: string) =>
       type === "gemini_local"
         ? {
@@ -714,9 +715,15 @@ describe("company-and-environment setup-token route — object-level authorizati
       environmentId: ENVIRONMENT_ID,
       adapterType: "gemini_local",
     });
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(res.body.panelMode).toBe("displayed_code");
-    expect(res.body.status).toBe("waiting_for_user");
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("This adapter does not support a setup-token login.");
+    // The route rejected the adapter before any sandbox, lease, or store side
+    // effect: no cleanup record, no lease acquire, no pseudo-terminal start, and
+    // no environment or provider guard call.
+    expect(transport.records).toEqual([]);
+    expect(transport.factoryInvocations.count).toBe(0);
+    expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
+    expect(mockResolvePluginSandboxProviderDriverByKey).not.toHaveBeenCalled();
   });
 });
 

@@ -123,6 +123,7 @@ import {
   type SetupTokenSessionScope,
   type SetupTokenSessionState,
   type SetupTokenSessionDescriptor,
+  SETUP_TOKEN_ADAPTER_TYPE,
 } from "../services/setup-token-session.js";
 import type {
   DeploymentMode,
@@ -4770,9 +4771,6 @@ export function agentRoutes(
   // Each route writes its full path as a plain string literal, so the static
   // OpenAPI coverage test can read the path from the source text.
 
-  // The company-and-environment login serves only the Claude adapter.
-  const CLAUDE_SETUP_TOKEN_ADAPTER_TYPE = "claude_local";
-
   // Maps the internal session state to the public login status. The public union
   // carries no server-only state, so the route never returns the internal
   // `submitting` or `stored` state to a client.
@@ -4828,7 +4826,7 @@ export function agentRoutes(
   const companySetupTokenKey = (companyId: string, ownerUserId: string) => ({
     companyId,
     ownerUserId,
-    adapterType: CLAUDE_SETUP_TOKEN_ADAPTER_TYPE,
+    adapterType: SETUP_TOKEN_ADAPTER_TYPE,
   });
 
   // The stored Claude OAuth token status read. It returns
@@ -4895,6 +4893,18 @@ export function agentRoutes(
         // capability with a fixed 400.
         const capability = getRegistryLoginCapability(data.adapterType);
         if (capability?.completionClaim !== "storedSessionId") {
+          res.status(400).json({ error: "This adapter does not support a setup-token login." });
+          return true;
+        }
+        // The five follow-up routes and the restart reaper both read only the
+        // one pinned adapter type. A capability match alone is not enough: an
+        // adapter that declares `storedSessionId` but is not the served type
+        // would pass the check above, then create a session that no follow-up
+        // route and no reaper scan can reach. Reject that case here, before any
+        // sandbox assertion, lease, durable row, or pseudo-terminal, with the
+        // same fixed 400 as the capability check above, so the response
+        // discloses no difference between the two rejection reasons.
+        if (data.adapterType !== SETUP_TOKEN_ADAPTER_TYPE) {
           res.status(400).json({ error: "This adapter does not support a setup-token login." });
           return true;
         }
