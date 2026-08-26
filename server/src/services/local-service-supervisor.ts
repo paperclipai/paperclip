@@ -215,7 +215,7 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   if (!record) return null;
 
   let candidate = record;
-  if (!isPidAlive(candidate.pid)) {
+  if (!isProcessPidAlive(candidate.pid)) {
     const ownerPid = candidate.port ? await readLocalServicePortOwner(candidate.port) : null;
     if (!ownerPid) {
       await removeLocalServiceRegistryRecord(candidate.serviceKey);
@@ -242,6 +242,15 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   return candidate;
 }
 
+// Existence, not liveness: this returns true for an unreaped zombie. Never use
+// it to decide whether work is still making progress — that is isProcessPidAlive()
+// below, and every caller that asked the liveness question has moved to it.
+//
+// The two remaining callers ask the other question: "is this recorded
+// process-group id still held by a real process, so it is safe to keep using as
+// a group id?". A zombie leader answers yes there. It still holds the pgid, the
+// group can still contain live members, and kill(-pgid, …) still reaches them,
+// so treating it as gone would discard a group id that is still correct.
 export function isPidAlive(pid: number) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -250,6 +259,30 @@ export function isPidAlive(pid: number) {
   } catch {
     return false;
   }
+}
+
+// `kill(pid, 0)` also succeeds for a process that has already terminated but
+// whose parent has not reaped it. A zombie cannot run, hold a listener or make
+// progress on a run; it is only waiting to be reaped. Judge it dead, matching
+// how isProcessGroupAlive() treats an all-zombie group.
+//
+// A positive result still means only that some process currently owns the PID.
+// PIDs are recycled, so this is a best-effort signal rather than proof that the
+// original child is the one still running.
+export function isProcessPidAlive(pid: number | null | undefined) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    // EPERM means the PID exists but is owned by another user.
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EPERM") return false;
+  }
+
+  if (process.platform === "linux") {
+    const state = readLinuxProcessState(pid);
+    if (state !== null) return state !== "Z" && state !== "X";
+  }
+  return true;
 }
 
 export function isProcessGroupAlive(processGroupId: number | null | undefined) {
@@ -268,6 +301,29 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   return true;
 }
 
+// Returns the single-letter state field of /proc/<pid>/stat, or null when it
+// cannot be read. The command name is unquoted but may itself contain ")", so
+// the fields after it are located from the last ")" in the line.
+function readLinuxProcessStat(pid: number | string): { state: string; processGroupId: number } | null {
+  let stat: string;
+  try {
+    stat = fsSync.readFileSync(`/proc/${pid}/stat`, "utf8");
+  } catch {
+    // The process can exit while /proc is read.
+    return null;
+  }
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+  const state = fields[0];
+  if (!state) return null;
+  return { state, processGroupId: Number.parseInt(fields[2] ?? "", 10) };
+}
+
+function readLinuxProcessState(pid: number): string | null {
+  return readLinuxProcessStat(pid)?.state ?? null;
+}
+
 function readLinuxProcessGroupActivity(processGroupId: number): boolean | null {
   let entries: fsSync.Dirent[];
   try {
@@ -279,19 +335,10 @@ function readLinuxProcessGroupActivity(processGroupId: number): boolean | null {
   let foundMember = false;
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    try {
-      const stat = fsSync.readFileSync(`/proc/${entry.name}/stat`, "utf8");
-      const commandEnd = stat.lastIndexOf(")");
-      if (commandEnd < 0) continue;
-      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-      const state = fields[0];
-      const memberProcessGroupId = Number.parseInt(fields[2] ?? "", 10);
-      if (memberProcessGroupId !== processGroupId) continue;
-      foundMember = true;
-      if (state !== "Z" && state !== "X") return true;
-    } catch {
-      // The process can exit while /proc is scanned.
-    }
+    const member = readLinuxProcessStat(entry.name);
+    if (!member || member.processGroupId !== processGroupId) continue;
+    foundMember = true;
+    if (member.state !== "Z" && member.state !== "X") return true;
   }
 
   // kill(-pgid, 0) also succeeds for a group that contains only zombies. Such
@@ -416,7 +463,7 @@ export async function findAdoptableLocalService(input: {
     ?? await adoptLocalServiceFromPortOwner(input);
   if (!record) return null;
 
-  if (!isPidAlive(record.pid)) {
+  if (!isProcessPidAlive(record.pid)) {
     await removeLocalServiceRegistryRecord(input.serviceKey);
     return null;
   }
@@ -556,7 +603,7 @@ export async function terminateLocalService(
   const targetIsGone = async () => {
     const targetAlive = targetProcessGroup
       ? isProcessGroupAlive(record.processGroupId)
-      : isPidAlive(record.pid);
+      : isProcessPidAlive(record.pid);
     if (targetAlive) return false;
     if (!record.port) return true;
     const portOwnerPid = await readLocalServicePortOwner(record.port);

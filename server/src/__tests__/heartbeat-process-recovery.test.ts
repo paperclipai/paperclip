@@ -47,6 +47,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  readLinuxProcessState,
+  spawnZombieLeadProcessGroup,
+  waitForPidStopped,
+} from "./helpers/zombie-process.js";
 import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
@@ -2424,6 +2429,93 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+  });
+
+  it.skipIf(process.platform !== "linux")("reaps runs whose recorded pid is an unreaped zombie and still cleans up the live descendant group", async () => {
+    const orphan = await spawnZombieLeadProcessGroup();
+    childProcesses.add(orphan.leader);
+    cleanupPids.add(orphan.descendantPid);
+    expect(readLinuxProcessState(orphan.zombiePid)).toBe("Z");
+    expect(isPidAlive(orphan.descendantPid)).toBe(true);
+
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: orphan.zombiePid,
+      processGroupId: orphan.processGroupId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    // The live orphaned descendant is only reachable through the process-group
+    // cleanup branch, which the zombie pid used to short-circuit.
+    expect(await waitForPidStopped(orphan.descendantPid, 2_000)).toBe(true);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("descendant process group");
+    expect(failedRun?.resultJson).toMatchObject({
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      unmanagedBackgroundTask: {
+        kind: "orphaned_process_group_cleanup",
+        stopped: true,
+        processPid: orphan.zombiePid,
+        processGroupId: orphan.processGroupId,
+      },
+    });
+  });
+
+  it.skipIf(process.platform !== "linux")("reports hot-restart runs whose recorded pid is an unreaped zombie as lost instead of adopting them", async () => {
+    const orphan = await spawnZombieLeadProcessGroup();
+    childProcesses.add(orphan.leader);
+    cleanupPids.add(orphan.descendantPid);
+    expect(readLinuxProcessState(orphan.zombiePid)).toBe("Z");
+
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: orphan.zombiePid,
+      processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
+    });
+
+    await withTempPaperclipHome(async () => {
+      const heartbeat = heartbeatService(db);
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+      });
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:00.000Z"),
+      );
+
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-03-19T00:07:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        lostRunIds: [runId],
+      });
+
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.resultJson).not.toMatchObject({ hotRestart: { adopted: true } });
+    });
   });
 
   it("blocks the issue when process-loss retry is exhausted and the immediate continuation recovery also fails", async () => {
