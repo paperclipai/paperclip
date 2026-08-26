@@ -9646,6 +9646,13 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
+    const waitingForHumanInteraction =
+      existing.status !== "in_review" &&
+      updateFields.status === "in_review" &&
+      Boolean(nextExecutionPolicy?.stages.length) &&
+      (await issueThreadInteractionService(db).listForIssue(existing.id)).some(
+        (interaction) => interaction.status === "pending" && interaction.effectiveResolverPolicy === "human_only",
+      );
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     await assertCanManageIssueMonitor(
       access,
@@ -9659,7 +9666,9 @@ export function issueRoutes(
       issue: existing,
       policy: nextExecutionPolicy,
       previousPolicy: previousExecutionPolicy,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+      requestedStatus: waitingForHumanInteraction
+        ? undefined
+        : typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
         assigneeAgentId: normalizedAssigneeAgentId,
         assigneeUserId:

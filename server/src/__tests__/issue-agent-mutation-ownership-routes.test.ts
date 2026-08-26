@@ -2184,6 +2184,44 @@ describe("agent issue mutation checkout ownership", () => {
       );
     });
 
+    it("keeps the assignee when a watchdog moves a human-only wait to in_review", async () => {
+      denyBaseBoundary();
+      const issue = makeIssue({
+        status: "in_progress",
+        assigneeAgentId: ownerAgentId,
+        executionPolicy: {
+          stages: [{
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: peerAgentId }],
+          }],
+        },
+      });
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+      }));
+      mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+        status: "pending",
+        effectiveResolverPolicy: "human_only",
+      }] as never);
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.assigneeAgentId).toBe(ownerAgentId);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.not.objectContaining({
+          assigneeAgentId: peerAgentId,
+          executionState: expect.anything(),
+        }),
+        expect.anything(),
+      );
+    });
+
     it("rejects stale watchdog source mutations when revalidation finds a live path", async () => {
       denyBaseBoundary();
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
