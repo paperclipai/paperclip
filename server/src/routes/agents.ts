@@ -24,6 +24,7 @@ import {
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
+  updateAgentGrantSchema,
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
@@ -151,7 +152,7 @@ import {
   CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
   CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
 } from "../services/codex-device-login-service.js";
-import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
+import type { AdapterAuthSessionOwnerResponse, PermissionKey } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
@@ -1198,6 +1199,26 @@ export function agentRoutes(
     const decision = await access.decide({
       actor: req.actor,
       action: "agents:create",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  // Gate for the scoped-grant route below. Distinct from
+  // assertBoardCanManageAgentsForCompany (which checks agents:create, the
+  // agent-lifecycle permission): granting an arbitrary permissionKey onto an
+  // agent principal is itself gated by agents:configure, the same permission
+  // the grant is most commonly used to hand out. This mirrors the house
+  // pattern at /companies/:companyId/members/:memberId/permissions, which is
+  // gated by users:manage_permissions — the permission that manages grants,
+  // not a generic create/manage-lifecycle permission.
+  async function assertBoardCanConfigureAgentsForCompany(req: Request, companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:configure",
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return;
@@ -3740,6 +3761,91 @@ export function agentRoutes(
     });
 
     res.json(await buildAgentDetail(agent));
+  });
+
+  // Grants or revokes a single scoped permissionKey on an agent principal,
+  // e.g. "agents:configure" or "agents:suggest-changes". Added because
+  // access.setPrincipalPermission() has always supported any PermissionKey,
+  // but before this route the only two HTTP call sites
+  // (POST /companies/:companyId/agents and PATCH /agents/:id/permissions)
+  // both hardcoded "tasks:assign". There was no way to reach the generic
+  // grant for an agent principal after creation — human company members had
+  // /companies/:companyId/members/:memberId/permissions, agents did not.
+  router.get("/agents/:id/grants", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!existing) return;
+
+    if (req.actor.type === "agent") {
+      const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!actorAgent || actorAgent.companyId !== existing.companyId) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      if (actorAgent.role !== "ceo" && actorAgent.id !== existing.id) {
+        res.status(403).json({ error: "Only CEO or the agent itself can view grants" });
+        return;
+      }
+    } else {
+      await assertBoardCanConfigureAgentsForCompany(req, existing.companyId);
+    }
+
+    const grants = await access.listPrincipalGrants(existing.companyId, "agent", existing.id);
+    res.json({ agentId: existing.id, grants });
+  });
+
+  router.post("/agents/:id/grants", validate(updateAgentGrantSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!existing) return;
+
+    if (req.actor.type === "agent") {
+      const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!actorAgent || actorAgent.companyId !== existing.companyId) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      if (actorAgent.role !== "ceo") {
+        res.status(403).json({ error: "Only CEO can manage agent grants" });
+        return;
+      }
+    } else {
+      await assertBoardCanConfigureAgentsForCompany(req, existing.companyId);
+    }
+
+    const { permissionKey, enabled, scope } = req.body as {
+      permissionKey: PermissionKey;
+      enabled: boolean;
+      scope?: Record<string, unknown> | null;
+    };
+
+    await access.ensureMembership(existing.companyId, "agent", existing.id, "member", "active");
+    await access.setPrincipalPermission(
+      existing.companyId,
+      "agent",
+      existing.id,
+      permissionKey,
+      enabled,
+      req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      scope ?? null,
+    );
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.grant_updated",
+      entityType: "agent",
+      entityId: existing.id,
+      details: { permissionKey, enabled },
+    });
+
+    const grants = await access.listPrincipalGrants(existing.companyId, "agent", existing.id);
+    res.json({ agentId: existing.id, grants });
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
