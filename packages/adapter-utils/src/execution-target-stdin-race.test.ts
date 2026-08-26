@@ -480,11 +480,11 @@ describe("stdin file race (parent PAP-4037)", () => {
       await waitFor(() => finalizeStarted.includes("000000000001.json"), 8_000);
 
       // Stop the bridge while file 1's write is still pending. `stop()` awaits
-      // the chained `stdinEnd` write, so both finalizes are complete when it
-      // returns, in send order.
+      // the chained `stdinEnd` write, then chains a `shutdown` write after it,
+      // so all three finalizes are complete when it returns, in send order.
       await bridge!.stop();
       stopped = true;
-      expect(finalizeOrder).toEqual(["000000000001.json", "000000000002.json"]);
+      expect(finalizeOrder).toEqual(["000000000001.json", "000000000002.json", "000000000003.json"]);
     } finally {
       peer?.destroy();
       if (!stopped) await bridge?.stop();
@@ -619,5 +619,553 @@ describe("stdin file race (parent PAP-4037)", () => {
     // saw an empty or partial `.json` file.
     expect(readerErrors).toEqual([]);
     expect(observedComplete).toBeGreaterThan(0);
+  });
+});
+
+// Coverage for deterministic wrapper shutdown (parent PAP-5307): a bridge
+// stop must leave no remote wrapper process and no direct child process
+// alive, the host must send no operating-system signal, and the host must
+// store no process identifier. These tests drive the real emitted wrapper as
+// a node process and, where noted, the real bridge through a local runner.
+describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 8_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await check()) return;
+      await delay(20);
+    }
+    throw new Error("Timed out waiting for condition.");
+  }
+
+  function isPidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // A read-only, test-only liveness probe over the real OS process table. It
+  // never signals anything; it only greps `ps` output to tell the test
+  // whether a specific test-authored script (identified by its own temp file
+  // path) is still running. Production host code never does this — it never
+  // matches or signals a process by name or command line.
+  async function findLivePidsByArgvSubstring(substring: string): Promise<number[]> {
+    try {
+      const { stdout } = await execFile("ps", ["-eo", "pid=,args="]);
+      const pids: number[] = [];
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const match = /^(\d+)\s+(.*)$/.exec(trimmed);
+        if (match && match[2].includes(substring)) {
+          const pid = Number.parseInt(match[1], 10);
+          if (Number.isFinite(pid)) pids.push(pid);
+        }
+      }
+      return pids;
+    } catch {
+      return [];
+    }
+  }
+
+  type WrapperFrame = {
+    seq?: number;
+    type?: string;
+    stream?: string;
+    data?: string;
+    code?: number | null;
+    signal?: string | null;
+    message?: string;
+  };
+
+  // Run the real emitted wrapper (either variant) as a node process, with no
+  // sandbox and no bridge in front of it. The test owns the wrapper's node
+  // ChildProcess handle directly, so it can observe the wrapper's own exit
+  // without storing or signaling any process identifier itself.
+  async function startWrapperProcess(options?: {
+    outputToStdout?: boolean;
+    command?: string;
+    args?: string[];
+    maxRetries?: number;
+    terminateGraceMs?: number;
+  }) {
+    const sessionDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-wrapper-lifecycle-"));
+    cleanupDirs.push(sessionDir);
+    const stdinDir = path.join(sessionDir, "stdin");
+    const eventsDir = path.join(sessionDir, "events");
+    await mkdir(stdinDir, { recursive: true });
+    if (options?.outputToStdout !== true) await mkdir(eventsDir, { recursive: true });
+
+    const wrapperPath = path.join(sessionDir, "wrapper.mjs");
+    await writeFile(wrapperPath, getProcessSessionRemoteSource({ outputToStdout: options?.outputToStdout === true }), "utf8");
+
+    const config = { command: options?.command ?? "cat", args: options?.args ?? [], cwd: sessionDir, env: {} };
+    const commandPayload = Buffer.from(JSON.stringify(config), "utf8").toString("base64");
+
+    const env: Record<string, string> = {
+      ...process.env,
+      PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
+      PAPERCLIP_PROCESS_SESSION_COMMAND_B64: commandPayload,
+    };
+    if (options?.maxRetries != null) env.PAPERCLIP_PROCESS_SESSION_STDIN_MAX_RETRIES = String(options.maxRetries);
+    if (options?.terminateGraceMs != null) env.PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS = String(options.terminateGraceMs);
+
+    const child = spawn(process.execPath, [wrapperPath], {
+      cwd: sessionDir,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const frames: WrapperFrame[] = [];
+    let stdoutBuffer = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString("utf8");
+      const lines = stdoutBuffer.split("\n");
+      stdoutBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          frames.push(JSON.parse(line) as WrapperFrame);
+        } catch {
+          // A partial line at a chunk boundary; ignore.
+        }
+      }
+    });
+    let stderrText = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrText += chunk.toString("utf8");
+    });
+
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    const exited = new Promise<void>((resolve) => {
+      child.on("close", (code, signal) => {
+        exitCode = code;
+        exitSignal = signal;
+        resolve();
+      });
+    });
+
+    async function readEventFiles(): Promise<WrapperFrame[]> {
+      const names = (await readdir(eventsDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
+      const out: WrapperFrame[] = [];
+      for (const name of names) {
+        const body = await readFile(path.join(eventsDir, name), "utf8").catch(() => "");
+        if (!body.trim()) continue;
+        try {
+          out.push(JSON.parse(body) as WrapperFrame);
+        } catch {
+          // Not fully written yet; the test polls again.
+        }
+      }
+      return out;
+    }
+
+    return {
+      sessionDir,
+      stdinDir,
+      eventsDir,
+      wrapperPath,
+      frames,
+      stderrText: () => stderrText,
+      exited,
+      exitInfo: () => ({ code: exitCode, signal: exitSignal }),
+      readEventFiles,
+    };
+  }
+
+  // A runner that runs each bridge shell script as a real child process
+  // (matches the harness in the stdin-race describe block above), so a test
+  // drives the whole legacy-poll bridge for real: the socket handler, the
+  // command-managed `writeTextFile`/`remove` scripts, the nohup wrapper
+  // launch, and the output poll.
+  function createLocalSandboxRunner(onExecute?: (script: string) => Promise<void>) {
+    let counter = 0;
+    return {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }): Promise<RunProcessResult> => {
+        counter += 1;
+        const script = input.args?.[1] ?? "";
+        if (onExecute) await onExecute(script);
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        return runChildProcess(`wrapper-lifecycle-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+      },
+    };
+  }
+
+  function trackedChildSource(pidFile: string): string {
+    return [
+      `import { writeFileSync } from "node:fs";`,
+      `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      `process.stdin.resume();`,
+    ].join("\n");
+  }
+
+  // T2's child ignores SIGTERM, so `terminate()` must escalate to SIGKILL
+  // after its grace period. Ignoring end-of-file on stdin alone would not
+  // prove that: a plain `cat`-like child already dies from the default
+  // SIGTERM disposition.
+  function stubbornChildSource(pidFile: string): string {
+    return [
+      `import { writeFileSync } from "node:fs";`,
+      `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      `process.stdin.resume();`,
+      `process.on("SIGTERM", () => {});`,
+      `setInterval(() => {}, 1000);`,
+    ].join("\n");
+  }
+
+  async function startTrackedBridgeSession(input: {
+    rootDir: string;
+    runId: string;
+    childSource: string;
+    runner: ReturnType<typeof createLocalSandboxRunner>;
+  }) {
+    const pidFile = path.join(input.rootDir, `${input.runId}.pid`);
+    const childPath = path.join(input.rootDir, `${input.runId}-child.mjs`);
+    await writeFile(childPath, input.childSource, "utf8");
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: input.rootDir,
+      timeoutMs: 30_000,
+      runner: input.runner,
+    };
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: input.runId,
+      target,
+      runtimeRootDir: path.posix.join(input.rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: input.rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).trim().length > 0, 8_000);
+    const pid = Number.parseInt((await readFile(pidFile, "utf8")).trim(), 10);
+    return { bridge: bridge!, pid };
+  }
+
+  it("T1 exits within a bounded time when its session directory disappears with no message ever sent", async () => {
+    const wrapper = await startWrapperProcess({ outputToStdout: false, terminateGraceMs: 200 });
+    // Let the poll loop run a few cycles before the directory disappears.
+    await delay(150);
+    await rm(wrapper.sessionDir, { recursive: true, force: true });
+    await Promise.race([
+      wrapper.exited,
+      delay(4_000).then(() => {
+        throw new Error("The wrapper did not exit after its session directory disappeared.");
+      }),
+    ]);
+  });
+
+  it("T2 leaves neither the wrapper nor a stubborn child alive after stop()", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stubborn-child-"));
+    cleanupDirs.push(rootDir);
+    const runner = createLocalSandboxRunner();
+    const session = await startTrackedBridgeSession({
+      rootDir,
+      runId: "stubborn",
+      childSource: stubbornChildSource(path.join(rootDir, "stubborn.pid")),
+      runner,
+    });
+    // The emitted wrapper script's own path is unique to this test (it lives
+    // under this test's fresh temp root), so a `ps` grep on it identifies
+    // only this test's wrapper process, not a sibling test's.
+    const wrapperScriptSubstring = path.posix.join(rootDir, ".paperclip-runtime", "acpx", "process-sessions");
+    try {
+      expect(isPidAlive(session.pid)).toBe(true);
+      await waitFor(async () => (await findLivePidsByArgvSubstring(wrapperScriptSubstring)).length > 0, 4_000);
+      await session.bridge.stop();
+      // The child ignores SIGTERM, so `terminate()` needs its own grace
+      // period (default 3s) before it escalates to SIGKILL.
+      await waitFor(() => !isPidAlive(session.pid), 8_000);
+      expect(isPidAlive(session.pid)).toBe(false);
+      await waitFor(async () => (await findLivePidsByArgvSubstring(wrapperScriptSubstring)).length === 0, 4_000);
+    } finally {
+      await session.bridge.stop().catch(() => undefined);
+    }
+  }, 15_000);
+
+  it("T3 exits on its own when the child exits first and no stdinEnd is ever sent", async () => {
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      command: process.execPath,
+      args: ["-e", "process.exit(0)"],
+    });
+    await Promise.race([
+      wrapper.exited,
+      delay(4_000).then(() => {
+        throw new Error("The wrapper did not exit on its own after its child exited.");
+      }),
+    ]);
+    const events = await wrapper.readEventFiles();
+    expect(events.some((event) => event.type === "exit")).toBe(true);
+  });
+
+  it("T4 stopping one session leaves a sibling session's wrapper and child alive", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-session-isolation-"));
+    cleanupDirs.push(rootDir);
+    const runner = createLocalSandboxRunner();
+    const sessionA = await startTrackedBridgeSession({
+      rootDir,
+      runId: "session-a",
+      childSource: trackedChildSource(path.join(rootDir, "session-a.pid")),
+      runner,
+    });
+    const sessionB = await startTrackedBridgeSession({
+      rootDir,
+      runId: "session-b",
+      childSource: trackedChildSource(path.join(rootDir, "session-b.pid")),
+      runner,
+    });
+    try {
+      expect(isPidAlive(sessionA.pid)).toBe(true);
+      expect(isPidAlive(sessionB.pid)).toBe(true);
+
+      await sessionA.bridge.stop();
+      await waitFor(() => !isPidAlive(sessionA.pid), 8_000);
+
+      expect(isPidAlive(sessionA.pid)).toBe(false);
+      // Session B never received a stdinEnd or a shutdown message.
+      expect(isPidAlive(sessionB.pid)).toBe(true);
+    } finally {
+      await sessionA.bridge.stop().catch(() => undefined);
+      await sessionB.bridge.stop().catch(() => undefined);
+    }
+  }, 15_000);
+
+  it("T5 still writes both control messages and removes sessionDir after a forged exit event", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-forged-exit-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quiet-child.mjs");
+    await writeFile(childPath, "process.stdin.resume();\n", "utf8");
+
+    const scripts: string[] = [];
+    const runner = createLocalSandboxRunner(async (script) => {
+      scripts.push(script);
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-forged-exit",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    const mkdirScript = scripts.find((script) => script.startsWith("mkdir -p"));
+    const dirsMatch = /mkdir -p '([^']+)' '([^']+)'/.exec(mkdirScript ?? "");
+    expect(dirsMatch).not.toBeNull();
+    const eventsDir = dirsMatch![2];
+
+    // Forge an exit event from outside the wrapper, before any real shutdown.
+    await mkdir(eventsDir, { recursive: true });
+    await writeFile(path.join(eventsDir, "999999999999.json"), `${JSON.stringify({ type: "exit", code: 0 })}\n`, "utf8");
+
+    scripts.length = 0;
+    await bridge!.stop();
+
+    const finalizeWrites = scripts.filter((script) => script.includes("base64 -d") && script.includes(".paperclip-upload.decoded"));
+    // stdinEnd, then shutdown: both control messages still land.
+    expect(finalizeWrites.length).toBeGreaterThanOrEqual(2);
+    const removeScript = scripts.find((script) => script.trim().startsWith("rm -rf"));
+    expect(removeScript).toBeDefined();
+  });
+
+  it("T6 issues no operating-system signal from the host during stop()", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-no-signal-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quiet-child.mjs");
+    await writeFile(childPath, "process.stdin.resume();\n", "utf8");
+
+    const scripts: string[] = [];
+    const runner = createLocalSandboxRunner(async (script) => {
+      scripts.push(script);
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-no-signal",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    scripts.length = 0;
+    await bridge!.stop();
+
+    // stop() only ever writes files and removes a directory. None of the
+    // scripts it runs names a signal or a kill command.
+    const signalLike = scripts.filter((script) => /\bkill\b|SIGTERM|SIGKILL/i.test(script));
+    expect(signalLike).toEqual([]);
+  });
+
+  it("T8 running terminate() a second time, after the child already exited, is a safe no-op", async () => {
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      command: process.execPath,
+      args: ["-e", "process.exit(0)"],
+    });
+    await Promise.race([
+      wrapper.exited,
+      delay(4_000).then(() => {
+        throw new Error("The wrapper did not exit after its child exited on its own.");
+      }),
+    ]);
+    // The wrapper's own child-close handler already ran terminate() once (the
+    // child was already gone, so its child.kill() call no-opped). The
+    // wrapper did not throw and did not hang.
+    expect(wrapper.stderrText()).toBe("");
+    expect(wrapper.exitInfo().code).toBe(0);
+    const events = await wrapper.readEventFiles();
+    expect(events.filter((event) => event.type === "exit").length).toBe(1);
+    // No stray signal-triggered event (e.g. a second exit from a SIGKILL)
+    // ever landed.
+    expect(events.filter((event) => event.type === "error").length).toBe(0);
+  });
+
+  it("T9 exits with an error event when sessionDir is a symbolic link", async () => {
+    const targetDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-symlink-target-"));
+    cleanupDirs.push(targetDir);
+    const linkDir = `${targetDir}-link`;
+    const { symlink } = await import("node:fs/promises");
+    await symlink(targetDir, linkDir, "dir");
+    cleanupDirs.push(linkDir);
+
+    const wrapperPath = path.join(targetDir, "wrapper.mjs");
+    await writeFile(wrapperPath, getProcessSessionRemoteSource({ outputToStdout: true }), "utf8");
+    const config = { command: "cat", args: [] as string[], cwd: targetDir, env: {} };
+    const commandPayload = Buffer.from(JSON.stringify(config), "utf8").toString("base64");
+
+    const child = spawn(process.execPath, [wrapperPath], {
+      cwd: targetDir,
+      env: {
+        ...process.env,
+        PAPERCLIP_PROCESS_SESSION_DIR: linkDir,
+        PAPERCLIP_PROCESS_SESSION_COMMAND_B64: commandPayload,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const frames: WrapperFrame[] = [];
+    let stdoutBuffer = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString("utf8");
+      const lines = stdoutBuffer.split("\n");
+      stdoutBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        frames.push(JSON.parse(line) as WrapperFrame);
+      }
+    });
+    const exited = new Promise<void>((resolve) => child.on("close", () => resolve()));
+
+    await Promise.race([
+      exited,
+      delay(4_000).then(() => {
+        throw new Error("The wrapper did not exit after sessionDir was a symbolic link.");
+      }),
+    ]);
+    expect(frames.some((frame) => frame.type === "error" && typeof frame.message === "string" && frame.message.includes("symbolic link"))).toBe(
+      true,
+    );
+  });
+
+  it("T10 the emitted wrapper strips its own session env vars from the child", async () => {
+    const wrapper = await startWrapperProcess({
+      outputToStdout: true,
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(JSON.stringify(Object.keys(process.env).filter((k) => k.startsWith('PAPERCLIP_PROCESS_SESSION'))));process.exit(0)",
+      ],
+    });
+    await waitFor(() => wrapper.frames.some((frame) => frame.type === "exit"), 4_000);
+    const text = wrapper.frames
+      .filter((frame) => frame.type === "data" && frame.stream === "stdout" && typeof frame.data === "string")
+      .map((frame) => Buffer.from(frame.data as string, "base64").toString("utf8"))
+      .join("");
+    const leakedKeys = JSON.parse(text || "[]") as string[];
+    expect(leakedKeys).toEqual([]);
+  });
+
+  it("T11 each wrapper source has exactly one spawn call site and every kill call is child.kill()", () => {
+    for (const outputToStdout of [true, false]) {
+      const src = getProcessSessionRemoteSource({ outputToStdout });
+      // Strip `//` line comments first, so prose that happens to mention
+      // "spawn(" or "kill(" (e.g. explaining `ChildProcess#kill()`) is never
+      // mistaken for a call site. This checks the code, not the comments.
+      const code = src
+        .split("\n")
+        .map((line) => line.replace(/\/\/.*$/, ""))
+        .join("\n");
+      const spawnCallSites = code.match(/\bspawn\(/g) ?? [];
+      expect(spawnCallSites.length).toBe(1);
+      const killCallSites = [...code.matchAll(/[A-Za-z0-9_.$]*kill\(/g)].map((match) => match[0]);
+      expect(killCallSites.length).toBeGreaterThan(0);
+      for (const site of killCallSites) {
+        expect(site).toBe("child.kill(");
+      }
+    }
   });
 });
