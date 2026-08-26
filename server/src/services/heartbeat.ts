@@ -11473,14 +11473,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const millionTokens = (aggregateInputTokens / 1_000_000).toFixed(2);
     const action = "The issue reached the ≥1M aggregate-input ceiling. Automatic continuation is blocked. Use the real board_token_exception door (POST /companies/:companyId/board-token-exceptions) — confirmation is no longer offered to avoid placebo UX.";
-    await issuesSvc.update(issue.id, {
-      status: "blocked",
-      unblockDescriptor: {
+    const priorDesc = await db
+      .select({ unblockDescriptor: issues.unblockDescriptor })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((r) => r[0]?.unblockDescriptor ?? null);
+    const update: any = { status: "blocked", actorAgentId: input.agent.id };
+    if (!priorDesc || Object.keys(priorDesc).length === 0) {
+      update.unblockDescriptor = {
         owner: "board",
         action: "Request board grant of board_token_exception (cap/expiry/reason) for this issue via the exception API, or split the remaining work; then resume.",
-      },
-      actorAgentId: input.agent.id,
-    });
+      };
+    }
+    await issuesSvc.update(issue.id, update);
 
     await issuesSvc.addComment(
       issue.id,
@@ -19986,7 +19991,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!priorDesc || Object.keys(priorDesc).length === 0) {
           update.unblockDescriptor = {
             owner: "board",
-            action: "Record the business disposition, split the remaining work into bounded issues, or approve a deterministic route before resuming generation.",
+            action: "Request board grant of board_token_exception (cap/expiry/reason) for this issue via the exception API, or split the remaining work; then resume.",
           };
         }
         await issuesSvc.update(issueId, update);
