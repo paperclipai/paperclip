@@ -83,7 +83,13 @@ const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 // overruns the 8191-character cmd.exe command line. Node is invoked directly, so
 // no shell parses the arguments on any platform.
 const require = createRequire(import.meta.url);
-const vitestCli = path.join(path.dirname(require.resolve("vitest/package.json")), "vitest.mjs");
+let cachedVitestCli = null;
+function resolveVitestCli() {
+  // Resolved lazily: --dry-run never spawns Vitest, and some jobs run this
+  // script without the Vitest package installed.
+  cachedVitestCli ??= path.join(path.dirname(require.resolve("vitest/package.json")), "vitest.mjs");
+  return cachedVitestCli;
+}
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -294,7 +300,7 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync(process.execPath, [vitestCli, "run", ...sourceOnlyVitestArgs, ...args], {
+  const result = spawnSync(process.execPath, [resolveVitestCli(), "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",
