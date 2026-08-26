@@ -38,13 +38,21 @@ let queue: Promise<void> = Promise.resolve();
 
 /** Run gate operations one at a time, in call order. */
 function enqueue(op: () => Promise<void>): Promise<void> {
-  const next = queue.then(op, op);
+  const next = queue.then(op);
   queue = next.catch(() => {});
   return next;
 }
 
 /** The `@sentry/browser` module shape, resolved once. */
 type SentryBrowserModule = typeof import("@sentry/browser");
+
+/**
+ * The `Sentry.init` options this gate builds. `Sentry.init`'s parameter is
+ * optional, so `Parameters<...>[0]` alone carries an `| undefined` arm this
+ * gate never returns. `NonNullable` removes only that arm — the object shape
+ * underneath stays the true `@sentry/browser` option type.
+ */
+type BrowserSentryInitOptions = NonNullable<Parameters<SentryBrowserModule["init"]>[0]>;
 
 let sentry: SentryBrowserModule | null = null;
 
@@ -114,12 +122,12 @@ export function captureBrowserException(error: unknown): void {
  * `@sentry/browser` module and assert the resolved integration list and the
  * captured-event shape against the true SDK, not a stand-in.
  */
-export function buildBrowserSentryInitOptions(dsn: string): Record<string, unknown> {
+export function buildBrowserSentryInitOptions(dsn: string): BrowserSentryInitOptions {
   return {
     dsn,
     tracesSampleRate: 0,
     sendDefaultPii: false,
-    integrations: (defaults: Array<{ name: string }>) =>
+    integrations: (defaults) =>
       defaults.filter(
         (integration) => integration.name !== "HttpContext" && integration.name !== "Breadcrumbs",
       ),

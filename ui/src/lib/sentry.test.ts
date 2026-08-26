@@ -233,6 +233,22 @@ describe("captureBrowserException", () => {
   });
 });
 
+/**
+ * Call the `integrations` option with the given default list. The real
+ * `@sentry/browser` option type allows `integrations` to be an array instead
+ * of a function, so this guard narrows it before the call — this gate always
+ * builds a function, never an array, but the type does not know that.
+ */
+function resolveIntegrations(
+  options: ReturnType<typeof import("./sentry")["buildBrowserSentryInitOptions"]>,
+  defaults: Array<{ name: string }>,
+) {
+  if (typeof options.integrations !== "function") {
+    throw new Error("expected buildBrowserSentryInitOptions to set a function, not an array");
+  }
+  return options.integrations(defaults);
+}
+
 describe("buildBrowserSentryInitOptions", () => {
   it("sets the recorded built-in privacy options", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
@@ -256,10 +272,7 @@ describe("buildBrowserSentryInitOptions", () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
     const options = buildBrowserSentryInitOptions(DSN);
-    const integrationsFn = options.integrations as (
-      defaults: Array<{ name: string }>,
-    ) => Array<{ name: string }>;
-    const resolved = integrationsFn(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const resolved = resolveIntegrations(options, DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
     const names = resolved.map((i) => i.name);
 
     expect(names).not.toContain("HttpContext");
@@ -270,10 +283,7 @@ describe("buildBrowserSentryInitOptions", () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
     const options = buildBrowserSentryInitOptions(DSN);
-    const integrationsFn = options.integrations as (
-      defaults: Array<{ name: string }>,
-    ) => Array<{ name: string }>;
-    const resolved = integrationsFn(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const resolved = resolveIntegrations(options, DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
     const names = resolved.map((i) => i.name);
 
     expect(names).toEqual(
