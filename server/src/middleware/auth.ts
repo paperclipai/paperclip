@@ -17,6 +17,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { companyGovernancePolicyService } from "../services/company-governance-policy.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
 const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
@@ -554,19 +555,27 @@ export async function resolveCloudTenantActor(
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  if (shouldSync) await db
-    .insert(companies)
-    .values({
-      id: companyId,
-      name: companyName,
-      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
-      status: "active",
-      issuePrefix: issuePrefixForCloudStack(stackId),
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: companies.id,
-    });
+  if (shouldSync) await db.transaction(async (tx) => {
+    await tx
+      .insert(companies)
+      .values({
+        id: companyId,
+        name: companyName,
+        description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
+        status: "active",
+        issuePrefix: issuePrefixForCloudStack(stackId),
+        updatedAt: now,
+      })
+      .onConflictDoNothing({
+        target: companies.id,
+      });
+
+    // Cloud tenant provisioning bypasses companyService.create. The company
+    // row and its first policy become visible together, so a failed seed
+    // cannot leave a heartbeat-capable company without required policy.
+    await companyGovernancePolicyService(tx as unknown as Db)
+      .ensureDefaultInTransaction(tx as unknown as Db, companyId);
+  });
 
   if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {

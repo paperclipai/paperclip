@@ -143,6 +143,8 @@ export async function executeNativeCodexRunner(input: {
   cwd: string;
   prompt: string;
   model: string | null;
+  /** Delivered as Codex app-server baseInstructions for fresh and resumed threads. */
+  developerInstructions: string;
   resumeProviderSessionId: string | null;
   completionContract: { revision: string; criterionIds: string[] };
   timeoutMs: number;
@@ -203,7 +205,7 @@ export async function executeNativeCodexRunner(input: {
       ...(input.resumeProviderSessionId
         ? { providerSessionId: input.resumeProviderSessionId }
         : {}),
-      instructions: "",
+      instructions: input.developerInstructions,
       approvalPolicy: "never",
     },
     completionContract: input.completionContract,

@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -9,6 +9,7 @@ import {
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
+import { companyGovernancePolicyApi } from "../api/companyGovernancePolicy";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,21 @@ export function CompanySettings() {
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
+  const governancePolicyQuery = useQuery({
+    queryKey: queryKeys.companyGovernancePolicy.detail(selectedCompanyId ?? ""),
+    queryFn: () => companyGovernancePolicyApi.get(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const restoreGovernancePolicyMutation = useMutation({
+    mutationFn: (revisionId: string) => companyGovernancePolicyApi.restore(
+      selectedCompanyId!,
+      revisionId,
+      governancePolicyQuery.data?.active?.revision ?? 0,
+    ),
+    onSuccess: () => queryClient.invalidateQueries({
+      queryKey: queryKeys.companyGovernancePolicy.detail(selectedCompanyId ?? ""),
+    }),
+  });
 
   // Sync local state from selected company
   useEffect(() => {
@@ -406,6 +422,74 @@ export function CompanySettings() {
       />
 
       <InstanceGeneralSettings embedded />
+
+      <div className="space-y-4" data-testid="company-governance-policy-readback">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Company policy overlay
+        </div>
+        <div className="space-y-2 rounded-md border border-border px-4 py-3 text-sm">
+          {governancePolicyQuery.isLoading ? (
+            <span className="text-muted-foreground">Loading policy readback…</span>
+          ) : governancePolicyQuery.isError ? (
+            <span className="text-destructive">Unable to load policy readback.</span>
+          ) : governancePolicyQuery.data?.active ? (
+            <>
+              <p>
+                Active revision <span className="font-medium">{governancePolicyQuery.data.active.revision}</span>
+                {" · SHA-256 "}<code className="text-xs">{governancePolicyQuery.data.active.sha256}</code>
+              </p>
+              <p className={governancePolicyQuery.data.drift?.detected ? "text-destructive" : "text-muted-foreground"}>
+                {governancePolicyQuery.data.drift?.detected
+                  ? "Drift detected: stored policy body does not match its revision hash."
+                  : `No drift. ${governancePolicyQuery.data.targets.filter((target) => target.included).length} agent target(s) receive this overlay.`}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Delivery precedence: company policy → role instructions → task context → skills.
+              </p>
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                {governancePolicyQuery.data.targets.map((target) => (
+                  <li key={target.agentId}>
+                    {target.name} ({target.role ?? "no role"}): {target.included
+                      ? `${target.delivery} via ${target.bindingId}`
+                      : "not targeted"}
+                  </li>
+                ))}
+              </ul>
+              <details className="rounded border border-border p-2 text-xs">
+                <summary className="cursor-pointer font-medium">Active body and ordered bindings</summary>
+                <pre className="mt-2 whitespace-pre-wrap font-mono text-xs">{governancePolicyQuery.data.active.body}</pre>
+                <ol className="mt-2 list-decimal pl-4">
+                  {governancePolicyQuery.data.active.bindings.map((binding, index) => (
+                    <li key={`${index}-${JSON.stringify(binding)}`}><code>{JSON.stringify(binding)}</code></li>
+                  ))}
+                </ol>
+              </details>
+              <div className="space-y-1 text-xs">
+                <span className="font-medium">Revision history</span>
+                {governancePolicyQuery.data.history.map((revision) => (
+                  <div key={revision.id} className="flex items-center justify-between gap-2">
+                    <span>v{revision.revision} · {revision.sha256.slice(0, 12)}</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={revision.id === governancePolicyQuery.data?.active?.id || restoreGovernancePolicyMutation.isPending}
+                      onClick={() => restoreGovernancePolicyMutation.mutate(revision.id)}
+                    >
+                      Restore as new revision
+                    </Button>
+                  </div>
+                ))}
+                {restoreGovernancePolicyMutation.isError ? (
+                  <span className="text-destructive">Restore failed. Refresh and retry from the current revision.</span>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <span className="text-muted-foreground">No company policy overlay is configured.</span>
+          )}
+        </div>
+      </div>
 
       {/* Danger Zone */}
       <div className="space-y-4">

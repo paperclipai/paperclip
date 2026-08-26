@@ -11,6 +11,8 @@ import {
   companySkillVersions,
   companySkills,
   companyMemberships,
+  companyGovernancePolicies,
+  companyGovernancePolicyRevisions,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -50,6 +52,8 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(builtInManagedResources);
     await db.delete(companySkillVersions);
     await db.delete(companySkills);
+    await db.delete(companyGovernancePolicyRevisions);
+    await db.delete(companyGovernancePolicies);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -79,6 +83,36 @@ describeEmbeddedPostgres("companyService", () => {
 
     const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies);
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
+  });
+
+  it("backfills one immutable governance revision and makes company provisioning idempotent", async () => {
+    const created = await companyService(db).create({ name: "Governed Company" });
+
+    const first = await db
+      .select()
+      .from(companyGovernancePolicies)
+      .where(eq(companyGovernancePolicies.companyId, created.id));
+    const firstRevisions = await db
+      .select()
+      .from(companyGovernancePolicyRevisions)
+      .where(eq(companyGovernancePolicyRevisions.companyId, created.id));
+    expect(first).toHaveLength(1);
+    expect(firstRevisions).toHaveLength(1);
+    expect(first[0]?.activeRevisionId).toBe(firstRevisions[0]?.id);
+    expect(firstRevisions[0]).toMatchObject({ revision: 1, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+
+    // Cloud provisioning and startup repair call the same public service. A
+    // repeated seed must retain the active immutable row rather than append a
+    // second default revision.
+    const { companyGovernancePolicyService } = await import("../services/company-governance-policy.js");
+    await companyGovernancePolicyService(db).ensureDefault(created.id);
+    const repeated = await db
+      .select()
+      .from(companyGovernancePolicyRevisions)
+      .where(eq(companyGovernancePolicyRevisions.companyId, created.id));
+    expect(repeated).toHaveLength(1);
+    expect(repeated[0]?.id).toBe(firstRevisions[0]?.id);
+    expect(repeated[0]?.sha256).toBe(firstRevisions[0]?.sha256);
   });
 
   it("does not auto-provision bundled built-in agents for a freshly created company", async () => {

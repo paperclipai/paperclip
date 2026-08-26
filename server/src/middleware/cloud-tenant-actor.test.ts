@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Request } from "express";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
+import {
+  authUsers,
+  companies,
+  companyGovernancePolicies,
+  companyGovernancePolicyRevisions,
+  companyMemberships,
+  instanceSettings,
+  instanceUserRoles,
+} from "@paperclipai/db";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
@@ -36,26 +44,62 @@ function createFakeDb(options: {
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
   const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
-  const chain: Record<string, unknown> = {};
-  chain.values = () => chain;
-  chain.onConflictDoUpdate = () => chain;
-  chain.onConflictDoNothing = () => chain;
-  chain.where = () => chain;
-  chain.returning = async () => [membershipRow];
-  chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(undefined).then(resolve);
+  let transactionCalls = 0;
+  let cloudPolicySeedCommitted = false;
+  let policyRow: { id: string; activeRevisionId: string | null } | null = null;
+  let revisionRow: { id: string; policyId: string; revision: number } | null = null;
+  function mutationChain(table: unknown): Record<string, unknown> {
+    const chain: Record<string, unknown> = {};
+    chain.values = () => chain;
+    chain.onConflictDoUpdate = () => chain;
+    chain.onConflictDoNothing = () => chain;
+    chain.where = () => chain;
+    chain.for = () => chain;
+    chain.returning = async () => table === companyGovernancePolicyRevisions
+      ? [{
+          id: revisionRow!.id,
+          policyId: revisionRow!.policyId,
+          revision: revisionRow!.revision,
+          sha256: "a".repeat(64),
+        }]
+      : [membershipRow];
+    chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(undefined).then(resolve);
+    return chain;
+  }
   const db = {
     insert: (table: unknown) => {
       insertedTables.push(table);
+      if (table === companyGovernancePolicies) policyRow = { id: "policy-1", activeRevisionId: null };
+      if (table === companyGovernancePolicyRevisions) {
+        revisionRow = { id: "revision-1", policyId: policyRow?.id ?? "policy-1", revision: 1 };
+      }
+      return mutationChain(table);
+    },
+    update: (table: unknown) => {
+      const chain = mutationChain(table);
+      chain.set = (values: { activeRevisionId?: string }) => {
+        if (table === companyGovernancePolicies && policyRow && values.activeRevisionId) {
+          policyRow.activeRevisionId = values.activeRevisionId;
+        }
+        return chain;
+      };
       return chain;
     },
     delete: (table: unknown) => {
       deletedTables.push(table);
-      return chain;
+      return mutationChain(table);
     },
     select: () => {
-      if (options.selectThrows) throw new Error("select unavailable");
       return {
-        from: (table: unknown) => ({
+        from: (table: unknown) => {
+          // The failure-mode tests model reads made after the transactional
+          // tenant seed. Required policy reads must remain available within
+          // that seed; membership/settings reads below still exercise the
+          // fail-closed/degraded actor paths.
+          if (options.selectThrows && cloudPolicySeedCommitted && (table === companyMemberships || table === instanceSettings)) {
+            throw new Error("select unavailable");
+          }
+          return {
           where: (condition: unknown) => {
             selectWheres.push({ table, condition });
             const rows =
@@ -63,16 +107,25 @@ function createFakeDb(options: {
                 ? [settingsRow]
                 : table === companyMemberships
                   ? (options.membershipQueryRows ?? [])
+                  : table === companyGovernancePolicies
+                    ? (policyRow ? [policyRow] : [])
+                    : table === companyGovernancePolicyRevisions
+                      ? (revisionRow ? [revisionRow] : [])
                   : [];
-            return {
-              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
-            };
+            return { for: () => ({ then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve) }), then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve) };
           },
-        }),
+          };
+        },
       };
     },
+    transaction: async (callback: (tx: Db) => Promise<unknown>) => {
+      transactionCalls += 1;
+      const result = await callback(db as unknown as Db);
+      cloudPolicySeedCommitted = true;
+      return result;
+    },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables, selectWheres };
+  return { db, insertedTables, deletedTables, selectWheres, transactionCalls: () => transactionCalls };
 }
 
 function settingsRowWith(experimental: Record<string, unknown>) {
@@ -157,6 +210,15 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(authUsers);
     expect(insertedTables).toContain(companies);
     expect(insertedTables).toContain(companyMemberships);
+  });
+
+  it("creates the cloud tenant and required governance seed in one transaction", async () => {
+    const { db, insertedTables, transactionCalls } = createFakeDb();
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(transactionCalls()).toBe(1);
+    expect(insertedTables).toContain(companies);
+    expect(insertedTables).toContain(companyGovernancePolicies);
+    expect(insertedTables).toContain(companyGovernancePolicyRevisions);
   });
 
   it("resyncs an A to B to A context transition inside the debounce window", async () => {

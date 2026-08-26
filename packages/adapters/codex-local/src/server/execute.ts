@@ -32,6 +32,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asString,
+  asStringArray,
   asNumber,
   parseObject,
   buildPaperclipEnv,
@@ -1202,8 +1203,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
+      const governancePolicy = context.companyGovernancePolicy;
+      const governanceBody = governancePolicy
+        && typeof governancePolicy === "object"
+        && !Array.isArray(governancePolicy)
+        && typeof (governancePolicy as Record<string, unknown>).body === "string"
+        ? (governancePolicy as Record<string, unknown>).body
+        : null;
+      const configWithGovernanceOverlay = governanceBody
+        ? {
+            ...config,
+            // This is intentionally appended after operator args: policy delivery
+            // uses Codex's developer-level channel and cannot be shadowed by a
+            // role prompt or ordinary adapter extraArgs.
+            extraArgs: [
+              ...asStringArray((config as Record<string, unknown>).extraArgs),
+              "-c",
+              `developer_instructions=${JSON.stringify(governanceBody)}`,
+            ],
+          }
+        : config;
       const execArgs = buildCodexExecArgs(
-        forceSaferInvocation ? { ...config, fastMode: false } : config,
+        forceSaferInvocation ? { ...configWithGovernanceOverlay, fastMode: false } : configWithGovernanceOverlay,
         {
           resumeSessionId,
           skipGitRepoCheck: executionTargetIsSandbox,

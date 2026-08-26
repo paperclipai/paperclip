@@ -134,6 +134,8 @@ import {
   companySkillTestRunTemplateCreateSchema,
   companySkillTestRunTemplateUpdateSchema,
   evaluateSkillPolicySchema,
+  replaceGovernancePolicySchema,
+  restoreGovernancePolicyRevisionSchema,
   replaceSkillPolicySchema,
   updateInboxAgentPolicySchema,
   // Issue tree
@@ -5243,6 +5245,52 @@ registry.registerPath({
   summary: "Get the effective company skill policy",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/governance-policy",
+  tags: ["companies"],
+  summary: "Get the active company governance policy readback",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/governance-policy",
+  tags: ["companies"],
+  summary: "Create a new active company governance policy revision",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(replaceGovernancePolicySchema),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/governance-policy/revisions/{revisionId}/restore",
+  tags: ["companies"],
+  summary: "Restore a prior governance policy as a new immutable revision",
+  request: {
+    params: z.object({ companyId: z.string(), revisionId: z.string().uuid() }),
+    body: jsonBody(restoreGovernancePolicyRevisionSchema),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

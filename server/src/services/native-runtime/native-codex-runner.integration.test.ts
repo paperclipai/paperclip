@@ -188,6 +188,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
       cwd: tmpdir(),
       prompt: "Complete the fake native Codex turn.",
       model: "test-model",
+      developerInstructions: "# Company policy\nNative delivery is required.",
       resumeProviderSessionId: null,
       completionContract: native.completionContract,
       timeoutMs: 30_000,
@@ -201,6 +202,8 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
           resolve(runtimeRoot, "fake-codex-state.json"),
           "--call-log",
           resolve(runtimeRoot, "fake-codex-calls.log"),
+          "--thread-params-log",
+          resolve(runtimeRoot, "fake-codex-thread-params.log"),
         ],
         providerVersion: "fake-codex-v1",
       },
@@ -301,6 +304,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
       cwd: tmpdir(),
       prompt: "Continue the fake native Codex session.",
       model: "test-model",
+      developerInstructions: "# Company policy\nNative delivery is required.",
       resumeProviderSessionId: "codex-thread-1",
       completionContract: resumedNative.completionContract,
       timeoutMs: 30_000,
@@ -314,6 +318,8 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
           resolve(runtimeRoot, "fake-codex-state.json"),
           "--call-log",
           resolve(runtimeRoot, "fake-codex-calls.log"),
+          "--thread-params-log",
+          resolve(runtimeRoot, "fake-codex-thread-params.log"),
         ],
         providerVersion: "fake-codex-v1",
       },
@@ -332,5 +338,11 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
     );
     expect(providerCalls.match(/^thread\/start$/gm)).toHaveLength(1);
     expect(providerCalls.match(/^thread\/resume$/gm)).toHaveLength(1);
+    const threadParams = (await readFile(resolve(runtimeRoot, "fake-codex-thread-params.log"), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line) as { baseInstructions?: string });
+    expect(threadParams).toEqual([
+      expect.objectContaining({ baseInstructions: "# Company policy\nNative delivery is required." }),
+      expect.objectContaining({ baseInstructions: "# Company policy\nNative delivery is required." }),
+    ]);
   }, 60_000);
 });

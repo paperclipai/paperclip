@@ -1583,6 +1583,13 @@
       "when": 1787668790923,
       "tag": "0227_modern_pandemic",
       "breakpoints": true
+    },
+    {
+      "idx": 228,
+      "version": "7",
+      "when": 1787668791923,
+      "tag": "0228_company_governance_policies",
+      "breakpoints": true
     }
   ]
 }

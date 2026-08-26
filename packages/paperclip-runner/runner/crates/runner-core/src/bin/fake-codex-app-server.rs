@@ -47,6 +47,13 @@ fn log_call(path: Option<&Path>, method: &str) -> io::Result<()> {
     writeln!(file, "{method}")
 }
 
+fn log_thread_params(path: Option<&Path>, params: &Value) -> io::Result<()> {
+    let Some(path) = path else { return Ok(()) };
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    serde_json::to_writer(&mut file, params)?;
+    writeln!(file)
+}
+
 fn finish_turn(state_path: &Path, state: &mut FakeState, status: &str) -> io::Result<()> {
     let turn_id = state
         .active_turn_id
@@ -84,6 +91,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let state_path =
         PathBuf::from(argument(&args, "--state-file").ok_or("--state-file is required")?);
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
+    let thread_params_log = argument(&args, "--thread-params-log").map(PathBuf::from);
     let emit_question = args.iter().any(|value| value == "--emit-question");
     let hold_turn = args.iter().any(|value| value == "--hold-turn");
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
@@ -104,6 +112,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         log_call(call_log.as_deref(), method)?;
         let id = message.get("id").cloned();
+        if matches!(method, "thread/start" | "thread/resume") {
+            log_thread_params(thread_params_log.as_deref(), message.get("params").unwrap_or(&Value::Null))?;
+        }
         match method {
             "initialize" => send(json!({
                 "id": id,

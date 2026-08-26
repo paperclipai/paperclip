@@ -26,6 +26,7 @@ const apiPrefixes: Record<string, string> = {
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
+  "company-governance-policy.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "decision-queues.ts": "/api",
@@ -203,6 +204,9 @@ describe("openapi routes", () => {
       },
       required: expect.arrayContaining(["candidates"]),
     });
+    expect(res.body.paths["/api/companies/{companyId}/governance-policy"].put.requestBody.content[
+      "application/json"
+    ].schema.required).toEqual(expect.arrayContaining(["expectedRevision", "body", "bindings"]));
     expect(res.body.paths["/api/agents/{id}/keys"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
       properties: {

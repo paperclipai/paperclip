@@ -1322,6 +1322,73 @@ process.exit(1);
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps the governance overlay after the managed role instructions are replaced", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-governance-overlay-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const instructionsPath = path.join(root, "AGENTS.md");
+    const explicitCodexHome = path.join(root, "explicit-codex-home");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(explicitCodexHome, { recursive: true });
+    // Use an explicitly owned test home: Windows runners may prohibit the
+    // managed home's credential symlink, which is unrelated to overlay
+    // delivery and must not turn this regression into an EPERM skip.
+    await fs.writeFile(path.join(explicitCodexHome, "auth.json"), `${fakeCodexAuthJson}\n`, "utf8");
+    // This simulates the managed-revision overwrite which previously removed a
+    // policy copied into AGENTS.md. The policy now comes from run context.
+    await fs.writeFile(instructionsPath, "Replacement role instructions.\n", "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    try {
+      const result = await execute({
+        runId: "run-governance-overlay",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: { sessionId: null, sessionParams: {}, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: instructionsPath,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            CODEX_HOME: explicitCodexHome,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          companyGovernancePolicy: {
+            revision: 7,
+            sha256: "a".repeat(64),
+            body: "# Company policy\nThis instruction is inherited.",
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toEqual(expect.arrayContaining([
+        "-c",
+        'developer_instructions="# Company policy\\nThis instruction is inherited."',
+      ]));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");

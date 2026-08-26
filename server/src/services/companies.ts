@@ -38,6 +38,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { companyGovernancePolicyService } from "./company-governance-policy.js";
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,6 +61,7 @@ export function companyService(db: Db) {
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
+  const governancePolicies = companyGovernancePolicyService(db);
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -234,13 +236,13 @@ export function companyService(db: Db) {
     return false;
   }
 
-  async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
+  async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert, database: Db = db) {
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix < 10000) {
       const candidate = `${base}${suffixForAttempt(suffix)}`;
       try {
-        const rows = await db
+        const rows = await database
           .insert(companies)
           .values({ ...data, issuePrefix: candidate })
           .returning();
@@ -275,7 +277,14 @@ export function companyService(db: Db) {
     },
 
     create: async (data: typeof companies.$inferInsert) => {
-      const created = await createCompanyWithUniquePrefix(data);
+      // A company is not runnable until its required policy pointer and first
+      // immutable revision exist. Keep the seed in the same transaction as the
+      // company row so a failed seed cannot leave a heartbeat-capable tenant.
+      const created = await db.transaction(async (tx) => {
+        const company = await createCompanyWithUniquePrefix(data, tx as unknown as Db);
+        await governancePolicies.ensureDefaultInTransaction(tx as unknown as Db, company!.id);
+        return company!;
+      });
       await environmentsSvc.ensureLocalEnvironment(created.id);
       await builtInAgents.autoProvisionBundledAgents(created.id);
       const row = await getCompanyQuery(db)
