@@ -411,6 +411,31 @@ async function columnExists(
   return rows[0]?.exists ?? false;
 }
 
+// Postgres reports column defaults with an explicit cast appended, for example
+// 'on_demand'::text, while the migration statement writes the bare literal.
+// Compare the literal without the cast so both forms match.
+function normalizeColumnDefault(value: string): string {
+  return value.replace(/::[\w\s"\[\]().]+$/, "").trim().toLowerCase();
+}
+
+async function columnHasDefault(
+  sql: ReturnType<typeof postgres>,
+  tableName: string,
+  columnName: string,
+  expectedDefault: string,
+): Promise<boolean> {
+  const rows = await sql<{ columnDefault: string | null }[]>`
+    SELECT column_default AS "columnDefault"
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = ${tableName}
+      AND column_name = ${columnName}
+  `;
+  const actual = normalizeColumnDefault(rows[0]?.columnDefault ?? "");
+  if (actual.length === 0) return false;
+  return actual === normalizeColumnDefault(expectedDefault);
+}
+
 async function columnHasDataType(
   sql: ReturnType<typeof postgres>,
   tableName: string,
@@ -544,6 +569,18 @@ async function migrationStatementAlreadyApplied(
       alterColumnTypeMatch[1],
       alterColumnTypeMatch[2],
       alterColumnTypeMatch[3],
+    );
+  }
+
+  const alterColumnDefaultMatch = normalized.match(
+    /^ALTER TABLE "([^"]+)" ALTER COLUMN "([^"]+)" SET DEFAULT (.+?);?$/i,
+  );
+  if (alterColumnDefaultMatch) {
+    return columnHasDefault(
+      sql,
+      alterColumnDefaultMatch[1],
+      alterColumnDefaultMatch[2],
+      alterColumnDefaultMatch[3],
     );
   }
 
