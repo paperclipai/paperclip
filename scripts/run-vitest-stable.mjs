@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
+import { resolveVitestCli } from "./vitest-cli.mjs";
 
 const repoRoot = process.cwd();
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
@@ -82,14 +82,6 @@ const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
 // the general-server invocation passes one --exclude per serialized suite, which
 // overruns the 8191-character cmd.exe command line. Node is invoked directly, so
 // no shell parses the arguments on any platform.
-const require = createRequire(import.meta.url);
-let cachedVitestCli = null;
-function resolveVitestCli() {
-  // Resolved lazily: --dry-run never spawns Vitest, and some jobs run this
-  // script without the Vitest package installed.
-  cachedVitestCli ??= path.join(path.dirname(require.resolve("vitest/package.json")), "vitest.mjs");
-  return cachedVitestCli;
-}
 
 function walk(dir) {
   const entries = readdirSync(dir);
