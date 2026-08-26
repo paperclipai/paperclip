@@ -1597,6 +1597,95 @@ const PROCESS_SESSION_REMOTE_SCRIPT = "paperclip-process-session-remote.mjs";
 const PROCESS_SESSION_REMOTE_STREAM_SCRIPT = "paperclip-process-session-remote-stream.mjs";
 const PROCESS_SESSION_AUTH_TIMEOUT_MS = 5_000;
 
+// --- Process session teardown --------------------------------------------
+// The legacy-poll wrapper is launched with `nohup ... &`, so it leaves the
+// run's process group and reparents to init the moment its launching shell
+// exits. Nothing then holds a handle on it, and `stop()` used to ask it to
+// leave only by writing a `stdinEnd` file into the session directory -- which
+// `stop()` removes on the very next line. When the 50 ms stdin poll loses that
+// race the wrapper never sees the request, polls a directory that no longer
+// exists forever, and holds its child alive with it. The event-file wrapper
+// also kept polling after its own child had exited, so a finished session
+// stayed resident on nothing but the hope of a later `stdinEnd`. One clear-out
+// found 205 such strays across three runs holding ~10.5 GB.
+//
+// Teardown is therefore covered three independent ways, because each covers a
+// case the others miss: the child closing ends the wrapper on the normal path,
+// `stop()` signals the recorded pid on the host-driven path, and the wrapper
+// watches for its session directory going away so it still leaves when no
+// `stop()` ever runs (a server crash or restart).
+
+// How long the wrapper lets its child drain after SIGTERM before SIGKILL.
+const PROCESS_SESSION_CHILD_KILL_GRACE_MS = 3_000;
+// How long the host waits for a signalled wrapper to leave before SIGKILL.
+// This must exceed the wrapper's own child grace above, otherwise the host
+// kills the wrapper while it is still shutting its child down -- which
+// re-orphans the child, the exact leak this is here to close.
+const PROCESS_SESSION_TERMINATE_TICKS = 50;
+const PROCESS_SESSION_TERMINATE_TICK_SECONDS = "0.1";
+// Consecutive missed stats before the watchdog treats the host as gone. More
+// than one, so a transient stat failure cannot tear down a live session.
+const PROCESS_SESSION_WATCHDOG_MISSES = 3;
+const PROCESS_SESSION_WATCHDOG_INTERVAL_MS = 5_000;
+
+// Ask a backgrounded process-session wrapper to leave, then confirm that it
+// did. This runs in the sandbox rather than the host, because that is the pid
+// space the wrapper lives in -- a host-side `process.kill` would signal an
+// unrelated local process of the same number.
+async function terminateProcessSessionWrapper(input: {
+  runner: CommandManagedRuntimeRunner;
+  pid: number | null;
+  remoteCwd: string | undefined;
+  shellCommand: string;
+  timeoutMs: number | undefined;
+}): Promise<void> {
+  const { pid } = input;
+  if (pid === null) return;
+  await input.runner
+    .execute({
+      command: input.shellCommand,
+      args: shellCommandArgs(
+        [
+          // The pid was recorded when the session started and the wrapper
+          // usually exits on its own, so by now the number may have been
+          // recycled onto something unrelated. Signal it only while it still
+          // looks like our wrapper. When `ps` cannot confirm that -- a wrong
+          // command, or no `ps` at all in a minimal sandbox -- signal nothing
+          // and leave the wrapper to the watchdog. A late teardown is a far
+          // cheaper failure than killing an innocent process.
+          `case "$(ps -o command= -p ${pid} 2>/dev/null)" in`,
+          `  *${PROCESS_SESSION_REMOTE_SCRIPT}*) ;;`,
+          `  *) exit 0 ;;`,
+          `esac`,
+          `kill -TERM ${pid} 2>/dev/null || exit 0`,
+          // Wait for it to go, then insist. The budget here must outlast the
+          // wrapper's own child grace, so that SIGKILL lands on a wrapper that
+          // is genuinely stuck rather than on one still shutting its child
+          // down -- killing it mid-teardown would re-orphan that child.
+          `i=0`,
+          `while [ "$i" -lt ${PROCESS_SESSION_TERMINATE_TICKS} ]; do`,
+          `  kill -0 ${pid} 2>/dev/null || exit 0`,
+          `  sleep ${PROCESS_SESSION_TERMINATE_TICK_SECONDS}`,
+          `  i=$((i + 1))`,
+          `done`,
+          `kill -KILL ${pid} 2>/dev/null || true`,
+        ].join("\n"),
+      ),
+      cwd: input.remoteCwd,
+      env: {
+        PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+      },
+      timeoutMs: input.timeoutMs,
+      // Teardown plumbing, like the launch. Keep it off the persistent session
+      // so it never queues behind an in-run session command -- least of all
+      // the very command it is trying to tear down.
+      bypassSession: true,
+    })
+    // Teardown is best-effort by construction: the sandbox may already be
+    // gone. The watchdog remains the backstop for everything reached here.
+    .catch(() => undefined);
+}
+
 function jsonLine(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
 }
@@ -1782,6 +1871,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     env: sanitizeRemoteExecutionEnv(launchEnv),
   }), "utf8").toString("base64");
 
+  // The pid of the backgrounded legacy wrapper, or null on the streamed path
+  // (whose wrapper is a foreground session command the runner already owns).
+  // The wrapper reparents to init the moment its launching shell exits, so
+  // this pid is the only handle the host ever has on it.
+  let sessionPid: number | null = null;
+
   // Legacy poll path: background the wrapper with `nohup` and read its output
   // event files with the host poll below. The streamed path launches the wrapper
   // as one foreground session command further down instead, so skip this.
@@ -1809,6 +1904,22 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     });
     if (startResult.timedOut || (startResult.exitCode ?? 1) !== 0) {
       throw new Error(`Failed to start sandbox ACP process session bridge: ${startResult.stderr || startResult.stdout}`);
+    }
+    // The launch script's trailing `printf` emits `$!`, the backgrounded
+    // wrapper's pid. Read the last line rather than the whole buffer: the
+    // shell may have prefixed unrelated output (a login banner, an rc-file
+    // notice), and only the final line is the pid the printf wrote.
+    const pidLine = (startResult.stdout || "").trim().split("\n").pop()?.trim() ?? "";
+    const parsedPid = Number.parseInt(pidLine, 10);
+    sessionPid = Number.isFinite(parsedPid) && parsedPid > 0 ? parsedPid : null;
+    if (sessionPid === null) {
+      // Not fatal: the wrapper is running and the watchdog still bounds it.
+      // Say so anyway, because losing the pid downgrades a deterministic
+      // teardown to one that waits out a poll interval.
+      await onLog(
+        "stderr",
+        "[paperclip] Could not read the ACP process session wrapper pid; teardown will fall back to the session-directory watchdog.\n",
+      );
     }
   }
 
@@ -2155,6 +2266,19 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       );
       stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
       await stdinEndWrite.catch(() => undefined);
+      // Signal the wrapper before removing the session directory below. The
+      // `stdinEnd` file just written is a request the wrapper only sees on its
+      // next 50 ms poll, and the removal deletes that request out from under
+      // it; whichever wins, the wrapper is left polling a directory that no
+      // longer exists. Signalling the recorded pid does not depend on that
+      // race being won.
+      await terminateProcessSessionWrapper({
+        runner,
+        pid: sessionPid,
+        remoteCwd: target.remoteCwd,
+        shellCommand,
+        timeoutMs,
+      });
       await client.remove(sessionDir).catch(() => undefined);
       await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
     },
@@ -2213,6 +2337,91 @@ export function getProcessSessionRemoteSource(input?: { outputToStdout?: boolean
     ? getProcessSessionRemoteStreamSource()
     : getProcessSessionRemoteEventFileSource();
 }
+
+// The shared teardown. Both wrappers are unowned once launched -- the legacy
+// path backgrounds its wrapper with `nohup ... &`, so it reparents to init as
+// soon as the launching shell exits and nothing supervises it after that.
+// Leaving on its own is therefore not a nicety, it is the only thing that
+// bounds the wrapper's lifetime.
+//
+// Two exits live here. A signal from the host is the deterministic path, taken
+// when `stop()` runs. The session-directory watchdog is the backstop for when
+// `stop()` never runs at all, which is precisely the case that produced the
+// multi-day strays: a server crash or restart leaves the wrapper polling a
+// directory that its host will never touch again.
+const PROCESS_SESSION_TEARDOWN_TAIL = `let tearingDown = false;
+let graceTimer = null;
+
+// Both teardown timings are env-overridable so tests can exercise the real
+// emitted wrapper without waiting out the production intervals. Only the
+// timings are tunable, never whether teardown happens at all.
+function teardownTimingMs(name, fallback) {
+  const raw = Number.parseInt(process.env[name] || "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+const childKillGraceMs = teardownTimingMs(
+  "PAPERCLIP_PROCESS_SESSION_CHILD_KILL_GRACE_MS",
+  ${PROCESS_SESSION_CHILD_KILL_GRACE_MS},
+);
+const watchdogIntervalMs = teardownTimingMs(
+  "PAPERCLIP_PROCESS_SESSION_WATCHDOG_INTERVAL_MS",
+  ${PROCESS_SESSION_WATCHDOG_INTERVAL_MS},
+);
+
+function teardown(exitCode) {
+  if (tearingDown) return;
+  tearingDown = true;
+  // Stop the stdin poll first. The session directory is usually already gone
+  // by this point, and a poll cycle racing the exit only churns against it.
+  stdinClosed = true;
+  const signalChild = (signal) => {
+    try {
+      process.kill(child.pid, signal);
+    } catch (error) {
+      // Already gone. Nothing to signal, and nothing to report it to.
+    }
+  };
+  signalChild("SIGTERM");
+  // Hard bound. A child that ignores SIGTERM must not extend the wrapper's
+  // life, or tearing down one orphan simply leaves a different one behind.
+  graceTimer = setTimeout(() => {
+    signalChild("SIGKILL");
+    // Exit without draining the event write chain: teardown only runs when
+    // the host is gone or is tearing the bridge down, so there is no longer a
+    // reader for anything still queued.
+    process.exit(exitCode);
+  }, childKillGraceMs);
+  child.once("close", () => {
+    if (graceTimer) clearTimeout(graceTimer);
+    process.exit(exitCode);
+  });
+}
+
+process.on("SIGTERM", () => teardown(143));
+process.on("SIGINT", () => teardown(130));
+
+// The host removes the session directory in \`stop()\`. Its absence is the only
+// signal available to a wrapper whose host died without signalling it, so it
+// is what the backstop watches. Require several consecutive misses, so one
+// transient stat failure can never tear down a live session.
+let watchdogMisses = 0;
+const watchdogTimer = setInterval(() => {
+  void fs.stat(sessionDir).then(
+    () => {
+      watchdogMisses = 0;
+    },
+    () => {
+      watchdogMisses += 1;
+      if (watchdogMisses < ${PROCESS_SESSION_WATCHDOG_MISSES}) return;
+      clearInterval(watchdogTimer);
+      teardown(0);
+    },
+  );
+}, watchdogIntervalMs);
+// Never hold the wrapper open on the watchdog alone.
+watchdogTimer.unref?.();
+`;
 
 // The shared stdin drain. Both wrappers read newline-delimited stdin messages
 // from the stdin file queue and write them to the child, then end the child
@@ -2374,6 +2583,7 @@ child.on("close", (code, signal) => {
   process.exitCode = typeof code === "number" ? code : 1;
 });
 
+${PROCESS_SESSION_TEARDOWN_TAIL}
 ${PROCESS_SESSION_STDIN_POLL_TAIL}`;
 }
 
@@ -2419,8 +2629,17 @@ child.stderr.on("data", (chunk) => void writeEvent({ type: "data", stream: "stde
 child.on("error", (error) => void writeEvent({ type: "error", message: error.message }));
 // "close" (not "exit") so stdout/stderr fully drain before the exit event;
 // the write chain then guarantees the exit file lands after every data file.
-child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal }));
+// Closing stdin here is what ends the poll loop, and with it the wrapper. The
+// session is over once the child is gone, so waiting for the host's stdinEnd
+// to say so only leaves the wrapper resident on a directory nobody will write
+// to again -- which is how a finished session used to survive for days.
+child.on("close", (code, signal) => {
+  void writeEvent({ type: "exit", code, signal });
+  stdinClosed = true;
+  process.exitCode = typeof code === "number" ? code : 1;
+});
 
+${PROCESS_SESSION_TEARDOWN_TAIL}
 ${PROCESS_SESSION_STDIN_POLL_TAIL}`;
 }
 
