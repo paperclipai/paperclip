@@ -110,7 +110,7 @@ describe("config integrity guard (KEWL-3955 / KEWL-3960)", () => {
       await fs.mkdir(instanceDir, { recursive: true });
       const configPath = path.join(instanceDir, "config.json");
       const pcvtRoot = "/tmp/pcvt-84842-3-override";
-      const safeRoot = path.join(home, "safe-runtime");
+      const safeRoot = path.join(process.cwd(), ".paperclip-integrity-guard-safe-runtime");
       await fs.writeFile(
         configPath,
         JSON.stringify(buildConfigWithPoisonedOverrideablePaths(pcvtRoot, safeRoot), null, 2),
@@ -141,7 +141,7 @@ describe("config integrity guard (KEWL-3955 / KEWL-3960)", () => {
       await fs.mkdir(instanceDir, { recursive: true });
       const configPath = path.join(instanceDir, "config.json");
       const pcvtRoot = "/tmp/pcvt-84842-4-inactive";
-      const safeRoot = path.join(home, "safe-runtime");
+      const safeRoot = path.join(process.cwd(), ".paperclip-integrity-guard-safe-runtime");
       const config = buildPoisonedConfig(safeRoot);
       config.database.mode = "postgres";
       config.database.connectionString = "postgresql://paperclip:paperclip@127.0.0.1:5432/paperclip";
