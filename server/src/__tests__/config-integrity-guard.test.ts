@@ -67,6 +67,14 @@ function buildPoisonedConfig(pcvtRoot: string) {
   };
 }
 
+function buildConfigWithPoisonedOverrideablePaths(pcvtRoot: string, safeRoot: string) {
+  const config = buildPoisonedConfig(safeRoot);
+  config.database.backup.dir = path.join(pcvtRoot, "data", "backups");
+  config.storage.localDisk.baseDir = path.join(pcvtRoot, "data", "storage");
+  config.secrets.localEncrypted.keyFilePath = path.join(pcvtRoot, "secrets", "master.key");
+  return config;
+}
+
 describe("config integrity guard (KEWL-3955 / KEWL-3960)", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -89,6 +97,37 @@ describe("config integrity guard (KEWL-3955 / KEWL-3960)", () => {
       vi.stubEnv("PAPERCLIP_IN_WORKTREE", "");
 
       expect(() => loadConfig()).toThrow(/Config integrity check failed.*KEWL-3955/);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("uses env-overridden effective paths before rejecting a canonical config", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-integrity-guard-overrides-"));
+    try {
+      const instanceDir = path.join(home, "instances", "default");
+      await fs.mkdir(instanceDir, { recursive: true });
+      const configPath = path.join(instanceDir, "config.json");
+      const pcvtRoot = "/tmp/pcvt-84842-3-override";
+      const safeRoot = path.join(home, "safe-runtime");
+      await fs.writeFile(
+        configPath,
+        JSON.stringify(buildConfigWithPoisonedOverrideablePaths(pcvtRoot, safeRoot), null, 2),
+        "utf8",
+      );
+
+      vi.stubEnv("PAPERCLIP_HOME", home);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("PAPERCLIP_CONFIG", configPath);
+      vi.stubEnv("PAPERCLIP_IN_WORKTREE", "");
+      vi.stubEnv("PAPERCLIP_DB_BACKUP_DIR", path.join(safeRoot, "env-backups"));
+      vi.stubEnv("PAPERCLIP_STORAGE_LOCAL_DIR", path.join(safeRoot, "env-storage"));
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", path.join(safeRoot, "env-secrets", "master.key"));
+
+      const config = loadConfig();
+      expect(config.databaseBackupDir).toBe(path.join(safeRoot, "env-backups"));
+      expect(config.storageLocalDiskBaseDir).toBe(path.join(safeRoot, "env-storage"));
+      expect(config.secretsMasterKeyFilePath).toBe(path.join(safeRoot, "env-secrets", "master.key"));
     } finally {
       await fs.rm(home, { recursive: true, force: true });
     }

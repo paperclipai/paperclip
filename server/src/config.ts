@@ -117,6 +117,13 @@ function detectTailnetBindHost(): string | undefined {
 function checkConfigIntegrity(
   fileConfig: ReturnType<typeof readConfigFile>,
   resolvedConfigPath: string,
+  effectivePaths: {
+    databaseEmbeddedPostgresDataDir: string | undefined;
+    databaseBackupDir: string | undefined;
+    loggingLogDir: string | undefined;
+    storageLocalDiskBaseDir: string | undefined;
+    secretsMasterKeyFilePath: string | undefined;
+  },
 ): void {
   if (!fileConfig) return;
   if (process.env.PAPERCLIP_IN_WORKTREE === "true") return;
@@ -142,16 +149,16 @@ function checkConfigIntegrity(
   }
 
   const poisoned: string[] = [];
-  if (isVitestTmpPath(fileConfig.database.embeddedPostgresDataDir))
-    poisoned.push(`database.embeddedPostgresDataDir: ${fileConfig.database.embeddedPostgresDataDir}`);
-  if (isVitestTmpPath(fileConfig.database.backup?.dir))
-    poisoned.push(`database.backup.dir: ${fileConfig.database.backup?.dir}`);
-  if (isVitestTmpPath(fileConfig.logging?.logDir))
-    poisoned.push(`logging.logDir: ${fileConfig.logging?.logDir}`);
-  if (isVitestTmpPath(fileConfig.storage?.localDisk?.baseDir))
-    poisoned.push(`storage.localDisk.baseDir: ${fileConfig.storage?.localDisk?.baseDir}`);
-  if (isVitestTmpPath(fileConfig.secrets?.localEncrypted?.keyFilePath))
-    poisoned.push(`secrets.localEncrypted.keyFilePath: ${fileConfig.secrets?.localEncrypted?.keyFilePath}`);
+  if (isVitestTmpPath(effectivePaths.databaseEmbeddedPostgresDataDir))
+    poisoned.push(`database.embeddedPostgresDataDir: ${effectivePaths.databaseEmbeddedPostgresDataDir}`);
+  if (isVitestTmpPath(effectivePaths.databaseBackupDir))
+    poisoned.push(`database.backup.dir: ${effectivePaths.databaseBackupDir}`);
+  if (isVitestTmpPath(effectivePaths.loggingLogDir))
+    poisoned.push(`logging.logDir: ${effectivePaths.loggingLogDir}`);
+  if (isVitestTmpPath(effectivePaths.storageLocalDiskBaseDir))
+    poisoned.push(`storage.localDisk.baseDir: ${effectivePaths.storageLocalDiskBaseDir}`);
+  if (isVitestTmpPath(effectivePaths.secretsMasterKeyFilePath))
+    poisoned.push(`secrets.localEncrypted.keyFilePath: ${effectivePaths.secretsMasterKeyFilePath}`);
 
   if (poisoned.length > 0) {
     const configPath = process.env.PAPERCLIP_CONFIG ?? "(default path)";
@@ -173,7 +180,6 @@ function checkConfigIntegrity(
 export function loadConfig(): Config {
   const resolvedConfigPath = resolvePaperclipConfigPath();
   const fileConfig = readConfigFile();
-  checkConfigIntegrity(fileConfig, resolvedConfigPath);
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 
@@ -203,6 +209,14 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_LOCAL_DIR ??
       fileStorage?.localDisk?.baseDir ??
       resolveDefaultStorageDir(),
+  );
+  const embeddedPostgresDataDir = resolveHomeAwarePath(
+    fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
+  );
+  const secretsMasterKeyFilePath = resolveHomeAwarePath(
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
+      fileSecrets?.localEncrypted.keyFilePath ??
+      resolveDefaultSecretsKeyFilePath(),
   );
   const storageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
   const storageS3Region = process.env.PAPERCLIP_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
@@ -329,6 +343,13 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  checkConfigIntegrity(fileConfig, resolvedConfigPath, {
+    databaseEmbeddedPostgresDataDir: embeddedPostgresDataDir,
+    databaseBackupDir,
+    loggingLogDir: fileConfig?.logging?.logDir,
+    storageLocalDiskBaseDir,
+    secretsMasterKeyFilePath,
+  });
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores
@@ -378,9 +399,7 @@ export function loadConfig(): Config {
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
-    embeddedPostgresDataDir: resolveHomeAwarePath(
-      fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
-    ),
+    embeddedPostgresDataDir,
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
@@ -394,12 +413,7 @@ export function loadConfig(): Config {
     uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
     secretsProvider,
     secretsStrictMode,
-    secretsMasterKeyFilePath:
-      resolveHomeAwarePath(
-        process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
-          fileSecrets?.localEncrypted.keyFilePath ??
-          resolveDefaultSecretsKeyFilePath(),
-      ),
+    secretsMasterKeyFilePath,
     storageProvider,
     storageLocalDiskBaseDir,
     storageS3Bucket,
