@@ -91,6 +91,10 @@ repair_base_workspace_install() {
   # otherwise skip the dangling symlinks; --frozen-lockfile keeps the repair
   # from mutating the shared base workspace's lockfile.
   local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
+  # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+  # install. Node 24 reports that call as DEP0169. Remove this flag when the
+  # pinned pnpm no longer calls url.parse() in that path.
+  local repair_node_options="${NODE_OPTIONS:-} --disable-warning=DEP0169"
   # Resolve the real git dir so locking also covers base workspaces that are
   # linked worktrees, where "$base_cwd/.git" is a file rather than a directory.
   local repair_lock_dir=""
@@ -113,11 +117,11 @@ repair_base_workspace_install() {
         echo "Base workspace CLI became healthy while waiting for the repair lock; skipping reinstall." >&2
         exit 0
       fi
-      env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 || exit 1
+      env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 || exit 1
       base_cli_healthy
     )
   else
-    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 && base_cli_healthy)
+    (cd "$base_cwd" && env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 && base_cli_healthy)
   fi
 }
 
@@ -770,7 +774,10 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
-        pnpm install --prod=false "$@"
+        # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+        # install. Node 24 reports that call as DEP0169. Remove this flag
+        # when the pinned pnpm no longer calls url.parse() in that path.
+        NODE_OPTIONS="${NODE_OPTIONS:-} --disable-warning=DEP0169" pnpm install --prod=false "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
         cat "$stderr_path" >&2
