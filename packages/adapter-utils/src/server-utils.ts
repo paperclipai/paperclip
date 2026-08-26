@@ -3535,3 +3535,41 @@ export async function runChildProcess(
       .catch(reject);
   });
 }
+
+/**
+ * Resolve the working directory a local adapter should execute in.
+ *
+ * Precedence is workspace cwd, then the agent's configured cwd. When neither
+ * resolves, the adapter previously fell back to `process.cwd()` silently — the
+ * paperclip-server process directory, which in the published image is `/app`,
+ * the server's own source tree.
+ *
+ * That fallback is almost never what the operator intended: the agent reads and
+ * writes a codebase unrelated to its task, and because the run otherwise
+ * succeeds the output looks authoritative. Report it through `onLog` so the
+ * warning lands in the operator-visible run transcript rather than only on the
+ * server's stderr.
+ */
+export async function resolveAdapterWorkingDirectory(input: {
+  adapterType: string;
+  workspaceCwd: string;
+  configuredCwd: string;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<string> {
+  const resolved = input.workspaceCwd || input.configuredCwd;
+  if (resolved) return resolved;
+
+  const fallback = process.cwd();
+  const message =
+    `[paperclip] ${input.adapterType}: no workspace or configured working directory resolved. ` +
+    `Using the server process directory (${fallback}). ` +
+    "The agent reads and writes there, which is unlikely to be the intended project. " +
+    "Set a cwd on the project workspace, or on the agent's adapter config.\n";
+
+  if (input.onLog) {
+    await input.onLog("stderr", message);
+  } else {
+    console.warn(message.trim());
+  }
+  return fallback;
+}

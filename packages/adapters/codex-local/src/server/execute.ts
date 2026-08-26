@@ -50,6 +50,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
+  resolveAdapterWorkingDirectory,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseLocalProcessFilesystemScope,
@@ -630,7 +631,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = targetWorkspaceRealization?.mode === "in_place"
     ? targetWorkspaceRealization.authoritativeRoot
     : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const cwd = await resolveAdapterWorkingDirectory({
+    adapterType: "codex_local",
+    workspaceCwd: effectiveWorkspaceCwd,
+    configuredCwd,
+    onLog,
+  });
   const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const configuredCodexHome =

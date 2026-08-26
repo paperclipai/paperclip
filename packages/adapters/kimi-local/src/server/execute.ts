@@ -41,6 +41,7 @@ import {
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  resolveAdapterWorkingDirectory,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   SANDBOX_INSTALL_COMMAND,
@@ -228,7 +229,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const cwd = await resolveAdapterWorkingDirectory({
+    adapterType: "kimi_local",
+    workspaceCwd: effectiveWorkspaceCwd,
+    configuredCwd,
+    onLog,
+  });
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const kimiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
