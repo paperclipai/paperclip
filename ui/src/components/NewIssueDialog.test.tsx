@@ -548,6 +548,33 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("warns when the selected assignee is a paused imported agent", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Compare onboarding flows",
+      assigneeAgentId: "agent-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CEO",
+        status: "paused",
+        pauseReason: "import",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="new-issue-paused-assignee-note"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("arrived paused from a company import");
+
+    act(() => root.unmount());
+  });
+
   it("restores the planning mode from dialog defaults", async () => {
     dialogState.newIssueDefaults = {
       title: "Planned from defaults",

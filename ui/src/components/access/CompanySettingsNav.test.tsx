@@ -91,11 +91,16 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
   });
 
-  function renderNav(root: ReturnType<typeof createRoot>, hiddenSettings?: string[]) {
+  function renderNav(
+    root: ReturnType<typeof createRoot>,
+    hiddenSettings?: string[],
+    cloud?: { managed: boolean },
+  ) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(queryKeys.health, {
       status: "ok",
       ...(hiddenSettings ? { hiddenSettings } : {}),
+      ...(cloud ? { cloud } : {}),
     });
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -172,6 +177,47 @@ describe("CompanySettingsNav", () => {
       "instance-experimental",
       "instance-adapters",
     ]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("filters operator-hidden company tabs out of the tab bar", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, ["company.import", "company.secrets"]);
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).not.toContain("import");
+    expect(renderedValues).not.toContain("secrets");
+    expect(renderedValues).toContain("export");
+    expect(renderedValues).toContain("members");
+    expect(renderedValues).toContain("invites");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("suppresses the Import tab on a Cloud-managed instance", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, undefined, { managed: true });
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).not.toContain("import");
+    expect(renderedValues).toContain("export");
 
     await act(async () => {
       root.unmount();

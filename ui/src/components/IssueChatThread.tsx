@@ -82,6 +82,7 @@ import {
   type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { InlineBanner } from "@/components/InlineBanner";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -476,6 +477,9 @@ interface IssueChatThreadProps {
   issueAssigneeAgentId?: string | null;
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
+  /** Resume a paused assignee agent so runs can start again. */
+  onResumeAssignee?: () => Promise<void> | void;
+  resumeAssigneePending?: boolean;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -625,24 +629,50 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
   }
 }
 
-function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+export function IssueAssigneePausedNotice({
+  agent,
+  onResume,
+  resuming,
+}: {
+  agent: Agent | null;
+  onResume?: () => Promise<void> | void;
+  resuming?: boolean;
+}) {
   if (!agent || agent.status !== "paused") return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
       ? "It was paused by a budget hard stop."
-      : agent.pauseReason === "system"
-        ? "It was paused by the system."
-        : "It was paused manually.";
+      : agent.pauseReason === "import"
+        ? "It arrived paused from a company import — imported agents stay parked until you resume them."
+        : agent.pauseReason === "system"
+          ? "It was paused by the system."
+          : "It was paused manually.";
+  // Budget pauses clear on their own when the budget resets; resuming by hand
+  // would fight the hard stop, so the action is only offered for the rest.
+  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
 
   return (
-    <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
-      <div className="flex items-start gap-2">
-        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
-        <p className="min-w-0 leading-5">
-          <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
-        </p>
-      </div>
+    <div data-testid="issue-assignee-paused-notice" className="mb-3">
+      <InlineBanner
+        tone="warning"
+        icon={PauseCircle}
+        compact
+        title={<><span className="font-medium">{agent.name}</span> is paused.</>}
+        actions={canResume ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onResume}
+            disabled={resuming}
+            data-testid="issue-assignee-paused-resume"
+          >
+            {resuming ? "Resuming…" : "Resume agent"}
+          </Button>
+        ) : undefined}
+      >
+        New runs will not start until the agent is resumed. {pauseDetail}
+      </InlineBanner>
     </div>
   );
 }
@@ -4493,6 +4523,8 @@ export function IssueChatThread({
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
+  onResumeAssignee,
+  resumeAssigneePending = false,
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {
@@ -5241,9 +5273,22 @@ export function IssueChatThread({
                         : null
                     }
                   />
-                  <IssueAssigneePausedNotice agent={assignedAgent} />
+                  <IssueAssigneePausedNotice
+                    agent={assignedAgent}
+                    onResume={onResumeAssignee}
+                    resuming={resumeAssigneePending}
+                  />
                 </div>
-              ) : null}
+              ) : (
+                // Read-only viewers still need to see why nothing is running.
+                <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueAssigneePausedNotice
+                    agent={assignedAgent}
+                    onResume={onResumeAssignee}
+                    resuming={resumeAssigneePending}
+                  />
+                </div>
+              )}
               {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
               <div ref={bottomAnchorRef} />
               {showComposer ? (

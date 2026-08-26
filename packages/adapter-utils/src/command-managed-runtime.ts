@@ -37,11 +37,16 @@ export interface DuplexChannelOpenInput {
  */
 export interface CommandManagedDuplexChannel {
   /** Writes raw input bytes to the channel. */
-  write(data: string): void;
-  /** Registers the one data listener. The channel streams each raw chunk in order. */
-  onData(listener: (chunk: string) => void): void;
-  /** Registers the one exit listener. The channel calls it one time with the exit. */
-  onExit(listener: (exit: { exitCode: number | null }) => void): void;
+  write(data: Uint8Array): void;
+  /** Registers the one data listener. The channel streams each raw byte chunk in order. */
+  onData(listener: (chunk: Uint8Array) => void): void;
+  /**
+   * Registers the one exit listener. The channel calls it one time with the exit.
+   * A numeric `exitCode` is a real process exit. `transportClosed` is true when the
+   * provider transport closed with no exit data, so a reader can tell a real
+   * process exit from a reason-less transport close.
+   */
+  onExit(listener: (exit: { exitCode: number | null; transportClosed?: boolean }) => void): void;
   /** Stops the child process. Safe to call more than one time. */
   stop(): void;
   /** Closes the channel and releases the route. Safe to call more than one time. */
@@ -112,6 +117,8 @@ export interface CommandManagedRuntimeRunner {
    * bidirectional channel to a long-lived command in the sandbox. The SSH runner
    * and every provider without the capability omit the member, so a caller gates
    * on its presence in the same style as {@link syncIn}/{@link syncOut}.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
    */
   openDuplexChannel?(input: DuplexChannelOpenInput): Promise<CommandManagedDuplexChannel>;
 }

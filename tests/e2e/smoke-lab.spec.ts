@@ -301,7 +301,13 @@ async function gatewayFetch(request: APIRequestContext, path: string, token: str
 }
 
 test.describe.serial("Smoke Lab scenario catalog mirror", () => {
-  test.setTimeout(240_000);
+  // The lifecycle test walks all CI-safe scenarios, and each scenario records
+  // eight steps with a real navigation and a full-page screenshot. On a loaded
+  // CI runner the whole walk needs a little more than four minutes, so the
+  // earlier 240s budget could expire on the final step. Six minutes gives
+  // headroom for runner variance without slowing a healthy run, because this is
+  // a ceiling, not the normal run time.
+  test.setTimeout(360_000);
 
   test("records the P1-P7 CI-safe Smoke Lab lifecycle into the results API @smoke-lab", async ({ page, request }) => {
     const seed = await newCompany(request, "catalog");

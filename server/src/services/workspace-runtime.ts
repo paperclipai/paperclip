@@ -4829,6 +4829,13 @@ export async function allocateRuntimeServicePort(overrides?: {
   for (let attempt = 0; attempt < PORT_ALLOCATION_ATTEMPTS; attempt += 1) {
     const candidate = await probe();
     lastCandidate = candidate;
+    // Never hand back a port inside the runtime exposure app-port range. The
+    // reconciler classifies a persisted row by its port. A port in that range
+    // marks the row as an exposure reservation, not a managed auto port. An auto
+    // port from that range makes the reconciler read a stopped managed row as an
+    // exposure reservation and report drift instead of the adoption. The kernel
+    // can hand out an ephemeral port in that band, so skip the candidate here.
+    if (isRuntimeExposureAppPort(candidate)) continue;
     if (!reservePortIfFree(candidate)) continue;
     const ownerPid = await portOwnerLookup(candidate);
     if (!ownerPid) return candidate;

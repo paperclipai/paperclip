@@ -33,10 +33,10 @@
     "@rollup/plugin-typescript": "^12.1.2",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "rollup": "^4.62.4",
     "tslib": "^2.8.1",
-    "typescript": "^5.7.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
   "peerDependencies": {

@@ -11,7 +11,6 @@ import { api } from "./client";
  */
 export interface AdapterLoginProjection {
   panelMode: "displayed_code" | "submitted_browser_code";
-  sandboxTransport: "streamed_exec" | "pseudo_terminal";
   timeoutPolicy: "caller_bounded" | "fixed";
 }
 

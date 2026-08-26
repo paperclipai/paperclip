@@ -647,6 +647,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # gh pr view needs PR read for the skeleton's nested summaries;
+      # without it the enrichment silently degrades to bare subjects.
+      pull-requests: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -661,6 +664,9 @@ jobs:
 
       - name: Draft stable notes from the published beta
         env:
+          # gh needs a token so the generator can nest each PR's summary
+          # under its subject line (best-effort thoroughness).
+          GH_TOKEN: ${{ github.token }}
           BETA_VERSION: ${{ needs.publish_beta.outputs.beta_version }}
           SOURCE_SHA: ${{ needs.select_beta.outputs.sha }}
         run: |

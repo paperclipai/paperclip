@@ -255,6 +255,12 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/agents`),
     ),
     makeTool(
+      "paperclipListSkills",
+      "List the company skill library (all installed skills, independent of which agents have them enabled)",
+      z.object({ companyId: companyIdOptional }),
+      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/skills`),
+    ),
+    makeTool(
       "paperclipGetAgent",
       "Get a single agent by id",
       z.object({ agentId: z.string().min(1), companyId: companyIdOptional }),

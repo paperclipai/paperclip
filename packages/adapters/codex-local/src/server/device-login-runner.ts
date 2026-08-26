@@ -38,18 +38,33 @@ const MAX_PARSE_BUFFER_CHARS = 64 * 1024;
 
 /**
  * The sandbox side of the device-login run. The runner never calls Daytona
- * directly; a caller injects a concrete driver. A production driver binds these
- * three methods to a non-persisting Daytona exec path, a file read, and a
- * sandbox delete.
+ * directly; a caller injects a concrete driver. A production driver binds `start`
+ * to the shared login pseudo-terminal (PTY) transport, binds `readFile` to a
+ * descriptor-bound credential read, and binds `dispose` to the transport dispose.
+ *
+ * The `start` shape matches the shared login pseudo-terminal transport start
+ * method, so the driver runs the login command on a real pseudo-terminal. The
+ * login command
+ * needs a pseudo-terminal: pipe stdio emits no login prompt. The runner never
+ * calls `stop` or `write` on the driver; the device-login flow needs no delayed
+ * input, and the service owns the sandbox delete. The runner disposes the driver
+ * one time on every terminal state.
  */
 export interface SandboxLoginDriver extends LoginRunnerDisposable {
   /**
-   * Runs `command` in the sandbox and streams standard output to `onStdout` in
-   * memory. Resolves with the command exit code when the command ends. A driver
-   * must not persist the raw output to any durable log.
+   * Starts `command` on a pseudo-terminal and streams the terminal output to
+   * `onData` in memory, in order, as the pseudo-terminal emits it. Resolves with
+   * the command exit code when the command ends. A driver must not persist the raw
+   * output to any durable log.
    */
-  execStreaming(command: string, onStdout: (chunk: string) => void): Promise<{ exitCode: number | null }>;
-  /** Reads the bytes of one file from the sandbox. */
+  start(command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }>;
+  /**
+   * Reads the credential bytes with one descriptor-bound read. The read is
+   * separate from the pseudo-terminal session; the session has no file-read
+   * method. A driver runs one fixed, server-controlled operation that opens the
+   * verified session home and the credential file with no symlink follow, checks
+   * the opened descriptor, and reads only from that same descriptor.
+   */
   readFile(path: string): Promise<Buffer>;
 }
 
@@ -123,8 +138,8 @@ export async function runDeviceLogin(
       return { outcome: "cancelled", exitCode: null, promptSurfaced };
     }
 
-    const exec = driver.execStreaming(command, onStdout);
-    const raced = await raceLoginRunnerExit(exec, timeoutMs, signal);
+    const started = driver.start(command, onStdout);
+    const raced = await raceLoginRunnerExit(started, timeoutMs, signal);
 
     if (raced.kind === "timeout") {
       log("[paperclip] Device login timed out; disposing the sandbox.");

@@ -57,6 +57,16 @@ const mockAgentsApi = vi.hoisted(() => ({
   instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
   saveInstructionsFile: vi.fn(async () => ({})),
 }));
+// The Connect path loads environment settings before probing; without these
+// the probe dies on "Could not load environment settings" and the hire never
+// runs — which reads as a mysterious 0-call assertion, not an error.
+const mockEnvironmentsApi = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
+}));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
+  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
+}));
 const mockApprovalsApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
@@ -93,6 +103,8 @@ vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
+vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
+vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
   getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
@@ -253,6 +265,96 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
       expect(document.body.textContent).toContain("Create your first agent");
       expect(document.body.textContent).not.toContain("Define your mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("shows no environment-check card on the model step, and no Mission row on review", async () => {
+      // Round-3 walk feedback: the adapter environment check still runs —
+      // Connect probes before hiring and blocks on a fail — but its idle card
+      // (explainer plus "Test now") is gone. And the review checklist lost its
+      // "Mission" row: onboarding stopped asking, so the row could only ever
+      // render unchecked. Both asserted against positive anchors so an
+      // unrendered step cannot pass as an absence.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Create your first agent");
+
+      // Step 3 → 4 needs an agent name; choosing a role fills it.
+      const roleTrigger = document.body.querySelector("#onboarding-agent-role") as HTMLElement;
+      await act(async () => {
+        roleTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      const ceo = [...document.body.querySelectorAll('[role="option"]')].find(
+        (o) => o.textContent?.trim() === "CEO",
+      ) as HTMLElement;
+      await act(async () => {
+        ceo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+
+      expect(document.body.textContent).toContain("Connect a model");
+      expect(document.body.textContent).not.toContain("Adapter environment check");
+      expect(document.body.textContent).not.toContain("Test now");
+
+      // Through Connect to Review, so the Mission-row assertion runs against
+      // the checklist that actually renders it — stopping at the model step
+      // would let a Mission regression pass unseen.
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(document.body.textContent).toContain("Review");
+      expect(document.body.textContent).toContain("Organization name");
+      expect(document.body.textContent).toContain("Agent created");
+      expect(document.body.textContent).toContain("Model connected");
+      expect(document.body.textContent).not.toContain("Mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("hires one agent when Connect fires twice in one breath", async () => {
+      // The Connect handler re-runs a cached failed probe now that "Test now"
+      // is gone — so two overlapping submissions could both pass the fresh
+      // probe and both hire. `loading` cannot stop the second caller: it is
+      // state, unwritten while the first call is still awaiting. The ref
+      // guard must make the second submission a no-op.
+      let resolveHire: (v: { agent: { id: string }; approval: null }) => void = () => {};
+      mockAgentsApi.hire.mockReturnValue(
+        new Promise((resolve) => {
+          resolveHire = resolve;
+        }),
+      );
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne("create");
+      await clickByText((t) => t.startsWith("Next"));
+      const roleTrigger = document.body.querySelector("#onboarding-agent-role") as HTMLElement;
+      await act(async () => {
+        roleTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      const ceo = [...document.body.querySelectorAll('[role="option"]')].find(
+        (o) => o.textContent?.trim() === "CEO",
+      ) as HTMLElement;
+      await act(async () => {
+        ceo.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await clickByText((t) => t.startsWith("Next"));
+      expect(document.body.textContent).toContain("Connect a model");
+
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Connect"),
+      )!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await act(async () => resolveHire({ agent: { id: "agent-1" }, approval: null }));
+      await flushReact();
+
+      expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
 
       await act(async () => root.unmount());
     });

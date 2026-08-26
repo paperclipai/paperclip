@@ -108,14 +108,15 @@ vi.mock("../adapters", () => ({
 // third adapter with a projected login capability.
 const mockLoginProjections = vi.hoisted(
   () =>
-    new Map<string, { panelMode: string; sandboxTransport: string; timeoutPolicy: string }>([
-      ["codex_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
-      ["claude_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
+    new Map<string, { panelMode: string; timeoutPolicy: string }>([
+      ["codex_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
+      ["claude_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
       // A third adapter, not a built-in, with a projected displayed-code login.
-      ["vendor_local", { panelMode: "displayed_code", sandboxTransport: "streamed_exec", timeoutPolicy: "caller_bounded" }],
-      // A non-built-in adapter with a pseudo-terminal login transport. The gate
-      // requires the provider pty capability from the transport, not the name.
-      ["pty_vendor_local", { panelMode: "submitted_browser_code", sandboxTransport: "pseudo_terminal", timeoutPolicy: "fixed" }],
+      ["vendor_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
+      // A non-built-in adapter with a submitted-browser-code login. Every login
+      // runs on a real pseudo-terminal, so the gate requires the provider pty
+      // capability from the login capability, not the adapter name.
+      ["pty_vendor_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
     ]),
 );
 
@@ -408,9 +409,9 @@ async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
       makeEnvironment({
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       }),
     ],
     { defaultEnvironmentId: "sandbox-1", ...agentOverrides },
@@ -419,16 +420,17 @@ async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
 }
 
 // A third adapter, not a built-in, in a sandbox environment. Its projected login
-// capability drives the login affordance and the displayed-code panel.
+// capability drives the login affordance and the displayed-code panel. The
+// provider advertises the login pseudo-terminal capability the login needs.
 async function renderVendorSandbox(agentOverrides: Partial<Agent> = {}) {
   return renderForm(
     [
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
       makeEnvironment({
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       }),
     ],
     { adapterType: "vendor_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
@@ -1042,6 +1044,31 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Log in")).toBeTruthy();
   });
 
+  it("hides the Codex login for a provider without the login pseudo-terminal capability", async () => {
+    // The Codex device login runs on a real pseudo-terminal, so it needs a
+    // provider that advertises the login pseudo-terminal capability. E2B reports
+    // no capability, so the panel stays hidden even after the auth-missing check.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "codex_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
   it("shows the login affordance and the displayed-code panel for a third adapter with a projected login capability", async () => {
     // The adapter is not a built-in. Its projected login capability drives the
     // login affordance and the panel, so the form reads the capability, not the
@@ -1199,9 +1226,9 @@ describe("AgentConfigForm environment selector", () => {
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
       makeEnvironment({
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       }),
     ]);
 
