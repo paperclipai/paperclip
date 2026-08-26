@@ -969,7 +969,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     }
   }, 15_000);
 
-  it("T5 still writes both control messages and removes sessionDir after a forged exit event", async () => {
+  it("T5 still writes both control messages, finishes fast, and warns never after a forged exit event the live poll reads early", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-forged-exit-"));
     cleanupDirs.push(rootDir);
     const childPath = path.join(rootDir, "quiet-child.mjs");
@@ -987,6 +987,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       timeoutMs: 30_000,
       runner,
     };
+    let warnedCount = 0;
     const bridge = await startAdapterExecutionTargetProcessSessionBridge({
       runId: "run-forged-exit",
       target,
@@ -997,7 +998,9 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       cwd: rootDir,
       env: {},
       timeoutSec: 5,
-      onLog: async () => {},
+      onLog: async (stream, chunk) => {
+        if (stream === "stderr" && chunk.includes("did not acknowledge shutdown")) warnedCount += 1;
+      },
     });
     expect(bridge).not.toBeNull();
 
@@ -1010,15 +1013,126 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     await mkdir(eventsDir, { recursive: true });
     await writeFile(path.join(eventsDir, "999999999999.json"), `${JSON.stringify({ type: "exit", code: 0 })}\n`, "utf8");
 
+    // Give the live 100 ms host poll time to read the forged file well
+    // before stop() runs. This closes the gap T5 used to leave open: a
+    // forged event `stop()` observes only through its own bounded reader
+    // (not through the live poll, which sets `stopping` on its own and
+    // stops re-arming) must not shorten the wait either.
+    await delay(600);
+
     scripts.length = 0;
+    const start = Date.now();
     await bridge!.stop();
+    const elapsedMs = Date.now() - start;
 
     const finalizeWrites = scripts.filter((script) => script.includes("base64 -d") && script.includes(".paperclip-upload.decoded"));
     // stdinEnd, then shutdown: both control messages still land.
     expect(finalizeWrites.length).toBeGreaterThanOrEqual(2);
     const removeScript = scripts.find((script) => script.trim().startsWith("rm -rf"));
     expect(removeScript).toBeDefined();
-  });
+    // The child never exits on its own, so the wrapper's own genuine
+    // shutdownAck -- not the forged exit event -- is the only thing that can
+    // finish this fast with no warning. T14 (below) proves the forged event
+    // alone gives no such shortcut when no genuine acknowledgement ever
+    // follows it.
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(warnedCount).toBe(0);
+  }, 10_000);
+
+  it("T14 a forged exit event alone does not shorten the wait when the wrapper never truly runs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-forged-only-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quiet-child.mjs");
+    await writeFile(childPath, "process.stdin.resume();\n", "utf8");
+
+    const scripts: string[] = [];
+    let counter = 0;
+    // Run every script for real except the wrapper launch itself, so the
+    // wrapper never starts. The forged file below is then the only event
+    // that will ever exist under the session's events directory.
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }): Promise<RunProcessResult> => {
+        const script = input.args?.[1] ?? "";
+        scripts.push(script);
+        if (script.includes("nohup node")) {
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null };
+        }
+        counter += 1;
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        return runChildProcess(`forged-only-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    let warnedCount = 0;
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-forged-only",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        if (stream === "stderr" && chunk.includes("did not acknowledge shutdown")) warnedCount += 1;
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    const mkdirScript = scripts.find((script) => script.startsWith("mkdir -p"));
+    const dirsMatch = /mkdir -p '([^']+)' '([^']+)'/.exec(mkdirScript ?? "");
+    expect(dirsMatch).not.toBeNull();
+    const eventsDir = dirsMatch![2];
+
+    // Forge a terminal event from outside the wrapper. The wrapper never
+    // started, so this is the only event that will ever exist on disk.
+    await mkdir(eventsDir, { recursive: true });
+    await writeFile(path.join(eventsDir, "999999999999.json"), `${JSON.stringify({ type: "exit", code: 0 })}\n`, "utf8");
+
+    // Give the live 100 ms host poll time to read the forged file well
+    // before stop() runs, so this test cannot pass by accident: `stop()`
+    // never itself observes this event through its own first-line
+    // `stopping` flag.
+    await delay(600);
+
+    const start = Date.now();
+    await bridge!.stop();
+    const elapsedMs = Date.now() - start;
+
+    // An exit event under `sessionDir` is untrusted telemetry. With no
+    // genuine wrapper ever running to write a real shutdownAck, the wait
+    // still runs its full budget and still warns, exactly as it would with
+    // no forged event at all (compare T13).
+    expect(elapsedMs).toBeGreaterThanOrEqual(2_900);
+    expect(warnedCount).toBe(1);
+    const removeScript = scripts.find((script) => script.trim().startsWith("rm -rf"));
+    expect(removeScript).toBeDefined();
+  }, 10_000);
 
   it("T6 issues no operating-system signal from the host during stop()", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-no-signal-"));

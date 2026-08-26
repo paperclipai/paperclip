@@ -1851,21 +1851,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // `stop()` waits on this promise, bounded, for the wrapper's `shutdownAck`
   // event. `deliverRemoteEvent` resolves it below and never forwards the
   // event further: it is a host-internal control ack, not part of the ACP
-  // output stream.
+  // output stream. An event under `sessionDir` is untrusted telemetry: an
+  // `exit` or `error` event is never treated as proof of shutdown, because
+  // any process running under the sandbox can write one. Only `shutdownAck`
+  // counts, and `stop()` also gives itself a dedicated reader for it below,
+  // so a late `shutdownAck` still lands even after the long-lived poll has
+  // stopped re-arming.
   let signalShutdownAcknowledged: () => void = () => {};
   const shutdownAcknowledged = new Promise<void>((resolve) => {
     signalShutdownAcknowledged = resolve;
-  });
-  // `stop()` also races this promise. The wrapper's child `close` handler
-  // always calls `terminate()` before it writes the terminal `exit` event
-  // (an `error` event carries the same guarantee), so an observed terminal
-  // event is proof the wrapper already tears itself down. This lets `stop()`
-  // skip its bounded wait on a normal exit even on the file-poll path, where
-  // the poll loop stops re-arming right after it delivers that same event
-  // and so never reads the `shutdownAck` file that follows it on disk.
-  let signalWrapperTerminated: () => void = () => {};
-  const wrapperTerminated = new Promise<void>((resolve) => {
-    signalWrapperTerminated = resolve;
   });
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
@@ -1885,9 +1879,6 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     if (event.type === "shutdownAck") {
       signalShutdownAcknowledged();
       return;
-    }
-    if (event.type === "exit" || event.type === "error") {
-      signalWrapperTerminated();
     }
     if (socket) {
       writeRemoteEventToSocket(event);
@@ -1999,6 +1990,10 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const poll = async () => {
     if (stopping) return;
     try {
+      // Read every file this tick fetched before this loop decides whether to
+      // keep polling. A `shutdownAck` can land in the same batch right after
+      // an `exit` event; deliver it too, so this tick never drops an
+      // already-fetched (and already-removed-from-disk) event.
       const events = await readRemoteJsonFiles({ client, dir: eventsDir });
       for (const event of events) {
         const parsed = JSON.parse(event.body) as {
@@ -2010,7 +2005,6 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           message?: string;
         };
         deliverRemoteEvent(parsed);
-        if (parsed.type === "exit" || parsed.type === "error") return;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2163,6 +2157,43 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     schedulePoll();
   }
 
+  // `stop()` cannot rely on the long-lived poll above to observe a late
+  // `shutdownAck`: that poll stops re-arming as soon as it forwards a
+  // terminal `exit`/`error` event, and `stop()` itself sets `stopping` on
+  // its own first line. A normal completion's `shutdownAck` file, written a
+  // moment after `exit`, can then land on disk after nobody reads the events
+  // directory any more. Give `stop()` its own bounded reader that looks only
+  // for `shutdownAck` and ignores every other event type, so the wait below
+  // shortens on the wrapper's own proof of shutdown -- never on an `exit` or
+  // `error` event, which any process running under `sessionDir` can forge.
+  let stopReadingForShutdownAck = false;
+  const readShutdownAckUntil = (deadlineEpochMs: number) => {
+    if (stopReadingForShutdownAck) return;
+    void (async () => {
+      try {
+        const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+        if (stopReadingForShutdownAck) return;
+        for (const event of events) {
+          try {
+            const parsed = JSON.parse(event.body) as { type?: string };
+            if (parsed.type === "shutdownAck") {
+              signalShutdownAcknowledged();
+              return;
+            }
+          } catch {
+            // Not readable JSON yet. It is not a `shutdownAck`; ignore it.
+          }
+        }
+      } catch {
+        // Best-effort: a read failure here is not proof of anything.
+      }
+      if (!stopReadingForShutdownAck && Date.now() < deadlineEpochMs) {
+        const timer = setTimeout(() => readShutdownAckUntil(deadlineEpochMs), 100);
+        timer.unref?.();
+      }
+    })();
+  };
+
   return {
     agentCommand,
     stop: async () => {
@@ -2202,19 +2233,16 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       );
       stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
       await shutdownWrite.catch(() => undefined);
-      // Wait a bounded budget for proof the wrapper stopped: a `shutdownAck`
-      // event, or a terminal `exit`/`error` event. The wrapper's child
-      // `close` handler always calls `terminate()` before it writes the
-      // `exit` event, so an observed terminal event is equal proof to
-      // `shutdownAck`. Either proof only ends the wait early; it never
-      // gates, shortens, or replaces the removal below, which runs
-      // unconditionally.
+      // Wait a bounded budget for proof the wrapper stopped: only the
+      // `shutdownAck` event counts. An `exit` or `error` event is untrusted
+      // telemetry from inside the sandbox; it never shortens this wait or
+      // suppresses the warning below. This proof only ends the wait early;
+      // it never gates, shortens, or replaces the removal further down,
+      // which runs unconditionally.
       let acknowledgedInTime = false;
+      readShutdownAckUntil(Date.now() + DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
       await Promise.race([
         shutdownAcknowledged.then(() => {
-          acknowledgedInTime = true;
-        }),
-        wrapperTerminated.then(() => {
           acknowledgedInTime = true;
         }),
         new Promise<void>((resolve) => {
@@ -2222,6 +2250,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           budgetTimer.unref?.();
         }),
       ]);
+      stopReadingForShutdownAck = true;
       if (!acknowledgedInTime) {
         await onLog(
           "stderr",
@@ -2548,9 +2577,15 @@ child.on("error", (error) => writeEvent({ type: "error", message: error.message 
 // "close" (not "exit") so stdout/stderr fully drain before the exit frame.
 // Queue the exit frame first, then run terminate(), so the exit frame always
 // lands even when the child closes on its own, with no stdinEnd and no
-// shutdown message ever received. terminate() is idempotent and its
+// shutdown message ever received. writeEvent() only queues an asynchronous
+// write. terminate()'s own synchronous work (ending the child's stdin and
+// sending SIGTERM) already runs in this same handler by the time the exit
+// frame becomes readable on disk. terminate() is idempotent and its
 // child.kill() call here is always a no-op (I2): the child's process handle
-// is already gone by the time "close" fires.
+// is already gone by the time "close" fires. An error frame carries no such
+// guarantee: child.on("error", ...) below does not call terminate(), and
+// neither does the poll loop's own error writes, so those fire while the
+// wrapper and its child are still fully alive.
 child.on("close", (code, signal) => {
   writeEvent({ type: "exit", code, signal });
   process.exitCode = typeof code === "number" ? code : 1;
@@ -2634,9 +2669,15 @@ child.on("error", (error) => void writeEvent({ type: "error", message: error.mes
 // the write chain then guarantees the exit file lands after every data file.
 // Queue the exit event first, then run terminate(), so the poll loop ends
 // even when the child closes on its own, with no stdinEnd and no shutdown
-// message ever received. terminate() is idempotent and its child.kill() call
-// here is always a no-op (I2): the child's process handle is already gone by
-// the time "close" fires.
+// message ever received. writeEvent() only queues an asynchronous write.
+// terminate()'s own synchronous work (ending the child's stdin and sending
+// SIGTERM) already runs in this same handler by the time the exit file
+// becomes readable on disk. terminate() is idempotent and its child.kill()
+// call here is always a no-op (I2): the child's process handle is already
+// gone by the time "close" fires. An error event carries no such guarantee:
+// child.on("error", ...) below does not call terminate(), and neither does
+// the poll loop's own error writes, so those fire while the wrapper and its
+// child are still fully alive.
 child.on("close", (code, signal) => {
   void writeEvent({ type: "exit", code, signal });
   process.exitCode = typeof code === "number" ? code : 1;
