@@ -1,10 +1,10 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
   getProcessSessionRemoteSource,
@@ -693,6 +693,58 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     message?: string;
   };
 
+  // A test-only preload module for the wrapper's node process (PAP-5338).
+  // This sandbox's filesystems all report a real, working birthtime, so a
+  // test cannot reach the two known "no usable creation time" fallbacks by
+  // using a real filesystem alone. This preload patches fs.promises.lstat
+  // inside the wrapper's own process, for one directory the test names
+  // through an env var, so the wrapper observes the exact Stats shape each
+  // fallback produces. It never runs unless a test opts in, and it never
+  // touches this test file's own process.
+  // Kept outside cleanupDirs (which afterEach drains after every single test):
+  // this preload file is created once and reused by every test in this
+  // describe block, so an early test's cleanup must not delete it out from
+  // under a later test.
+  let fakeBirthtimePreloadDir: string | null = null;
+  afterAll(async () => {
+    if (fakeBirthtimePreloadDir) await rm(fakeBirthtimePreloadDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+  let fakeBirthtimePreloadPath: Promise<string> | null = null;
+  async function getFakeBirthtimePreloadPath(): Promise<string> {
+    if (!fakeBirthtimePreloadPath) {
+      fakeBirthtimePreloadPath = (async () => {
+        const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-birthtime-preload-"));
+        fakeBirthtimePreloadDir = dir;
+        const preloadPath = path.join(dir, "fake-birthtime-preload.cjs");
+        await writeFile(
+          preloadPath,
+          [
+            `const fs = require("fs");`,
+            `const path = require("path");`,
+            `const target = process.env.PAPERCLIP_TEST_FAKE_BIRTHTIME_TARGET;`,
+            `const mode = process.env.PAPERCLIP_TEST_FAKE_BIRTHTIME_MODE;`,
+            `const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;`,
+            `if (target && mode && sessionDir) {`,
+            `  const resolvedTarget = path.resolve(target === "stdinDir" ? path.join(sessionDir, "stdin") : sessionDir);`,
+            `  const originalLstat = fs.promises.lstat.bind(fs.promises);`,
+            `  fs.promises.lstat = async (candidatePath, opts) => {`,
+            `    const stats = await originalLstat(candidatePath, opts);`,
+            `    if (path.resolve(String(candidatePath)) === resolvedTarget) {`,
+            `      const fakeValue = mode === "zero" ? 0 : stats.ctimeMs;`,
+            `      Object.defineProperty(stats, "birthtimeMs", { value: fakeValue, configurable: true });`,
+            `    }`,
+            `    return stats;`,
+            `  };`,
+            `}`,
+          ].join("\n"),
+          "utf8",
+        );
+        return preloadPath;
+      })();
+    }
+    return fakeBirthtimePreloadPath;
+  }
+
   // Run the real emitted wrapper (either variant) as a node process, with no
   // sandbox and no bridge in front of it. The test owns the wrapper's node
   // ChildProcess handle directly, so it can observe the wrapper's own exit
@@ -703,8 +755,19 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     args?: string[];
     maxRetries?: number;
     terminateGraceMs?: number;
+    // A dedicated parent for this wrapper's session directory, instead of the
+    // shared OS temp directory. A test that must chmod sessionDir's own
+    // parent (to force EACCES on sessionDir itself) needs a parent it owns,
+    // never the shared OS temp directory every other process on the host
+    // also uses.
+    parentDir?: string;
+    // Makes the wrapper's own process observe an unusable birthtimeMs on one
+    // control directory, through the preload above. See PAP-5338 AC-1: a
+    // real "no usable creation time" filesystem is not reachable in this
+    // sandbox, so the test simulates the exact Stats shape instead.
+    fakeBirthtime?: { target: "sessionDir" | "stdinDir"; mode: "zero" | "followCtime" };
   }) {
-    const sessionDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-wrapper-lifecycle-"));
+    const sessionDir = await mkdtemp(path.join(options?.parentDir ?? os.tmpdir(), "paperclip-wrapper-lifecycle-"));
     cleanupDirs.push(sessionDir);
     const stdinDir = path.join(sessionDir, "stdin");
     const eventsDir = path.join(sessionDir, "events");
@@ -725,7 +788,14 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     if (options?.maxRetries != null) env.PAPERCLIP_PROCESS_SESSION_STDIN_MAX_RETRIES = String(options.maxRetries);
     if (options?.terminateGraceMs != null) env.PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS = String(options.terminateGraceMs);
 
-    const child = spawn(process.execPath, [wrapperPath], {
+    const execArgv: string[] = [];
+    if (options?.fakeBirthtime) {
+      env.PAPERCLIP_TEST_FAKE_BIRTHTIME_TARGET = options.fakeBirthtime.target;
+      env.PAPERCLIP_TEST_FAKE_BIRTHTIME_MODE = options.fakeBirthtime.mode;
+      execArgv.push("--require", await getFakeBirthtimePreloadPath());
+    }
+
+    const child = spawn(process.execPath, [...execArgv, wrapperPath], {
       cwd: sessionDir,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -1600,5 +1670,148 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     await waitFor(() => !isPidAlive(pid), 8_000);
     expect(isPidAlive(pid)).toBe(false);
     await waitFor(async () => (await findLivePidsByArgvSubstring(wrapperScriptSubstring)).length === 0, 8_000);
+  }, 15_000);
+
+  // ---- PAP-5338: fail closed on an unusable creation time, and on every
+  // lstat error during verification -------------------------------------
+
+  async function waitForTrackedChildPid(pidFile: string): Promise<number> {
+    await waitFor(async () => (await readFile(pidFile, "utf8").catch(() => "")).trim().length > 0, 8_000);
+    return Number.parseInt((await readFile(pidFile, "utf8")).trim(), 10);
+  }
+
+  async function expectWrapperAndTrackedChildToDie(
+    wrapper: { exited: Promise<void> },
+    pid: number,
+  ): Promise<void> {
+    await waitFor(() => !isPidAlive(pid), 8_000);
+    expect(isPidAlive(pid)).toBe(false);
+    await Promise.race([
+      wrapper.exited,
+      delay(8_000).then(() => {
+        throw new Error("The wrapper process did not exit.");
+      }),
+    ]);
+  }
+
+  // A capture failure latches and calls terminate() before the poll loop
+  // ever starts, often within a few milliseconds of the child's own spawn()
+  // call returning. A freshly spawned Node.js child needs real wall-clock
+  // time just to boot before it can run its own code, so it can lose the
+  // race to write a pid file before terminate()'s SIGTERM reaches it. This
+  // is the correct, intended shape of a fail-fast capture: the child never
+  // gets a chance to become a live orphan. So these two tests prove death
+  // through the OS process table by the child's own script path (the same
+  // technique T15 above uses for the wrapper itself), which needs no
+  // cooperation from code inside the child.
+  async function expectNoLiveProcessByArgvSubstring(substring: string): Promise<void> {
+    await waitFor(async () => (await findLivePidsByArgvSubstring(substring)).length === 0, 8_000);
+    expect(await findLivePidsByArgvSubstring(substring)).toEqual([]);
+  }
+
+  it("T16 fails closed at capture when the reported creation time is zero, so no orphan wrapper or child ever starts polling", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-birthtime-zero-"));
+    cleanupDirs.push(rootDir);
+    const pidFile = path.join(rootDir, "t16-child.pid");
+    const childPath = path.join(rootDir, "t16-child.mjs");
+    await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      command: process.execPath,
+      args: [childPath],
+      fakeBirthtime: { target: "sessionDir", mode: "zero" },
+    });
+
+    await Promise.race([
+      wrapper.exited,
+      delay(8_000).then(() => {
+        throw new Error("The wrapper process did not exit.");
+      }),
+    ]);
+    expect(wrapper.stderrText()).toMatch(/not usable/);
+    await expectNoLiveProcessByArgvSubstring(childPath);
+  }, 15_000);
+
+  it("T17 fails closed at capture when the reported creation time follows the change time, so a change-time copy never passes as a real creation time", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-birthtime-followctime-"));
+    cleanupDirs.push(rootDir);
+    const pidFile = path.join(rootDir, "t17-child.pid");
+    const childPath = path.join(rootDir, "t17-child.mjs");
+    await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      command: process.execPath,
+      args: [childPath],
+      fakeBirthtime: { target: "stdinDir", mode: "followCtime" },
+    });
+
+    await Promise.race([
+      wrapper.exited,
+      delay(8_000).then(() => {
+        throw new Error("The wrapper process did not exit.");
+      }),
+    ]);
+    await expectNoLiveProcessByArgvSubstring(childPath);
+    expect(wrapper.stderrText()).toMatch(/changed after a probe write/);
+  }, 15_000);
+
+  it("T18 latches on an EACCES lstat failure on sessionDir during verification, not only on a removed directory", async () => {
+    // sessionDir lives inside a parent this test owns, never the shared OS
+    // temp directory: the test denies traversal on that parent, and doing
+    // that to the shared OS temp directory would break every other process
+    // on the host that also uses it.
+    const parentDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-eacces-sessiondir-"));
+    cleanupDirs.push(parentDir);
+    const pidFile = path.join(parentDir, "t18-child.pid");
+    const childPath = path.join(parentDir, "t18-child.mjs");
+    await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      command: process.execPath,
+      args: [childPath],
+      parentDir,
+      terminateGraceMs: 200,
+    });
+
+    const pid = await waitForTrackedChildPid(pidFile);
+    // Let capture succeed and the poll loop run a clean cycle first, so the
+    // termination below proves the verify-time latch, not the capture-time
+    // one.
+    await delay(150);
+    await chmod(parentDir, 0o000);
+    try {
+      await expectWrapperAndTrackedChildToDie(wrapper, pid);
+    } finally {
+      // Restore permission so the shared cleanup can remove this directory.
+      await chmod(parentDir, 0o700).catch(() => undefined);
+    }
+    expect(wrapper.stderrText()).toMatch(/Latching on a lost process session identity/);
+  }, 15_000);
+
+  it("T19 latches on an EACCES lstat failure on stdinDir during verification, even though sessionDir itself still stats cleanly", async () => {
+    const wrapperOptions = { outputToStdout: false as const, terminateGraceMs: 200 };
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-eacces-stdindir-"));
+    cleanupDirs.push(rootDir);
+    const pidFile = path.join(rootDir, "t19-child.pid");
+    const childPath = path.join(rootDir, "t19-child.mjs");
+    await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+    const wrapper = await startWrapperProcess({ ...wrapperOptions, command: process.execPath, args: [childPath] });
+
+    const pid = await waitForTrackedChildPid(pidFile);
+    await delay(150);
+    // Deny traversal into sessionDir itself: lstat(stdinDir) fails EACCES
+    // while lstat(sessionDir) still succeeds, since a directory's own mode
+    // never gates lstat of the directory itself, only lookups inside it.
+    await chmod(wrapper.sessionDir, 0o000);
+    try {
+      await expectWrapperAndTrackedChildToDie(wrapper, pid);
+    } finally {
+      await chmod(wrapper.sessionDir, 0o700).catch(() => undefined);
+    }
+    expect(wrapper.stderrText()).toMatch(/Latching on a lost process session identity/);
   }, 15_000);
 });

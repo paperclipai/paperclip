@@ -2417,6 +2417,17 @@ async function terminate() {
 // deleting individual stdin files) changes that directory's OWN change time,
 // but never its creation time, so the creation time is safe to latch on
 // without producing a false positive on every stdin message.
+//
+// A filesystem or kernel that cannot report a real creation time does not
+// always report a value of zero. Node fails in one of two ways, and both are
+// grounded, not assumed: on Linux, when the statx() call finds no creation
+// time support, the kernel leaves the field unset and Node reports 0. On a
+// platform whose stat() call has no creation-time field at all, Node copies
+// the change time into the creation time instead. A 0 value fails open (any
+// recreated directory then matches on birthtimeMs alone), and a change-time
+// copy fails closed but far too often (it would move on every stdin file
+// this wrapper deletes). captureSessionIdentity() below proves the value is
+// usable before it trusts it, and fails closed on both known fallbacks.
 let sessionDirIdentity = null;
 let stdinDirIdentity = null;
 // The latch. Once set, it never clears. This replaces a counter that a
@@ -2450,24 +2461,121 @@ async function latchAndTerminate() {
   await terminate();
 }
 
-// Runs once, before the first poll cycle. A failed capture fails closed: the
-// wrapper has no verified identity to check on later cycles, so it
-// terminates now instead of polling a control path it never verified.
+function isUsableBirthtimeMs(value) {
+  return typeof value === "number" && Number.isFinite(value) && value !== 0;
+}
+
+let probeSeq = 0;
+
+// A probe file name that pollStdin() can never read as a stdin message: it
+// does not end in ".json", so the ".json" filter in pollStdin() skips it if
+// a poll cycle ever lists the directory during the probe's short window.
+function nextProbeFileName() {
+  probeSeq += 1;
+  return ".paperclip-birthtime-probe-" + process.pid + "-" + probeSeq;
+}
+
+// Proves a directory's reported birthtimeMs is a real creation time, not a
+// change-time copy. Creating and removing a file inside a directory changes
+// that directory's OWN change time but never its true creation time, so a
+// birthtimeMs that moves across the probe is a change-time copy. Returns
+// false both on a detected copy and on a probe that cannot run at all (for
+// example a permission error): either way the caller must not trust the
+// value.
+async function birthtimeSurvivesProbe(dirPath) {
+  let before;
+  try {
+    before = (await fs.lstat(dirPath)).birthtimeMs;
+  } catch {
+    return false;
+  }
+  const probePath = path.posix.join(dirPath, nextProbeFileName());
+  try {
+    await fs.writeFile(probePath, "");
+  } catch {
+    return false;
+  } finally {
+    await fs.rm(probePath, { force: true }).catch(() => undefined);
+  }
+  let after;
+  try {
+    after = (await fs.lstat(dirPath)).birthtimeMs;
+  } catch {
+    return false;
+  }
+  return before === after;
+}
+
+async function refuseUnusableCreationTime(label, dirPath, reason) {
+  process.stderr.write(
+    "Refusing to trust the process session control path " + label + " (" + dirPath + "): " + reason +
+      ". This filesystem or kernel gives no usable creation time. Terminating.\\n",
+  );
+  await latchAndTerminate();
+}
+
+// Runs once, before the first poll cycle, and before this wrapper captures
+// the identities it later checks on every cycle. A failed capture fails
+// closed: the wrapper has no verified identity to check on later cycles, so
+// it terminates now instead of polling a control path it never verified.
+//
+// This wrapper cannot assume stats.birthtimeMs is a real creation time. Node
+// reports it in one of two unusable shapes on a filesystem or kernel that
+// cannot supply one: 0 (the Linux statx() path when the filesystem reports
+// no STATX_BTIME), or a copy of the change time (the generic POSIX stat()
+// path on a platform with no birthtime field). A 0 value fails open, so this
+// wrapper rejects it outright. A change-time copy fails closed but far too
+// aggressively (it would move on every stdin file this wrapper deletes), so
+// this wrapper proves the value is not a copy with a probe before it trusts
+// it, run once here, before either directory's identity is captured.
 async function captureSessionIdentity() {
   try {
-    sessionDirIdentity = await statPathIdentity(sessionDir);
-    stdinDirIdentity = await statPathIdentity(stdinDir);
+    if (!(await birthtimeSurvivesProbe(sessionDir))) {
+      await refuseUnusableCreationTime("sessionDir", sessionDir, "its reported creation time changed after a probe write");
+      return;
+    }
+    if (!(await birthtimeSurvivesProbe(stdinDir))) {
+      await refuseUnusableCreationTime("stdinDir", stdinDir, "its reported creation time changed after a probe write");
+      return;
+    }
+    const session = await statPathIdentity(sessionDir);
+    const stdin = await statPathIdentity(stdinDir);
+    if (!isUsableBirthtimeMs(session.birthtimeMs)) {
+      await refuseUnusableCreationTime("sessionDir", sessionDir, "its reported creation time (" + session.birthtimeMs + ") is not usable");
+      return;
+    }
+    if (!isUsableBirthtimeMs(stdin.birthtimeMs)) {
+      await refuseUnusableCreationTime("stdinDir", stdinDir, "its reported creation time (" + stdin.birthtimeMs + ") is not usable");
+      return;
+    }
+    sessionDirIdentity = session;
+    stdinDirIdentity = stdin;
   } catch (error) {
+    process.stderr.write(
+      "Failed to capture the process session identity: " +
+        (error instanceof Error ? error.message : String(error)) + ". Terminating.\\n",
+    );
     await latchAndTerminate();
   }
 }
 
-// Runs on every poll cycle, before the wrapper reads stdinDir. Terminate (and
-// latch) on any proof the control path is no longer the one this wrapper
-// captured at startup: a missing path, a path that is no longer a directory,
-// a symbolic link, or a directory whose identity changed. Every other lstat
-// error (for example a permission error) is transient: keep the current
-// cycle empty and do not latch.
+// Runs on every poll cycle, before the wrapper reads stdinDir. Terminate and
+// latch on any proof the control path is no longer the one this wrapper
+// captured at startup (a missing path, a path that is no longer a directory,
+// a symbolic link, or a directory whose identity changed), AND on every
+// other lstat failure. A permission error is not transient here: a sandbox
+// peer can deny search permission on the control directory without removing
+// it, and treating that as transient would leave the wrapper and its child
+// alive forever. The error code below only picks the stderr message, so an
+// operator can still tell a removed directory from a permission error; it
+// never decides whether to latch.
+//
+// Contrast readStdinDirNames() right below, whose catch block stays narrow
+// on purpose: readdir() opens a directory descriptor, so it can fail with a
+// genuinely transient error under descriptor exhaustion, and latching there
+// would kill live sessions under load. lstat() opens no descriptor, and this
+// function already runs before every call to readStdinDirNames(), so a
+// permission error latches here before readdir() is ever reached.
 async function verifySessionIdentity() {
   if (identityLost) return false;
   try {
@@ -2480,13 +2588,23 @@ async function verifySessionIdentity() {
     return true;
   } catch (error) {
     const code = error && typeof error === "object" ? error.code : undefined;
-    if (code === "ENOENT" || code === "ENOTDIR" || code === "EPAPERCLIP_SYMLINK") {
-      await latchAndTerminate();
-    }
+    const reason =
+      code === "ENOENT"
+        ? "the control path no longer exists"
+        : code === "ENOTDIR"
+          ? "the control path is no longer a directory"
+          : code === "EPAPERCLIP_SYMLINK"
+            ? "the control path is now a symbolic link"
+            : "lstat failed" + (code ? " with " + code : "");
+    process.stderr.write("Latching on a lost process session identity: " + reason + ". Terminating.\\n");
+    await latchAndTerminate();
     return false;
   }
 }
 
+// This catch block stays narrow on purpose: see the comment above
+// verifySessionIdentity() for why a permission error here is treated as
+// transient while the same error latches there.
 async function readStdinDirNames() {
   if (!(await verifySessionIdentity())) return [];
   try {
