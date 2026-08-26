@@ -89,29 +89,51 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
   select: (selection: Record<string, unknown>) => ({
     from: () => ({
       where: () => {
-        if (Object.keys(selection).includes("count")) {
-          return {
-            then: (resolve: (rows: unknown[]) => unknown) =>
-              resolve([{ count: mockCrossIssueInfluence.priorCount }]),
-          };
+        const keys = Object.keys(selection);
+        const resolved = (rows: unknown[]) => ({
+          then: (resolve: (value: unknown[]) => unknown) => resolve(rows),
+        });
+        if (keys.includes("count")) {
+          return resolved([{ count: mockCrossIssueInfluence.priorCount }]);
         }
+        // Issue facts for the cross-issue write basis resolver. The target is
+        // modelled as held by the acting agent, so the resolver lands on
+        // `actor_is_target_assignee` and these cases keep exercising the cap
+        // rather than the authority decision. ("The target has no agent
+        // assignee" stopped being a basis in FAI-10134 — an unassigned target
+        // here would make every one of these a grant denial.)
+        if (keys.includes("originFingerprint")) {
+          const actingAgentId = mockRunAttribution.value?.agentId ?? null;
+          return resolved([mockCrossIssueInfluence.sourceIssueId, ISSUE_ID].map((id) => ({
+            id,
+            parentId: null,
+            projectId: null,
+            assigneeAgentId: id === ISSUE_ID ? actingAgentId : null,
+            assigneeUserId: null,
+            createdByAgentId: null,
+            originKind: "manual",
+            originId: null,
+            originFingerprint: "default",
+          })));
+        }
+        // The `issues:cross-write` grant lookup; no row means no grant.
+        if (keys.length === 1 && keys[0] === "scope") return resolved([]);
         const run = mockRunAttribution.value;
         return {
-          for: () => ({
-            then: (resolve: (rows: unknown[]) => unknown) => resolve(run
-              ? [{
-                  id: run.runId ?? null,
-                  companyId: run.companyId ?? null,
-                  agentId: run.agentId ?? null,
-                  responsibleUserId: run.responsibleUserId ?? null,
-                  contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
-                }]
-              : []),
-          }),
+          for: () => resolved(run
+            ? [{
+                id: run.runId ?? null,
+                companyId: run.companyId ?? null,
+                agentId: run.agentId ?? null,
+                responsibleUserId: run.responsibleUserId ?? null,
+                contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
+              }]
+            : []),
         };
       },
     }),
   }),
+  execute: async () => [],
   insert: () => ({
     values: async (value: Record<string, unknown>) => {
       mockCrossIssueInfluence.inserted.push(value);

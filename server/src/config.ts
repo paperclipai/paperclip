@@ -4,6 +4,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
+import { assertCrossIssueWriteGrantEnforceAtConfig } from "./services/cross-issue-write-enforcement-config.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import {
   AUTH_BASE_URL_MODES,
@@ -300,6 +301,10 @@ export function loadConfig(): Config {
   if (resolvedBind.errors.length > 0) {
     throw new Error(resolvedBind.errors[0]);
   }
+  // A mistyped cross-issue-write cutover must not boot. Unset is observe on
+  // purpose; unparseable means an operator meant to arm enforcement and the
+  // server would otherwise keep the broad writes without saying so.
+  assertCrossIssueWriteGrantEnforceAtConfig();
 
   return {
     deploymentMode,

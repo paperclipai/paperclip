@@ -247,13 +247,37 @@ import {
 } from "../services/issue-thread-interaction-resolution.js";
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
+  assertCrossIssueWriteFence,
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
+  type CrossIssueWriteFence,
 } from "../services/cross-issue-influence-limit.js";
+import type { CrossIssueWriteOperation } from "../services/cross-issue-write-basis.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+/**
+ * Cross-issue write authority resolved by the run-cap gate, pending a
+ * re-assertion under locks inside the transaction that persists the write
+ * (FAI-10132). Keyed by request because a single PATCH can carry both an update
+ * and a comment, each with its own fence. Populated only when enforcement is
+ * armed; in observe mode the gate returns no fence and every helper below is a
+ * no-op.
+ */
+const pendingCrossIssueWriteFences = new WeakMap<Request, CrossIssueWriteFence[]>();
+
+function recordCrossIssueWriteFence(req: Request, fence: CrossIssueWriteFence | null | undefined) {
+  if (!fence) return;
+  const existing = pendingCrossIssueWriteFences.get(req);
+  if (existing) existing.push(fence);
+  else pendingCrossIssueWriteFences.set(req, [fence]);
+}
+
+function hasPendingCrossIssueWriteFences(req: Request) {
+  return (pendingCrossIssueWriteFences.get(req)?.length ?? 0) > 0;
+}
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -1701,6 +1725,30 @@ function isApprovalReviewComment(body: string) {
   );
 }
 
+/**
+ * Whether posting this body auto-approves the target's pending review: on an
+ * `in_review` issue with a pending execution decision, an approval-shaped comment
+ * from the current participant closes the issue and writes a decision row.
+ *
+ * The comment route grades its cross-issue authority and applies this transition
+ * from the same predicate, so the cap gate cannot admit as comment-grade a write
+ * that later mutates the target. Deriving the condition a second time at the
+ * effect site is what let a comment-only basis — a sibling relationship, a shared
+ * routine origin, a mention — reach the transition (FAI-10134 security verdict at
+ * 1462ea9c3, finding 2).
+ */
+function commentAutoApprovesIssueReview(
+  issue: { status: string; executionState?: unknown },
+  actor: { actorType: "user" | "agent"; actorId: string },
+  body: string,
+) {
+  if (issue.status !== "in_review") return false;
+  const state = parseIssueExecutionState(issue.executionState);
+  if (state?.status !== "pending") return false;
+  return actorMatchesExecutionParticipant(actor, state.currentParticipant ?? null)
+    && isApprovalReviewComment(body);
+}
+
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
@@ -2349,6 +2397,18 @@ class AutoApprovalIssueMissingError extends Error {
   }
 }
 
+/**
+ * Thrown so drizzle rolls back the fenced comment transaction when the target
+ * issue has been deleted between the run-cap gate and the write. Returning null
+ * would commit the comment against a vanished issue.
+ */
+class CommentTargetIssueMissingError extends Error {
+  constructor() {
+    super("Issue not found during fenced comment transaction");
+    this.name = "CommentTargetIssueMissingError";
+  }
+}
+
 function toCompactIssue(issue: any): CompactIssue {
   return {
     id: issue.id,
@@ -2911,6 +2971,7 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; identifier?: string | null; companyId: string },
     kind: CrossIssueInfluenceKind,
+    options: { operation?: CrossIssueWriteOperation } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
@@ -2925,7 +2986,12 @@ export function issueRoutes(
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
       kind,
+      operation: options.operation,
     });
+    // The gate's decision is a time-of-check answer. Under enforcement it comes
+    // with a fence the persistence transaction must re-assert under locks, or a
+    // revocation landing in the gap would still write.
+    recordCrossIssueWriteFence(req, decision?.fence);
     if (!decision || decision.allowed) return true;
 
     const labels = await issueWriteDenialLabels(req, {
@@ -2937,6 +3003,43 @@ export function issueRoutes(
       issueIdentifier: labels.issueIdentifier,
     }));
     return false;
+  }
+
+  /**
+   * Re-assert every fence this request collected, inside the transaction that
+   * is about to persist. Call it as the first statement of that transaction:
+   * the `FOR SHARE` locks it takes must be held through commit for the check to
+   * mean anything, and a refusal must roll the mutation back.
+   */
+  async function assertPendingCrossIssueWriteFences(
+    tx: Parameters<typeof assertCrossIssueWriteFence>[1],
+    req: Request,
+  ) {
+    for (const fence of pendingCrossIssueWriteFences.get(req) ?? []) {
+      await assertCrossIssueWriteFence(db, tx, fence);
+    }
+  }
+
+  /**
+   * Insert a comment inside a transaction whenever this request carries a
+   * pending fence, so the authority re-check and the insert commit together.
+   * With no fence (observe mode, board actors, same-issue writes) the call is
+   * forwarded untouched — same arguments, same pooled handle, no transaction.
+   */
+  async function addCommentWithCrossIssueWriteFence(
+    req: Request,
+    args: [
+      issueId: string,
+      body: string,
+      actor: Parameters<typeof svc.addComment>[2],
+      options: Parameters<typeof svc.addComment>[3],
+    ],
+  ) {
+    if (!hasPendingCrossIssueWriteFences(req)) return svc.addComment(...args);
+    return db.transaction(async (tx) => {
+      await assertPendingCrossIssueWriteFences(tx, req);
+      return svc.addComment(args[0], args[1], args[2], args[3], tx);
+    });
   }
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
@@ -4391,7 +4494,12 @@ export function issueRoutes(
     if (!(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))) return false;
     if (req.actor.type !== "agent") assertBoard(req);
 
-    const interactionSvc = issueThreadInteractionService(db);
+    // The guard runs inside whichever transaction the resolution opens, so a
+    // cross-issue resolution re-checks its authority under locks at write time
+    // and rolls the whole resolution back if it was revoked mid-flight.
+    const interactionSvc = issueThreadInteractionService(db, {
+      preCommitAuthorityGuard: (tx) => assertPendingCrossIssueWriteFences(tx, req),
+    });
     const current = await interactionSvc.getForIssue(issue, interactionId);
     const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(
       req,
@@ -4588,8 +4696,15 @@ export function issueRoutes(
       res.status(403).json({ error: "Only the interaction creator, current issue assignee, or a board user may withdraw it" });
       return false;
     }
-    if (isAssignee) return assertAgentIssueMutationAllowed(req, res, issue);
-    return true;
+    if (isAssignee && !(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
+    // Withdrawing cancels the target's pending decision, revokes the tool-action
+    // requests linked to it and wakes the peer issue's assignee, so it mutates
+    // that ticket exactly as a resolution does and takes the same gate: a named
+    // basis over the target, counted against the run's cap and audited on denial.
+    // Having created the interaction earlier is not a standing licence over a
+    // peer issue — the creator branch previously returned allowed here without
+    // ever reaching the gate (FAI-10134 security verdict at 1462ea9c3, finding 3).
+    return assertCrossIssueInfluenceWithinRunCap(req, res, issue, "interaction_resolution");
   }
 
   async function assertTaskWatchdogCreateIssueAllowed(
@@ -6859,6 +6974,7 @@ export function issueRoutes(
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
+      await assertPendingCrossIssueWriteFences(tx, req);
       const lockedIssue = await tx
         .select()
         .from(issueRows)
@@ -9950,10 +10066,25 @@ export function issueRoutes(
       Boolean(decision)
       || shouldRelayStop
       || persistReviewActivityTransactionally
-      || reviewPolicySensitiveMutationRequested;
+      || reviewPolicySensitiveMutationRequested
+      // A pending cross-issue fence must be re-asserted in the same transaction
+      // as the update, so this path stops being optional for those writes.
+      || hasPendingCrossIssueWriteFences(req);
+    // A bundled PATCH persists two rows: the field update and the comment. With
+    // a fence pending those are one authorized cross-issue write, so they have
+    // to commit together — re-asserting the fence in a second transaction can
+    // refuse the comment *after* the field update has already landed, leaving
+    // the request half applied and the caller reading a 403 for a status change
+    // that persisted. The insert is therefore hoisted into the update
+    // transaction; reference and external syncing stay post-commit, and an
+    // unfenced request keeps the pooled two-statement path unchanged.
+    const bundleCommentWithUpdate = Boolean(commentBody) && shouldUseTransactionalIssueUpdate
+      && hasPendingCrossIssueWriteFences(req);
+    let comment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
     try {
       if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
+          await assertPendingCrossIssueWriteFences(tx, req);
           if (
             reviewPolicySensitiveMutationRequested
             && !(await assertLockedReviewPolicyAllowsMutation(tx))
@@ -9981,6 +10112,21 @@ export function issueRoutes(
           }
 
           await persistReviewTransitionActivity(tx, updated);
+
+          // Last statement in the transaction so the comment keeps its position
+          // after any stop-relay comment this update wrote, exactly as it does
+          // on the unfenced path.
+          if (bundleCommentWithUpdate && commentBody) {
+            comment = await svc.addComment(id, commentBody, {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+              onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+            }, {
+              authorizationReason: issueMutationAuthorizationReason,
+              sourceTrust: await sourceTrustForActorWrite(updated, actor),
+            }, tx);
+          }
 
           return updated;
         });
@@ -10410,12 +10556,14 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
     let lostReviewPathRef: string | null = null;
     if (commentBody) {
+      // Safe to read as the "before" summary even when the bundled insert
+      // already committed the row: a comment contributes references only once
+      // `syncComment` runs, which is the next statement.
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
+      const created = comment ?? await addCommentWithCrossIssueWriteFence(req, [id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
@@ -10423,9 +10571,10 @@ export function issueRoutes(
       }, {
         authorizationReason: issueMutationAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(issue, actor),
-      });
-      await issueReferencesSvc.syncComment(comment.id);
-      await externalObjectsSvc.syncCommentSafely(comment.id);
+      }]);
+      comment = created;
+      await issueReferencesSvc.syncComment(created.id);
+      await externalObjectsSvc.syncCommentSafely(created.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
         commentReferenceSummaryBefore,
@@ -10451,8 +10600,8 @@ export function issueRoutes(
         entityType: "issue",
         entityId: issue.id,
         details: {
-          commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
+          commentId: created.id,
+          bodySnippet: created.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
           authorizationReason: issueMutationAuthorizationReason,
@@ -10477,7 +10626,7 @@ export function issueRoutes(
 
       const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
         issue,
-        comment,
+        created,
         {
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
@@ -11798,7 +11947,12 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
 
-      const interactionSvc = issueThreadInteractionService(db);
+      // Same guarded service the resolution paths use: the withdrawal's own
+      // transaction re-checks the authority under locks and rolls the whole
+      // withdrawal back if the basis or grant was revoked mid-request.
+      const interactionSvc = issueThreadInteractionService(db, {
+        preCommitAuthorityGuard: (tx) => assertPendingCrossIssueWriteFences(tx, req),
+      });
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
@@ -12231,7 +12385,28 @@ export function issueRoutes(
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
     }
-    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
+    // Grade the authority by what this request actually does, not by the route
+    // it arrived on. A comment that moves the target to `todo`, supersedes its
+    // scheduled retry, or rebuilds its closed workspace is a mutation of someone
+    // else's ticket, and a comment-only basis — a sibling relationship, a shared
+    // routine origin, a mention — must not reach it (FAI-10134 blocking finding 1).
+    //
+    // Auto-approval is graded from `issue`, the same snapshot every other clause
+    // above reads. The only status change between here and the transition site is
+    // the move to `todo` at the reopen path, and that path is already a mutation
+    // by `effectiveMoveToTodoRequested` — so reading the pre-gate snapshot cannot
+    // miss an auto-approval the later site would apply, and cannot over-grade one
+    // it would skip.
+    const commentPerformsIssueMutation =
+      effectiveMoveToTodoRequested ||
+      effectiveReopenRequested ||
+      effectiveResumeRequested === true ||
+      interruptRequested ||
+      closedExecutionWorkspace !== null ||
+      commentAutoApprovesIssueReview(issue, actor, req.body.body);
+    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment", {
+      operation: commentPerformsIssueMutation ? "mutation" : "comment",
+    }))) return;
     // Reopen the closed isolated workspace only after every access, resume-intent,
     // blocker, and run-cap gate passes. A rejected comment must not rebuild and
     // republish the workspace as active, because the issue stays terminal and the
@@ -12280,11 +12455,23 @@ export function issueRoutes(
 
     let scheduledRetrySupersededByComment = false;
     let cancelledScheduledRetryRunId: string | null = null;
-    if (
+    const commentMovesIssueToTodo =
       effectiveMoveToTodoRequested &&
-      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry)
-    ) {
+      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry);
+    // A fenced write must be all-or-nothing: persisting `status: todo` and then
+    // taking a 403 on the comment leaves a peer issue reopened by an agent whose
+    // authority was revoked mid-request. So under a fence the transition is
+    // deferred into the comment's transaction and its non-transactional side
+    // effect — cancelling the superseded retry run — happens only after that
+    // commit. With no fence the ordering is exactly what it was
+    // (FAI-10134 blocking finding 1).
+    const deferTodoTransitionToCommentTx = commentMovesIssueToTodo && hasPendingCrossIssueWriteFences(req);
+    if (commentMovesIssueToTodo) {
       scheduledRetrySupersededByComment = shouldResumeInProgressScheduledRetry && issue.status === "in_progress";
+      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
+      reopenFromStatus = reopened ? issue.status : null;
+    }
+    if (commentMovesIssueToTodo && !deferTodoTransitionToCommentTx) {
       cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
         ? await cancelScheduledRetrySupersededByComment({
             scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
@@ -12297,8 +12484,6 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
-      reopenFromStatus = reopened ? issue.status : null;
       currentIssue = reopenedIssue;
 
       await logActivity(db, {
@@ -12368,11 +12553,7 @@ export function issueRoutes(
 
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
     const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
-    const shouldAutoApproveReviewComment =
-      currentIssue.status === "in_review" &&
-      currentExecutionState?.status === "pending" &&
-      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
-      isApprovalReviewComment(req.body.body);
+    const shouldAutoApproveReviewComment = commentAutoApprovesIssueReview(currentIssue, actor, req.body.body);
 
     // Persist the comment and the auto-approval state transition atomically when both apply.
     // Without a single transaction, a 422 (or any error) thrown by the status update after the
@@ -12421,6 +12602,7 @@ export function issueRoutes(
       const postCommitActivityPublications: ActivityPublication[] = [];
       try {
         txResult = await db.transaction(async (tx) => {
+          await assertPendingCrossIssueWriteFences(tx, req);
           const insertedComment = await svc.addComment(
             id,
             req.body.body,
@@ -12497,7 +12679,7 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await svc.addComment(id, req.body.body, {
+      const commentArgs: Parameters<typeof addCommentWithCrossIssueWriteFence>[1] = [id, req.body.body, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
@@ -12508,7 +12690,68 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
         authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      });
+      }];
+      if (deferTodoTransitionToCommentTx) {
+        let txResult: {
+          issue: NonNullable<Awaited<ReturnType<typeof svc.update>>>;
+          comment: Awaited<ReturnType<typeof svc.addComment>>;
+        };
+        try {
+          txResult = await db.transaction(async (tx) => {
+            await assertPendingCrossIssueWriteFences(tx, req);
+            const updated = await svc.update(id, { status: "todo" }, tx);
+            if (!updated) throw new CommentTargetIssueMissingError();
+            // Last statement, so the comment keeps its position after any
+            // relay comment the update wrote.
+            const inserted = await svc.addComment(commentArgs[0], commentArgs[1], commentArgs[2], commentArgs[3], tx);
+            return { issue: updated, comment: inserted };
+          });
+        } catch (err) {
+          if (err instanceof CommentTargetIssueMissingError) {
+            res.status(404).json({ error: "Issue not found" });
+            return;
+          }
+          throw err;
+        }
+        currentIssue = txResult.issue;
+        comment = txResult.comment;
+        // Cancelling the superseded retry run is not transactional, so it runs
+        // only once the transition it belongs to is durable.
+        cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
+          ? await cancelScheduledRetrySupersededByComment({
+              scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+              issue,
+              actor,
+            })
+          : null;
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: "todo",
+            ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+            ...(scheduledRetrySupersededByComment
+              ? {
+                  scheduledRetrySupersededByComment: true,
+                  scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+                  ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+                }
+              : {}),
+            source: "comment",
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            identifier: currentIssue.identifier,
+          },
+        });
+      } else {
+        comment = await addCommentWithCrossIssueWriteFence(req, commentArgs);
+      }
     }
 
     await issueReferencesSvc.syncComment(comment.id);

@@ -20,7 +20,15 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS,
+  CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX,
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  grantScopePrefixedValues,
+  grantScopeValueList,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -172,20 +180,10 @@ function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
 }
 
-function scopeValueList(value: unknown): string[] {
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    .map((entry) => entry.trim());
-}
-
-function prefixedScopeValues(grantScope: Record<string, unknown>, prefix: string) {
-  return scopeValueList(grantScope.allow)
-    .filter((rule) => rule.startsWith(prefix))
-    .map((rule) => rule.slice(prefix.length))
-    .filter((value) => value.length > 0);
-}
+// Shared with the `issues:cross-write` save-time scope check so the two cannot
+// disagree about what a scope constrains on — see `cross-issue-write-grant-scope.ts`.
+const scopeValueList = grantScopeValueList;
+const prefixedScopeValues = grantScopePrefixedValues;
 
 function scopeValuesForKeys(grantScope: Record<string, unknown>, keys: string[]) {
   return keys.flatMap((key) => scopeValueList(grantScope[key]));
@@ -365,12 +363,18 @@ async function isAgentInSubtree(db: Db, companyId: string, rootAgentId: string, 
   );
 }
 
-async function scopeAllows(
+/**
+ * Exported so the cross-issue write basis resolver scores an
+ * `issues:cross-write` grant with the same scope vocabulary every other grant
+ * uses — `project:`/`agent:` prefixes, id lists, manager subtrees. A second
+ * hand-rolled matcher would drift from this one and quietly widen a grant.
+ */
+export async function scopeAllows(
   db: Db,
   companyId: string,
   grantScope: Record<string, unknown> | null,
   requestedScope: Record<string, unknown> | null | undefined,
-  options: { requireStructuredScope?: boolean } = {},
+  options: { requireStructuredScope?: boolean; requireRecognizedConstraint?: boolean } = {},
 ) {
   if (!grantScope || Object.keys(grantScope).length === 0) return !options.requireStructuredScope;
   if (!requestedScope) return false;
@@ -417,18 +421,12 @@ async function scopeAllows(
     if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
   }
 
+  // Shared with the cross-issue write fence, which has to know when a scope is
+  // answered by a `reportsTo` walk so it can lock that hierarchy first. Two
+  // copies of this list would let the fence miss a selector the evaluator honours.
   const subtreeRootAgentIds = [
-    ...scopeValuesForKeys(grantScope, [
-      "managerAgentId",
-      "managerAgentIds",
-      "managedSubtreeAgentId",
-      "managedSubtreeAgentIds",
-      "subtreeAgentId",
-      "subtreeAgentIds",
-      "subtreeRootAgentId",
-      "subtreeRootAgentIds",
-    ]),
-    ...prefixedScopeValues(grantScope, "subtree:"),
+    ...scopeValuesForKeys(grantScope, [...CROSS_ISSUE_WRITE_SUBTREE_SCOPE_KEYS]),
+    ...prefixedScopeValues(grantScope, CROSS_ISSUE_WRITE_SUBTREE_SCOPE_PREFIX),
   ];
   if (subtreeRootAgentIds.length > 0) {
     constrained = true;
@@ -446,7 +444,12 @@ async function scopeAllows(
 
   // Unknown metadata keys do not constrain the grant. Recognized constraints
   // return false above when they fail to match the requested assignment scope.
-  return !constrained ? true : constrained;
+  // For grants whose whole point is that they must be narrow — `issues:cross-write`
+  // — the caller passes `requireRecognizedConstraint` and a scope made only of
+  // keys this evaluator does not understand (`{"note":"scoped"}`) is refused
+  // rather than read as an unconstrained allow.
+  if (!constrained) return !options.requireRecognizedConstraint;
+  return true;
 }
 
 function allow(input: Omit<AuthorizationDecision, "allowed">): AuthorizationDecision {

@@ -82,6 +82,7 @@ import { collectReachableInterfaceHosts } from "../runtime-api.js";
 import {
   accessService,
   agentService,
+  assertGrantScopesAreSaveable,
   boardAuthService,
   deduplicateAgentName,
   logActivity,
@@ -4592,6 +4593,9 @@ export function accessRoutes(
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      // Refuse an unscoped `issues:cross-write` before the delete-then-insert
+      // below drops the member's existing grants for an unsaveable payload.
+      assertGrantScopesAreSaveable((req.body.grants ?? []) as MemberGrantPayload[]);
 
       const updated = await db.transaction(async (tx) => {
         await tx.execute(sql`

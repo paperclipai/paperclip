@@ -1022,6 +1022,9 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
+  // Standing authority to write to issues outside the run's own issue tree.
+  // Always scoped (project and/or assignee); an unscoped grant confers nothing.
+  "issues:cross-write",
   "pipelines:write",
   "joins:approve",
 ] as const;
