@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,6 +75,15 @@ const serializedServerVitestArgs = [
   "--maxWorkers=1",
 ];
 const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
+
+// Run Vitest through its own JS entry point rather than `pnpm exec vitest`.
+// Spawning `pnpm` fails on Windows, where it is a .cmd shim that Node cannot
+// execute without a shell, and routing through a shell is not an option here:
+// the general-server invocation passes one --exclude per serialized suite, which
+// overruns the 8191-character cmd.exe command line. Node is invoked directly, so
+// no shell parses the arguments on any platform.
+const require = createRequire(import.meta.url);
+const vitestCli = path.join(path.dirname(require.resolve("vitest/package.json")), "vitest.mjs");
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -284,7 +294,7 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
+  const result = spawnSync(process.execPath, [vitestCli, "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",
