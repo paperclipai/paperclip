@@ -528,7 +528,7 @@ export function IssueWorkspaceCard({
             className="inline-flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
           >
             <FolderSearch className="h-3.5 w-3.5 shrink-0" />
-            Browse files…
+            {t("app.issueWorkspaceCard.browseFiles", { defaultValue: "Browse files…" })}
           </button>
           <button
             type="button"
@@ -536,7 +536,7 @@ export function IssueWorkspaceCard({
             className="inline-flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
           >
             <FileSearch className="h-3.5 w-3.5 shrink-0" />
-            Open file by path…
+            {t("app.issueWorkspaceCard.openFileByPath", { defaultValue: "Open file by path…" })}
           </button>
         </div>
       )}

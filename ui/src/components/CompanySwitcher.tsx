@@ -85,7 +85,7 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
                 }}
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
-                Try again
+                {t("app.companySwitcher.tryAgain", { defaultValue: "Try again" })}
               </DropdownMenuItem>
             </>
           ) : (
@@ -96,13 +96,13 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
         <DropdownMenuItem asChild>
           <Link to="/company/settings" className="no-underline text-inherit">
             <Settings className="h-4 w-4 mr-2" />
-            Settings
+            {t("app.companySwitcher.settings", { defaultValue: "Settings" })}
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/companies" className="no-underline text-inherit">
             <Plus className="h-4 w-4 mr-2" />
-            Manage Companies
+            {t("app.companySwitcher.manageCompanies", { defaultValue: "Manage Companies" })}
           </Link>
         </DropdownMenuItem>
       </DropdownMenuContent>

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { SVGProps } from "react";
 
 interface PaperclipLockupProps extends Omit<SVGProps<SVGSVGElement>, "children"> {
@@ -17,7 +18,7 @@ interface PaperclipLockupProps extends Omit<SVGProps<SVGSVGElement>, "children">
  */
 export function PaperclipLockup({
   decorative = false,
-  title = "Paperclip",
+  title = t("app.paperclipLockup.paperclip", { defaultValue: "Paperclip" }),
   className,
   ...rest
 }: PaperclipLockupProps) {

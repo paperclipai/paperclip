@@ -99,7 +99,7 @@ export function ExecutionWorkspaceCloseDialog({
         {readinessQuery.isLoading ? (
           <div className="flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Checking whether this workspace is safe to close...
+            {t("app.executionWorkspaceCloseDialog.checkingWhetherThisWorkspaceIsSafeToClose", { defaultValue: "Checking whether this workspace is safe to close..." })}
           </div>
         ) : readinessQuery.error ? (
           <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">

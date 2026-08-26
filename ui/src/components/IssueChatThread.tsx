@@ -1776,8 +1776,8 @@ function IssueChatAssistantMessage({
     onVote,
     agentMap,
     onStopRun,
-    stopRunLabel = "Stop run",
-    stoppingRunLabel = "Stopping...",
+    stopRunLabel = t("app.issueChatThread.stopRun", { defaultValue: "Stop run" }),
+    stoppingRunLabel = t("app.issueChatThread.stopping", { defaultValue: "Stopping..." }),
     stopRunVariant = "stop",
     runFinalizationActions = [],
     userLabelMap,
@@ -1937,7 +1937,7 @@ function IssueChatAssistantMessage({
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy message
+            {t("app.agentBubbleActionRow.copyMessage", { defaultValue: "Copy message" })}
           </DropdownMenuItem>
           {canStopRun && onStopRun && runId ? (
             <DropdownMenuItem
@@ -1963,7 +1963,7 @@ function IssueChatAssistantMessage({
             <DropdownMenuItem asChild>
               <Link to={runHref} target="_blank" rel="noreferrer noopener">
                 <Search className="mr-2 h-3.5 w-3.5" />
-                View run
+                {t("app.issueChatThread.viewRun", { defaultValue: "View run" })}
               </Link>
             </DropdownMenuItem>
           ) : null}
@@ -2076,7 +2076,7 @@ function IssueChatAssistantMessage({
                   )}
                 >
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
+                  {t("app.issueChatThread.running", { defaultValue: "Running" })}
                 </Badge>
               ) : null}
             </div>
@@ -4312,7 +4312,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             value={reassignTarget}
             options={reassignOptions}
             placeholder={t("app.issueChatThread.responsible", { defaultValue: "Responsible" })}
-            noneLabel="No responsible"
+            noneLabel={t("app.commentThread.noResponsible", { defaultValue: "No responsible" })}
             searchPlaceholder="Search responsible..."
             emptyMessage={t("app.issueChatThread.noResponsibleFound", { defaultValue: "No responsible found." })}
             onChange={setReassignTarget}

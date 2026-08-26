@@ -1646,7 +1646,7 @@ export function CompanyImport() {
               : t("app.companyImport.theImportFinishedAndYourCompanyIsReadyItsDetailedSummaryIsNoLongerAvailableButTheCompanyHasBeenAddedSelectItFromTheCompanySwitcherToViewIt", { defaultValue: "The import finished and your company is ready. Its detailed summary is no longer available, but the company has been added — select it from the company switcher to view it." })}          </p>
           {importOutcome.pausedAutomations ? (
             <p className="text-xs text-muted-foreground mt-1">
-              Imported agents arrived paused — resume them from the company's Agents page so assigned tasks can start.
+              {t("app.companyImport.importedAgentsArrivedPausedResumeThemFromTheCompanySAgentsPa", { defaultValue: "Imported agents arrived paused — resume them from the company's Agents page so assigned tasks can start." })}
             </p>
           ) : null}
         </div>
@@ -1660,7 +1660,7 @@ export function CompanyImport() {
               // immediately visible (same reason as the full-outcome CTA).
               onClick={() => window.location.assign(importOutcome.dashboardPath!)}
             >
-              Open company dashboard
+              {t("app.companyImport.openCompanyDashboard", { defaultValue: "Open company dashboard" })}
             </Button>
           </div>
         ) : null}
@@ -1767,7 +1767,7 @@ export function CompanyImport() {
 
         {importOutcome.pausedAutomations ? (
           <p className="text-xs text-muted-foreground">
-            Anything left paused here stays visible on the company's Agents and Routines pages, which offer the same resume actions — nothing is lost if you leave this page.
+            {t("app.companyImport.anythingLeftPausedHereStaysVisibleOnTheCompanySAgentsAndRout", { defaultValue: "Anything left paused here stays visible on the company's Agents and Routines pages, which offer the same resume actions — nothing is lost if you leave this page." })}
           </p>
         ) : null}
 

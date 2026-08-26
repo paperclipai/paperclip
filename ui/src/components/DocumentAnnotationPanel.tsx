@@ -433,7 +433,7 @@ export function ThreadCard(props: {
                     }}
                   >
                     <Copy className="h-3.5 w-3.5" />
-                    Copy link
+                    {t("app.documentAnnotationPanel.copyLink", { defaultValue: "Copy link" })}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

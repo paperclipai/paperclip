@@ -158,7 +158,7 @@ export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitl
         {isLoading ? (
           <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            Loading...
+            {t("app.artifactsPanel.loading", { defaultValue: "Loading..." })}
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-4 py-8 text-center">
@@ -216,7 +216,7 @@ export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitl
                         {showGenerating ? (
                           <Badge variant="ghost" className="[&>svg]:size-2.5 text-(length:--text-nano) px-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400">
                             <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                            Generating...
+                            {t("app.artifactsPanel.generating", { defaultValue: "Generating..." })}
                           </Badge>
                         ) : (
                           <Badge variant="ghost" className={cn("text-(length:--text-nano) px-1.5", badge.className)}>
@@ -284,7 +284,7 @@ function DocumentViewer({
         {isLoading ? (
           <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            Loading document...
+            {t("app.artifactsPanel.loadingDocument", { defaultValue: "Loading document..." })}
           </div>
         ) : error ? (
           <p className="text-sm text-muted-foreground">{ t("app.artifactsPanel.documentNotAvailableYet", { defaultValue: "Document not available yet." }) }</p>

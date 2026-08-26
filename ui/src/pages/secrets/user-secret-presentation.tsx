@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { SecretStatus, UserSecretCoverageSummary } from "@paperclipai/shared";
 import { UserRound } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -13,7 +14,7 @@ export const USER_SECRET_ACCENT_BORDER = "border-violet-500/30";
 export const USER_SECRET_ACCENT_BG = "bg-violet-500/10";
 
 /** Small pill used to mark user-scoped rows and headers. */
-export function UserSecretChip({ className, label = "User secret" }: { className?: string; label?: string }) {
+export function UserSecretChip({ className, label = t("app.userSecretPresentation.userSecret", { defaultValue: "User secret" }) }: { className?: string; label?: string }) {
   return (
     <Badge variant="outline"
       className={cn(

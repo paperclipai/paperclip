@@ -360,7 +360,7 @@ export function RoutineRunVariablesDialog({
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeIds}
                 placeholder={t("app.routineRunVariablesDialog.agent2", { defaultValue: "Agent" })}
-                noneLabel="Select an agent"
+                noneLabel={t("app.routineRunVariablesDialog.selectAnAgent", { defaultValue: "Select an agent" })}
                 searchPlaceholder="Search agents..."
                 emptyMessage={t("app.routineRunVariablesDialog.noAgentsFound", { defaultValue: "No agents found." })}
                 disablePortal
@@ -402,7 +402,7 @@ export function RoutineRunVariablesDialog({
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder={t("app.routineRunVariablesDialog.project", { defaultValue: "Project" })}
-                noneLabel="No project"
+                noneLabel={t("app.newIssueDialog.noProject", { defaultValue: "No project" })}
                 searchPlaceholder="Search projects..."
                 emptyMessage={t("app.routineRunVariablesDialog.noProjectsFound", { defaultValue: "No projects found." })}
                 disablePortal

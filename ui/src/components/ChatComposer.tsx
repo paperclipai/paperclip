@@ -114,7 +114,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     value,
     onChange,
     onSubmit,
-    placeholder = "Message…",
+    placeholder = t("app.chatComposer.message", { defaultValue: "Message…" }),
     disabled = false,
     submitting = false,
     submitKey = "mod-enter",
@@ -122,7 +122,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     tone = "standard",
     surface = "card",
     autoFocus = false,
-    sendLabel = "Send message",
+    sendLabel = t("app.chatComposer.sendMessage", { defaultValue: "Send message" }),
     onAttachFiles,
     attachments = [],
     attaching = false,
@@ -255,7 +255,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         >
           <span className="inline-flex items-center gap-2">
             <Paperclip className="h-3.5 w-3.5" />
-            Drop to attach
+            {t("app.chatComposer.dropToAttach", { defaultValue: "Drop to attach" })}
           </span>
         </div>
       ) : null}

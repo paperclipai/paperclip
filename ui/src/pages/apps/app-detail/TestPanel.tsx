@@ -796,7 +796,7 @@ function ActionTester({
           onChange={setValues}
           errors={errors}
           disabled={running}
-          advancedLabel="More options"
+          advancedLabel={t("app.testPanel.moreOptions", { defaultValue: "More options" })}
         />
       ) : (
         <p className="text-xs text-muted-foreground">{t("app.testPanel.thisActionTakesNoInputs", { defaultValue: "This action takes no inputs." })}</p>

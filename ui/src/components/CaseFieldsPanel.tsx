@@ -111,7 +111,7 @@ function CopyableCompactValue({
           className="pointer-events-none absolute bottom-full left-1/2 mb-1.5 inline-flex -translate-x-1/2 items-center gap-1 rounded-md bg-foreground px-2 py-1 text-xs whitespace-nowrap text-background"
         >
           <Check className="h-3 w-3 shrink-0" />
-          Copied
+          {t("app.caseFieldsPanel.copied", { defaultValue: "Copied" })}
         </span>
       ) : null}
     </span>

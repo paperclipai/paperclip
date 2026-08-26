@@ -377,7 +377,7 @@ export function BuiltInBundlePanel({
                   <ConfirmActionButton
                     title={t("app.builtInBundlePanel.runReflectionCoachOnce", { defaultValue: "Run Reflection Coach once?" })}
                     body="Paperclip will create one routine task now. This does not enable the weekly schedule or turn on background work."
-                    triggerLabel="Run once"
+                    triggerLabel={t("app.builtInBundlePanel.runOnce", { defaultValue: "Run once" })}
                     confirmLabel={t("app.builtInBundlePanel.runOnce", { defaultValue: "Run once" })}
                     pending={routineActionPending === "run"}
                     onConfirm={() => onRunRoutine(routineKey)}
@@ -388,7 +388,7 @@ export function BuiltInBundlePanel({
                     <ConfirmActionButton
                       title={t("app.builtInBundlePanel.disableTheWeeklySchedule", { defaultValue: "Disable the weekly schedule?" })}
                       body="Paperclip will stop future scheduled Reflection Coach runs. Manual Run once remains available."
-                      triggerLabel="Disable schedule"
+                      triggerLabel={t("app.builtInBundlePanel.disableSchedule", { defaultValue: "Disable schedule" })}
                       confirmLabel={t("app.builtInBundlePanel.disableSchedule", { defaultValue: "Disable schedule" })}
                       pending={routineActionPending === "disable"}
                       onConfirm={() => onDisableSchedule(routineKey)}
@@ -398,7 +398,7 @@ export function BuiltInBundlePanel({
                     <ConfirmActionButton
                       title={t("app.builtInBundlePanel.enableTheWeeklySchedule", { defaultValue: "Enable the weekly schedule?" })}
                       body="Paperclip will allow Reflection Coach to create routine tasks on the weekly schedule. It can spend tokens when those tasks run."
-                      triggerLabel="Enable weekly"
+                      triggerLabel={t("app.builtInBundlePanel.enableWeekly", { defaultValue: "Enable weekly" })}
                       confirmLabel={t("app.builtInBundlePanel.enableWeekly", { defaultValue: "Enable weekly" })}
                       pending={routineActionPending === "enable"}
                       onConfirm={() => onEnableSchedule(routineKey)}

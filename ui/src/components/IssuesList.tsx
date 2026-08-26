@@ -2126,7 +2126,7 @@ export function IssuesList({
                                   title={t("app.issuesList.paused", { defaultValue: "Paused" })}
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
-                                  Paused
+                                  {t("app.issuesList.paused", { defaultValue: "Paused" })}
                                 </Badge>
                               ) : (
                                 <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
@@ -2141,7 +2141,7 @@ export function IssuesList({
                                 title={t("app.issuesList.thisTaskNeedsANextStep", { defaultValue: "This task needs a next step" })}
                               >
                                 <CircleDot className="h-3 w-3" />
-                                Needs next step
+                                {t("app.issuesList.needsNextStep", { defaultValue: "Needs next step" })}
                               </Badge>
                             ) : null}
                           </>

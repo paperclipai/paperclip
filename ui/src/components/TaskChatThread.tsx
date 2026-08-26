@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { IssueChatThread, IssueAssigneePausedNotice } from "@/components/IssueChatThread";
 import {
@@ -105,7 +106,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     footer,
     showComposer = true,
     composerDisabledReason,
-    emptyMessage = "No messages yet.",
+    emptyMessage = t("app.taskChatThread.noMessagesYet", { defaultValue: "No messages yet." }),
     companyId,
     linkedRuns,
     liveRuns,

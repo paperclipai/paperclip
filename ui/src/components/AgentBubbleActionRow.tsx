@@ -155,7 +155,7 @@ export function AgentBubbleActionRow({
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy message
+            {t("app.agentBubbleActionRow.copyMessage", { defaultValue: "Copy message" })}
           </DropdownMenuItem>
           {menuItems}
         </DropdownMenuContent>

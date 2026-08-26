@@ -486,7 +486,7 @@ export function RuntimeProvisionStatusValue({
     return (
       <StatusPill className="border-border text-muted-foreground">
         <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-        Provisioning…
+        {t("app.executionWorkspaceDetail.provisioning", { defaultValue: "Provisioning…" })}
       </StatusPill>
     );
   }
@@ -513,7 +513,7 @@ function MonoValue({ value, copy }: { value: string; copy?: boolean }) {
     <div className="inline-flex max-w-full items-start gap-2">
       <span className="break-all font-mono text-xs">{value}</span>
       {copy ? (
-        <CopyText text={value} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel="Copied">
+        <CopyText text={value} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel={t("app.caseFieldsPanel.copied", { defaultValue: "Copied" })}>
           <Copy className="h-3.5 w-3.5" />
         </CopyText>
       ) : null}
@@ -1200,7 +1200,7 @@ export function ExecutionWorkspaceDetail() {
                 ? t("app.executionWorkspaceDetail.noServicesHaveBeenStartedForThisExecutionWorkspaceYet", { defaultValue: "No services have been started for this execution workspace yet." })
                 : t("app.executionWorkspaceDetail.noWorkspaceCommandConfigIsDefinedForThisExecutionWorkspaceYet", { defaultValue: "No workspace command config is defined for this execution workspace yet." })
             }
-            jobEmptyMessage="No one-shot jobs are configured for this execution workspace yet."
+            jobEmptyMessage={t("app.executionWorkspaceDetail.noOneShotJobsAreConfiguredForThisExecutionWorkspaceYet", { defaultValue: "No one-shot jobs are configured for this execution workspace yet." })}
             disabledHint={
               canStartRuntimeServices
                 ? null
@@ -1555,7 +1555,7 @@ export function ExecutionWorkspaceDetail() {
                       {workspace.repoUrl}
                       <ExternalLink className="h-3.5 w-3.5 shrink-0" />
                     </a>
-                    <CopyText text={workspace.repoUrl} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel="Copied">
+                    <CopyText text={workspace.repoUrl} className="shrink-0 text-muted-foreground hover:text-foreground" copiedLabel={t("app.caseFieldsPanel.copied", { defaultValue: "Copied" })}>
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>
                   </div>
@@ -1658,7 +1658,7 @@ export function ExecutionWorkspaceDetail() {
         ) : isExecutionWorkspacePluginTab(activeTab) ? (
           <MissingPluginTabPlaceholder
             defaultTabHref={executionWorkspaceTabPath(workspace.id, "issues")}
-            defaultTabLabel="Back to tasks"
+            defaultTabLabel={t("app.executionWorkspaceDetail.backToTasks", { defaultValue: "Back to tasks" })}
           />
         ) : activeTab === "routines" ? (
           <ExecutionWorkspaceRoutinesList

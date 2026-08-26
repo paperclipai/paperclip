@@ -791,7 +791,7 @@ export function InviteUxLab() {
               <InviteSummaryPanel
                 title={t("app.inviteUxLab.joinAcmeRobotics", { defaultValue: "Join Acme Robotics" })}
                 description={t("app.inviteUxLab.createYourPaperclipAccountFirstIfYouAlreadyHaveOneSwitchToSignInAndContinueTheInviteWithTheSameEmail", { defaultValue: "Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email." })}
-                inviteMessage="Welcome aboard."
+                inviteMessage={t("app.inviteUxLab.welcomeAboard", { defaultValue: "Welcome aboard." })}
                 requestedAccess="Operator"
               />
             }
@@ -803,7 +803,7 @@ export function InviteUxLab() {
               <InviteSummaryPanel
                 title={t("app.inviteUxLab.joinAcmeRobotics", { defaultValue: "Join Acme Robotics" })}
                 description={t("app.inviteUxLab.createYourPaperclipAccountFirstIfYouAlreadyHaveOneSwitchToSignInAndContinueTheInviteWithTheSameEmail", { defaultValue: "Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email." })}
-                inviteMessage="Welcome aboard."
+                inviteMessage={t("app.inviteUxLab.welcomeAboard", { defaultValue: "Welcome aboard." })}
                 requestedAccess="Operator"
               />
             }
@@ -823,9 +823,9 @@ export function InviteUxLab() {
               <InviteSummaryPanel
                 title={t("app.inviteUxLab.joinAcmeRobotics", { defaultValue: "Join Acme Robotics" })}
                 description={t("app.inviteUxLab.yourAccountIsReadyReviewTheInviteDetailsThenAcceptItToContinue", { defaultValue: "Your account is ready. Review the invite details, then accept it to continue." })}
-                inviteMessage="Welcome aboard."
+                inviteMessage={t("app.inviteUxLab.welcomeAboard", { defaultValue: "Welcome aboard." })}
                 requestedAccess="Operator"
-                signedInLabel="Jane Example"
+                signedInLabel={t("app.inviteUxLab.janeExample", { defaultValue: "Jane Example" })}
               />
             }
             right={<AcceptInvitePreview autoAccept />}
@@ -848,7 +848,7 @@ export function InviteUxLab() {
                 title={t("app.inviteUxLab.joinAcmeRobotics", { defaultValue: "Join Acme Robotics" })}
                 description={t("app.inviteUxLab.yourAccountIsReadyReviewTheInviteDetailsThenAcceptItToContinue", { defaultValue: "Your account is ready. Review the invite details, then accept it to continue." })}
                 requestedAccess="Operator"
-                signedInLabel="Jane Example"
+                signedInLabel={t("app.inviteUxLab.janeExample", { defaultValue: "Jane Example" })}
               />
             }
             right={<AcceptInvitePreview error="This account already belongs to the company." isCurrentMember />}

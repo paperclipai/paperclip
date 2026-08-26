@@ -82,7 +82,7 @@ export function buildMonitorSurfaceCopy(
       break;
     case "due-now":
       bannerTitle = isScheduledRetryOnly ? t("app.issueMonitorBanner.agentRetryDueNow", { defaultValue: "Agent retry due now" }) : t("app.issueMonitorBanner.waitingOnMonitorDueNow", { defaultValue: "Waiting on monitor — due now" });
-      stripTitle = "Due now";
+      stripTitle = t("app.issueMonitorBanner.dueNow", { defaultValue: "Due now" });
       statusHint = "Checking momentarily…";
       break;
     case "overdue":

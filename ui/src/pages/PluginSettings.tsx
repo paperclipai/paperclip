@@ -813,14 +813,14 @@ function FolderRequirements({
         title={t("app.pluginSettings.requiredDirectories", { defaultValue: "Required directories" })}
         items={requiredDirectories}
         missingItems={missingDirectories}
-        missingLabel="Missing directories"
+        missingLabel={t("app.pluginSettings.missingDirectories", { defaultValue: "Missing directories" })}
         inspectionUnavailable={rootNotInspected}
       />
       <RequirementList
         title={t("app.pluginSettings.requiredFiles", { defaultValue: "Required files" })}
         items={requiredFiles}
         missingItems={missingFiles}
-        missingLabel="Missing files"
+        missingLabel={t("app.pluginSettings.missingFiles", { defaultValue: "Missing files" })}
         inspectionUnavailable={rootNotInspected}
       />
     </div>

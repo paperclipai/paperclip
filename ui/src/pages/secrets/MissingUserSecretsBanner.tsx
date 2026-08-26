@@ -21,7 +21,7 @@ import { t } from "@/i18n";
 export function MissingUserSecretsBanner({
   companyId,
   definitionKeys,
-  title = "Set your user secrets",
+  title = t("app.missingUserSecretsBanner.setYourUserSecrets", { defaultValue: "Set your user secrets" }),
   secretsPath,
   className,
 }: {

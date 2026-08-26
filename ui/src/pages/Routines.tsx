@@ -924,7 +924,7 @@ export function Routines() {
               <FolderChip
                 result={railFolderResult}
                 selection={folderSelection}
-                allLabel="All routines"
+                allLabel={t("app.routines.allRoutines", { defaultValue: "All routines" })}
                 onClick={() => setMobileFoldersOpen(true)}
               />
             </div>
@@ -1021,7 +1021,7 @@ export function Routines() {
                     options={assigneeOptions}
                     recentOptionIds={recentAssigneeIds}
                     placeholder={t("app.routines.responsible", { defaultValue: "Responsible" })}
-                    noneLabel="No responsible"
+                    noneLabel={t("app.commentThread.noResponsible", { defaultValue: "No responsible" })}
                     searchPlaceholder="Search responsible..."
                     emptyMessage={t("app.routines.noResponsibleFound", { defaultValue: "No responsible found." })}
                     onChange={(assigneeAgentId) => {
@@ -1067,7 +1067,7 @@ export function Routines() {
                     options={projectOptions}
                     recentOptionIds={recentProjectIds}
                     placeholder={t("app.routines.project", { defaultValue: "Project" })}
-                    noneLabel="No project"
+                    noneLabel={t("app.newIssueDialog.noProject", { defaultValue: "No project" })}
                     searchPlaceholder="Search projects..."
                     emptyMessage={t("app.routines.noProjectsFound", { defaultValue: "No projects found." })}
                     onChange={(projectId) => {
@@ -1232,7 +1232,7 @@ export function Routines() {
             <FolderRail
               result={railFolderResult}
               selection={folderSelection}
-              allLabel="All routines"
+              allLabel={t("app.routines.allRoutines", { defaultValue: "All routines" })}
               itemLabelPlural="routines"
               loading={foldersLoading}
               onSelect={setFolderSelection}
@@ -1407,8 +1407,8 @@ export function Routines() {
         onOpenChange={setMobileFoldersOpen}
         result={railFolderResult}
         selection={folderSelection}
-        allLabel="All routines"
-        itemLabelPlural="Routines"
+        allLabel={t("app.routines.allRoutines", { defaultValue: "All routines" })}
+        itemLabelPlural={t("app.routines.routines", { defaultValue: "Routines" })}
         onSelect={setFolderSelection}
         onCreate={() => openCreateFolder()}
       />

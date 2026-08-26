@@ -12,7 +12,7 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
       <div className="text-center mb-10">
         <h2 className="text-2xl font-bold tracking-tight"> { t("app.frontDoor.welcomeToPaperclip", { defaultValue: "Welcome to Paperclip" }) } </h2>
         <p className="text-sm text-muted-foreground mt-2">
-          How would you like to get started?
+          {t("app.frontDoor.howWouldYouLikeToGetStarted", { defaultValue: "How would you like to get started?" })}
         </p>
       </div>
 

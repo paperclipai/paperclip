@@ -458,7 +458,7 @@ function LoadingView({ elapsedMs }: { elapsedMs: number }) {
     >
       <div className="flex items-center gap-2 text-muted-foreground">
         <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-        Loading file preview...
+        {t("app.fileViewerSheet.loadingFilePreview", { defaultValue: "Loading file preview..." })}
       </div>
     </div>
   );
@@ -765,7 +765,7 @@ export function FileViewerSheet({
                   aria-label={t("app.fileViewerSheet.backToFiles", { defaultValue: "Back to files" })}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back to files
+                  {t("app.fileViewerSheet.backToFiles", { defaultValue: "Back to files" })}
                 </Button>
               ) : null}
               {state ? (

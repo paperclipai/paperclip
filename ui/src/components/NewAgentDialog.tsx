@@ -258,18 +258,18 @@ export function NewAgentDialog() {
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {t("app.newAgentDialog.askTheCEOToCreateANewAgent", { defaultValue: "Ask the CEO to create a new agent" })}
               </Button>
 
               <div className="grid gap-2">
                 <Button variant="outline" className="w-full" onClick={handleAdvancedConfig}>
                   <Settings2 className="h-4 w-4 mr-2" />
-                  Configure a runtime manually
+                  {t("app.newAgentDialog.configureARuntimeManually", { defaultValue: "Configure a runtime manually" })}
                 </Button>
                 <div className="space-y-1">
                   <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
                     <MailPlus className="h-4 w-4 mr-2" />
-                    Invite an external agent
+                    {t("app.newAgentDialog.inviteAnExternalAgent", { defaultValue: "Invite an external agent" })}
                   </Button>
                   <p className="text-xs text-muted-foreground text-center">
                     (OpenClaw, Hermes, or any agent that can call the invite API.)
@@ -285,7 +285,7 @@ export function NewAgentDialog() {
                   onClick={() => setMode("choices")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {t("app.newAgentDialog.back", { defaultValue: "Back" })}
                 </button>
                 <p className="text-sm text-muted-foreground"> { t("app.newAgentDialog.chooseTheRuntimePaperclipShouldStartOrResumeDirectly", { defaultValue: "Choose the runtime Paperclip should start or resume directly." }) } </p>
               </div>
@@ -324,7 +324,7 @@ export function NewAgentDialog() {
                   onClick={() => setMode("choices")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {t("app.newAgentDialog.back", { defaultValue: "Back" })}
                 </button>
                 <div className="space-y-1">
                   <h2 className="text-sm font-semibold">{ t("app.newAgentDialog.inviteAnExternalAgent", { defaultValue: "Invite an external agent" }) }</h2>
@@ -362,7 +362,7 @@ export function NewAgentDialog() {
                   onClick={() => setMode("invite")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {t("app.newAgentDialog.back", { defaultValue: "Back" })}
                 </button>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-3">
@@ -370,7 +370,7 @@ export function NewAgentDialog() {
                     {latestAgentPromptCopied ? (
                       <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                         <Check className="h-3.5 w-3.5" />
-                        Copied
+                        {t("app.caseFieldsPanel.copied", { defaultValue: "Copied" })}
                       </div>
                     ) : null}
                   </div>

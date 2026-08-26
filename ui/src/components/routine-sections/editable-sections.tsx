@@ -161,7 +161,7 @@ export function OverviewSection({
             options={assigneeOptions}
             recentOptionIds={recentAssigneeIds}
             placeholder={t("app.editableSections.responsible", { defaultValue: "Responsible" })}
-            noneLabel="No responsible"
+            noneLabel={t("app.commentThread.noResponsible", { defaultValue: "No responsible" })}
             searchPlaceholder="Search responsible..."
             emptyMessage={t("app.editableSections.noResponsibleFound", { defaultValue: "No responsible found." })}
             onChange={(assigneeAgentId) =>
@@ -208,7 +208,7 @@ export function OverviewSection({
             options={projectOptions}
             recentOptionIds={recentProjectIds}
             placeholder={t("app.editableSections.project", { defaultValue: "Project" })}
-            noneLabel="No project"
+            noneLabel={t("app.newIssueDialog.noProject", { defaultValue: "No project" })}
             searchPlaceholder="Search projects..."
             emptyMessage={t("app.editableSections.noProjectsFound", { defaultValue: "No projects found." })}
             onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
@@ -643,7 +643,7 @@ export function SecretsSection() {
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
-        {t("app.editableSections.routineSecretsApplyToEveryTaskThisRoutineCreatesTheyOverrideMatchingKeysInProjectAndAgentEnv", { defaultValue: "Routine secrets apply to every task this routine creates. They override matching keys in\n        project and agent env." })} <span className="font-mono">{t("app.editableSections.paperclip_", { defaultValue: "PAPERCLIP_*" })}</span> {t("app.editableSections.namesAreReserved", { defaultValue: "names are reserved." })}
+        {t("app.editableSections.routineSecretsApplyToEveryTaskThisRoutineCreatesTheyOverrideMatchingKeysInProjectAndAgentEnv", { defaultValue: "Routine secrets apply to every task this routine creates. They override matching keys in\n        project and agent env." })} <span className="font-mono">{"PAPERCLIP_*"}</span> {t("app.editableSections.namesAreReserved", { defaultValue: "names are reserved." })}
       </div>
 
       {secretMessage ? (
@@ -704,7 +704,7 @@ export function DeliverySection() {
           {t("app.editableSections.concurrency", { defaultValue: "Concurrency" })}
         </p>
         <RadioCardGroup
-          ariaLabel="Concurrency policy"
+          ariaLabel={t("app.editableSections.concurrencyPolicy", { defaultValue: "Concurrency policy" })}
           value={editDraft.concurrencyPolicy}
           onValueChange={(concurrencyPolicy) =>
             setEditDraft((current) => ({ ...current, concurrencyPolicy }))
@@ -717,7 +717,7 @@ export function DeliverySection() {
           {t("app.editableSections.catchUp", { defaultValue: "Catch-up" })}
         </p>
         <RadioCardGroup
-          ariaLabel="Catch-up policy"
+          ariaLabel={t("app.editableSections.catchUpPolicy", { defaultValue: "Catch-up policy" })}
           value={editDraft.catchUpPolicy}
           onValueChange={(catchUpPolicy) =>
             setEditDraft((current) => ({ ...current, catchUpPolicy }))
@@ -730,7 +730,7 @@ export function DeliverySection() {
           {t("app.editableSections.advancedRunPolicy", { defaultValue: "Advanced run policy" })}
         </p>
         <RadioCardGroup
-          ariaLabel="Advanced run policy"
+          ariaLabel={t("app.editableSections.advancedRunPolicy", { defaultValue: "Advanced run policy" })}
           value={editDraft.activityGatePolicy}
           onValueChange={(activityGatePolicy) =>
             setEditDraft((current) => ({ ...current, activityGatePolicy }))
@@ -746,7 +746,7 @@ export function DeliverySection() {
           <div className="space-y-2 rounded-lg border border-border p-3">
             <Label className="text-xs font-medium">{t("app.editableSections.activityScope", { defaultValue: "Activity scope" })}</Label>
             <RadioCardGroup
-              ariaLabel="Activity gate scope"
+              ariaLabel={t("app.editableSections.activityGateScope", { defaultValue: "Activity gate scope" })}
               value={editDraft.activityGateScope}
               onValueChange={(activityGateScope) =>
                 setEditDraft((current) => ({ ...current, activityGateScope }))

@@ -1128,7 +1128,7 @@ function AskUserQuestionsCard({
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <Badge variant="outline" className="border-border/70 bg-background/70 px-2.5 py-1 uppercase tracking-(--tracking-eyebrow) text-foreground/70">
           <MessageSquareQuote className="h-3 w-3" />
-          Ask user questions
+          {t("app.issueThreadInteractionCard.askUserQuestions", { defaultValue: "Ask user questions" })}
         </Badge>
         <span>
           {questions.length === 1
@@ -1935,7 +1935,7 @@ function RequestToolActionCard({
                     {working === "reject" ? (
                       <>
                         <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                        Declining…
+                        {t("app.issueThreadInteractionCard.declining", { defaultValue: "Declining…" })}
                       </>
                     ) : (
                       t(NS + "decline", { defaultValue: "Decline" })
@@ -2368,7 +2368,7 @@ function ConfirmationActionRow({
             {working === "reject" && !revising ? (
               <>
                 <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                Rejecting…
+                {t("app.issueThreadInteractionCard.rejecting", { defaultValue: "Rejecting…" })}
               </>
             ) : (
               rejectLabel
@@ -3394,7 +3394,7 @@ function RequestItemVerdictsCard({
                 onClick={handleApproveAll}
               >
                 <ThumbsUp className="h-4 w-4" aria-hidden />
-                Approve all
+                {t("app.issueThreadInteractionCard.approveAll", { defaultValue: "Approve all" })}
               </Button>
             ) : null}
             <Button
@@ -3437,7 +3437,7 @@ function VerdictProgressBadge({
       {pendingReason ? (
         <span className="inline-flex items-center gap-1 rounded-sm border border-amber-500/60 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-900 dark:text-amber-100">
           <AlertTriangle className="h-3 w-3" aria-hidden />
-          Reason needed
+          {t("app.issueThreadInteractionCard.reasonNeeded", { defaultValue: "Reason needed" })}
         </span>
       ) : null}
       <div
@@ -3787,7 +3787,7 @@ function ResolvedByAgentChip() {
           data-testid="interaction-resolved-by-agent-chip"
         >
           <Bot className="h-3 w-3" />
-          Agent
+          {t("app.issueThreadInteractionCard.agent", { defaultValue: "Agent" })}
         </Badge>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-xs text-xs"> { t("app.issueThreadInteractionCard.resolvedByAnAgentUnderTheCompanySInteractionGovernancePolicyAuditDistinctFromAHumanBoardResolution", { defaultValue: "Resolved by an agent under the company's interaction governance policy — audit-distinct from a human board resolution." }) } </TooltipContent>

@@ -339,7 +339,7 @@ function KanbanCard({
               aria-label={t("app.kanbanBoard.needsNextStep", { defaultValue: "Needs next step" })}
             >
               <AlertTriangle className="h-3 w-3" />
-              Next step
+              {t("app.kanbanBoard.nextStep", { defaultValue: "Next step" })}
             </Badge>
           ) : null}
           {isLive && (

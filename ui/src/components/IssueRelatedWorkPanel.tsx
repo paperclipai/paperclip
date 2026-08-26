@@ -189,7 +189,7 @@ export function IssueRelatedWorkPanel({
         title={t("app.issueRelatedWorkPanel.references", { defaultValue: "References" })}
         description={t("app.issueRelatedWorkPanel.otherTasksThisTaskCurrentlyPointsAtInItsTitleDescriptionCommentsOrDocuments", { defaultValue: "Other tasks this task currently points at in its title, description, comments, or documents." })}
         items={outbound}
-        emptyLabel="This task does not reference any other tasks yet."
+        emptyLabel={t("app.issueRelatedWorkPanel.thisTaskDoesNotReferenceAnyOtherTasksYet", { defaultValue: "This task does not reference any other tasks yet." })}
       />
       {externalObjectsEnabled ? (
         <ExternalObjectsSection
@@ -203,7 +203,7 @@ export function IssueRelatedWorkPanel({
         title={t("app.issueRelatedWorkPanel.referencedBy", { defaultValue: "Referenced by" })}
         description={t("app.issueRelatedWorkPanel.otherTasksThatCurrentlyPointAtThisTask", { defaultValue: "Other tasks that currently point at this task." })}
         items={inbound}
-        emptyLabel="No other tasks reference this task yet."
+        emptyLabel={t("app.issueRelatedWorkPanel.noOtherTasksReferenceThisTaskYet", { defaultValue: "No other tasks reference this task yet." })}
       />
     </div>
   );

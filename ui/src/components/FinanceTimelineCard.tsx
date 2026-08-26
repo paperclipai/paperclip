@@ -17,7 +17,7 @@ interface FinanceTimelineCardProps {
 
 export function FinanceTimelineCard({
   rows,
-  emptyMessage = "No financial events in this period.",
+  emptyMessage = t("app.financeTimelineCard.noFinancialEventsInThisPeriod", { defaultValue: "No financial events in this period." }),
 }: FinanceTimelineCardProps) {
   return (
     <Card>

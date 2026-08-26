@@ -19,14 +19,14 @@ function StatusBadge({ status }: { status: AcceptedPlanDecompositionSummary["sta
     return (
       <span className="inline-flex items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-emerald-900 dark:text-emerald-100">
         <CheckCircle2 className="h-3 w-3" />
-        Completed
+        {t("app.issuePlanDecompositionsSection.completed", { defaultValue: "Completed" })}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1 rounded-sm border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-900 dark:text-amber-100">
       <Loader2 className="h-3 w-3 animate-spin" />
-      In flight
+      {t("app.issuePlanDecompositionsSection.inFlight", { defaultValue: "In flight" })}
     </span>
   );
 }
@@ -105,7 +105,7 @@ export function IssuePlanDecompositionsSection({
                     title={t("app.issuePlanDecompositionsSection.repeatAttemptsWithThisFingerprintReuseThisRecordInsteadOfCreatingNewChildren", { defaultValue: "Repeat attempts with this fingerprint reuse this record instead of creating new children" })}
                   >
                     <Repeat className="h-3 w-3" />
-                    Idempotent claim
+                    {t("app.issuePlanDecompositionsSection.idempotentClaim", { defaultValue: "Idempotent claim" })}
                   </span>
                 ) : null}
               </div>

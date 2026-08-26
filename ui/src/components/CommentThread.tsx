@@ -1037,7 +1037,7 @@ export function CommentThread({
                 value={reassignTarget}
                 options={reassignOptions}
                 placeholder={t("app.commentThread.responsible", { defaultValue: "Responsible" })}
-                noneLabel="No responsible"
+                noneLabel={t("app.commentThread.noResponsible", { defaultValue: "No responsible" })}
                 searchPlaceholder="Search responsible..."
                 emptyMessage={t("app.commentThread.noResponsibleFound", { defaultValue: "No responsible found." })}
                 onChange={setReassignTarget}

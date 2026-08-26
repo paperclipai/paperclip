@@ -335,20 +335,20 @@ export function Dashboard() {
             </Button>
           }
         >
-          Agents from a company import arrive paused as a safety default. Resume them so assigned tasks can start.
+          {t("app.dashboard.agentsFromACompanyImportArrivePausedAsASafetyDefaultResumeTh", { defaultValue: "Agents from a company import arrive paused as a safety default. Resume them so assigned tasks can start." })}
         </InlineBanner>
       ) : pausedBanner?.kind === "all-paused" ? (
         <InlineBanner
           tone="warning"
           icon={PauseCircle}
-          title="All agents in this company are paused — nothing will run."
+          title={t("app.dashboard.allAgentsInThisCompanyArePausedNothingWillRun", { defaultValue: "All agents in this company are paused — nothing will run." })}
           actions={
             <Button variant="ghost" size="sm" asChild>
-              <Link to="/agents">Review agents</Link>
+              <Link to="/agents">{t("app.dashboard.reviewAgents", { defaultValue: "Review agents" })}</Link>
             </Button>
           }
         >
-          Resume at least one agent to let assigned tasks start.
+          {t("app.dashboard.resumeAtLeastOneAgentToLetAssignedTasksStart", { defaultValue: "Resume at least one agent to let assigned tasks start." })}
         </InlineBanner>
       ) : null}
 

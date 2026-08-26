@@ -32,8 +32,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Command Palette",
-  description = "Search for a command to run...",
+  title = t("app.command.commandPalette", { defaultValue: "Command Palette" }),
+  description = t("app.command.searchForACommandToRun", { defaultValue: "Search for a command to run..." }),
   children,
   className,
   showCloseButton = true,

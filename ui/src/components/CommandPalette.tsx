@@ -341,11 +341,11 @@ export function CommandPalette() {
             }}
           >
             <Plus className="mr-2 h-4 w-4" />
-            Create new agent
+            {t("app.commandPalette.createNewAgent", { defaultValue: "Create new agent" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
-            Create new project
+            {t("app.commandPalette.createNewProject", { defaultValue: "Create new project" })}
           </CommandItem>
         </CommandGroup>
 
@@ -354,35 +354,35 @@ export function CommandPalette() {
         <CommandGroup heading="Pages">
           <CommandItem onSelect={() => go("/dashboard")}>
             <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
+            {t("app.commandPalette.dashboard", { defaultValue: "Dashboard" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
-            Inbox
+            {t("app.commandPalette.inbox", { defaultValue: "Inbox" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Tasks
+            {t("app.commandPalette.tasks", { defaultValue: "Tasks" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
-            Projects
+            {t("app.commandPalette.projects", { defaultValue: "Projects" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/goals")}>
             <Target className="mr-2 h-4 w-4" />
-            Goals
+            {t("app.commandPalette.goals", { defaultValue: "Goals" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
-            Agents
+            {t("app.activeAgentsPanel.agents", { defaultValue: "Agents" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
-            Costs
+            {t("app.commandPalette.costs", { defaultValue: "Costs" })}
           </CommandItem>
           <CommandItem onSelect={() => go("/activity")}>
             <History className="mr-2 h-4 w-4" />
-            Activity
+            {t("app.commandPalette.activity", { defaultValue: "Activity" })}
           </CommandItem>
         </CommandGroup>
 

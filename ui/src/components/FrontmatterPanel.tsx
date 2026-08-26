@@ -382,7 +382,7 @@ export function FrontmatterPanel({
           ) : !readOnly ? (
             <Button variant="ghost" size="sm" onClick={addFrontmatter} data-testid="add-frontmatter">
               <Plus className="mr-1 h-3.5 w-3.5" />
-              Add frontmatter
+              {t("app.frontmatterPanel.addFrontmatter", { defaultValue: "Add frontmatter" })}
             </Button>
           ) : null}
 

@@ -64,7 +64,7 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
     selected,
     searchable = false,
     searchPlaceholder = "Search…",
-    emptyMessage = "No options",
+    emptyMessage = t("app.searchFilterMenu.noOptions", { defaultValue: "No options" }),
     triggerClassName,
     contentClassName,
     align = "start",

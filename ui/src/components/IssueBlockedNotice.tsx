@@ -109,7 +109,7 @@ function SuccessfulRunRetryNowControl({
           {retryNow.isPending ? (
             <span className="inline-flex items-center gap-1.5">
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              Retrying...
+              {t("app.issueBlockedNotice.retrying", { defaultValue: "Retrying..." })}
             </span>
           ) : success ? (
             <span className="inline-flex items-center gap-1.5">
@@ -119,7 +119,7 @@ function SuccessfulRunRetryNowControl({
           ) : (
             <span className="inline-flex items-center gap-1.5">
               <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry now
+              {t("app.issueBlockedNotice.retryNow", { defaultValue: "Retry now" })}
             </span>
           )}
         </Button>
@@ -381,7 +381,7 @@ function WaitingOnLiveWorkNotice({
             >
               <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
                 <Flag className="h-3 w-3" aria-hidden />
-                Blocked by parked work
+                {t("app.issueBlockedNotice.blockedByParkedWork", { defaultValue: "Blocked by parked work" })}
               </span>
               {parkedBlockers.map((blocker) => renderParkedChip(blocker))}
             </div>
@@ -697,7 +697,7 @@ export function IssueBlockedNotice({
                 >
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
                     <Flag className="h-3 w-3" aria-hidden />
-                    Blocked by parked work
+                    {t("app.issueBlockedNotice.blockedByParkedWork", { defaultValue: "Blocked by parked work" })}
                   </span>
                   {parkedBlockers.map(renderBlockerChip)}
                 </div>

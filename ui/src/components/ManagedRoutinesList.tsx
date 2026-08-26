@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
   RoutineListRow,
@@ -83,7 +84,7 @@ export function ManagedRoutinesList({
   agents = [],
   projects = [],
   pluginDisplayName = null,
-  emptyMessage = "No managed routines.",
+  emptyMessage = t("app.managedRoutinesList.noManagedRoutines", { defaultValue: "No managed routines." }),
   runningRoutineKey = null,
   statusMutationRoutineKey = null,
   reconcilingRoutineKey = null,
@@ -127,7 +128,7 @@ export function ManagedRoutinesList({
               runningRoutineId={runningRoutineKey}
               statusMutationRoutineId={statusMutationRoutineKey}
               href={href}
-              configureLabel="Configure"
+              configureLabel={t("app.managedRoutinesList.configure", { defaultValue: "Configure" })}
               managedByLabel={managedBy ? `Managed by ${managedBy}` : null}
               runNowButton
               hideArchiveAction

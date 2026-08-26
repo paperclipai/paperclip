@@ -141,7 +141,7 @@ export function ExecutionParticipantPicker({
               onClick={() => toggle(`user:${currentUserId}`)}
             >
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              Assign to me
+              {t("app.executionParticipantPicker.assignToMe", { defaultValue: "Assign to me" })}
             </button>
           )}
           {issue.createdByUserId && issue.createdByUserId !== currentUserId && (

@@ -206,7 +206,7 @@ export function ActivitySection() {
   const groups = useMemo(() => {
     const byDay = new Map<string, typeof events>();
     for (const event of events) {
-      let label = "Earlier";
+      let label = t("app.operateSections.earlier", { defaultValue: "Earlier" });
       try {
         label = new Date(event.createdAt).toLocaleDateString(undefined, {
           weekday: "short",

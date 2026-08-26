@@ -1286,7 +1286,7 @@ export function DiscoveryGrid({
               <FolderChip
                 result={folderResult}
                 selection={folderSelection}
-                allLabel="All skills"
+                allLabel={t("app.companySkills.allSkills", { defaultValue: "All skills" })}
                 onClick={onOpenMobileFolders ?? (() => undefined)}
               />
             </div>
@@ -1966,8 +1966,8 @@ function CatalogDetailPane({
           <span className="font-mono">{skill.contentHash.slice(0, 24)}…</span>
           <CopyText
             text={skill.contentHash}
-            copiedLabel="Copied hash"
-            ariaLabel="Copy content hash"
+            copiedLabel={t("app.companySkills.copiedHash", { defaultValue: "Copied hash" })}
+            ariaLabel={t("app.companySkills.copyContentHash", { defaultValue: "Copy content hash" })}
             title={t("app.companySkills.copyContentHash", { defaultValue: "Copy content hash" })}
             className="inline-flex h-6 w-6 items-center justify-center rounded-sm border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
           >
@@ -2070,15 +2070,15 @@ export function InstallPreviewDialog({
 
   if (!skill) return null;
 
-  let confirmLabel = "Install skill";
+  let confirmLabel = t("app.companySkills.installSkill", { defaultValue: "Install skill" });
   let confirmVariant: "default" | "destructive" = "default";
   if (defaultAction === "update") {
-    confirmLabel = "Install update";
+    confirmLabel = t("app.companySkills.installUpdate", { defaultValue: "Install update" });
   } else if (defaultAction === "replace") {
-    confirmLabel = "Replace existing skill";
+    confirmLabel = t("app.companySkills.replaceExistingSkill", { defaultValue: "Replace existing skill" });
     confirmVariant = "destructive";
   }
-  if (isPending) confirmLabel = "Installing…";
+  if (isPending) confirmLabel = t("app.companySkills.installing", { defaultValue: "Installing…" });
 
   return (
     <Dialog open={open} onOpenChange={(value) => (!isPending ? onOpenChange(value) : null)}>
@@ -2152,9 +2152,9 @@ export function InstallPreviewDialog({
 
           {defaultAction === "install" ? (
             <div className="rounded-md border border-border p-3">
-              <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">Enable for agents</div>
+              <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">{t("app.companySkills.enableForAgents", { defaultValue: "Enable for agents" })}</div>
               <p className="mb-2 text-xs text-muted-foreground">
-                Installing adds the skill to the company library. Agents can only use it once it is enabled for them.
+                {t("app.companySkills.installingAddsTheSkillToTheCompanyLibraryAgentsCanOnlyUseItO", { defaultValue: "Installing adds the skill to the company library. Agents can only use it once it is enabled for them." })}
               </p>
               <AgentMultiSelect
                 agents={agents}
@@ -2164,7 +2164,7 @@ export function InstallPreviewDialog({
                   setSelectedAgentIds(next);
                 }}
                 showSelectionPreview={false}
-                emptyMessage="No agents in this company support skills yet."
+                emptyMessage={t("app.companySkills.noAgentsInThisCompanySupportSkillsYet", { defaultValue: "No agents in this company support skills yet." })}
                 isAgentDisabled={(agent) => {
                   const option = agent as AttachAgentOption;
                   return option.required || !option.supportsSkills;
@@ -2265,7 +2265,7 @@ function AttachAgentsPopover({
       selectedAgentIds={attachedIds}
       onSave={(nextIds) => onSubmit(Array.from(nextIds), draftVersionId)}
       pending={pending}
-      triggerLabel="Add to agent"
+      triggerLabel={t("app.companySkills.addToAgent", { defaultValue: "Add to agent" })}
       triggerIcon={<Plus className="mr-1.5 h-3.5 w-3.5" />}
       triggerVariant="default"
       triggerSize="sm"
@@ -2686,7 +2686,7 @@ function SkillVersionDiffDialog({
                     <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">{row.oldLineNumber ?? ""}</span>
                     <span className="select-none border-r border-border/30 px-3 text-right text-muted-foreground">{row.newLineNumber ?? ""}</span>
                     <span className="select-none px-3 text-center text-muted-foreground">{markerByKind[row.kind]}</span>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">{row.text.length > 0 ? row.text : t("app.companySkills.text2", { defaultValue: " " })}</pre>
+                    <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">{row.text.length > 0 ? row.text : " "}</pre>
                   </div>
                 ))}
               </div>
@@ -3774,8 +3774,8 @@ function SkillPane({
                     </span>
                     <CopyText
                       text={detail.sourcePath}
-                      copiedLabel="Copied path"
-                      ariaLabel="Copy source path"
+                      copiedLabel={t("app.companySkills.copiedPath", { defaultValue: "Copied path" })}
+                      ariaLabel={t("app.companySkills.copySourcePath", { defaultValue: "Copy source path" })}
                       title={t("app.companySkills.copySourcePath", { defaultValue: "Copy source path" })}
                       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     >
@@ -5310,7 +5310,7 @@ export function CompanySkills() {
         onOpenChange={setMobileFoldersOpen}
         result={railSkillFolderResult}
         selection={folderSelection}
-        allLabel="All skills"
+        allLabel={t("app.companySkills.allSkills", { defaultValue: "All skills" })}
         itemLabelPlural={t("skills.skills", { defaultValue: "Skills" })}
         onSelect={setFolderSelection}
         onCreate={() => openCreateFolder()}

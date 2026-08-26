@@ -94,7 +94,7 @@ export function InboxArchiveButton({
       aria-label={t("app.issueRow.archive", { defaultValue: "Archive" })}
     >
       <Archive className="h-3.5 w-3.5" />
-      Archive
+      {t("app.issueRow.archive", { defaultValue: "Archive" })}
     </button>
   );
 }
@@ -165,7 +165,7 @@ export function IssueRow({
       />
     </button>
   );
-  const selectedStatusClass = selected ? t("app.issueRow.textMutedForegroundBorderMutedForeground", { defaultValue: "!text-muted-foreground !border-muted-foreground" }) : undefined;
+  const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
   const productivityReview = issue.productivityReview ?? null;
   const productivityReviewIndicator = productivityReview ? (
@@ -199,7 +199,7 @@ export function IssueRow({
       title={t("app.issueRow.blockedByParkedWorkAtLeastOneAssignedBlockerIsInBacklogAndWillNotWakeItsAssignee", { defaultValue: "Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee." })}
     >
       <Flag className="h-2.5 w-2.5" aria-hidden />
-      Blocked by parked work
+      {t("app.issueBlockedNotice.blockedByParkedWork", { defaultValue: "Blocked by parked work" })}
     </Badge>
   ) : null;
 
@@ -380,7 +380,7 @@ function renderRecoveryChip(
       className={cn(
         "ml-1.5 gap-0.5 text-(length:--text-nano)",
         tone.className,
-        selected ? t("app.issueRow.borderMutedForegroundTextMutedForeground", { defaultValue: "!border-muted-foreground !text-muted-foreground" }) : null,
+        selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
       title={detail
         ? `${label} — ${detail}. Open the source task to act.`

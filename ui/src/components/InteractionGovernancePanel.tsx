@@ -272,7 +272,7 @@ export function InteractionGovernancePanel({
                   field="defaultPolicy"
                   testId={`governance-${kind}-default`}
                   ariaLabel={`Default resolver audience for ${kindLabel}`}
-                  mobileLabel="Default policy"
+                  mobileLabel={t("app.interactionGovernancePanel.defaultPolicy", { defaultValue: "Default policy" })}
                   value={toGovernanceSelectValue(entry.defaultPolicy)}
                   disabled={isPending}
                   onChange={(v) => onChange(kind, "defaultPolicy", v)}
@@ -281,7 +281,7 @@ export function InteractionGovernancePanel({
                   field="cap"
                   testId={`governance-${kind}-cap`}
                   ariaLabel={`Resolver cap for ${kindLabel}`}
-                  mobileLabel="Cap"
+                  mobileLabel={t("app.interactionGovernancePanel.cap", { defaultValue: "Cap" })}
                   value={toGovernanceSelectValue(entry.cap)}
                   disabled={isPending}
                   onChange={(v) => onChange(kind, "cap", v)}

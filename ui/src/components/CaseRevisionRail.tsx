@@ -216,7 +216,7 @@ export function CaseRevisionRail({
               onClick={() => setDiffOpen(true)}
             >
               <Diff className="h-3.5 w-3.5" />
-              Diff
+              {t("app.caseRevisionRail.diff", { defaultValue: "Diff" })}
             </Button>
           ) : null}
         </div>

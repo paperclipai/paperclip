@@ -87,8 +87,8 @@ function statusTone(status: CompanySecret["status"]): string {
 export function SecretBindingPicker({
   value,
   onChange,
-  label = "Secret",
-  placeholder = "Select secret",
+  label = t("app.secretBindingPicker.secret", { defaultValue: "Secret" }),
+  placeholder = t("app.secretBindingPicker.selectSecret", { defaultValue: "Select secret" }),
   allowVersionSelector = true,
   emptyHint = "No matching secrets. Create one to bind it here.",
   className,
@@ -295,7 +295,7 @@ export function SecretBindingPicker({
                 id="secret-name"
                 value={createName}
                 onChange={(event) => setCreateName(event.target.value)}
-                placeholder={t("app.secretBindingPicker.openai_api_key", { defaultValue: "OPENAI_API_KEY" })}
+                placeholder={"OPENAI_API_KEY"}
                 autoFocus
               />
             </div>

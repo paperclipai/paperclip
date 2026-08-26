@@ -133,7 +133,7 @@ export function IssueScheduledRetryCard({
             {retryNow.isPending ? (
               <span className="inline-flex items-center gap-1.5">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                Retrying…
+                {t("app.issueScheduledRetryCard.retrying2", { defaultValue: "Retrying…" })}
               </span>
             ) : isSuccessTransient ? (
               <span className="inline-flex items-center gap-1.5">
@@ -143,7 +143,7 @@ export function IssueScheduledRetryCard({
             ) : (
               <span className="inline-flex items-center gap-1.5">
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                Retry now
+                {t("app.issueBlockedNotice.retryNow", { defaultValue: "Retry now" })}
               </span>
             )}
           </Button>

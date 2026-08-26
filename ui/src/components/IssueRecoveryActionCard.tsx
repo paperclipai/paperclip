@@ -555,7 +555,7 @@ function BreakGlassOverride({
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-700 dark:text-red-300"
           >
             <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
-            Break-glass reconciliation
+            {t("app.issueRecoveryActionCard.breakGlassReconciliation", { defaultValue: "Break-glass reconciliation" })}
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
             This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
@@ -689,7 +689,7 @@ function RepairWorkspace({
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-sky-700 dark:text-sky-300"
           >
             <Wrench className="h-3.5 w-3.5" aria-hidden />
-            Repair workspace
+            {t("app.issueRecoveryActionCard.repairWorkspace", { defaultValue: "Repair workspace" })}
           </div>
           <p className="text-xs leading-5 text-muted-foreground"> { t("app.issueRecoveryActionCard.thisIsLosslessNoReasonRequiredYourUncommittedChangesAreCommittedOntoAFreshRescueBranchThenTheRecordedBranchIsRestoredSoTheTaskCanResumeTheLiveBranchIsLeftExactlyAsItIs", { defaultValue: "This is lossless — no reason required. Your uncommitted changes are committed onto a fresh rescue branch, then the recorded branch is restored so the task can resume. The live branch is left exactly as it is." }) } </p>
         </div>

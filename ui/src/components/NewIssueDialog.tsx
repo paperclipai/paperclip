@@ -1532,7 +1532,7 @@ export function NewIssueDialog() {
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder={t("app.newIssueDialog.assignee", { defaultValue: "Assignee" })}
                 disablePortal
-                noneLabel="No assignee"
+                noneLabel={t("app.newIssueDialog.noAssignee", { defaultValue: "No assignee" })}
                 searchPlaceholder="Search assignees..."
                 emptyMessage={t("app.newIssueDialog.noAssigneesFound", { defaultValue: "No assignees found." })}
                 onChange={(value) => {
@@ -1591,7 +1591,7 @@ export function NewIssueDialog() {
                 recentOptionIds={recentProjectIds}
                 placeholder={t("app.newIssueDialog.project", { defaultValue: "Project" })}
                 disablePortal
-                noneLabel="No project"
+                noneLabel={t("app.newIssueDialog.noProject", { defaultValue: "No project" })}
                 searchPlaceholder="Search projects..."
                 emptyMessage={t("app.newIssueDialog.noProjectsFound", { defaultValue: "No projects found." })}
                 onChange={handleProjectChange}
@@ -1704,7 +1704,7 @@ export function NewIssueDialog() {
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder={t("app.newIssueDialog.reviewer", { defaultValue: "Reviewer" })}
                 disablePortal
-                noneLabel="No reviewer"
+                noneLabel={t("app.newIssueDialog.noReviewer", { defaultValue: "No reviewer" })}
                 searchPlaceholder="Search reviewers..."
                 emptyMessage={t("app.newIssueDialog.noReviewersFound", { defaultValue: "No reviewers found." })}
                 onChange={setReviewerValue}
@@ -1749,7 +1749,7 @@ export function NewIssueDialog() {
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder={t("app.newIssueDialog.approver", { defaultValue: "Approver" })}
                 disablePortal
-                noneLabel="No approver"
+                noneLabel={t("app.newIssueDialog.noApprover", { defaultValue: "No approver" })}
                 searchPlaceholder="Search approvers..."
                 emptyMessage={t("app.newIssueDialog.noApproversFound", { defaultValue: "No approvers found." })}
                 onChange={setApproverValue}
@@ -1815,7 +1815,7 @@ export function NewIssueDialog() {
                         value={watchdogAgentId}
                         options={watchdogAgentOptions}
                         placeholder={t("app.newIssueDialog.selectAgent", { defaultValue: "Select agent" })}
-                        noneLabel="No watchdog agent"
+                        noneLabel={t("app.newIssueDialog.noWatchdogAgent", { defaultValue: "No watchdog agent" })}
                         searchPlaceholder="Search agents..."
                         emptyMessage={t("app.newIssueDialog.noAgentsFound", { defaultValue: "No agents found." })}
                         onChange={setWatchdogAgentId}
@@ -2002,7 +2002,7 @@ export function NewIssueDialog() {
                       options={modelOverrideOptions}
                       placeholder={t("app.newIssueDialog.defaultModel", { defaultValue: "Default model" })}
                       disablePortal
-                      noneLabel="Default model"
+                      noneLabel={t("app.newIssueDialog.defaultModel", { defaultValue: "Default model" })}
                       searchPlaceholder="Search models..."
                       emptyMessage={t("app.newIssueDialog.noModelsFound", { defaultValue: "No models found." })}
                       onChange={setAssigneeModelOverride}
@@ -2213,7 +2213,7 @@ export function NewIssueDialog() {
           {/* Labels chip — disabled, not wired up yet */}
           {/* <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
             <Tag className="h-3 w-3" />
-            Labels
+            {t("app.newIssueDialog.labels", { defaultValue: "Labels" })}
           </button> */}
 
           <input

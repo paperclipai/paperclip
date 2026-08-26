@@ -974,7 +974,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
   const [testActionPending, setTestActionPending] = useState(false);
   const [testActionError, setTestActionError] = useState<string | null>(null);
-  const testActionLabel = "Test";
+  const testActionLabel = t("app.agentConfigForm.test", { defaultValue: "Test" });
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
 
@@ -1387,7 +1387,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={eff("identity", "reportsTo", props.agent.reportsTo ?? null)}
                 onChange={(id) => mark("identity", "reportsTo", id)}
                 excludeAgentIds={[props.agent.id]}
-                chooseLabel="Choose manager…"
+                chooseLabel={t("app.agentConfigForm.chooseManager", { defaultValue: "Choose manager…" })}
               />
             </Field>
             <Field label={t("app.agentConfigForm.capabilities", { defaultValue: "Capabilities" })} hint={help.capabilities}>
@@ -1704,7 +1704,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     : undefined
                 }
                 refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
+                detectModelLabel={t("app.agentConfigForm.detectModel", { defaultValue: "Detect model" })}
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
               {(refreshModelsError || fetchedModelsError) && (

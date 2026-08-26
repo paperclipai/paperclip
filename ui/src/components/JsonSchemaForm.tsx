@@ -1208,7 +1208,7 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
-  advancedLabel = "Advanced options",
+  advancedLabel = t("app.jsonSchemaForm.advancedOptions", { defaultValue: "Advanced options" }),
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
 

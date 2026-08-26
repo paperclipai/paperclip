@@ -404,7 +404,7 @@ function StudioCreateMode({
             skills={skills}
             loading={skillsLoading}
             onSelectSkill={onSelectSkill}
-            emptyLabel="New skill"
+            emptyLabel={t("app.skillStudio.newSkill", { defaultValue: "New skill" })}
           />
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -723,7 +723,7 @@ function StudioEmptyState({
             skills={skills}
             loading={skillsLoading}
             onSelectSkill={onSelectSkill}
-            emptyLabel="Select skill"
+            emptyLabel={t("app.skillStudio.selectSkill", { defaultValue: "Select skill" })}
           />
         </header>
         <div className="flex flex-1 items-center justify-center">
@@ -796,7 +796,7 @@ function StudioLanding({
             skills={skills}
             loading={skillsLoading}
             onSelectSkill={onSelectSkill}
-            emptyLabel="Select skill"
+            emptyLabel={t("app.skillStudio.selectSkill", { defaultValue: "Select skill" })}
           />
           <Button variant="ghost" size="sm" className="ml-auto" onClick={onCreateNew}>
             <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -1193,7 +1193,7 @@ function SkillSwitcher({
   skills,
   loading,
   onSelectSkill,
-  emptyLabel = "Select skill",
+  emptyLabel = t("app.skillStudio.selectSkill", { defaultValue: "Select skill" }),
 }: {
   skill: CompanySkillDetail | null;
   skills: CompanySkillListItem[];
@@ -1218,7 +1218,7 @@ function SkillSwitcher({
       value={skill?.id ?? ""}
       groups={groups}
       loading={loading}
-      loadingMessage="Loading skills..."
+      loadingMessage={t("app.skillStudio.loadingSkills", { defaultValue: "Loading skills..." })}
       placeholder={emptyLabel}
       searchPlaceholder="Search skills..."
       emptyMessage={t("app.skillStudio.noMatchingSkills", { defaultValue: "No matching skills." })}
@@ -1466,7 +1466,7 @@ function SkillPane({
             }
             onSelectFile={selectFile}
             showCheckboxes={false}
-            ariaLabel="Skill files"
+            ariaLabel={t("app.skillStudio.skillFiles", { defaultValue: "Skill files" })}
           />
         </div>
         {readOnly && (
@@ -2103,7 +2103,7 @@ function InputPane({
                         </DropdownMenu>
                       );
                     }}
-                    ariaLabel="Test inputs"
+                    ariaLabel={t("app.skillStudio.testInputs", { defaultValue: "Test inputs" })}
                   />
                 </>
               )}
@@ -2691,7 +2691,7 @@ function RunTemplateAdvancedPanel({
                 groups={templateGroups}
                 loading={templatesLoading}
                 disabled={templatesLoading || templatesError}
-                loadingMessage="Loading templates..."
+                loadingMessage={t("app.skillStudio.loadingTemplates", { defaultValue: "Loading templates..." })}
                 placeholder={t("app.skillStudio.selectTemplate", { defaultValue: "Select template" })}
                 searchPlaceholder="Search templates..."
                 emptyMessage={t("app.skillStudio.noTemplates", { defaultValue: "No templates." })}
@@ -3501,7 +3501,7 @@ function VersionHistorySheet({
                       row.kind === "removed" && "bg-red-500/10 text-red-700 dark:text-red-300",
                     )}
                   >
-                    {row.kind === "added" ? "+" : row.kind === "removed" ? "-" : t("app.skillStudio.text2", { defaultValue: " " })}
+                    {row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}
                     {row.text}
                   </div>
                 ))}

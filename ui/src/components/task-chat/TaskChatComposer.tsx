@@ -540,7 +540,7 @@ export function TaskChatComposer({
             value={assigneeValue}
             options={reassignOptions ?? []}
             placeholder={t("app.taskChatComposer.assignee", { defaultValue: "Assignee" })}
-            noneLabel="No assignee"
+            noneLabel={t("app.newIssueDialog.noAssignee", { defaultValue: "No assignee" })}
             searchPlaceholder="Search assignees…"
             emptyMessage={t("app.taskChatComposer.noMatches", { defaultValue: "No matches." })}
             onChange={setPendingAssignee}

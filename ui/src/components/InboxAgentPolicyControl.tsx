@@ -136,7 +136,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
       </div>
 
       <RadioCardGroup
-        ariaLabel="Inbox agent archiving policy"
+        ariaLabel={t("app.inboxAgentPolicyControl.inboxAgentArchivingPolicy", { defaultValue: "Inbox agent archiving policy" })}
         value={draft.mode}
         onValueChange={(value) => setDraft((current) => (current ? { ...current, mode: value as InboxAgentPolicyMode } : current))}
         options={MODE_OPTIONS}

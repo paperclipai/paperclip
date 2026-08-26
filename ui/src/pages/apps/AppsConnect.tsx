@@ -1607,7 +1607,7 @@ function ActionsStep({
         actions={readOnly}
         enabled={enabled}
         onToggle={onToggle}
-        bulkLabel="Turn all off"
+        bulkLabel={t("app.appsConnect.turnAllOff", { defaultValue: "Turn all off" })}
         onBulk={() => onBulk(readOnly.map((a) => a.catalogEntryId), false)}
         askFirstLevels={askFirstLevels}
       />
@@ -1618,7 +1618,7 @@ function ActionsStep({
         actions={canMakeChanges}
         enabled={enabled}
         onToggle={onToggle}
-        bulkLabel="Turn all on"
+        bulkLabel={t("app.appsConnect.turnAllOn", { defaultValue: "Turn all on" })}
         onBulk={() => onBulk(canMakeChanges.map((a) => a.catalogEntryId), true)}
         askFirstLevels={askFirstLevels}
       />

@@ -413,7 +413,7 @@ export function PipelineItemBodyDocument({
     >
       <DocumentFrameHeader
         documentKey={BODY_DOCUMENT_KEY}
-        documentLabel="Item body document"
+        documentLabel={t("app.pipelineItemBodyDocument.itemBodyDocument", { defaultValue: "Item body document" })}
         folded={folded}
         onToggleFolded={() => setFolded((value) => !value)}
         revisionMenu={hasDocument ? {

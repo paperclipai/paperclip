@@ -440,10 +440,10 @@ function AddAgentPicker({
       value=""
       groups={groups}
       loading={loading}
-      loadingMessage="Loading agents..."
+      loadingMessage={t("app.agentsUsingSkillDialog.loadingAgents", { defaultValue: "Loading agents..." })}
       placeholder={t("app.agentsUsingSkillDialog.addAgent", { defaultValue: "Add agent…" })}
       searchPlaceholder="Search agents..."
-      emptyMessage="All eligible agents already have this skill."
+      emptyMessage={t("app.agentsUsingSkillDialog.allEligibleAgentsAlreadyHaveThisSkill", { defaultValue: "All eligible agents already have this skill." })}
       disabled={disabled}
       onValueChange={(_value, option) => {
         onSelect(option.agent);

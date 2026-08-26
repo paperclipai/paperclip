@@ -1127,7 +1127,7 @@ function CarriedFieldTokenHelper({
 function AutomationVariableTokenHelper({
   groups,
   onInsert,
-  label = "Available variables",
+  label = t("app.pipelineSettings.availableVariables", { defaultValue: "Available variables" }),
 }: {
   groups: AutomationVariableGroup[];
   onInsert: (fieldKey: string) => void;
@@ -1461,13 +1461,13 @@ export function PipelineSettings() {
       instructionsEditorRef.current.insertMarkdown(token);
       return;
     }
-    setInstructionsBody((current) => `${current}${current ? t("app.pipelineSettings.text2", { defaultValue: " " }) : ""}${token}`);
+    setInstructionsBody((current) => `${current}${current ? " " : ""}${token}`);
   }, []);
   const insertIssueTitleVariableToken = useCallback((fieldKey: string) => {
     const token = `{{${fieldKey}}}`;
     setIssueTitleTemplate((current) => {
       const input = issueTitleTemplateInputRef.current;
-      if (!input) return `${current}${current ? t("app.pipelineSettings.text2", { defaultValue: " " }) : ""}${token}`;
+      if (!input) return `${current}${current ? " " : ""}${token}`;
       const start = input.selectionStart ?? current.length;
       const end = input.selectionEnd ?? start;
       const next = `${current.slice(0, start)}${token}${current.slice(end)}`;
@@ -2806,7 +2806,7 @@ export function PipelineSettings() {
                               options={approvalOptions}
                               recentOptionIds={recentAssigneeOptionIds}
                               placeholder={t("app.pipelineSettings.approver", { defaultValue: "Approver" })}
-                              noneLabel="Any human"
+                              noneLabel={t("app.pipelineSettings.anyHuman", { defaultValue: "Any human" })}
                               searchPlaceholder="Search approvers..."
                               emptyMessage={t("app.pipelineSettings.noApproversFound", { defaultValue: "No approvers found." })}
                               onChange={(value) => setSelectedApproval(approverValueFromOption(value))}
@@ -2894,7 +2894,7 @@ export function PipelineSettings() {
                             options={stageAssigneeOptions}
                             recentOptionIds={recentAssigneeOptionIds}
                             placeholder={t("app.pipelineSettings.pickAgent", { defaultValue: "Pick agent" })}
-                            noneLabel="No automation"
+                            noneLabel={t("app.pipelineSettings.noAutomation", { defaultValue: "No automation" })}
                             searchPlaceholder="Search agents..."
                             emptyMessage={t("app.pipelineSettings.noAgentsFound", { defaultValue: "No agents found." })}
                             onChange={(value) => setStageAssigneeAgentId(stageAssigneeIdFromOption(value))}
@@ -2936,7 +2936,7 @@ export function PipelineSettings() {
                                   options={projectOptions}
                                   recentOptionIds={recentProjectIds}
                                   placeholder={t("app.pipelineSettings.project", { defaultValue: "Project" })}
-                                  noneLabel="No project"
+                                  noneLabel={t("app.newIssueDialog.noProject", { defaultValue: "No project" })}
                                   searchPlaceholder="Search projects..."
                                   emptyMessage={t("app.pipelineSettings.noProjectsFound", { defaultValue: "No projects found." })}
                                   onChange={handleAutomationProjectChange}

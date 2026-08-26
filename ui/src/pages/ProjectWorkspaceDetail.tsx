@@ -704,7 +704,7 @@ export function ProjectWorkspaceDetail() {
                   ? t("app.projectWorkspaceDetail.noServicesHaveBeenStartedForThisWorkspaceYet", { defaultValue: "No services have been started for this workspace yet." })
                   : t("app.projectWorkspaceDetail.noWorkspaceCommandConfigIsDefinedForThisWorkspaceYet", { defaultValue: "No workspace command config is defined for this workspace yet." })
               }
-              jobEmptyMessage="No one-shot jobs are configured for this workspace yet."
+              jobEmptyMessage={t("app.projectWorkspaceDetail.noOneShotJobsAreConfiguredForThisWorkspaceYet", { defaultValue: "No one-shot jobs are configured for this workspace yet." })}
               disabledHint="Project workspaces need a working directory before local commands can run, and services also need runtime config."
               onAction={(request) => controlRuntimeServices.mutate(request)}
             />
@@ -733,7 +733,7 @@ export function ProjectWorkspaceDetail() {
         ) : (
           <MissingPluginTabPlaceholder
             defaultTabHref={`${projectWorkspaceUrl(project, routeWorkspaceId)}?tab=configuration`}
-            defaultTabLabel="Back to configuration"
+            defaultTabLabel={t("app.projectWorkspaceDetail.backToConfiguration", { defaultValue: "Back to configuration" })}
           />
         )
       ) : null}

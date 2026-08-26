@@ -157,15 +157,15 @@ export function ProjectWorkspaceSummaryCard({
                       text={summary.branchName}
                       containerClassName="min-w-0"
                       className="min-w-0 break-all text-left font-mono text-xs text-foreground"
-                      copiedLabel="Branch copied"
+                      copiedLabel={t("app.projectWorkspaceSummaryCard.branchCopied", { defaultValue: "Branch copied" })}
                     >
                       {summary.branchName}
                     </CopyText>
                     <CopyText
                       text={summary.branchName}
-                      ariaLabel="Copy branch"
+                      ariaLabel={t("app.projectWorkspaceSummaryCard.copyBranch", { defaultValue: "Copy branch" })}
                       className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
-                      copiedLabel="Branch copied"
+                      copiedLabel={t("app.projectWorkspaceSummaryCard.branchCopied", { defaultValue: "Branch copied" })}
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>
@@ -185,15 +185,15 @@ export function ProjectWorkspaceSummaryCard({
                       title={summary.cwd}
                       containerClassName="min-w-0"
                       className="min-w-0 break-all text-left font-mono text-xs text-foreground"
-                      copiedLabel="Path copied"
+                      copiedLabel={t("app.projectWorkspaceSummaryCard.pathCopied", { defaultValue: "Path copied" })}
                     >
                       {truncatePath(summary.cwd)}
                     </CopyText>
                     <CopyText
                       text={summary.cwd}
-                      ariaLabel="Copy path"
+                      ariaLabel={t("app.projectWorkspaceSummaryCard.copyPath", { defaultValue: "Copy path" })}
                       className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
-                      copiedLabel="Path copied"
+                      copiedLabel={t("app.projectWorkspaceSummaryCard.pathCopied", { defaultValue: "Path copied" })}
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -92,8 +93,8 @@ export function SearchableSelect<
   onValueChange,
   placeholder,
   searchPlaceholder = "Search...",
-  emptyMessage = "No options found.",
-  loadingMessage = "Loading...",
+  emptyMessage = t("app.searchableSelect.noOptionsFound", { defaultValue: "No options found." }),
+  loadingMessage = t("app.artifactsPanel.loading", { defaultValue: "Loading..." }),
   loading = false,
   disabled = false,
   className,

@@ -1772,7 +1772,7 @@ export function RunTranscriptView({
   limit,
   streaming = false,
   collapseStdout = false,
-  emptyMessage = "No transcript yet.",
+  emptyMessage = t("app.runTranscriptView.noTranscriptYet", { defaultValue: "No transcript yet." }),
   className,
   thinkingClassName,
   externalReferences,

@@ -2973,9 +2973,9 @@ export function PromptsTab({
               {!fileLoading && (
                 <CopyText
                   text={displayValue}
-                  ariaLabel="Copy instructions file as markdown"
+                  ariaLabel={t("app.agentDetail.copyInstructionsFileAsMarkdown", { defaultValue: "Copy instructions file as markdown" })}
                   title={t("app.agentDetail.copyAsMarkdown", { defaultValue: "Copy as markdown" })}
-                  copiedLabel="Copied"
+                  copiedLabel={t("app.caseFieldsPanel.copied", { defaultValue: "Copied" })}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   <Copy className="h-3.5 w-3.5" />

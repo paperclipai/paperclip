@@ -52,7 +52,7 @@ import { t } from "@/i18n";
 export function RunButton({
   onClick,
   disabled,
-  label = "Run now",
+  label = t("app.agentActionButtons.runNow", { defaultValue: "Run now" }),
   size = "sm",
 }: {
   onClick: () => void;
@@ -160,7 +160,7 @@ export function AgentActionButtons({
   companyId,
   size = "sm",
   assignLabel = t("app.agentDetail.assignTask", { defaultValue: "Assign Task" }),
-  runLabel = "Run now",
+  runLabel = t("app.agentActionButtons.runNow", { defaultValue: "Run now" }),
   showStatus = true,
   actionsDisabled = false,
   workActionsDisabled = false,
@@ -437,7 +437,7 @@ export function AgentActionButtons({
             }}
           >
             <Copy className="h-3 w-3" />
-            Copy Agent ID
+            {t("app.agentActionButtons.copyAgentID", { defaultValue: "Copy Agent ID" })}
           </button>
           <button
             className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
@@ -447,7 +447,7 @@ export function AgentActionButtons({
             }}
           >
             <RotateCcw className="h-3 w-3" />
-            Reset Sessions
+            {t("app.agentActionButtons.resetSessions", { defaultValue: "Reset Sessions" })}
           </button>
           {!hideTerminate && (
             <button
@@ -459,7 +459,7 @@ export function AgentActionButtons({
               }}
             >
               <Trash2 className="h-3 w-3" />
-              Terminate
+              {t("app.agentActionButtons.terminate", { defaultValue: "Terminate" })}
             </button>
           )}
         </PopoverContent>

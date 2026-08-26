@@ -58,7 +58,11 @@
       "pendingBudgetApprovals": "pending budget approvals",
       "recentActivity": "Recent Activity",
       "recentTasks": "Recent Tasks",
-      "noTasksYet": "No tasks yet."
+      "noTasksYet": "No tasks yet.",
+      "agentsFromACompanyImportArrivePausedAsASafetyDefaultResumeTh": "Agents from a company import arrive paused as a safety default. Resume them so assigned tasks can start.",
+      "allAgentsInThisCompanyArePausedNothingWillRun": "All agents in this company are paused — nothing will run.",
+      "reviewAgents": "Review agents",
+      "resumeAtLeastOneAgentToLetAssignedTasksStart": "Resume at least one agent to let assigned tasks start."
     },
     "pages": {
       "routines": "Routines",
@@ -188,7 +192,13 @@
       "noReviewersFound": "No reviewers found.",
       "noApproversFound": "No approvers found.",
       "noAgentsFound": "No agents found.",
-      "noModelsFound": "No models found."
+      "noModelsFound": "No models found.",
+      "noAssignee": "No assignee",
+      "noProject": "No project",
+      "noReviewer": "No reviewer",
+      "noApprover": "No approver",
+      "noWatchdogAgent": "No watchdog agent",
+      "labels": "Labels"
     },
     "newProjectDialog": {
       "localFolder": "Local folder",
@@ -273,7 +283,9 @@
       "restoring": "Restoring…",
       "restoreThisRevision": "Restore this revision",
       "noBodyYetCaptureTheItemSDetailsHere": "No body yet. Capture the item's details here.",
-      "itemBody": "Item body"
+      "itemBody": "Item body",
+      "itemBodyDocument": "Item body document",
+      "board": "Board"
     },
     "pipelineStageHistoryPanel": {
       "paperclipCouldNotRestoreTheRevision": "Paperclip could not restore the revision.",
@@ -380,7 +392,11 @@
       "branch": "Branch",
       "path": "Path",
       "service": "Service",
-      "linkedTasks": "Linked tasks"
+      "linkedTasks": "Linked tasks",
+      "branchCopied": "Branch copied",
+      "copyBranch": "Copy branch",
+      "pathCopied": "Path copied",
+      "copyPath": "Copy path"
     },
     "projectWorkspacesContent": {
       "noNonDefaultWorkspaceActivityYet": "No non-default workspace activity yet.",
@@ -402,7 +418,8 @@
     "reportsToPicker": {
       "noManager": "No manager",
       "current": "Current:",
-      "savedManagerIsMissingFromThisCompanyChooseANewManagerOrClear": "Saved manager is missing from this company. Choose a new manager or clear."
+      "savedManagerIsMissingFromThisCompanyChooseANewManagerOrClear": "Saved manager is missing from this company. Choose a new manager or clear.",
+      "reportsTo": "Reports to..."
     },
     "routeErrorBoundary": {
       "thisPageHitAnError": "This page hit an error",
@@ -482,7 +499,9 @@
       "chooseAnExistingWorkspaceBeforeRunning": "Choose an existing workspace before running.",
       "running": "Running...",
       "noAgentsFound": "No agents found.",
-      "noProjectsFound": "No projects found."
+      "noProjectsFound": "No projects found.",
+      "agent": "Agent *",
+      "agent2": "Agent"
     },
     "routineSaveBar": {
       "routineChangedElsewhereReloadToMerge": "Routine changed elsewhere. Reload to merge.",
@@ -572,7 +591,9 @@
       "pasteTheSecretValue": "Paste the secret value",
       "theValueIsStoredOnceAndNeverReDisplayedRotateToReplace": "The value is stored once and never re-displayed. Rotate to replace.",
       "description": "Description",
-      "optionalNotesNoValues": "Optional notes (no values)"
+      "optionalNotesNoValues": "Optional notes (no values)",
+      "secret": "Secret",
+      "selectSecret": "Select secret"
     },
     "sidebarAccountMenu": {
       "signedIn": "Signed in",
@@ -781,7 +802,9 @@
       "untrackedServices": "Untracked services",
       "longRunningCommands": "Long-running commands that Paperclip can supervise for this workspace.",
       "oneShotCommands": "One-shot commands that run now and exit when they finish.",
-      "staleServices": "Running services that no longer match the current workspace command config."
+      "staleServices": "Running services that no longer match the current workspace command config.",
+      "noServicesAreConfiguredForThisWorkspace": "No services are configured for this workspace.",
+      "noOneShotJobsAreConfiguredForThisWorkspace": "No one-shot jobs are configured for this workspace."
     },
     "workspaceServiceControlBar": {
       "urlCopied": "URL copied",
@@ -1115,7 +1138,9 @@
       "usesCheapProfile": "· uses the agent's configured cheap profile",
       "fallsBackToPrimary": "· falls back to the primary model if no cheap profile is configured",
       "noModelsFound": "No models found.",
-      "noAgentsFound": "No agents found."
+      "noAgentsFound": "No agents found.",
+      "chrome": "Chrome",
+      "agent": "Agent"
     },
     "issuePropertiesArtifactsTab": {
       "thisMarkdownFileIsTooLargeToPreviewUseRawOrDownloadInstead": "This Markdown file is too large to preview. Use Raw or Download instead.",
@@ -1184,7 +1209,12 @@
       "for": "For",
       "replayWindowSeconds": "Replay window (seconds)",
       "noResponsibleFound": "No responsible found.",
-      "noProjectsFound": "No projects found."
+      "noProjectsFound": "No projects found.",
+      "concurrencyPolicy": "Concurrency policy",
+      "catchUpPolicy": "Catch-up policy",
+      "activityGateScope": "Activity gate scope",
+      "url": "URL",
+      "utc": "UTC"
     },
     "operateSections": {
       "noRunsYetTriggerARunFromTheHeaderOrWaitForTheSchedule": "No runs yet. Trigger a run from the header or wait for the schedule.",
@@ -1197,13 +1227,15 @@
       "noRunsMatchTheseFilters": "No runs match these filters.",
       "run": "Run",
       "noActivityYet": "No activity yet.",
-      "any": "any"
+      "any": "any",
+      "earlier": "Earlier"
     },
     "searchFilterChips": {
       "clearAll": "Clear all"
     },
     "searchFilterMenu": {
-      "clear": "Clear"
+      "clear": "Clear",
+      "noOptions": "No options"
     },
     "searchFilterSheet": {
       "showResults": "Show results",
@@ -1239,7 +1271,9 @@
       "latest": "Latest",
       "behindLatest": "behind latest",
       "remove": "Remove",
-      "addAgent": "Add agent…"
+      "addAgent": "Add agent…",
+      "loadingAgents": "Loading agents...",
+      "allEligibleAgentsAlreadyHaveThisSkill": "All eligible agents already have this skill."
     },
     "forkSkillDialog": {
       "theForkRequestFailed": "The fork request failed.",
@@ -1327,7 +1361,8 @@
       "collapseCommandDetails": "Collapse command details",
       "expandCommandDetails": "Expand command details",
       "collapseStdout": "Collapse stdout",
-      "expandStdout": "Expand stdout"
+      "expandStdout": "Expand stdout",
+      "noTranscriptYet": "No transcript yet."
     },
     "breadcrumb": {
       "more": "More"
@@ -1553,7 +1588,13 @@
       "runHeartbeat": "Run Heartbeat",
       "assignTask": "Assign Task",
       "seeAll": "See All",
-      "last14Days": "Last 14 days"
+      "last14Days": "Last 14 days",
+      "copyInstructionsFileAsMarkdown": "Copy instructions file as markdown",
+      "agent": "Agent",
+      "agentsMd": "AGENTS.md",
+      "toolsMd": "TOOLS.md",
+      "id": "ID",
+      "kb": "KB"
     },
     "agentToolsTab": {
       "installedApps": "Installed apps",
@@ -1892,7 +1933,10 @@
       "corePaperclipKeepsEnforcingCompanyBoundariesAndAnyExistingRestrictivePolicyDataButEditingAdvancedPermissionsRequiresAnInstalledExtension": "Core Paperclip keeps enforcing company boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.",
       "pluginExtensionsUnavailable": "Plugin extensions unavailable:",
       "openMembers": "Open Members",
-      "openInvites": "Open Invites"
+      "openInvites": "Open Invites",
+      "approveHuman": "Approve human",
+      "rejectHuman": "Reject human",
+      "agents": "Agents"
     },
     "companyEnvironments": {
       "terminalClosed": "Terminal closed.",
@@ -1978,7 +2022,11 @@
       "test": "Test",
       "creating": "Creating...",
       "saveEnvironment": "Save environment",
-      "createEnvironment": "Create environment"
+      "createEnvironment": "Create environment",
+      "deleteEnvironment": "Delete environment",
+      "sandboxLeasesHeldBy": "Sandbox leases held by",
+      "reassignAgentsToEnvironment": "Reassign agents to environment",
+      "ssh": "SSH"
     },
     "companyExport": {
       "selectAFileToPreviewItsContents": "Select a file to preview its contents.",
@@ -2058,7 +2106,11 @@
       "packageFiles": "Package files",
       "theImportFinishedAnd": "The import finished and ",
       "isReadyItsDetailedSummaryIsNoLongerAvailable": " is ready. Its detailed summary is no longer available.",
-      "theImportFinishedAndYourCompanyIsReadyItsDetailedSummaryIsNoLongerAvailableButTheCompanyHasBeenAddedSelectItFromTheCompanySwitcherToViewIt": "The import finished and your company is ready. Its detailed summary is no longer available, but the company has been added — select it from the company switcher to view it."
+      "theImportFinishedAndYourCompanyIsReadyItsDetailedSummaryIsNoLongerAvailableButTheCompanyHasBeenAddedSelectItFromTheCompanySwitcherToViewIt": "The import finished and your company is ready. Its detailed summary is no longer available, but the company has been added — select it from the company switcher to view it.",
+      "importedAgentsArrivedPausedResumeThemFromTheCompanySAgentsPa": "Imported agents arrived paused — resume them from the company's Agents page so assigned tasks can start.",
+      "openCompanyDashboard": "Open company dashboard",
+      "anythingLeftPausedHereStaysVisibleOnTheCompanySAgentsAndRout": "Anything left paused here stays visible on the company's Agents and Routines pages, which offer the same resume actions — nothing is lost if you leave this page.",
+      "githubUrl": "GitHub URL"
     },
     "companyInvites": {
       "company": "Company",
@@ -2408,7 +2460,40 @@
       "catalogSkillNotFound": "Catalog skill not found.",
       "github": "GitHub",
       "enabledFor": "enabled for",
-      "isInTheLibraryButNotEnabledForAnyAgentYetUseAddToAgentToEnableIt": "is in the library but not enabled for any agent yet. Use \"Add to agent\" to enable it."
+      "isInTheLibraryButNotEnabledForAnyAgentYetUseAddToAgentToEnableIt": "is in the library but not enabled for any agent yet. Use \"Add to agent\" to enable it.",
+      "allSkills": "All skills",
+      "copiedHash": "Copied hash",
+      "replaceExistingSkill": "Replace existing skill",
+      "installing": "Installing…",
+      "enableForAgents": "Enable for agents",
+      "installingAddsTheSkillToTheCompanyLibraryAgentsCanOnlyUseItO": "Installing adds the skill to the company library. Agents can only use it once it is enabled for them.",
+      "addToAgent": "Add to agent",
+      "copiedPath": "Copied path",
+      "paperclip": "Paperclip",
+      "unfiled": "Unfiled",
+      "untitled": "Untitled",
+      "slug": "Slug",
+      "preparing": "Preparing...",
+      "hash": "Hash",
+      "replace": "Replace",
+      "trust": "Trust",
+      "compatibility": "Compatibility",
+      "compatible": "Compatible",
+      "requires2": "Requires",
+      "provenance": "Provenance",
+      "overview": "Overview",
+      "initial": "Initial",
+      "location": "Location",
+      "tags2": "Tags",
+      "code": "Code",
+      "about": "About",
+      "compare": "Compare",
+      "starred": "Starred",
+      "star": "Star",
+      "updates": "Updates",
+      "discard": "Discard",
+      "detail": "Detail",
+      "undo": "Undo"
     },
     "costs": {
       "financeLedger": "Finance ledger",
@@ -2636,7 +2721,14 @@
       "noWorkspaceOperationsHaveBeenRecordedYet": "No workspace operations have been recorded yet.",
       "workspaceSummary": "Workspace summary",
       "summarizerKeepsTheLatestWorkspaceStatusNextStepAndOperatorNeededItemsHere": "Summarizer keeps the latest workspace status, next step, and operator-needed items here.",
-      "loadingWorkspacePlugin": "Loading workspace plugin..."
+      "loadingWorkspacePlugin": "Loading workspace plugin...",
+      "provisioning": "Provisioning…",
+      "noOneShotJobsAreConfiguredForThisExecutionWorkspaceYet": "No one-shot jobs are configured for this execution workspace yet.",
+      "backToTasks": "Back to tasks",
+      "deferred": "Deferred",
+      "provisioned": "Provisioned",
+      "paths": "Paths",
+      "cleanup": "Cleanup"
     },
     "goalDetail": {
       "showProperties": "Show properties",
@@ -3096,7 +3188,14 @@
       "authPageStates": "Auth page states",
       "theGeneralAuthPageUsesADifferentCompositionFromInviteLandingThesePreviewsKeepBothSignInAndSignUpVariantsVisible": "The general `/auth` page uses a different composition from invite landing. These previews keep both sign-in and sign-up variants visible.",
       "companyInviteManagement": "Company invite management",
-      "thisSectionCapturesTheBoardSideInviteCreationFlowCopiedLinkStateAuditTableAndTheEdgeStatesThatAreOtherwiseTediousToStage": "This section captures the board-side invite creation flow, copied-link state, audit table, and the edge states that are otherwise tedious to stage."
+      "thisSectionCapturesTheBoardSideInviteCreationFlowCopiedLinkStateAuditTableAndTheEdgeStatesThatAreOtherwiseTediousToStage": "This section captures the board-side invite creation flow, copied-link state, audit table, and the edge states that are otherwise tedious to stage.",
+      "welcomeAboard": "Welcome aboard.",
+      "janeExample": "Jane Example",
+      "operator": "Operator",
+      "codex": "Codex",
+      "cursor": "Cursor",
+      "capabilities": "Capabilities",
+      "paperclip": "Paperclip"
     },
     "issueChatLongThreadPerf": {
       "deterministicLocalFixtureForMeasuringTheCurrentDirectRenderIssueChatPathWithHundredsOfMergedThreadRowsMarkdownHeavyAssistantBodiesLinkedRunsDocumentsSubIssuesAndSidebarContext": "Deterministic local fixture for measuring the current direct-render issue chat path with hundreds of merged thread rows, markdown-heavy assistant bodies, linked runs, documents, sub-issues, and sidebar context.",
@@ -3316,7 +3415,16 @@
       "retryPreview": "Retry preview",
       "complete": "Complete",
       "previewUnavailable": "Preview unavailable.",
-      "originating": "Originating"
+      "originating": "Originating",
+      "pausing": "Pausing...",
+      "subTask": "Sub-task",
+      "properties": "Properties",
+      "undo": "Undo",
+      "live": "Live",
+      "watchdog": "Watchdog",
+      "artifacts": "Artifacts",
+      "chat": "Chat",
+      "applying": "Applying..."
     },
     "joinRequestQueue": {
       "company": "Company",
@@ -3558,7 +3666,14 @@
       "type": "Type ",
       "toConfirm": "to confirm",
       "archiveConfirmation": "Archive confirmation",
-      "archiving": "Archiving..."
+      "archiving": "Archiving...",
+      "availableVariables": "Available variables",
+      "noAutomation": "No automation",
+      "automation": "Automation",
+      "operate": "Operate",
+      "wait": "Wait",
+      "transitions": "Transitions",
+      "children": "Children"
     },
     "pipelines": {
       "retireDirectChildItems": "Retire direct child items",
@@ -3914,7 +4029,18 @@
       "configurationTestFailed": "Configuration test failed.",
       "loadingConfiguration": "Loading configuration...",
       "saving": "Saving...",
-      "testing": "Testing..."
+      "testing": "Testing...",
+      "missingDirectories": "Missing directories",
+      "missingFiles": "Missing files",
+      "about": "About",
+      "pid": "PID",
+      "uptime": "Uptime",
+      "crashes": "Crashes",
+      "overall": "Overall",
+      "lifecycle": "Lifecycle",
+      "readable": "Readable",
+      "writable": "Writable",
+      "present": "Present"
     },
     "profileSettings": {
       "settings": "Settings",
@@ -4027,7 +4153,10 @@
       "longRunningServicesStaySupervisedHereWhileOneShotJobsRunOnDemandAgainstThisWorkspaceExecutionWorkspacesInheritThisConfigUnlessTheyOverrideIt": "Long-running services stay supervised here, while one-shot jobs run on demand against this workspace. Execution workspaces inherit this config unless they override it.",
       "noServicesHaveBeenStartedForThisWorkspaceYet": "No services have been started for this workspace yet.",
       "noWorkspaceCommandConfigIsDefinedForThisWorkspaceYet": "No workspace command config is defined for this workspace yet.",
-      "loadingWorkspacePlugin": "Loading workspace plugin..."
+      "loadingWorkspacePlugin": "Loading workspace plugin...",
+      "noOneShotJobsAreConfiguredForThisWorkspaceYet": "No one-shot jobs are configured for this workspace yet.",
+      "backToConfiguration": "Back to configuration",
+      "visibility": "Visibility"
     },
     "projects": {
       "name": "Name",
@@ -4194,7 +4323,13 @@
       "noRoutinesMatchThisView": "No routines match this view.",
       "thisFolderIsEmpty": "This folder is empty.",
       "newRoutineInThisFolder": "New routine in this folder",
-      "routineMoved": "Routine moved"
+      "routineMoved": "Routine moved",
+      "unfiled": "Unfiled",
+      "unassigned": "Unassigned",
+      "asc": "Asc",
+      "desc": "Desc",
+      "concurrency": "Concurrency",
+      "undo": "Undo"
     },
     "runTranscriptUxLab": {
       "runDetail": "Run Detail",
@@ -4676,7 +4811,17 @@
       "v": "→ v",
       "back": "Back",
       "skill": "Skill",
-      "runs": "Runs"
+      "runs": "Runs",
+      "selectSkill": "Select skill",
+      "skillFiles": "Skill files",
+      "testInputs": "Test inputs",
+      "loadingTemplates": "Loading templates...",
+      "basics": "Basics",
+      "slug": "Slug",
+      "tagline": "Tagline",
+      "appearance": "Appearance",
+      "unsaved": "Unsaved",
+      "interactions": "Interactions"
     },
     "archivedStatusCardRow": {
       "untitledCard": "Untitled card",
@@ -5086,7 +5231,8 @@
       "savingSoon": "Saving soon…",
       "saved": "Saved",
       "noSkillsInTheCompanyLibrary": "No skills in the company library",
-      "installSkillsToTheCompanyThenEnableThemOnThisAgent": "Install skills to the company, then enable them on this agent."
+      "installSkillsToTheCompanyThenEnableThemOnThisAgent": "Install skills to the company, then enable them on this agent.",
+      "saving": "Saving…"
     },
     "appDetail": {
       "app": "App",
@@ -5260,7 +5406,12 @@
       "on": "on ·",
       "allAgentsCanUseIt": "All agents can use it",
       "specificAgentsCanUseIt": "Specific agents can use it",
-      "done": "Done"
+      "done": "Done",
+      "turnAllOff": "Turn all off",
+      "turnAllOn": "Turn all on",
+      "zapier": "Zapier",
+      "recommended": "Recommended",
+      "finishing": "Finishing..."
     },
     "appsReview": {
       "company": "Company",
@@ -5533,7 +5684,10 @@
       "otherAgentsUsing": "Other agents using ",
       "text4": ": ",
       "tryAsADifferentAgent": "Try as a different agent:",
-      "running": "Running…"
+      "running": "Running…",
+      "moreOptions": "More options",
+      "allowed": "Allowed",
+      "calling": "Calling"
     },
     "connectClientDialog": {
       "copied": "Copied",
@@ -5824,7 +5978,8 @@
       "them": " them",
       "willFailUntilYouSetYourValue": "will fail until you set your value.",
       "setValue": "Set value",
-      "manageAllMySecrets": "Manage all my secrets"
+      "manageAllMySecrets": "Manage all my secrets",
+      "setYourUserSecrets": "Set your user secrets"
     },
     "proposalsTab": {
       "by": "by ",
@@ -6694,7 +6849,8 @@
       "requireApproval": "require approval",
       "rateLimited": "rate limited",
       "couldNotLoadThisView": "Could not load this view",
-      "trackedIn": "Tracked in "
+      "trackedIn": "Tracked in ",
+      "loading2": "Loading…"
     },
     "launchers": {
       "min24remCalc100vw2rem": "min(24rem, calc(100vw - 2rem))",
@@ -6757,7 +6913,8 @@
       "persistent": "Persistent",
       "oneShot": "One-shot",
       "deny": "Deny",
-      "fail": "Fail"
+      "fail": "Fail",
+      "provider": "Provider"
     },
     "geminiLocalConfigFields": {
       "executionEngine": "Execution engine",
@@ -6823,7 +6980,9 @@
       "fixed": "Fixed",
       "perIssue": "Per issue",
       "perRun": "Per run",
-      "whenEnabledPaperclipPersistsADeviceKeyDuringOnboardingSoPairingApprovalsRemainStableAcrossRuns": "When enabled, Paperclip persists a device key during onboarding so pairing approvals remain stable across runs."
+      "whenEnabledPaperclipPersistsADeviceKeyDuringOnboardingSoPairingApprovalsRemainStableAcrossRuns": "When enabled, Paperclip persists a device key during onboarding so pairing approvals remain stable across runs.",
+      "skipDeviceKeyAuthentication": "Skip device key authentication",
+      "automaticallyApproveDevicePairing": "Automatically approve device pairing"
     },
     "accountingModelCard": {
       "requestScopedUsageAndBilledRunsFromCostEvents": "Request-scoped usage and billed runs from cost_events.",
@@ -6868,7 +7027,11 @@
       "pause": "Pause",
       "clearError": "Clear error",
       "cancel": "Cancel",
-      "pauseAnyway": "Pause anyway"
+      "pauseAnyway": "Pause anyway",
+      "runNow": "Run now",
+      "copyAgentID": "Copy Agent ID",
+      "resetSessions": "Reset Sessions",
+      "terminate": "Terminate"
     },
     "agentBubbleActionRow": {
       "copyMessage": "Copy message",
@@ -6991,7 +7154,10 @@
       "useManualModel": "Use manual model",
       "noExplicitCheapModelSelectedRuntimeFallsBackTo": "No explicit cheap model selected — runtime falls back to",
       "noCheapModelSelectedAndTheAdapterHasNoDefaultCheapLaneRunsWillContinueOnThePrimaryModelWithAFallbackNote": "No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.",
-      "runPolicy": "Run Policy"
+      "runPolicy": "Run Policy",
+      "test": "Test",
+      "chooseManager": "Choose manager…",
+      "detectModel": "Detect model"
     },
     "agentIconPicker": {
       "searchIcons": "Search icons...",
@@ -7005,7 +7171,9 @@
       "save": "Save",
       "done": "Done",
       "noMatches": "No matches.",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "selectAgent": "Select agent…",
+      "noAgentsYet": "No agents yet."
     },
     "agentSecretAccessEditor": {
       "alias": "ALIAS",
@@ -7014,7 +7182,8 @@
       "removeApiAccess": "Remove API access",
       "noSecretsAreBoundToThisAgentYet": "No secrets are bound to this agent yet.",
       "proposedAccess": "Proposed access",
-      "duplicateAlias": "Duplicate alias"
+      "duplicateAlias": "Duplicate alias",
+      "addAPIAccess": "Add API access"
     },
     "animatedPaperclipIcon": {
       "loading": "Loading…"
@@ -7077,7 +7246,10 @@
       "approve": "Approve",
       "reject": "Reject",
       "approvedHireTasksCreated": "Approved — hire tasks created",
-      "changesRequestedCeoIsRevising": "Changes requested — CEO is revising"
+      "changesRequestedCeoIsRevising": "Changes requested — CEO is revising",
+      "loading": "Loading...",
+      "generating": "Generating...",
+      "loadingDocument": "Loading document..."
     },
     "attentionInteractionResolver": {
       "thisDecisionIsNoLongerAvailableItMayHaveBeenResolvedElsewhere": "This decision is no longer available — it may have been resolved elsewhere."
@@ -7101,7 +7273,10 @@
       "viewIssue": "View issue",
       "custom": "Custom",
       "snoozeUntil": "Snooze until…",
-      "missingIssueReferenceForThisDecision": "Missing issue reference for this decision."
+      "missingIssueReferenceForThisDecision": "Missing issue reference for this decision.",
+      "restore": "Restore",
+      "dismiss": "Dismiss",
+      "snooze": "Snooze"
     },
     "billerSpendCard": {
       "periodSpend": "Period spend",
@@ -7210,7 +7385,8 @@
     },
     "caseFieldsPanel": {
       "fields": "Fields",
-      "noFieldsSet": "No fields set"
+      "noFieldsSet": "No fields set",
+      "copied": "Copied"
     },
     "caseIdentifierKey": {
       "caseId": "case ID",
@@ -7220,7 +7396,7 @@
       "selectRevision": "Select revision",
       "user": "User",
       "system": "System",
-      "diff": "Diff -",
+      "diff": "Diff",
       "old": "Old",
       "new": "New",
       "selectTwoRevisionsToCompare": "Select two revisions to compare.",
@@ -7236,7 +7412,10 @@
       "attachFiles": "Attach files",
       "uploading": "Uploading…",
       "insertedInline": "Inserted inline",
-      "attached": "Attached"
+      "attached": "Attached",
+      "message": "Message…",
+      "sendMessage": "Send message",
+      "dropToAttach": "Drop to attach"
     },
     "claudeSubscriptionPanel": {
       "anthropicSubscription": "Anthropic subscription",
@@ -7260,7 +7439,16 @@
       "orKeepTypingToRefine": "or keep typing to refine.",
       "searchAllFor": "Search all for",
       "openFullSearch": "open full search",
-      "gF": "g f"
+      "gF": "g f",
+      "createNewAgent": "Create new agent",
+      "createNewProject": "Create new project",
+      "dashboard": "Dashboard",
+      "inbox": "Inbox",
+      "tasks": "Tasks",
+      "projects": "Projects",
+      "goals": "Goals",
+      "costs": "Costs",
+      "activity": "Activity"
     },
     "commentThread": {
       "copyCommentAsMarkdown": "Copy comment as markdown",
@@ -7288,12 +7476,16 @@
       "noTimelineEntriesYet": "No timeline entries yet.",
       "environment": "Environment",
       "provider": "Provider",
-      "run": "run"
+      "run": "run",
+      "noResponsible": "No responsible"
     },
     "companySwitcher": {
       "companies": "Companies",
       "couldnTLoadCompanies": "Couldn't load companies",
-      "noCompanies": "No companies"
+      "noCompanies": "No companies",
+      "tryAgain": "Try again",
+      "settings": "Settings",
+      "manageCompanies": "Manage Companies"
     },
     "configureBuiltInAgentModal": {
       "adapterType": "Adapter type",
@@ -7358,7 +7550,9 @@
       "queues": "Queues",
       "clear": "Clear",
       "cancel": "Cancel",
-      "noOtherQueuesYet": "No other queues yet."
+      "noOtherQueuesYet": "No other queues yet.",
+      "queue": "Queue",
+      "newQueue": "New queue…"
     },
     "decisionsToolbar": {
       "filter": "Filter",
@@ -7387,7 +7581,8 @@
       "openAnnotationThread": "Open annotation thread",
       "anchorMovedNeedsReview": "Anchor moved — needs review",
       "selectionActions": "Selection actions",
-      "addCommentOnSelectionM": "Add comment on selection (⌘⇧M)"
+      "addCommentOnSelectionM": "Add comment on selection (⌘⇧M)",
+      "comment": "Comment"
     },
     "documentAnnotationPanel": {
       "closeAnnotationPanel": "Close annotation panel",
@@ -7402,7 +7597,8 @@
       "reply2": "Reply",
       "board": "Board",
       "cancel": "Cancel",
-      "agent2": "· agent"
+      "agent2": "· agent",
+      "copyLink": "Copy link"
     },
     "documentAnnotationPopover": {
       "writeAComment": "Write a comment…",
@@ -7433,7 +7629,8 @@
     },
     "executionParticipantPicker": {
       "reviewers": "Reviewers",
-      "approvers": "Approvers"
+      "approvers": "Approvers",
+      "assignToMe": "Assign to me"
     },
     "executionWorkspaceCloseDialog": {
       "unknownError": "Unknown error",
@@ -7469,7 +7666,8 @@
       "cleanupPreviouslyFailedOnThisWorkspaceRetryingCloseWillRerunTheCleanupFlowAndUpdateTheWorkspaceStatusIfItSucceeds": "Cleanup previously failed on this workspace. Retrying close will rerun the cleanup flow and update the workspace status if it succeeds.",
       "thisWorkspaceIsAlreadyArchived": "This workspace is already archived.",
       "cancel": "Cancel",
-      "aheadBehind": "Ahead / behind"
+      "aheadBehind": "Ahead / behind",
+      "checkingWhetherThisWorkspaceIsSafeToClose": "Checking whether this workspace is safe to close..."
     },
     "feedCard": {
       "needsApprovalOn": "needs approval on",
@@ -7481,7 +7679,8 @@
     },
     "fileTree": {
       "description": "Description",
-      "retry": "Retry"
+      "retry": "Retry",
+      "files": "Files"
     },
     "fileViewerSheet": {
       "loadingFileDetails": "Loading file details",
@@ -7512,7 +7711,7 @@
       "copyFileContents": "Copy file contents",
       "copyLinkToThisFileView": "Copy link to this file view",
       "copyLink": "Copy link",
-      "loadingFilePreview": "Loading file preview",
+      "loadingFilePreview": "Loading file preview...",
       "tryProjectWorkspace": "Try project workspace"
     },
     "filterBar": {
@@ -7525,14 +7724,16 @@
     },
     "financeTimelineCard": {
       "recentFinancialEvents": "Recent financial events",
-      "topUpsFeesCreditsCommitmentsAndOtherNonRequestCharges": "Top-ups, fees, credits, commitments, and other non-request charges."
+      "topUpsFeesCreditsCommitmentsAndOtherNonRequestCharges": "Top-ups, fees, credits, commitments, and other non-request charges.",
+      "noFinancialEventsInThisPeriod": "No financial events in this period."
     },
     "frontDoor": {
       "welcomeToPaperclip": "Welcome to Paperclip",
       "buildANewCompany": "Build a new company",
       "beginWithAMissionBringOnALeadAgentAndGrowATeamOfAgentsToDoTheWork": "Begin with a mission, bring on a lead agent, and grow a team of agents to do the work.",
       "addAgentsToYourOrg": "Add agents to your org",
-      "bringAiAgentsIntoYourExistingTeamOrWorkflows": "Bring AI agents into your existing team or workflows."
+      "bringAiAgentsIntoYourExistingTeamOrWorkflows": "Bring AI agents into your existing team or workflows.",
+      "howWouldYouLikeToGetStarted": "How would you like to get started?"
     },
     "frontmatterPanel": {
       "addATool": "Add a tool…",
@@ -7549,7 +7750,8 @@
       "thisFileHasNoFrontmatter": "This file has no frontmatter.",
       "complexValueEditInYaml": "Complex value — edit in YAML.",
       "editingRawYamlToPreserveFormattingTheFormCanTReconstruct": "Editing raw YAML to preserve formatting the form can't reconstruct.",
-      "rawYamlIsTheSourceOfTruthInThisMode": "Raw YAML is the source of truth in this mode."
+      "rawYamlIsTheSourceOfTruthInThisMode": "Raw YAML is the source of truth in this mode.",
+      "addFrontmatter": "Add frontmatter"
     },
     "goalProperties": {
       "status": "Status",
@@ -7576,14 +7778,16 @@
       "save": "Save",
       "loadingInboxAgentPolicy": "Loading inbox agent policy…",
       "agentsAllowedToTidyMyInbox": "Agents allowed to tidy my inbox",
-      "saved": "Saved"
+      "saved": "Saved",
+      "inboxAgentArchivingPolicy": "Inbox agent archiving policy"
     },
     "inlineEditor": {
       "autosaving": "Autosaving...",
       "saved": "Saved",
       "couldNotSave": "Could not save",
       "idle": "Idle",
-      "cannotContainThe": "cannot contain the"
+      "cannotContainThe": "cannot contain the",
+      "clickToEdit": "Click to edit..."
     },
     "interactionGovernancePanel": {
       "interactionGovernance": "Interaction governance",
@@ -7636,7 +7840,10 @@
       "delegateFollowUpWorkOrQueueAContinuation": "Delegate follow-up work or queue a continuation.",
       "workOnThisTaskIsBlockedUntilSomeoneMovesItBackToToDoCommentsStillNotifyTheAssigneeForQuestionsOrTriage": "Work on this task is blocked until someone moves it back to To do. Comments still notify the assignee for questions or triage.",
       "stalledInReview": "Stalled in review",
-      "ultimatelyWaitingOn": "Ultimately waiting on"
+      "ultimatelyWaitingOn": "Ultimately waiting on",
+      "retrying": "Retrying...",
+      "retryNow": "Retry now",
+      "blockedByParkedWork": "Blocked by parked work"
     },
     "issueCasesPanel": {
       "cases": "Cases"
@@ -7723,7 +7930,11 @@
       "deleteCommentQuestion": "Delete comment?",
       "whatCouldHaveBeenBetter": "What could have been better?",
       "run": "run",
-      "itArrivedPausedFromACompanyImportImportedAgentsStayParkedUntilYouResumeThem": "It arrived paused from a company import — imported agents stay parked until you resume them."
+      "itArrivedPausedFromACompanyImportImportedAgentsStayParkedUntilYouResumeThem": "It arrived paused from a company import — imported agents stay parked until you resume them.",
+      "stopRun": "Stop run",
+      "stopping": "Stopping...",
+      "viewRun": "View run",
+      "running": "Running"
     },
     "issueColumns": {
       "columns": "Columns",
@@ -7788,7 +7999,12 @@
       "thisDocumentChangedWhileYouWereEditingYourLocalDraftIsPreservedAndAutosaveIsPaused": "This document changed while you were editing. Your local draft is preserved and autosave is paused.",
       "keepMyDraft": "Keep my draft",
       "reloadRemote": "Reload remote",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "editDocument": "Edit document",
+      "downloadDocument": "Download document",
+      "viewDiff": "View diff",
+      "deleteDocument": "Delete document",
+      "deleteThisDocumentThisCannotBeUndone": "Delete this document? This cannot be undone."
     },
     "issueFiltersPopover": {
       "searchCreators": "Search creators...",
@@ -7819,14 +8035,18 @@
       "checking": "Checking…",
       "waitingOnMonitorDueNow": "Waiting on monitor — due now",
       "checkNow": "Check now",
-      "sendingAReplyWakesTheAgentNowBeforeTheScheduledCheck": "Sending a reply wakes the agent now — before the scheduled check."
+      "sendingAReplyWakesTheAgentNowBeforeTheScheduledCheck": "Sending a reply wakes the agent now — before the scheduled check.",
+      "dueNow": "Due now"
     },
     "issuePlanDecompositionsSection": {
       "repeatAttemptsWithThisFingerprintReuseThisRecordInsteadOfCreatingNewChildren": "Repeat attempts with this fingerprint reuse this record instead of creating new children",
       "1AcceptedPlanRevision": "1 accepted plan revision",
       "planDecomposition": "Plan decomposition",
       "rowInsideA": "row inside a",
-      "planDocument": "Plan document"
+      "planDocument": "Plan document",
+      "completed": "Completed",
+      "inFlight": "In flight",
+      "idempotentClaim": "Idempotent claim"
     },
     "issueRecoveryActionCard": {
       "expectedRecorded": "Expected · recorded",
@@ -7909,7 +8129,9 @@
       "theCardStaysOpenUntilAnExplicitDecisionIsRecorded": "The card stays open until an explicit decision is recorded.",
       "recovery": "Recovery:",
       "returnsTo": "→ Returns to:",
-      "detachedUnknown": "detached / unknown"
+      "detachedUnknown": "detached / unknown",
+      "breakGlassReconciliation": "Break-glass reconciliation",
+      "repairWorkspace": "Repair workspace"
     },
     "issueRelatedWorkPanel": {
       "references": "References",
@@ -7920,7 +8142,9 @@
       "remoteWorkReferencedFromThisIssuePullRequestsDeploymentsTicketsInOtherSystemsAndMore": "Remote work referenced from this issue — pull requests, deployments, tickets in other systems, and more.",
       "retry": "Retry",
       "loadingExternalObjects": "Loading external objects…",
-      "thisIssueDoesNotReferenceAnyExternalObjectsYet": "This issue does not reference any external objects yet."
+      "thisIssueDoesNotReferenceAnyExternalObjectsYet": "This issue does not reference any external objects yet.",
+      "thisTaskDoesNotReferenceAnyOtherTasksYet": "This task does not reference any other tasks yet.",
+      "noOtherTasksReferenceThisTaskYet": "No other tasks reference this task yet."
     },
     "issueRow": {
       "archive": "Archive",
@@ -7988,7 +8212,8 @@
       "promoted": "Promoted",
       "promotedRunStarting": "Promoted — run starting",
       "couldnTRetryNow": "Couldn't retry now",
-      "tryAgain": "Try again"
+      "tryAgain": "Try again",
+      "retrying2": "Retrying…"
     },
     "issueThreadInteractionCard": {
       "responsible": "Responsible",
@@ -8158,7 +8383,13 @@
       "couldntUploadImageTryAgain": "Couldn't upload that image. Try again.",
       "verdictThisItem": "{{verdict}} this item",
       "reasonRequiredToVerdict": "A reason is required to {{action}} this item.",
-      "sendRevision": "Send revision"
+      "sendRevision": "Send revision",
+      "askUserQuestions": "Ask user questions",
+      "declining": "Declining…",
+      "rejecting": "Rejecting…",
+      "approveAll": "Approve all",
+      "reasonNeeded": "Reason needed",
+      "agent": "Agent"
     },
     "issueWorkspaceCard": {
       "projectDefault": "Project default",
@@ -8173,7 +8404,9 @@
       "copy": "Copy",
       "thisTaskWillUseTheProjectDefaultWorkspaceConfigurationWhenItRuns": "This task will use the project default workspace configuration when it runs.",
       "save": "Save",
-      "repo": "Repo:"
+      "repo": "Repo:",
+      "browseFiles": "Browse files…",
+      "openFileByPath": "Open file by path…"
     },
     "issuesList": {
       "searchTasks": "Search tasks...",
@@ -8231,12 +8464,14 @@
       "orPasteARawValue": "Or paste a raw value",
       "removeItem": "Remove item",
       "noItemsAddedYet": "No items added yet.",
-      "noConfigurationOptionsAvailable": "No configuration options available."
+      "noConfigurationOptionsAvailable": "No configuration options available.",
+      "advancedOptions": "Advanced options"
     },
     "kanbanBoard": {
       "thisTaskNeedsANextStep": "This task needs a next step",
       "needsNextStep": "Needs next step",
-      "live": "Live"
+      "live": "Live",
+      "nextStep": "Next step"
     },
     "keyboardShortcutsCheatsheet": {
       "moveDown": "Move down",
@@ -8306,7 +8541,10 @@
       "optionalMessageForTheAgent": "Optional message for the agent",
       "agentInvitesCreateAJoinRequestFirstACompanyAdminStillApprovesTheRequestBeforeTheAgentCanClaimItsApiKey": "Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.",
       "agentOnboardingPrompt": "Agent onboarding prompt",
-      "sendThisPromptToTheExternalAgentThatShouldJoinThisCompany": "Send this prompt to the external agent that should join this company."
+      "sendThisPromptToTheExternalAgentThatShouldJoinThisCompany": "Send this prompt to the external agent that should join this company.",
+      "askTheCEOToCreateANewAgent": "Ask the CEO to create a new agent",
+      "configureARuntimeManually": "Configure a runtime manually",
+      "back": "Back"
     },
     "newGoalDialog": {
       "goalTitle": "Goal title",
@@ -8373,7 +8611,8 @@
       "routineSection": "Routine section"
     },
     "sourceResolvedFoldBadge": {
-      "sourceResolvedWatchdogFold": "Source-resolved watchdog fold"
+      "sourceResolvedWatchdogFold": "Source-resolved watchdog fold",
+      "systemFoldedThisRunAsASourceResolvedFalsePositive": "System folded this run as a source-resolved false positive."
     },
     "markdownBody": {
       "copyCode": "Copy code",
@@ -8456,6 +8695,41 @@
     "summarizerAgentSelect": {
       "summarizerDefault": "Summarizer (default)",
       "noAgentsFound": "No agents found."
+    },
+    "activeAgentsPanel": {
+      "agents": "Agents",
+      "noRecentAgentRuns": "No recent agent runs."
+    },
+    "foldCurtain": {
+      "showMore": "Show more",
+      "showLess": "Show less"
+    },
+    "managedRoutinesList": {
+      "noManagedRoutines": "No managed routines.",
+      "configure": "Configure"
+    },
+    "paperclipLockup": {
+      "paperclip": "Paperclip"
+    },
+    "reusableExecutionWorkspaceSelect": {
+      "chooseAnExistingWorkspace": "Choose an existing workspace",
+      "loadingWorkspaces": "Loading workspaces..."
+    },
+    "searchableSelect": {
+      "noOptionsFound": "No options found."
+    },
+    "taskChatThread": {
+      "noMessagesYet": "No messages yet."
+    },
+    "command": {
+      "commandPalette": "Command Palette",
+      "searchForACommandToRun": "Search for a command to run..."
+    },
+    "userSecretPresentation": {
+      "userSecret": "User secret"
+    },
+    "copyText": {
+      "copied": "Copied!"
     }
   },
   "onboarding": {

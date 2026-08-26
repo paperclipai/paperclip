@@ -974,7 +974,7 @@ export function BoardChat() {
               surface="translucent"
               submitting={sending}
               disabled={sending}
-              sendLabel="Send message"
+              sendLabel={t("app.chatComposer.sendMessage", { defaultValue: "Send message" })}
               className="pointer-events-auto"
             />
           </div>

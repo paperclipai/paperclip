@@ -958,7 +958,7 @@ export function IssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
+              {t("app.issueDocumentsSection.cancel", { defaultValue: "Cancel" })}
             </Button>
             <Button
               size="sm"
@@ -1109,7 +1109,7 @@ export function IssueDocumentsSection({
                         {!isHistoricalPreview && !isLocked ? (
                           <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
                             <FilePenLine className="h-3.5 w-3.5" />
-                            Edit document
+                            {t("app.issueDocumentsSection.editDocument", { defaultValue: "Edit document" })}
                           </DropdownMenuItem>
                         ) : null}
                         {!isHistoricalPreview && !isLocked ? <DropdownMenuSeparator /> : null}
@@ -1117,12 +1117,12 @@ export function IssueDocumentsSection({
                           onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                         >
                           <Download className="h-3.5 w-3.5" />
-                          Download document
+                          {t("app.issueDocumentsSection.downloadDocument", { defaultValue: "Download document" })}
                         </DropdownMenuItem>
                         {doc.latestRevisionNumber > 1 ? (
                           <DropdownMenuItem onClick={() => setDiffViewKey(doc.key)}>
                             <Diff className="h-3.5 w-3.5" />
-                            View diff
+                            {t("app.issueDocumentsSection.viewDiff", { defaultValue: "View diff" })}
                           </DropdownMenuItem>
                         ) : null}
                         {canDeleteDocuments && !isLocked ? <DropdownMenuSeparator /> : null}
@@ -1132,7 +1132,7 @@ export function IssueDocumentsSection({
                             onClick={() => setConfirmDeleteKey(doc.key)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
-                            Delete document
+                            {t("app.issueDocumentsSection.deleteDocument", { defaultValue: "Delete document" })}
                           </DropdownMenuItem>
                         ) : null}
                       </DropdownMenuContent>
@@ -1358,7 +1358,7 @@ export function IssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
+                    {t("app.issueDocumentsSection.deleteThisDocumentThisCannotBeUndone", { defaultValue: "Delete this document? This cannot be undone." })}
                   </p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button

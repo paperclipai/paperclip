@@ -545,7 +545,7 @@ function SaveStatusChip({
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Saving…
+        {t("app.agentSkillsTab.saving", { defaultValue: "Saving…" })}
       </span>
     );
   }

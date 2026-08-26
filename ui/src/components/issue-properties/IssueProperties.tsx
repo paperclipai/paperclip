@@ -723,7 +723,7 @@ export function IssueProperties({
               options={modelOverrideOptions}
               placeholder={t("app.issueProperties.defaultModel", { defaultValue: "Default model" })}
               disablePortal
-              noneLabel="Default model"
+              noneLabel={t("app.newIssueDialog.defaultModel", { defaultValue: "Default model" })}
               searchPlaceholder="Search models..."
               emptyMessage={t("app.issueProperties.noModelsFound", { defaultValue: "No models found." })}
               onChange={(model) => updateAssigneeOverrideConfig({ model: model || undefined })}
@@ -1011,7 +1011,7 @@ export function IssueProperties({
           value={watchdogAgentInput}
           options={watchdogAgentOptions}
           placeholder={t("app.issueProperties.selectAgent", { defaultValue: "Select agent" })}
-          noneLabel="No watchdog agent"
+          noneLabel={t("app.newIssueDialog.noWatchdogAgent", { defaultValue: "No watchdog agent" })}
           searchPlaceholder="Search agents..."
           emptyMessage={t("app.issueProperties.noAgentsFound", { defaultValue: "No agents found." })}
           onChange={setWatchdogAgentInput}

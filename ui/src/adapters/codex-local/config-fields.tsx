@@ -73,7 +73,7 @@ export function CodexLocalConfigFields({
         </select>
       </Field>}
       {runnerManaged && (
-        <Field label="Provider" hint="Paperclip Runner currently supports Codex through app-server.">
+        <Field label={t("app.codexLocalConfigFields.provider", { defaultValue: "Provider" })} hint="Paperclip Runner currently supports Codex through app-server.">
           <select className={inputClass} value="codex" disabled>
             <option value="codex">Codex</option>
           </select>
@@ -251,7 +251,7 @@ export function CodexLocalConfigFields({
             }
           />
           <ToggleField
-            label="Fast mode"
+            label={t("app.codexLocalConfigFields.fastMode", { defaultValue: "Fast mode" })}
             hint={help.fastMode}
             checked={fastModeEnabled}
             onChange={(v) =>
