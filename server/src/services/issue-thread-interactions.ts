@@ -425,10 +425,14 @@ function isOperatorFacingInteractionKind(kind: string) {
     || kind === "ask_user_questions";
 }
 
+const OPERATOR_FACING_INTERACTION_KINDS = [
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "ask_user_questions",
+] as const;
+
 function operatorFacingInteractionRequiresLiveIssue(kind: string) {
-  return kind === "request_confirmation"
-    || kind === "request_checkbox_confirmation"
-    || kind === "ask_user_questions";
+  return (OPERATOR_FACING_INTERACTION_KINDS as readonly string[]).includes(kind);
 }
 
 function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
@@ -3391,6 +3395,27 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         await emitResolvedInteractionsTelemetry(db, resolved);
       }
       return resolved;
+    },
+
+    // Guards the terminal-transition race behind expirePendingInteractionsForTerminalIssue
+    // below: that expiry is correct in general (a pending ask should not outlive its
+    // issue), but when the SAME agent that raised an operator-facing ask closes the
+    // issue itself moments later, the ask almost certainly never reached anyone —
+    // it was silently destroyed by its own creator's next action (TSBC-2092,
+    // 2026-08-26: confirmation created and the issue marked done 5 seconds apart by
+    // the same run). Callers use this to refuse that specific transition rather than
+    // let it happen and expire the card.
+    hasPendingSelfCreatedOperatorAsk: async (issueId: string, agentId: string): Promise<boolean> => {
+      const rows = await db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.createdByAgentId, agentId),
+          inArray(issueThreadInteractions.kind, OPERATOR_FACING_INTERACTION_KINDS),
+        ));
+      return rows.length > 0;
     },
 
     expirePendingInteractionsForTerminalIssue: async (
