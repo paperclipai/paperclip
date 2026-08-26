@@ -2484,12 +2484,34 @@ function nextProbeFileName() {
 // example a permission error or a pre-created probe path): either way the
 // caller must not trust the value.
 //
-// The write uses the "wx" flag: exclusive create, fail if the path exists.
+// The open uses the "wx" flag: exclusive create, fail if the path exists.
 // A sandbox peer cannot pre-create the probe path as a symbolic link and
-// have this write follow it, because "wx" fails closed on an existing path
-// instead of following a link to it. The probe path is removed only when
-// this call is the one that created it, so a failed exclusive create never
-// removes a path this wrapper does not own.
+// have this call follow it, because "wx" fails closed on an existing path
+// instead of following a link to it.
+//
+// Cleanup checks identity, not only ownership of the initial create. This
+// wrapper reads the probe file's identity, (dev, ino, ctimeMs), off the open
+// file descriptor itself (fstat), not off the path, so a peer that swaps the
+// path in the short gap after create cannot poison the identity this
+// wrapper trusts as its own. Right before removal, this wrapper reads the
+// path's identity again and removes it only when that identity still
+// matches. A same-sandbox peer that deletes the probe file and creates its
+// own entry at the same path in between leaves a different identity behind,
+// so this wrapper leaves that entry untouched instead of removing it. This
+// covers a peer's replacement file, a peer's replacement directory, and a
+// peer's replacement symbolic link alike, because all three change the
+// identity this wrapper reads back. The identity check includes ctimeMs,
+// not only (dev, ino): a filesystem can hand this call's freed inode number
+// straight back out to a peer's very next create at the same path, so
+// (dev, ino) alone can match a path this call no longer owns; ctimeMs resets
+// on every create, so a peer's replacement carries a different one even when
+// the inode number repeats. Node's filesystem API has no call that removes a
+// path only when its identity still matches an earlier read as one atomic
+// step, so a gap remains between this wrapper's final identity read and the
+// removal call itself. A peer that wins that single-syscall gap still only
+// ever destroys an entry it created a moment earlier at this exact probe
+// path, never a file that predates the probe and never a path outside
+// dirPath.
 async function birthtimeSurvivesProbe(dirPath) {
   let before;
   try {
@@ -2498,14 +2520,40 @@ async function birthtimeSurvivesProbe(dirPath) {
     return "its reported creation time could not be read";
   }
   const probePath = path.posix.join(dirPath, nextProbeFileName());
-  let probeCreatedByThisCall = false;
+  let handle;
   try {
-    await fs.writeFile(probePath, "", { flag: "wx" });
-    probeCreatedByThisCall = true;
+    handle = await fs.open(probePath, "wx");
   } catch {
     return "its probe file could not be created exclusively (the path may already exist)";
+  }
+  // fstat on the open handle names the exact inode this call just created.
+  // A path-based lstat here instead would be racy against a peer that swaps
+  // the path in the gap between the create above and the stat: fstat has no
+  // such gap, because a file descriptor keeps naming the inode it opened no
+  // matter what a later swap does to the path.
+  let ownedIdentity = null;
+  try {
+    const createdStats = await handle.stat();
+    // ctimeMs guards against inode reuse; see the function comment above.
+    ownedIdentity = { dev: createdStats.dev, ino: createdStats.ino, ctimeMs: createdStats.ctimeMs };
+  } catch {
+    ownedIdentity = null;
   } finally {
-    if (probeCreatedByThisCall) {
+    await handle.close().catch(() => undefined);
+  }
+  if (ownedIdentity) {
+    // The one gap the fs API cannot close: this lstat and the removal below
+    // are two separate calls, not one atomic "remove if identity still
+    // matches" step. A peer that wins this narrow gap still only ever
+    // destroys an entry it created a moment earlier at this exact probe
+    // path, never a file that predates the probe.
+    const currentStats = await fs.lstat(probePath).catch(() => null);
+    const stillOwned =
+      currentStats !== null &&
+      currentStats.dev === ownedIdentity.dev &&
+      currentStats.ino === ownedIdentity.ino &&
+      currentStats.ctimeMs === ownedIdentity.ctimeMs;
+    if (stillOwned) {
       await fs.rm(probePath, { force: true }).catch(() => undefined);
     }
   }
