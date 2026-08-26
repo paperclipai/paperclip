@@ -280,6 +280,36 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(authRequired?.hint).toBe("Run `claude login` in this environment, then retry the probe.");
   });
 
+  it("never renders an allowlisted login URL path that can carry a session identifier", async () => {
+    const sessionPathMarker = "OPAQUESESSIONPATHmarker";
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        JSON.stringify({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          result: `Please run claude login. Visit https://claude.ai/login/${sessionPathMarker}`,
+          session_id: "abc",
+        }),
+      ].join("\n"),
+      stderr: "",
+      timedOut: false,
+    };
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    const checkText = JSON.stringify(checks);
+    expect(checkText).not.toContain(sessionPathMarker);
+    expect(checkText).not.toContain("https://claude.ai/login/");
+    const authRequired = checks.find((check) => check.code === "claude_hello_probe_auth_required");
+    expect(authRequired?.hint).toBe("Run `claude login` in this environment, then retry the probe.");
+  });
+
   it("emits the positive hello code when the sandbox probe reports a healthy login", async () => {
     probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
 
@@ -347,7 +377,9 @@ describe("probeClaudeAcpSandboxLogin", () => {
     // no check text and no log call repeats either one.
     const opaqueCredMarker = "OPAQUECREDMARKERnoshape";
     const proxyMarker = "http://user:pass@proxy.corp.internal:3128";
-    probeResult.throwError = new Error(
+    const SecretNamedError = class extends Error {};
+    Object.defineProperty(SecretNamedError, "name", { value: opaqueCredMarker });
+    probeResult.throwError = new SecretNamedError(
       `transport failed with ${opaqueCredMarker} via ${proxyMarker}`,
     );
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -361,16 +393,13 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(checkText).not.toContain(opaqueCredMarker);
     expect(checkText).not.toContain("proxy.corp.internal");
     expect(checks[0]?.code).toBe("claude_hello_probe_failed");
-    // The log carries only the fixed context, the allowlisted classification,
-    // and a safe error class name. It never repeats the raw error text.
+    // The log carries only the fixed context and allowlisted classification.
+    // Even a crafted Error constructor name is omitted.
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const loggedText = JSON.stringify(warnSpy.mock.calls);
     expect(loggedText).not.toContain(opaqueCredMarker);
     expect(loggedText).not.toContain("proxy.corp.internal");
-    expect(warnSpy.mock.calls[0]?.[1]).toMatchObject({
-      classification: "spawn_error",
-      errorClass: "Error",
-    });
+    expect(warnSpy.mock.calls[0]?.[1]).toEqual({ classification: "spawn_error" });
     warnSpy.mockRestore();
   });
 

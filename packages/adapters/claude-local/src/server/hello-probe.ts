@@ -1,11 +1,7 @@
 import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import {
-  buildClaudeLoginRequiredHint,
-  classifyThrownErrorClass,
-  logSandboxProbeDiagnostic,
-} from "./probe-diagnostics.js";
+import { logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 import {
   detectClaudeLoginRequired,
   isClaudeProviderQuotaError,
@@ -46,10 +42,8 @@ export async function runClaudeHelloProbe(input: {
         onLog: async () => {},
       },
     );
-  } catch (error) {
-    logSandboxProbeDiagnostic("Claude hello probe could not run", "spawn_error", {
-      errorClass: classifyThrownErrorClass(error),
-    });
+  } catch {
+    logSandboxProbeDiagnostic("Claude hello probe could not run", "spawn_error");
     return [
       {
         code: "claude_hello_probe_failed",
@@ -85,7 +79,9 @@ export async function runClaudeHelloProbe(input: {
         code: "claude_hello_probe_auth_required",
         level: "warn",
         message: "Claude login is required.",
-        hint: buildClaudeLoginRequiredHint(loginMeta.loginUrl),
+        // A provider-supplied URL can carry an opaque session identifier in its
+        // path even when its host is trusted. Keep the public check fully fixed.
+        hint: "Run `claude login` in this environment, then retry the probe.",
       },
     ];
   }
