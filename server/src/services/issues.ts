@@ -2162,6 +2162,20 @@ function appendBlockerAttentionEdges(
   }
 }
 
+function appendBlockerAttentionChildren(
+  childrenByIssueId: Map<string, string[]>,
+  rows: IssueBlockerAttentionQueryRow[],
+) {
+  for (const row of rows) {
+    if (!row.issueId) continue;
+    const existing = childrenByIssueId.get(row.issueId) ?? [];
+    if (!existing.includes(row.blockerIssueId)) {
+      existing.push(row.blockerIssueId);
+      childrenByIssueId.set(row.issueId, existing);
+    }
+  }
+}
+
 type IssueRelationSummaryRow = {
   relatedId: string;
   identifier: string | null;
@@ -2391,6 +2405,7 @@ async function listIssueBlockerAttentionMap(
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
+  const childrenByIssueId = new Map<string, string[]>();
   for (const root of roots) nodesById.set(root.id, { ...root });
 
   let frontier = roots.map((root) => root.id);
@@ -2464,10 +2479,8 @@ async function listIssueBlockerAttentionMap(
         ...unresolvedExplicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
-        ...childRows
-          .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
       ]);
+      appendBlockerAttentionChildren(childrenByIssueId, childRows);
 
       for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
         if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
@@ -2821,12 +2834,39 @@ async function listIssueBlockerAttentionMap(
     return null;
   };
 
+  const activeChildrenFor = (issueId: string, seen = new Set<string>()): IssueBlockerAttentionNode[] => {
+    if (seen.has(issueId)) return [];
+    const nextSeen = new Set(seen);
+    nextSeen.add(issueId);
+    const activeChildren: IssueBlockerAttentionNode[] = [];
+    for (const childId of childrenByIssueId.get(issueId) ?? []) {
+      const child = nodesById.get(childId);
+      if (!child || child.companyId !== companyId) continue;
+      if (activeIssueIds.has(child.id)) {
+        activeChildren.push(child);
+        continue;
+      }
+      activeChildren.push(...activeChildrenFor(child.id, nextSeen));
+    }
+    return activeChildren;
+  };
+
   for (const root of roots) {
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
     });
+    const activeChildren = activeChildrenFor(root.id);
     if (topLevelEdges.length === 0) {
+      if (activeChildren.length > 0) {
+        attentionMap.set(root.id, createIssueBlockerAttention({
+          state: "covered",
+          reason: "active_child",
+          coveredBlockerCount: activeChildren.length,
+          sampleBlockerIdentifier: blockerSampleIdentifier(activeChildren[0]),
+        }));
+        continue;
+      }
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
         reason: "attention_required",

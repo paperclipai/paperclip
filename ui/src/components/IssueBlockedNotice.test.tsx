@@ -431,6 +431,30 @@ describe("IssueBlockedNotice", () => {
     expect(node.textContent).toContain("A message won’t restart this task yet");
   });
 
+  it("renders aggregate child coverage without telling operators to move the parent back to todo", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_child",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-2",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-testid="issue-blocked-notice-active-child"]')).not.toBeNull();
+    expect(node.textContent).toContain("Active sub-task work is in progress");
+    expect(node.textContent).toContain("no direct blocker");
+    expect(node.textContent).not.toContain("moved back to todo");
+  });
+
   it("sorts same-status live-work steps with numeric identifier ordering", () => {
     const node = render(
       <IssueBlockedNotice

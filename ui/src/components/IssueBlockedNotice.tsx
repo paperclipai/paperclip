@@ -583,6 +583,34 @@ export function IssueBlockedNotice({
     && chainBlockers.length > 0
     && hasLiveWaitingBlocker;
 
+  const aggregateChildWorkIsLive =
+    !showSuccessfulRunHandoff
+    && issueStatus === "blocked"
+    && blockerAttention?.reason === "active_child"
+    && blockers.length === 0;
+
+  if (aggregateChildWorkIsLive) {
+    return (
+      <div
+        data-blocker-attention-state={blockerAttention?.state}
+        data-testid="issue-blocked-notice-active-child"
+        className="mb-3 rounded-md border border-blue-300/70 bg-blue-50/90 px-3 py-2.5 text-sm text-blue-950 shadow-sm dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-100"
+      >
+        <div className="flex items-start gap-2">
+          <span className="mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" />
+          </span>
+          <div className="min-w-0 space-y-1">
+            <p className="font-medium leading-5">Active sub-task work is in progress</p>
+            <p className="leading-5">
+              This aggregate task has no direct blocker. Do not move it back to todo while its sub-task work is active.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (waitingOnLiveWork) {
     return (
       <WaitingOnLiveWorkNotice
