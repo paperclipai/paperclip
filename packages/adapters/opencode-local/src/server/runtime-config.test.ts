@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { ProviderSchemaContractError } from "./provider-schema.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -321,4 +322,129 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
+
+  describe("MCP tool-surface narrowing", () => {
+    const mcpSurface = {
+      git: { command: "opencode-git" },
+      filesystem: { command: "opencode-fs" },
+      cloudflare: { command: "mcp-cloudflare" },
+      playwright: { command: "mcp-playwright" },
+      shadcn: { command: "mcp-shadcn" },
+      storybook: { command: "mcp-storybook" },
+    };
+
+    it("keeps the full surface when no filter is configured and reports BEFORE/AFTER", async () => {
+      const configHome = await makeConfigHome({ mcp: mcpSurface });
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome },
+        config: {},
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+      ) as { mcp?: Record<string, unknown> };
+      expect(Object.keys(runtimeConfig.mcp ?? {})).toHaveLength(6);
+      expect(prepared.runtimeDiagnostics.mcp?.serverNames.before).toHaveLength(6);
+      expect(prepared.runtimeDiagnostics.mcp?.serverNames.after).toHaveLength(6);
+      expect(prepared.notes.some((n) => n.startsWith("MCP tool surface:"))).toBe(true);
+      await prepared.cleanup();
+    });
+
+    it("defers irrelevant Cloudflare/Playwright/Shadcn/Storybook connections via denylist before inference", async () => {
+      const configHome = await makeConfigHome({ mcp: mcpSurface });
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome },
+        config: { toolSurface: { mcpDenylist: ["cloudflare", "playwright", "shadcn", "storybook"] } },
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+      ) as { mcp?: Record<string, unknown> };
+      expect(Object.keys(runtimeConfig.mcp ?? {})).toEqual(["git", "filesystem"]);
+      expect(prepared.runtimeDiagnostics.mcp?.removedByDenylist.sort()).toEqual([
+        "cloudflare",
+        "playwright",
+        "shadcn",
+        "storybook",
+      ]);
+      expect(prepared.runtimeDiagnostics.mcp?.serverNames.after).toEqual(["git", "filesystem"]);
+      await prepared.cleanup();
+    });
+
+    it("keeps only an explicit allowlist (git/filesystem) for a scoped Engineer Paperclip Ops run", async () => {
+      const configHome = await makeConfigHome({ mcp: mcpSurface });
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_MCP_ALLOWLIST: "git,filesystem" },
+        config: {},
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+      ) as { mcp?: Record<string, unknown> };
+      expect(Object.keys(runtimeConfig.mcp ?? {}).sort()).toEqual(["filesystem", "git"]);
+      expect(prepared.runtimeDiagnostics.mcp?.removedByAllowlist.sort()).toEqual([
+        "cloudflare",
+        "playwright",
+        "shadcn",
+        "storybook",
+      ]);
+      await prepared.cleanup();
+    });
+
+    it("collapses duplicate alias definitions to one canonical entry", async () => {
+      const configHome = await makeConfigHome({
+        mcp: {
+          srv: { command: "dup", args: ["--a"] },
+          srv_alias: { command: "dup", args: ["--a"] },
+        },
+      });
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome },
+        config: { toolSurface: { mcpAllowlist: "srv,srv_alias" } },
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+      ) as { mcp?: Record<string, unknown> };
+      expect(Object.keys(runtimeConfig.mcp ?? {})).toEqual(["srv"]);
+      expect(prepared.runtimeDiagnostics.mcp?.removedAsAliases).toEqual(["srv_alias (= srv)"]);
+      await prepared.cleanup();
+    });
+  });
+
+  describe("provider schema preflight", () => {
+    it("fails fast with PROVIDER_SCHEMA_CONTRACT when a generated tool name exceeds 64 chars", async () => {
+      const configHome = await makeConfigHome();
+      const providers = {
+        bifrost: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "http://gateway/v1" },
+          tools: [{ name: "a".repeat(75), description: "oversized" }],
+          models: { "example/model-a": {} },
+        },
+      };
+      await expect(
+        prepareOpenCodeRuntimeConfig({
+          env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers) },
+          config: {},
+        }),
+      ).rejects.toThrow(ProviderSchemaContractError);
+    });
+
+    it("still writes and returns diagnostics for a legal provider surface", async () => {
+      const configHome = await makeConfigHome();
+      const providers = {
+        bifrost: { npm: "@ai-sdk/openai-compatible", models: { "example/model-a": {} } },
+      };
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers) },
+        config: {},
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      expect(prepared.runtimeDiagnostics).toBeDefined();
+      expect(prepared.runtimeDiagnostics.mcp).toBeUndefined();
+      await prepared.cleanup();
+    });
+  });
+
 });

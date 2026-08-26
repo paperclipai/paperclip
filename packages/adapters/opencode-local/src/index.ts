@@ -140,3 +140,14 @@ Notes:
   runtime config with \`permission.external_directory=allow\` so headless runs do \
   not stall on approval prompts.
 `;
+
+export {
+  resolveOpenCodeMcpToolSurfaceFilter,
+  applyOpenCodeMcpToolSurface,
+} from "./server/runtime-config.js";
+export { validateProviderSchemaContract, ProviderSchemaContractError } from "./server/provider-schema.js";
+export type {
+  OpenCodeRuntimeDiagnostics,
+  OpenCodeMcpToolSurfaceFilter,
+  AppliedOpenCodeMcpToolSurfaceResult,
+} from "./server/runtime-config.js";
