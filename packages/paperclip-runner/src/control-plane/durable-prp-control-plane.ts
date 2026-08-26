@@ -693,7 +693,12 @@ class PrpWebSocketConnection {
     this.#onClose();
   }
 
+  waitForProcessing(): Promise<void> {
+    return this.#processing;
+  }
+
   #consume(chunk: Buffer): void {
+    if (this.#closed) return;
     this.#buffer = Buffer.concat([this.#buffer, chunk]);
     while (this.#buffer.length >= 2) {
       const first = this.#buffer[0]!;
@@ -828,25 +833,24 @@ export class DurablePrpControlPlane {
   }
 
   async stop(): Promise<void> {
-    for (const connection of this.#connections) {
-      connection.close();
-    }
-    this.#connections.clear();
     const server = this.#server;
     this.#server = null;
     this.#port = null;
-    if (server !== null) {
-      await new Promise<void>((resolveClose) =>
+    const serverClosed = server === null
+      ? Promise.resolve()
+      : new Promise<void>((resolveClose) =>
         server.close(() => resolveClose()),
       );
-    }
+    await this.disconnectActiveRunner();
+    await serverClosed;
   }
 
   /** Forces a resumable re-authentication after an immutable run attachment rotates. */
-  disconnectActiveRunner(): void {
+  async disconnectActiveRunner(): Promise<void> {
     const connections = [...this.#connections];
     this.#connections.clear();
     for (const connection of connections) connection.close();
+    await Promise.all(connections.map((connection) => connection.waitForProcessing()));
   }
 
   activeRunnerConnectionCount(): number {
@@ -1631,7 +1635,7 @@ export class DurablePrpControlPlane {
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so
             // the caller can recover or terminate the run explicitly.
-            this.disconnectActiveRunner();
+            void this.disconnectActiveRunner();
           }
         };
         void this.#onSemanticToolInput(call)
