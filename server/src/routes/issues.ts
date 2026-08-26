@@ -4034,7 +4034,10 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: {
+      allowVisibleIssueWrite?: boolean;
+      allowStaleTaskWatchdogHumanWaitAssigneeRepair?: boolean;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -4063,7 +4066,9 @@ export function issueRoutes(
         });
         return false;
       }
-      return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
+      return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue, {
+        allowHumanWaitAssigneeRepair: options.allowStaleTaskWatchdogHumanWaitAssigneeRepair,
+      });
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
@@ -4134,12 +4139,17 @@ export function issueRoutes(
     res: Response,
     scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
     issue: { id: string },
+    options: { allowHumanWaitAssigneeRepair?: boolean } = {},
   ) {
     if (scope.kind !== "watchdog") return true;
     if (scope.watchdogIssueId && issue.id === scope.watchdogIssueId) return true;
 
     const revalidated = await taskWatchdogsSvc.revalidateMutationScope(scope);
     if (revalidated.allowed) return true;
+    if (
+      options.allowHumanWaitAssigneeRepair &&
+      revalidated.classification?.includedIssueIds.includes(issue.id)
+    ) return true;
     res.status(409).json({
       error: revalidated.reason,
       details: {
@@ -4153,6 +4163,46 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  async function isTaskWatchdogHumanWaitAssigneeRepair(
+    req: Request,
+    issue: {
+      id: string;
+      status: string;
+      assigneeAgentId: string | null;
+      executionPolicy?: unknown;
+      executionState?: unknown;
+    },
+  ) {
+    if (
+      req.actor.type !== "agent" ||
+      !req.actor.agentId ||
+      issue.status !== "in_review" ||
+      issue.assigneeAgentId !== req.actor.agentId ||
+      req.body.status !== "in_review" ||
+      typeof req.body.assigneeAgentId !== "string" ||
+      req.body.assigneeAgentId === req.actor.agentId ||
+      Object.keys(req.body).some((key) => key !== "status" && key !== "assigneeAgentId")
+    ) return false;
+
+    const executionState = parseIssueExecutionState(issue.executionState);
+    const executionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    if (
+      executionState?.status !== "pending" ||
+      executionState.currentParticipant?.type !== "agent" ||
+      executionState.currentParticipant.agentId !== req.actor.agentId ||
+      executionState.returnAssignee?.type !== "agent" ||
+      executionState.returnAssignee.agentId !== req.body.assigneeAgentId ||
+      !executionPolicy?.stages.some((stage) => stage.id === executionState.currentStageId)
+    ) return false;
+
+    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (scope.kind !== "watchdog" || !scope.stopFingerprint || scope.watchdogIssueId === issue.id) return false;
+
+    return (await issueThreadInteractionService(db).listForIssue(issue.id)).some(
+      (interaction) => interaction.status === "pending" && interaction.effectiveResolverPolicy === "human_only",
+    );
   }
 
   async function rejectTaskWatchdogConfigMutation(req: Request, res: Response) {
@@ -9373,11 +9423,15 @@ export function issueRoutes(
       await denyIssueWrite(req, res, existing, "issue_write_attribution_spoof_rejected");
       return;
     }
+    const taskWatchdogHumanWaitAssigneeRepair = await isTaskWatchdogHumanWaitAssigneeRepair(req, existing);
     const issueMutationAccess = await assertAgentIssueMutationAllowed(
       req,
       res,
       existing,
-      { allowVisibleIssueWrite: true },
+      {
+        allowVisibleIssueWrite: true,
+        allowStaleTaskWatchdogHumanWaitAssigneeRepair: taskWatchdogHumanWaitAssigneeRepair,
+      },
     );
     if (!issueMutationAccess) return;
     const issueMutationAuthorizationReason = req.actor.type === "agent"
@@ -9662,27 +9716,29 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined && monitorChanged,
     );
 
-    const transition = applyIssueExecutionPolicyTransition({
-      issue: existing,
-      policy: nextExecutionPolicy,
-      previousPolicy: previousExecutionPolicy,
-      requestedStatus: waitingForHumanInteraction
-        ? undefined
-        : typeof updateFields.status === "string" ? updateFields.status : undefined,
-      requestedAssigneePatch: {
-        assigneeAgentId: normalizedAssigneeAgentId,
-        assigneeUserId:
-          req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
-      },
-      actor: {
-        agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-      allowBoardOverride: req.actor.type === "board",
-      commentBody,
-      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
-      monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
-    });
+    const transition = taskWatchdogHumanWaitAssigneeRepair
+      ? { patch: { executionState: null } }
+      : applyIssueExecutionPolicyTransition({
+        issue: existing,
+        policy: nextExecutionPolicy,
+        previousPolicy: previousExecutionPolicy,
+        requestedStatus: waitingForHumanInteraction
+          ? undefined
+          : typeof updateFields.status === "string" ? updateFields.status : undefined,
+        requestedAssigneePatch: {
+          assigneeAgentId: normalizedAssigneeAgentId,
+          assigneeUserId:
+            req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+        },
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        allowBoardOverride: req.actor.type === "board",
+        commentBody,
+        reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+        monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
+      });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;

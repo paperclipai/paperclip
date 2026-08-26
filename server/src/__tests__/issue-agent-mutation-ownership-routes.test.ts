@@ -2222,6 +2222,69 @@ describe("agent issue mutation checkout ownership", () => {
       );
     });
 
+    it("repairs the assignee after a stale watchdog human-only review transition", async () => {
+      denyBaseBoundary();
+      const stageId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+      const issue = makeIssue({
+        status: "in_review",
+        assigneeAgentId: peerAgentId,
+        executionPolicy: {
+          stages: [{
+            id: stageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: peerAgentId }],
+          }],
+        },
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: peerAgentId },
+          returnAssignee: { type: "agent", agentId: ownerAgentId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      });
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+      }));
+      mockAgentService.resolveByReference.mockResolvedValue({
+        ambiguous: false,
+        agent: makeAgent(ownerAgentId),
+      });
+      mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+        status: "pending",
+        effectiveResolverPolicy: "human_only",
+      }] as never);
+      mockTaskWatchdogService.revalidateMutationScope.mockResolvedValueOnce({
+        allowed: false,
+        reason:
+          "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+        classification: { state: "live", includedIssueIds: [issueId], liveIssueIds: [issueId] },
+      });
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app)
+        .patch("/api/issues/" + issueId)
+        .send({ status: "in_review", assigneeAgentId: ownerAgentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.assigneeAgentId).toBe(ownerAgentId);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({
+          status: "in_review",
+          assigneeAgentId: ownerAgentId,
+          executionState: null,
+        }),
+      );
+    });
+
     it("rejects stale watchdog source mutations when revalidation finds a live path", async () => {
       denyBaseBoundary();
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
