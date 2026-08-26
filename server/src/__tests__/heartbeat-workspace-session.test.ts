@@ -427,7 +427,7 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
 
     await expectWorkspaceValidationFailure(
       buildWorkspaceValidationInput({
-        resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+        resolvedWorkspace: buildResolvedWorkspace({ cwd, sourceType: "local_path" }),
         executionWorkspace: {
           ...input.executionWorkspace,
           baseCwd: cwd,
@@ -436,6 +436,54 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
         persistedExecutionWorkspace: {
           ...input.persistedExecutionWorkspace!,
           cwd,
+        },
+      }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("allows a non_git_path project workspace without git metadata", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-workspace-non-git-path";
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          resolvedWorkspace: buildResolvedWorkspace({ cwd, sourceType: "non_git_path" }),
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            baseCwd: cwd,
+            cwd,
+          },
+          persistedExecutionWorkspace: {
+            ...input.persistedExecutionWorkspace!,
+            cwd,
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("requires git metadata when a non_git_path workspace is realized as a git worktree", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-non-git-path-worktree-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd, sourceType: "non_git_path" }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          strategy: "git_worktree",
+          baseCwd: cwd,
+          cwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          strategyType: "git_worktree",
+          cwd,
+          providerType: "git_worktree",
+          providerRef: cwd,
         },
       }),
       "missing_git_metadata",

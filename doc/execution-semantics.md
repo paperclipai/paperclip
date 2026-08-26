@@ -365,6 +365,7 @@ A workspace-coherent adapter path means:
 - the adapter will receive the same effective workspace/cwd that Paperclip resolved for the run, including the same workspace ids and `PAPERCLIP_WORKSPACE_*` environment values
 - the effective cwd exists or is provider-reachable, according to the workspace provider
 - when the adapter or workspace strategy relies on git state, the cwd is git-valid for the selected workspace: it resolves to the expected repository root, required base refs or branch metadata can be resolved, and runtime-created worktrees are still registered or explicitly recoverable
+- a project workspace declared as `non_git_path` is intentionally non-git; adapters may run there without `.git` metadata while the remaining workspace-coherence checks still apply
 
 Adapter-backed liveness also requires control-plane reachability from the agent's actual mutation surface, not just from the host adapter process. If the agent is expected to use Bash, shell tools, runtime helpers, or in-sandbox command execution to update issues, create comments, upload artifacts, or submit review decisions, the `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` visible to that surface must route to Paperclip successfully.
 
