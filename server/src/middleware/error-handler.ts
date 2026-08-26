@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
 import {
@@ -49,6 +50,13 @@ function attachErrorContext(
   }
 }
 
+/** Report a server-side crash to every error sink. */
+function reportCrash(error: Error): void {
+  const tc = getTelemetryClient();
+  if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
+  captureException(error);
+}
+
 function getPaperclipDb(req: Request): Db | null {
   const locals = req.app?.locals as { paperclipDb?: Db; db?: Db } | undefined;
   return locals?.paperclipDb ?? locals?.db ?? null;
@@ -90,6 +98,7 @@ export function errorHandler(
       ? err.details as Record<string, unknown>
       : null;
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
+    const workspaceRepairPreconditionFailure = details?.code === "workspace_repair_precondition_failed";
     const structuredConnectionError = new Set([
       "user_authorization_required",
       "grant_revoked",
@@ -106,20 +115,25 @@ export function errorHandler(
         { message: err.message, stack: err.stack, name: err.name, details: err.details },
         err,
       );
-      const tc = getTelemetryClient();
-      if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
+      reportCrash(err);
     }
     res.status(err.status).json({
       error: err.message,
       ...(typeof details?.code === "string" ? { code: details.code } : {}),
       ...(redactedSkillPolicyDenial && typeof details?.reason === "string" ? { reason: details.reason } : {}),
+      ...(workspaceRepairPreconditionFailure && typeof details?.reason === "string" ? { reason: details.reason } : {}),
+      ...(workspaceRepairPreconditionFailure && typeof details?.repairPhase === "string"
+        ? { repairPhase: details.repairPhase }
+        : {}),
       ...(typeof details?.remediation === "string" || (structuredConnectionError && details?.remediation && typeof details.remediation === "object")
         ? { remediation: details.remediation }
         : {}),
       ...(structuredConnectionError && details?.connection ? { connection: details.connection } : {}),
       ...(structuredConnectionError && details?.subject ? { subject: details.subject } : {}),
       ...(structuredConnectionError && typeof details?.grantId === "string" ? { grantId: details.grantId } : {}),
-      ...(!redactedSkillPolicyDenial && err.details ? { details: err.details } : {}),
+      ...(!redactedSkillPolicyDenial && !workspaceRepairPreconditionFailure && err.details
+        ? { details: err.details }
+        : {}),
     });
     return;
   }
@@ -140,8 +154,7 @@ export function errorHandler(
     rootError,
   );
 
-  const tc = getTelemetryClient();
-  if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
+  reportCrash(rootError);
 
   res.status(500).json({
     error: "Internal server error",

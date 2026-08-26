@@ -119,6 +119,7 @@ export const storybookAuthSession: AuthSession = {
     email: "riley@paperclip.local",
     image: null,
   },
+  sentryDsn: null,
 };
 
 export const storybookAgents: Agent[] = [

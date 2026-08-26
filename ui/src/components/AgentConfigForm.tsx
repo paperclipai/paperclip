@@ -10,7 +10,7 @@ import type {
   EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
@@ -21,8 +21,8 @@ import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/adapter-codex-local/ui";
 import {
   Popover,
   PopoverContent,
@@ -32,7 +32,12 @@ import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
+import {
+  resolveAdapterTestEnvironmentId,
+  resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
+} from "../lib/adapter-test-environment";
+import { environmentDisplayLabel } from "../lib/managed-sandbox-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -199,6 +204,15 @@ const claudeThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
+] as const;
+
+// Kimi exposes low/high/max (no "medium") via each model's support_efforts;
+// the kimi_local adapter maps a legacy "medium" onto "high" at runtime.
+const kimiThinkingEffortOptions = [
+  { id: "", label: "Auto" },
+  { id: "low", label: "Low" },
+  { id: "high", label: "High" },
+  { id: "max", label: "Max" },
 ] as const;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -572,32 +586,60 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
 
   // The environment a login session runs in. It mirrors the Test resolution: the
-  // agent's own environment wins, otherwise the instance default. The login
-  // affordance shows only when this environment is a sandbox, because the
-  // canonical auth-missing check comes only from a sandbox target.
-  const effectiveLoginEnvironmentId = useMemo(
-    () =>
-      resolveAdapterTestEnvironmentId({
+  // agent's own environment wins, otherwise the instance default, otherwise the
+  // local default. The login affordance shows only when this environment is a
+  // sandbox, because the canonical auth-missing check comes only from a sandbox
+  // target.
+  //
+  // The resolution passes the same managed-sandbox-only policy inputs as the
+  // adapter Test target, so both resolve to the same environment. Under the
+  // policy a resolution that lands on the local environment redirects to the
+  // managed sandbox the real run uses. Without the redirect the login target
+  // stays local while the Test and the real run use the managed sandbox, so the
+  // login affordance reads the wrong target. The resolver throws when the policy
+  // is on but no managed sandbox is available; a render must not throw, so this
+  // resolution catches that case and resolves no login environment. The Test
+  // mutation surfaces the same case as a fail-closed error.
+  const effectiveLoginEnvironmentId = useMemo(() => {
+    try {
+      return resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
-      }),
-    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId],
-  );
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+        managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+        // The policy hides the local environment, so an agent default that still
+        // points at the hidden local row names no visible environment. Pass the
+        // visible ids so the resolver redirects that stale local default to the
+        // managed sandbox instead of the hidden local id.
+        visibleEnvironmentIds: environments.map((environment) => environment.id),
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    rawCurrentDefaultEnvironmentId,
+    instanceSettings?.defaultEnvironmentId,
+    environments,
+    experimentalSettings?.enableManagedSandboxOnly,
+  ]);
   const effectiveLoginEnvironment = useMemo(
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
   );
-  // Load the sandbox provider capabilities. The Claude setup-token login runs on
-  // a real pseudo-terminal, so it needs a provider that advertises the
-  // setup-token login capability. The login panel gate reads this to hide the
-  // panel for a provider without the capability. The gate is advisory; the
-  // server resolves the capability again and fails closed.
+  // Load the sandbox provider capabilities. A login that runs on a real
+  // pseudo-terminal needs a provider that advertises the login pseudo-terminal
+  // capability. The login panel gate reads this to hide the panel for a provider
+  // without the capability. Enable the query when the adapter declares a login
+  // capability: every login runs on a real pseudo-terminal, so every login
+  // consults this data. The gate is advisory; the server resolves the capability
+  // again and fails closed.
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.environments.capabilities(selectedCompanyId)
       : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId) && adapterType === "claude_local",
+    enabled: Boolean(selectedCompanyId) && adapterCaps.login != null,
   });
 
   // When the instance forces Kubernetes execution, new agents must default to the
@@ -637,9 +679,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
-    ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
+    ? environmentDisplayLabel(instanceDefaultEnvironment)
     : managedSandboxOnly
-      ? "Managed sandbox"
+      ? "Paperclip Computer"
       : "Local";
 
   // Fetch adapter models for the effective adapter type
@@ -846,21 +888,57 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // the exact false command-not-found failure this resolution exists to
       // fix. Agents with their own environment never need the settings.
       let settings = instanceSettings;
-      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
+      let environmentList = environments;
+      let managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+      if (!rawCurrentDefaultEnvironmentId) {
+        // The agent has no own environment, so the Test resolves the instance
+        // default, the local default, or the managed sandbox. Resolve the
+        // settings, the environment list, and the managed-sandbox-only policy
+        // here, because the render-time queries can be unsettled, or the
+        // environments query can be disabled under the managed-sandbox-only
+        // policy. A failure surfaces an honest error, not a silent host probe
+        // that reports a false result.
         try {
-          settings = await queryClient.ensureQueryData({
-            queryKey: queryKeys.instance.settings,
-            queryFn: () => instanceSettingsApi.get(),
-          });
+          const [resolvedSettings, resolvedEnvironments, resolvedExperimental] =
+            await Promise.all([
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.instance.settings,
+                queryFn: () => instanceSettingsApi.get(),
+              }),
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.environments.list(selectedCompanyId),
+                queryFn: () => environmentsApi.list(selectedCompanyId),
+              }),
+              queryClient.ensureQueryData({
+                queryKey: queryKeys.instance.experimentalSettings,
+                queryFn: () => instanceSettingsApi.getExperimental(),
+              }),
+            ]);
+          settings = resolvedSettings;
+          environmentList = resolvedEnvironments;
+          managedSandboxOnly = resolvedExperimental?.enableManagedSandboxOnly === true;
         } catch {
           throw new Error(
-            "Could not load instance settings to determine which environment to test in. Retry the test.",
+            "Could not load environment settings to determine which environment to test in. Retry the test.",
           );
         }
       }
+      // Mirror the server run-time resolution, including the managed-sandbox-only
+      // redirect: when the resolution lands on the local environment and the
+      // policy is on, probe the managed sandbox the real run uses instead. The
+      // resolver throws when no managed sandbox is available, which the mutation
+      // surfaces as a fail-closed error rather than a local host probe.
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
+        // The policy hides the local environment, so an agent default that still
+        // points at the hidden local row names no visible environment. Pass the
+        // visible ids so the resolver redirects that stale local default to the
+        // managed sandbox instead of sending the hidden local id to the server.
+        visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
@@ -939,35 +1017,39 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     clearClaudeLoginClaimRef.current();
   }, [adapterType, effectiveLoginEnvironmentId]);
 
-  // Show the login affordance only for a current `codex_local` or `claude_local`
-  // sandbox whose most recent Test result carries the canonical auth-missing
-  // check. Both adapters emit the same neutral code. The result keeps its own
-  // `adapterType`, so a result from another adapter never gates the panel.
-  const adapterSupportsSandboxLogin =
-    adapterType === "codex_local" || adapterType === "claude_local";
+  // Show the login affordance only for a current sandbox adapter that declares a
+  // login capability, and whose most recent Test result carries the canonical
+  // auth-missing check. The form reads the projected capability, not the adapter
+  // name. The result keeps its own `adapterType`, so the form reads the
+  // capability for that result adapter; a result from an adapter with no login
+  // capability never gates the panel.
+  const adapterSupportsSandboxLogin = adapterCaps.login != null;
+  const testResult = testEnvironment.data;
+  const testResultSupportsSandboxLogin =
+    testResult != null && getCapabilities(testResult.adapterType).login != null;
   const authMissingCheck =
-    testEnvironment.data?.adapterType === "codex_local" ||
-    testEnvironment.data?.adapterType === "claude_local"
-      ? testEnvironment.data.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
+    testResult && testResultSupportsSandboxLogin
+      ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
-  // The Claude login runs on a real pseudo-terminal, so it needs a provider that
-  // advertises the setup-token login capability. Read the capability for the
-  // effective environment provider. The codex login uses a different flow and
-  // does not gate on this capability, so the requirement applies to Claude only.
+  // A login runs on a real pseudo-terminal, so it needs a provider that
+  // advertises the login pseudo-terminal capability. Read the capability for the
+  // effective environment provider. The form reads the adapter login capability,
+  // not the adapter name: every adapter login gates on this provider capability.
   const effectiveLoginProvider =
     typeof effectiveLoginEnvironment?.config?.provider === "string"
       ? effectiveLoginEnvironment.config.provider
       : null;
-  const providerSupportsSetupTokenLogin =
+  const providerSupportsLoginPty =
     effectiveLoginProvider != null &&
-    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsSetupTokenLogin === true;
+    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
+  const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
     Boolean(selectedCompanyId) &&
     Boolean(authMissingCheck) &&
-    (adapterType !== "claude_local" || providerSupportsSetupTokenLogin);
+    (!loginNeedsPty || providerSupportsLoginPty);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
       throw new Error("Select a company to test adapter environment");
@@ -1090,7 +1172,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? cursorModeOptions
         : adapterType === "opencode_local"
           ? openCodeThinkingEffortOptions
-          : claudeThinkingEffortOptions;
+          : adapterType === "kimi_local"
+            ? kimiThinkingEffortOptions
+            : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1104,7 +1188,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud";
+  const showThinkingEffort = adapterType !== "gemini_local"
+    && adapterType !== "cursor_cloud"
+    && adapterType !== "paperclip_runner";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -1399,7 +1485,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   <option value="">Default: {inheritedEnvironmentLabel}</option>
                   {environmentOptions.map((environment) => (
                     <option key={environment.id} value={environment.id}>
-                      {environment.name} · {environment.driver}
+                      {environmentDisplayLabel(environment)}
                     </option>
                   ))}
                 </select>
@@ -1445,6 +1531,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "kimi_local") {
+                      nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -1462,6 +1550,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         model:
                           t === "gemini_local"
                             ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "kimi_local"
+                              ? DEFAULT_KIMI_LOCAL_MODEL
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
@@ -1576,6 +1666,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       claude_local: "claude",
                       codex_local: "codex",
                       gemini_local: "gemini",
+                      kimi_local: "kimi",
                       pi_local: "pi",
                       cursor: "agent",
                       opencode_local: "opencode",
@@ -1962,7 +2053,7 @@ function AdapterLoginTerminalState({
     return (
       <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
         <Check className="size-3 shrink-0" />
-        <span>Authenticated. The sandbox has credentials now.</span>
+        <span>Authenticated. The environment has credentials now.</span>
       </div>
     );
   }
@@ -2011,11 +2102,13 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onApplyStored?: () => void;
 };
 
-// The login panel dispatcher. It picks the panel mode from the adapter. The
-// Claude adapter shows the submitted-browser-code panel. Every other adapter
-// shows the displayed-code panel.
+// The login panel dispatcher. It picks the panel from the projected panel mode,
+// not from the adapter name. The `submitted_browser_code` mode shows the
+// submitted-browser-code panel; every other mode shows the displayed-code panel.
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
-  if (props.adapterType === "claude_local") {
+  const getCapabilities = useAdapterCapabilities();
+  const panelMode = getCapabilities(props.adapterType).login?.panelMode;
+  if (panelMode === "submitted_browser_code") {
     return <SubmittedBrowserCodeLoginPanel {...props} />;
   }
   return <DisplayedCodeLoginPanel {...props} />;
@@ -2088,7 +2181,7 @@ function DisplayedCodeLoginPanel({
   return (
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the sandbox</span>
+        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2536,7 +2629,7 @@ function SubmittedBrowserCodeLoginPanel({
   return (
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the sandbox</span>
+        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2698,7 +2791,7 @@ function SubmittedBrowserCodeLoginPanel({
         {isStored && (
           <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
             <Check className="size-3 shrink-0" />
-            <span>Authenticated. The sandbox has credentials now.</span>
+            <span>Authenticated. The environment has credentials now.</span>
           </div>
         )}
 

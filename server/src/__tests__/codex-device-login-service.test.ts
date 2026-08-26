@@ -66,12 +66,15 @@ const OWNER_B = "user-b";
 // the status through a serialized tail, so a test waits for the write to land
 // before it drives the next step.
 async function waitForStatus(
-  store: { get(sessionId: string): Promise<AdapterAuthSessionRow | null> },
-  sessionId: string,
+  store: {
+    getByPublicId(publicSessionId: string, companyId: string): Promise<AdapterAuthSessionRow | null>;
+  },
+  publicSessionId: string,
+  companyId: string,
   status: AdapterAuthSessionRow["status"],
 ): Promise<void> {
   for (let attempt = 0; attempt < 1000; attempt += 1) {
-    const row = await store.get(sessionId);
+    const row = await store.getByPublicId(publicSessionId, companyId);
     if (row?.status === status) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -112,6 +115,8 @@ const execHang: ExecBehavior = ({ onStdout }) => {
 interface FakeRuntimeOptions {
   exec: ExecBehavior;
   authBytes?: Buffer;
+  /** When set, the descriptor-bound read rejects with this error on success. */
+  readError?: Error;
   delete?: () => Promise<SandboxDeleteResult>;
 }
 
@@ -127,8 +132,11 @@ function createFakeRuntime(opts: FakeRuntimeOptions) {
         providerLeaseId: `lease-${input.sessionId}`,
         authPath: sessionCredentialPath(input.sessionId),
         driver: {
-          execStreaming: (_command, onStdout) => opts.exec({ onStdout, input }),
-          readFile: async () => opts.authBytes ?? Buffer.from("{}"),
+          start: (_command, onData) => opts.exec({ onStdout: onData, input }),
+          readFile: async () => {
+            if (opts.readError) throw opts.readError;
+            return opts.authBytes ?? Buffer.from("{}");
+          },
           dispose: async () => {},
         },
         deleteSandbox: async () => {
@@ -153,17 +161,21 @@ function createMemoryStore(): AdapterAuthSessionStore & {
 } {
   const rows = new Map<string, AdapterAuthSessionRow>();
   const activeSlots = new Set<string>();
-  const slotKey = (companyId: string, adapterType: string) => `${companyId}|${adapterType}`;
+  // The active company credential slot is scoped to the company, the owner, and
+  // the adapter, so two owners in one company hold independent slots.
+  const slotKey = (companyId: string, startedByUserId: string, adapterType: string) =>
+    `${companyId}|${startedByUserId}|${adapterType}`;
   const isActive = (status: AdapterAuthSessionRow["status"]) =>
     status === "starting" || status === "waiting_for_user" || status === "promoting";
   return {
     rows,
     async insert(input) {
-      const key = slotKey(input.companyId, input.adapterType);
+      const key = slotKey(input.companyId, input.startedByUserId, input.adapterType);
       if (activeSlots.has(key)) throw new AdapterAuthSessionConflictError();
       activeSlots.add(key);
       rows.set(input.id, {
         id: input.id,
+        publicSessionId: input.publicSessionId,
         companyId: input.companyId,
         environmentId: input.environmentId,
         adapterType: input.adapterType,
@@ -187,7 +199,8 @@ function createMemoryStore(): AdapterAuthSessionStore & {
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
     },
     async compareAndSetStatus(input) {
       const row = rows.get(input.sessionId);
@@ -196,14 +209,25 @@ function createMemoryStore(): AdapterAuthSessionStore & {
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
-      if (!isActive(input.status)) activeSlots.delete(slotKey(row.companyId, row.adapterType));
+      if (!isActive(input.status))
+        activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
       return true;
     },
     async get(sessionId) {
       const row = rows.get(sessionId);
       return row ? { ...row } : null;
     },
-    async withCompanyAdapterPromotionLock(_companyId, _adapterType, fn) {
+    async getByPublicId(publicSessionId, companyId) {
+      // Scope the read to the company and the public session id, so a
+      // foreign-company lookup reads nothing and the internal id never matches.
+      for (const row of rows.values()) {
+        if (row.publicSessionId === publicSessionId && row.companyId === companyId) {
+          return { ...row };
+        }
+      }
+      return null;
+    },
+    async withCompanyAdapterPromotionLock(_companyId, _startedByUserId, _adapterType, fn) {
       // The in-memory store runs on a single event loop, so it needs no real
       // lock. The pass-through keeps the store contract satisfied.
       return fn();
@@ -222,7 +246,7 @@ describe("codex device login service", () => {
           providerLeaseId: `lease-${input.sessionId}`,
           authPath: sessionCredentialPath(input.sessionId),
           driver: {
-            execStreaming: (_command, onStdout) => execSuccess({ onStdout, input }),
+            start: (_command, onData) => execSuccess({ onStdout: onData, input }),
             readFile: async () => Buffer.from("{}"),
             dispose: async () => {},
           },
@@ -275,15 +299,17 @@ describe("codex device login service", () => {
     // The prompt is surfaced only after the conditional move to
     // `waiting_for_user` wins, so wait for that surface, then drain the microtask
     // that retains the prompt before the owner reads it.
-    await waitForStatus(store, session.sessionId, "waiting_for_user");
+    await waitForStatus(store, session.sessionId, companyId, "waiting_for_user");
     await new Promise((resolve) => setImmediate(resolve));
 
     // The owner reads the one-time prompt through the owner read path.
-    const owner = await service.readOwnerSession(session.sessionId, OWNER_A);
+    const owner = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
     expect(owner?.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+    // The read returns the public session id, never the internal row id.
+    expect(owner?.sessionId).toBe(session.sessionId);
 
     // A non-owner never reads the prompt.
-    const other = await service.readOwnerSession(session.sessionId, OWNER_B);
+    const other = await service.readOwnerSession(session.sessionId, companyId, OWNER_B);
     expect(other?.prompt).toBeNull();
 
     const outcome = await completed;
@@ -292,15 +318,18 @@ describe("codex device login service", () => {
     expect(outcome.sandboxDeleteObserved).toBe(true);
     expect(deleteCalls).toHaveLength(1);
     expect(promoted).toHaveLength(1);
-    // The promotion runs with the session and company context, so it resolves the
-    // company scope and the sole-active-owner check for this exact session.
-    expect(promotionContexts).toEqual([{ sessionId: session.sessionId, companyId }]);
+    // The promotion runs with the internal session id and the company context, so
+    // it resolves the company scope and the sole-active-owner check for this exact
+    // session. The internal id is not the public session id.
+    const internalRow = await store.getByPublicId(session.sessionId, companyId);
+    expect(promotionContexts).toEqual([{ sessionId: internalRow?.id, companyId }]);
+    expect(internalRow?.id).not.toBe(session.sessionId);
 
     // The prompt is one-time: a second owner read returns null.
-    const secondRead = await service.readOwnerSession(session.sessionId, OWNER_A);
+    const secondRead = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
     expect(secondRead?.prompt).toBeNull();
 
-    const row = await store.get(session.sessionId);
+    const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("authenticated");
     expect(row?.finishedAt).not.toBeNull();
 
@@ -338,8 +367,9 @@ describe("codex device login service", () => {
         },
       },
     });
+    const companyId = randomUUID();
     const { session, completed } = await service.start({
-      companyId: randomUUID(),
+      companyId,
       environmentId: randomUUID(),
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
@@ -350,9 +380,9 @@ describe("codex device login service", () => {
     expect(outcome.status).toBe("failed");
     expect(promoteCalls).toBe(0);
     expect(deleteCalls).toHaveLength(1);
-    const row = await store.get(session.sessionId);
+    const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("failed");
-    const failed = await service.readOwnerSession(session.sessionId, OWNER_A);
+    const failed = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
     expect(failed?.failure?.reason).toBe("promotion_failed");
   });
 
@@ -360,8 +390,9 @@ describe("codex device login service", () => {
     const store = createMemoryStore();
     const { runtime, deleteCalls } = createFakeRuntime({ exec: execFailure });
     const service = makeService({ store, runtime });
+    const companyId = randomUUID();
     const { session, completed } = await service.start({
-      companyId: randomUUID(),
+      companyId,
       environmentId: randomUUID(),
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
@@ -370,7 +401,7 @@ describe("codex device login service", () => {
     expect(outcome.status).toBe("failed");
     expect(outcome.sandboxDeleteObserved).toBe(true);
     expect(deleteCalls).toHaveLength(1);
-    const failed = await service.readOwnerSession(session.sessionId, OWNER_A);
+    const failed = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
     expect(failed?.status).toBe("failed");
     expect(failed?.failure?.reason).toBe("login_command_failed");
   });
@@ -390,13 +421,81 @@ describe("codex device login service", () => {
     expect(deleteCalls).toHaveLength(1);
   });
 
+  it("fails closed and deletes the sandbox when the descriptor-bound read fails", async () => {
+    const store = createMemoryStore();
+    let promoteCalls = 0;
+    const { runtime, deleteCalls } = createFakeRuntime({
+      // The login command exits 0, but the descriptor-bound read rejects. The
+      // runner converts the read error to a fixed driver error, so the run fails.
+      exec: execSuccess,
+      readError: new Error("device login failed: the sandbox credential read errored."),
+    });
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {
+          promoteCalls += 1;
+        },
+      },
+    });
+    const companyId = randomUUID();
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+    const outcome = await completed;
+    // A failed read never promotes a credential and still deletes the sandbox.
+    expect(outcome.status).toBe("failed");
+    expect(promoteCalls).toBe(0);
+    expect(deleteCalls).toHaveLength(1);
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    expect(row?.status).toBe("failed");
+  });
+
+  it("fails closed and deletes the sandbox when the credential schema is malformed", async () => {
+    const store = createMemoryStore();
+    const { runtime, deleteCalls } = createFakeRuntime({
+      // The read returns a well-formed file, but the promotion rejects the shape.
+      // A malformed schema fails the same way as a failed check: no authenticate,
+      // and a sandbox delete.
+      exec: execSuccess,
+      authBytes: Buffer.from('{"not":"a subscription auth"}', "utf8"),
+    });
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {
+          throw new Error("malformed credential schema");
+        },
+      },
+    });
+    const companyId = randomUUID();
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+    const outcome = await completed;
+    expect(outcome.status).toBe("failed");
+    expect(deleteCalls).toHaveLength(1);
+    const failed = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.failure?.reason).toBe("promotion_failed");
+  });
+
   it("deletes the sandbox and records a cancelled terminal on a cancellation", async () => {
     const store = createMemoryStore();
     const { runtime, deleteCalls } = createFakeRuntime({ exec: execHang });
     const service = makeService({ store, runtime });
     const controller = new AbortController();
+    const companyId = randomUUID();
     const { session, completed } = await service.start({
-      companyId: randomUUID(),
+      companyId,
       environmentId: randomUUID(),
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
@@ -407,7 +506,7 @@ describe("codex device login service", () => {
     expect(outcome.status).toBe("cancelled");
     expect(outcome.sandboxDeleteObserved).toBe(true);
     expect(deleteCalls).toHaveLength(1);
-    const row = await store.get(session.sessionId);
+    const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("cancelled");
   });
 
@@ -462,8 +561,9 @@ describe("codex device login service", () => {
       });
       const service = makeService({ store, runtime });
       const controller = new AbortController();
+      const companyId = randomUUID();
       const { session, completed } = await service.start({
-        companyId: randomUUID(),
+        companyId,
         environmentId: randomUUID(),
         adapterType: ADAPTER_TYPE,
         startedByUserId: OWNER_A,
@@ -475,10 +575,10 @@ describe("codex device login service", () => {
       expect(outcome.cleanupPending).toBe(true);
       expect(outcome.sandboxDeleteObserved).toBe(true);
       expect(deleteCalls).toHaveLength(1);
-      const row = await store.get(session.sessionId);
+      const row = await store.getByPublicId(session.sessionId, companyId);
       expect(row?.status).toBe("cleanup_pending");
       // The public read resolves the retained terminal, never a false-clean.
-      const publicRead = await service.readOwnerSession(session.sessionId, OWNER_A);
+      const publicRead = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
       expect(publicRead?.status).toBe(terminal);
     },
   );
@@ -499,8 +599,9 @@ describe("codex device login service", () => {
         },
       },
     });
+    const companyId = randomUUID();
     const { session, completed } = await service.start({
-      companyId: randomUUID(),
+      companyId,
       environmentId: randomUUID(),
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
@@ -512,9 +613,9 @@ describe("codex device login service", () => {
     expect(outcome.cleanupPending).toBe(true);
     expect(outcome.sandboxDeleteObserved).toBe(true);
     expect(deleteCalls).toHaveLength(1);
-    const row = await store.get(session.sessionId);
+    const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("cleanup_pending");
-    const publicRead = await service.readOwnerSession(session.sessionId, OWNER_A);
+    const publicRead = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
     expect(publicRead?.status).toBe("failed");
     expect(publicRead?.failure?.reason).toBe("promotion_failed");
   });
@@ -527,8 +628,9 @@ describe("codex device login service", () => {
       delete: async () => ({ outcome: "not_found" }),
     });
     const service = makeService({ store, runtime });
+    const companyId = randomUUID();
     const { session, completed } = await service.start({
-      companyId: randomUUID(),
+      companyId,
       environmentId: randomUUID(),
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
@@ -537,7 +639,7 @@ describe("codex device login service", () => {
     expect(outcome.status).toBe("authenticated");
     expect(outcome.cleanupPending).toBe(false);
     expect(outcome.sandboxDeleteObserved).toBe(true);
-    const row = await store.get(session.sessionId);
+    const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("authenticated");
   });
 
@@ -560,19 +662,22 @@ describe("codex device login service", () => {
     });
     const promote = vi.fn(() => {});
     const service = makeService({ store, runtime, promotion: { promote } });
+    const companyId = randomUUID();
     const { session, completed } = await service.start({
-      companyId: randomUUID(),
+      companyId,
       environmentId: randomUUID(),
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
     });
 
     // The prompt moves the row to the active `waiting_for_user` state.
-    await waitForStatus(store, session.sessionId, "waiting_for_user");
+    await waitForStatus(store, session.sessionId, companyId, "waiting_for_user");
 
     // The reaper wins the slot: it terminates the row before the promotion claim.
+    // The status write keys on the internal id, not the public session id.
+    const seededRow = await store.getByPublicId(session.sessionId, companyId);
     await store.setStatus({
-      sessionId: session.sessionId,
+      sessionId: seededRow!.id,
       status: "timed_out",
       at: new Date(),
       finishedAt: new Date(),
@@ -586,7 +691,7 @@ describe("codex device login service", () => {
     // The lost claim writes no credential and never authenticates.
     expect(promote).not.toHaveBeenCalled();
     expect(outcome.status).not.toBe("authenticated");
-    const row = await store.get(session.sessionId);
+    const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("timed_out");
     // The service still deletes its own sandbox on the lost-claim path.
     expect(deleteCalls).toHaveLength(1);
@@ -616,18 +721,18 @@ describe("codex device login service", () => {
         adapterType: ADAPTER_TYPE,
         startedByUserId: OWNER_A,
       });
-      await waitForStatus(store, session.sessionId, "waiting_for_user");
+      await waitForStatus(store, session.sessionId, companyId, "waiting_for_user");
 
       // A non-owner cannot cancel the session.
-      expect(await service.cancelOwnerSession(session.sessionId, OWNER_B)).toBeNull();
+      expect(await service.cancelOwnerSession(session.sessionId, companyId, OWNER_B)).toBeNull();
 
       // The owner cancel resolves the public terminal status at once.
-      const cancelled = await service.cancelOwnerSession(session.sessionId, OWNER_A);
+      const cancelled = await service.cancelOwnerSession(session.sessionId, companyId, OWNER_A);
       expect(cancelled?.status).toBe("cancelled");
 
       // The row holds the internal cleanup_pending state that encodes the
       // cancelled terminal, so the reaper deletes the sandbox and finalizes it.
-      const row = await store.get(session.sessionId);
+      const row = await store.getByPublicId(session.sessionId, companyId);
       expect(row?.status).toBe("cleanup_pending");
       expect(row?.finishedAt).not.toBeNull();
 
@@ -662,19 +767,20 @@ describe("codex device login service", () => {
       });
       const { runtime } = createFakeRuntime({ exec: execSuccess, authBytes: Buffer.from("{}") });
       const service = makeService({ store, runtime, promotion: { promote } });
+      const companyId = randomUUID();
       const { session, completed } = await service.start({
-        companyId: randomUUID(),
+        companyId,
         environmentId: randomUUID(),
         adapterType: ADAPTER_TYPE,
         startedByUserId: OWNER_A,
       });
-      await waitForStatus(store, session.sessionId, "promoting");
+      await waitForStatus(store, session.sessionId, companyId, "promoting");
 
       // The cancel skips the promoting row, so the credential write finishes. The
       // public projection of a promoting row is `waiting_for_user`.
-      const result = await service.cancelOwnerSession(session.sessionId, OWNER_A);
+      const result = await service.cancelOwnerSession(session.sessionId, companyId, OWNER_A);
       expect(result?.status).toBe("waiting_for_user");
-      const row = await store.get(session.sessionId);
+      const row = await store.getByPublicId(session.sessionId, companyId);
       expect(row?.status).toBe("promoting");
 
       // Release the promotion, so the run reaches its own terminal.
@@ -691,8 +797,9 @@ describe("codex device login service", () => {
         const store = createMemoryStore();
         const { runtime, deleteCalls } = createFakeRuntime({ exec: execHang });
         const service = makeService({ store, runtime });
+        const companyId = randomUUID();
         const { session, completed } = await service.start({
-          companyId: randomUUID(),
+          companyId,
           environmentId: randomUUID(),
           adapterType: ADAPTER_TYPE,
           startedByUserId: OWNER_A,
@@ -706,7 +813,7 @@ describe("codex device login service", () => {
         // claim.
         await vi.advanceTimersByTimeAsync(CODEX_DEVICE_LOGIN_TIMEOUT_MS - 1);
         expect(settled).toBe(false);
-        const midRow = await store.get(session.sessionId);
+        const midRow = await store.getByPublicId(session.sessionId, companyId);
         expect(["starting", "waiting_for_user"]).toContain(midRow?.status);
 
         // The last millisecond fires the timeout.
@@ -715,7 +822,7 @@ describe("codex device login service", () => {
         expect(outcome.status).toBe("timed_out");
         expect(outcome.sandboxDeleteObserved).toBe(true);
         expect(deleteCalls).toHaveLength(1);
-        const row = await store.get(session.sessionId);
+        const row = await store.getByPublicId(session.sessionId, companyId);
         expect(row?.status).toBe("timed_out");
       } finally {
         vi.useRealTimers();
@@ -733,8 +840,9 @@ describe("codex device login service", () => {
           },
         });
         const service = makeService({ store, runtime });
+        const companyId = randomUUID();
         const { session, completed } = await service.start({
-          companyId: randomUUID(),
+          companyId,
           environmentId: randomUUID(),
           adapterType: ADAPTER_TYPE,
           startedByUserId: OWNER_A,
@@ -745,7 +853,7 @@ describe("codex device login service", () => {
         expect(outcome.cleanupPending).toBe(true);
         expect(outcome.sandboxDeleteObserved).toBe(true);
         expect(deleteCalls).toHaveLength(1);
-        const row = await store.get(session.sessionId);
+        const row = await store.getByPublicId(session.sessionId, companyId);
         expect(row?.status).toBe("cleanup_pending");
       } finally {
         vi.useRealTimers();
@@ -753,45 +861,53 @@ describe("codex device login service", () => {
     });
   });
 
-  it("builds a production driver that sets an empty session home and reads the fixed credential path", async () => {
-    // Record the program and the argument vector for each call. The provider
-    // quotes each element as one shell token, so the driver must pass a program
-    // plus its arguments, never one compound string. A one-shot exec streams no
-    // output, so the login command must set `forceSession` to open the session.
-    const calls: {
-      command: string;
-      args?: string[];
-      forceSession?: boolean;
-      bypassSession?: boolean;
-    }[] = [];
+  it("runs the login over the shared pseudo-terminal and reads the credential with the descriptor-bound read", async () => {
     const sessionId = randomUUID();
     const sessionHome = sessionCodexHomePath(sessionId);
     const authPath = sessionCredentialPath(sessionId);
+
+    // The fake pseudo-terminal session streams the prompt and exits with code
+    // zero. It records the command the transport opened.
+    let openedCommand: string | null = null;
+    let closed = false;
+    const openPtySession = async (command: string) => {
+      openedCommand = command;
+      return {
+        onData(listener: (chunk: string) => void) {
+          listener(PROMPT_OUTPUT);
+        },
+        write() {},
+        async wait() {
+          return { exitCode: 0 };
+        },
+        kill() {},
+        async close() {
+          closed = true;
+        },
+      };
+    };
+
+    // The fake runtime runs only the descriptor-bound read. It records the fixed,
+    // no-follow helper shape and returns the base64 of the credential bytes.
+    const execCalls: { command: string; args?: string[]; bypassSession?: boolean }[] = [];
+    const credential = '{"tokens":{"refresh_token":"r"}}';
     const environmentRuntime = {
-      execute: async (input: {
-        command: string;
-        args?: string[];
-        forceSession?: boolean;
-        bypassSession?: boolean;
-        onLog?: (stream: "stdout" | "stderr", chunk: string) => void | Promise<void>;
-      }) => {
-        calls.push({
+      execute: async (input: { command: string; args?: string[]; bypassSession?: boolean }) => {
+        execCalls.push({
           command: input.command,
           args: input.args,
-          forceSession: input.forceSession,
           bypassSession: input.bypassSession,
         });
-        const script = input.args?.join(" ") ?? "";
-        if (script.includes("codex login")) {
-          await input.onLog?.("stdout", PROMPT_OUTPUT);
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        // The credential read.
-        return { exitCode: 0, stdout: '{"token":"secret"}', stderr: "" };
+        return {
+          exitCode: 0,
+          stdout: Buffer.from(credential, "utf8").toString("base64"),
+          stderr: "",
+        };
       },
     };
+
     const driver = buildSandboxLoginDriver({
-      // The helper only calls `execute`; a partial runtime is enough here.
+      openPtySession,
       environmentRuntime: environmentRuntime as never,
       environment: { id: "env", driver: "sandbox" } as never,
       lease: { id: "lease" } as never,
@@ -800,25 +916,28 @@ describe("codex device login service", () => {
     });
 
     const chunks: string[] = [];
-    const result = await driver.execStreaming("codex login --device-auth", (chunk) => chunks.push(chunk));
+    const result = await driver.start("codex login --device-auth", (chunk) => chunks.push(chunk));
     expect(result.exitCode).toBe(0);
+    expect(openedCommand).toBe("codex login --device-auth");
     expect(chunks.join("")).toContain(DEVICE_LOGIN_URL);
-    // The login command runs through `sh -c`, so the runtime runs the whole
-    // compound command in one shell. It sets an empty session-specific Codex
-    // home before the login. It opens the session, so the prompt streams.
-    expect(calls[0].command).toBe("sh");
-    expect(calls[0].args).toEqual([
-      "-c",
-      `rm -rf ${sessionHome} && mkdir -p ${sessionHome} && CODEX_HOME=${sessionHome} codex login --device-auth`,
-    ]);
-    expect(calls[0].forceSession).toBe(true);
+    // The login runs over the pseudo-terminal, so the descriptor read did not run
+    // during the login.
+    expect(execCalls.length).toBe(0);
 
+    // The runner path passes the credential path, but the descriptor-bound read
+    // ignores it and reads the fixed file under the verified session home.
     const authBytes = await driver.readFile(authPath);
-    expect(authBytes.toString("utf8")).toBe('{"token":"secret"}');
-    // The credential read runs `cat` with the path as one argument, one-shot.
-    expect(calls[1].command).toBe("cat");
-    expect(calls[1].args).toEqual([authPath]);
-    expect(calls[1].bypassSession).toBe(true);
+    expect(authBytes.toString("utf8")).toBe(credential);
+    expect(execCalls.length).toBe(1);
+    // The read runs the fixed no-follow helper as a one-shot, non-session command.
+    expect(execCalls[0].command).toBe("node");
+    expect(execCalls[0].bypassSession).toBe(true);
+    expect(execCalls[0].args?.[0]).toBe("-e");
+    // The third argument is the verified session home the helper opens no-follow.
+    expect(execCalls[0].args?.[2]).toBe(sessionHome);
+
+    await driver.dispose();
+    expect(closed).toBe(true);
   });
 });
 
@@ -887,73 +1006,112 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     return environmentId;
   }
 
-  it.each([
-    { name: "two owners, same environment" },
-    { name: "one owner, two environments" },
-  ])(
-    "returns one session, one lease, and one 409 for concurrent starts ($name)",
-    async ({ name }) => {
-      const { companyId, environmentId: environmentA } = await seedCompanyEnvironment();
-      const twoOwners = name.startsWith("two owners");
-      const environmentB = twoOwners ? environmentA : await seedEnvironment(companyId);
-      const ownerB = twoOwners ? OWNER_B : OWNER_A;
+  it("lets two owners in one company each hold an active session", async () => {
+    // The active slot is scoped to the company, the owner, and the adapter. Two
+    // owners in one company hold independent slots, so both concurrent starts
+    // succeed and each acquires one lease.
+    const { companyId, environmentId } = await seedCompanyEnvironment();
+    const store = createDbAdapterAuthSessionStore(db);
+    const { runtime, acquisitions } = createFakeRuntime({ exec: execHang });
+    const service = makeService({ store, runtime });
+    const controller = new AbortController();
 
-      const store = createDbAdapterAuthSessionStore(db);
-      const { runtime, acquisitions } = createFakeRuntime({ exec: execHang });
-      const service = makeService({ store, runtime });
-      const controller = new AbortController();
+    const results = await Promise.allSettled([
+      service.start({
+        companyId,
+        environmentId,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      }),
+      service.start({
+        companyId,
+        environmentId,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_B,
+        signal: controller.signal,
+      }),
+    ]);
 
-      const results = await Promise.allSettled([
-        service.start({
-          companyId,
-          environmentId: environmentA,
-          adapterType: ADAPTER_TYPE,
-          startedByUserId: OWNER_A,
-          signal: controller.signal,
-        }),
-        service.start({
-          companyId,
-          environmentId: environmentB,
-          adapterType: ADAPTER_TYPE,
-          startedByUserId: ownerB,
-          signal: controller.signal,
-        }),
-      ]);
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof service.start>>> =>
+        result.status === "fulfilled",
+    );
+    expect(fulfilled).toHaveLength(2);
+    expect(acquisitions).toHaveLength(2);
+    const rows = await db
+      .select()
+      .from(adapterAuthSessions)
+      .where(eq(adapterAuthSessions.companyId, companyId));
+    expect(rows).toHaveLength(2);
 
-      const fulfilled = results.filter(
-        (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof service.start>>> =>
-          result.status === "fulfilled",
-      );
-      const rejected = results.filter(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
-      );
-      expect(fulfilled).toHaveLength(1);
-      expect(rejected).toHaveLength(1);
-      const conflict = rejected[0]!.reason;
-      expect(conflict).toBeInstanceOf(AdapterAuthSessionConflictError);
-      expect(conflict.statusCode).toBe(409);
+    // Release the surviving runs so the hanging login commands end.
+    controller.abort();
+    await Promise.all(fulfilled.map((result) => result.value.completed));
+  });
 
-      // Exactly one start acquired a lease; the losing start never acquired.
-      expect(acquisitions).toHaveLength(1);
-      const rows = await db
-        .select()
-        .from(adapterAuthSessions)
-        .where(eq(adapterAuthSessions.companyId, companyId));
-      expect(rows).toHaveLength(1);
+  it("returns one session, one lease, and one 409 when one owner starts twice", async () => {
+    // One owner starting twice in two environments conflicts on the active slot.
+    // The slot dropped the environment term, so the second environment does not
+    // grant a second active session.
+    const { companyId, environmentId: environmentA } = await seedCompanyEnvironment();
+    const environmentB = await seedEnvironment(companyId);
 
-      // Release the surviving run so the hanging login command ends.
-      controller.abort();
-      await fulfilled[0]!.value.completed;
-    },
-  );
+    const store = createDbAdapterAuthSessionStore(db);
+    const { runtime, acquisitions } = createFakeRuntime({ exec: execHang });
+    const service = makeService({ store, runtime });
+    const controller = new AbortController();
 
-  it("rejects a second start with a 409 while the first login holds the promotion claim", async () => {
+    const results = await Promise.allSettled([
+      service.start({
+        companyId,
+        environmentId: environmentA,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      }),
+      service.start({
+        companyId,
+        environmentId: environmentB,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      }),
+    ]);
+
+    const fulfilled = results.filter(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof service.start>>> =>
+        result.status === "fulfilled",
+    );
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    const conflict = rejected[0]!.reason;
+    expect(conflict).toBeInstanceOf(AdapterAuthSessionConflictError);
+    expect(conflict.statusCode).toBe(409);
+
+    // Exactly one start acquired a lease; the losing start never acquired.
+    expect(acquisitions).toHaveLength(1);
+    const rows = await db
+      .select()
+      .from(adapterAuthSessions)
+      .where(eq(adapterAuthSessions.companyId, companyId));
+    expect(rows).toHaveLength(1);
+
+    // Release the surviving run so the hanging login command ends.
+    controller.abort();
+    await fulfilled[0]!.value.completed;
+  });
+
+  it("rejects the same owner's second start with a 409 while the first holds the promotion claim", async () => {
     const { companyId, environmentId } = await seedCompanyEnvironment();
     const store = createDbAdapterAuthSessionStore(db);
     const { runtime } = createFakeRuntime({ exec: execSuccess, authBytes: Buffer.from("{}") });
 
     // A promotion that never resolves. The first login stays in `promoting`, so
-    // it holds the active company slot through the claim window.
+    // it holds the active slot through the claim window.
     let releasePromotion!: () => void;
     const promotionGate = new Promise<void>((resolve) => {
       releasePromotion = resolve;
@@ -972,16 +1130,16 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     });
 
     // The first login reaches the `promoting` claim and holds it.
-    await waitForStatus(store, first.session.sessionId, "promoting");
+    await waitForStatus(store, first.session.sessionId, companyId, "promoting");
 
-    // A second start for the same company and adapter conflicts on the active
-    // slot, even though the first login is mid-promotion.
+    // A second start for the same company, owner, and adapter conflicts on the
+    // active slot, even though the first login is mid-promotion.
     await expect(
       service.start({
         companyId,
         environmentId,
         adapterType: ADAPTER_TYPE,
-        startedByUserId: OWNER_B,
+        startedByUserId: OWNER_A,
       }),
     ).rejects.toBeInstanceOf(AdapterAuthSessionConflictError);
 
@@ -1003,6 +1161,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
       environmentId,
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
+      publicSessionId: randomUUID(),
       providerLeaseId: `lease-${sessionId}`,
       status: "promoting",
       expiresAt: past,
@@ -1033,7 +1192,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     const sectionActive = new Promise<void>((resolve) => {
       markSectionActive = resolve;
     });
-    const promotion = store.withCompanyAdapterPromotionLock(companyId, ADAPTER_TYPE, async () => {
+    const promotion = store.withCompanyAdapterPromotionLock(companyId, OWNER_A, ADAPTER_TYPE, async () => {
       markSectionActive();
       await sectionGate;
       // Decision H: the write proceeds only while the session still owns the slot.
@@ -1078,7 +1237,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     // A delayed promotion now runs its section. The ownership check reads the
     // reclaimed row, so it writes no credential and the terminal claim fails.
     let wroteCredential = false;
-    await store.withCompanyAdapterPromotionLock(companyId, ADAPTER_TYPE, async () => {
+    await store.withCompanyAdapterPromotionLock(companyId, OWNER_A, ADAPTER_TYPE, async () => {
       const row = await store.get(sessionId);
       if (row?.status === "promoting" && row.companyId === companyId) {
         wroteCredential = true;
@@ -1122,8 +1281,8 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
       startedByUserId: OWNER_A,
       signal: controller.signal,
     });
-    const sessionId = started.session.sessionId;
-    await waitForStatus(store, sessionId, "starting");
+    const publicSessionId = started.session.sessionId;
+    await waitForStatus(store, publicSessionId, companyId, "starting");
 
     // The reaper reclaims the expired row and times it out.
     const { runtime: reaperRuntime } = createReaperRuntime();
@@ -1134,7 +1293,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     });
     const sweep = await reaper.sweep();
     expect(sweep.expiredTimedOut).toBe(1);
-    expect((await store.get(sessionId))?.status).toBe("timed_out");
+    expect((await store.getByPublicId(publicSessionId, companyId))?.status).toBe("timed_out");
 
     // The delayed prompt arrives now. The conditional transition must not revive
     // the reaped row, and the owner must not read a prompt for it.
@@ -1142,12 +1301,94 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
-    const owner = await service.readOwnerSession(sessionId, OWNER_A);
-    expect((await store.get(sessionId))?.status).toBe("timed_out");
+    const owner = await service.readOwnerSession(publicSessionId, companyId, OWNER_A);
+    expect((await store.getByPublicId(publicSessionId, companyId))?.status).toBe("timed_out");
     expect(owner?.prompt ?? null).toBeNull();
 
     // End the run so no timer survives.
     controller.abort();
     await started.completed;
+  });
+
+  describe("public session id lookup", () => {
+    // Start one session and read its rows. The service returns the public session
+    // id, and the store keeps the internal id private.
+    async function startOneSession(companyId: string, environmentId: string) {
+      const store = createDbAdapterAuthSessionStore(db);
+      const controller = new AbortController();
+      const { runtime } = createFakeRuntime({ exec: execHang });
+      const service = makeService({ store, runtime });
+      const started = await service.start({
+        companyId,
+        environmentId,
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      });
+      const publicSessionId = started.session.sessionId;
+      const row = await store.getByPublicId(publicSessionId, companyId);
+      return { store, service, controller, started, publicSessionId, row };
+    }
+
+    it("reads a session by its public id in the same company", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const { store, controller, started, publicSessionId, row } = await startOneSession(
+        companyId,
+        environmentId,
+      );
+
+      // The lookup by the public id succeeds in the same company.
+      expect(row).not.toBeNull();
+      expect(row?.publicSessionId).toBe(publicSessionId);
+      // The internal primary-key id is a distinct value, never the public id.
+      expect(row?.id).toBeTruthy();
+      expect(row?.id).not.toBe(publicSessionId);
+      // The API-facing row read stays scoped: the same public id resolves the
+      // same row on a second read.
+      const again = await store.getByPublicId(publicSessionId, companyId);
+      expect(again?.id).toBe(row?.id);
+
+      controller.abort();
+      await started.completed;
+    });
+
+    it("does not read a session for a foreign company", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const { store, controller, started, publicSessionId } = await startOneSession(
+        companyId,
+        environmentId,
+      );
+
+      // A different company id never resolves the row, even with the exact public
+      // session id. The predicate carries the company id, so a query never keys on
+      // the public session id alone.
+      const foreignCompanyId = randomUUID();
+      expect(await store.getByPublicId(publicSessionId, foreignCompanyId)).toBeNull();
+
+      controller.abort();
+      await started.completed;
+    });
+
+    it("never accepts the internal row id as an API identifier", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const { store, service, controller, started, publicSessionId, row } =
+        await startOneSession(companyId, environmentId);
+      const internalId = row!.id;
+
+      // The store never resolves a row by the internal id through the public-id
+      // path, even within the same company.
+      expect(await store.getByPublicId(internalId, companyId)).toBeNull();
+
+      // The owner read returns the public session id, never the internal id.
+      const owner = await service.readOwnerSession(publicSessionId, companyId, OWNER_A);
+      expect(owner?.sessionId).toBe(publicSessionId);
+      expect(owner?.sessionId).not.toBe(internalId);
+
+      // The owner read rejects the internal id as an API identifier.
+      expect(await service.readOwnerSession(internalId, companyId, OWNER_A)).toBeNull();
+
+      controller.abort();
+      await started.completed;
+    });
   });
 });

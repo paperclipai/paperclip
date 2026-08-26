@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
 import {
@@ -266,6 +266,73 @@ function createJoinRequest(
   };
 }
 
+function createApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    id: "approval-1",
+    companyId: "company-1",
+    type: "hire_agent",
+    requestedByAgentId: null,
+    requestedByUserId: "local-board",
+    status: "pending",
+    payload: { name: "New teammate" },
+    decisionNote: null,
+    decidedByUserId: null,
+    decidedAt: null,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
+  return {
+    id: "run-1",
+    companyId: "company-1",
+    agentId: "agent-1",
+    responsibleUserId: null,
+    invocationSource: "assignment",
+    triggerDetail: null,
+    status: "failed",
+    error: "boom",
+    wakeupRequestId: null,
+    exitCode: null,
+    signal: null,
+    usageJson: null,
+    resultJson: null,
+    sessionIdBefore: null,
+    sessionIdAfter: null,
+    logStore: null,
+    logRef: null,
+    logBytes: null,
+    logSha256: null,
+    logCompressed: false,
+    stdoutExcerpt: null,
+    stderrExcerpt: null,
+    errorCode: null,
+    externalRunId: null,
+    processPid: null,
+    processGroupId: null,
+    processStartedAt: null,
+    lastOutputAt: null,
+    lastOutputSeq: 0,
+    lastOutputStream: null,
+    lastOutputBytes: null,
+    retryOfRunId: null,
+    processLossRetryCount: 0,
+    livenessState: null,
+    livenessReason: null,
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: null,
+    contextSnapshot: null,
+    startedAt: new Date("2026-03-11T00:00:00.000Z"),
+    finishedAt: new Date("2026-03-11T00:01:00.000Z"),
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:01:00.000Z"),
+    ...overrides,
+  };
+}
+
 function resetInboxApiMocks() {
   for (const mock of Object.values(apiMocks)) mock.mockReset();
   externalObjectMocks.summaries.clear();
@@ -341,6 +408,49 @@ describe("Inbox toolbar", () => {
     });
 
     expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("keeps archive hover actions and swipe targets on every unread non-task Mine row", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.approvalsList.mockResolvedValue([createApproval()]);
+    apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
+    apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest()]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Hire Agent: New teammate");
+      expect(container.textContent).toContain("Failed run");
+      expect(container.textContent).toContain("Jordan Example");
+    });
+
+    const rowFor = (text: string) =>
+      [...container.querySelectorAll("[data-inbox-item]")]
+        .find((row) => row.textContent?.includes(text));
+
+    for (const text of ["Hire Agent: New teammate", "Failed run", "Jordan Example"]) {
+      const row = rowFor(text);
+      expect(row, `missing inbox row for ${text}`).toBeDefined();
+      expect(row?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+      const archiveButton = row?.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      expect(archiveButton).not.toBeNull();
+      expect(archiveButton?.className).toContain("opacity-0");
+      expect(archiveButton?.className).toContain("group-hover:opacity-100");
+      expect(row?.querySelector("[data-inbox-row-surface]")).not.toBeNull();
+    }
 
     act(() => root.unmount());
   });
@@ -990,51 +1100,7 @@ describe("FailedRunInboxRow", () => {
 
   it("suppresses accent hover styling when selected", () => {
     const root = createRoot(container);
-    const run = {
-      id: "run-1",
-      companyId: "company-1",
-      agentId: "agent-1",
-      responsibleUserId: null,
-      invocationSource: "assignment",
-      triggerDetail: null,
-      status: "failed",
-      error: "boom",
-      wakeupRequestId: null,
-      exitCode: null,
-      signal: null,
-      usageJson: null,
-      resultJson: null,
-      sessionIdBefore: null,
-      sessionIdAfter: null,
-      logStore: null,
-      logRef: null,
-      logBytes: null,
-      logSha256: null,
-      logCompressed: false,
-      lastOutputAt: null,
-      lastOutputSeq: 0,
-      lastOutputStream: null,
-      lastOutputBytes: null,
-      errorCode: null,
-      externalRunId: null,
-      processPid: null,
-      processGroupId: null,
-      processStartedAt: null,
-      retryOfRunId: null,
-      processLossRetryCount: 0,
-      livenessState: null,
-      livenessReason: null,
-      continuationAttempt: 0,
-      lastUsefulActionAt: null,
-      nextAction: null,
-      stdoutExcerpt: null,
-      stderrExcerpt: null,
-      contextSnapshot: null,
-      startedAt: new Date("2026-03-11T00:00:00.000Z"),
-      finishedAt: null,
-      createdAt: new Date("2026-03-11T00:00:00.000Z"),
-      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
-    } as const;
+    const run = createFailedRun();
 
     act(() => {
       root.render(

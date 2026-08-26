@@ -168,6 +168,19 @@ Guidelines:
 - write from the user perspective
 - keep highlights short and concrete
 - spell out upgrade actions for breaking changes
+- **write at full stable depth from the first pass**: the beta-keyed
+  draft ships verbatim as the stable's notes, so the previous stable's
+  file is the density bar the moment the draft is first written — never
+  leave it at generated-skeleton density for the soak. The skeleton's
+  nested PR summaries are raw material to rewrite, not a format to keep.
+- **describe deltas, not repeats**: read the previous stable's notes
+  (`releases/v<last-stable>.md`) before writing. When they already
+  introduced a feature, this release's entry covers only what changed —
+  a default flip, a hardening, a completion — phrased against the prior
+  release ("last release introduced X; this release makes it the
+  default"), never re-describing the feature as if it debuted. A theme
+  that headlined the previous release does not headline again for
+  follow-through work; demote it to Improvements.
 
 ### Inline PR and contributor attribution
 

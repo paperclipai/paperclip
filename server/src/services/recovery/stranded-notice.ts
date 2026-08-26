@@ -74,7 +74,7 @@ export function buildExecutionReviewParticipantRecoveryNoticeSeed(): StrandedRec
   return {
     body:
       "Paperclip retried the pending execution-review participant once, but the review stage still has no " +
-      "completed decision or live reviewer run. Moving it to `blocked` so the recovery owner can repair the " +
+      "completed decision or live reviewer run. Moving it to `blocked` so the board can inspect the evidence, repair the " +
       "reviewer runtime, restore the review stage, or record an intentional manual resolution.",
     title: "Review recovery stalled",
     tone: "danger",
@@ -86,7 +86,7 @@ export function buildExecutionReviewParticipantUnavailableNoticeSeed(): Stranded
     body:
       "Paperclip cannot continue the pending execution-review participant because the participant is not " +
       "invokable and the review stage has no completed decision or live reviewer run. Moving it to `blocked` " +
-      "so the recovery owner can repair the reviewer runtime, restore the review stage, or record an " +
+      "so the board can inspect the evidence, repair the reviewer runtime, restore the review stage, or record an " +
       "intentional manual resolution.",
     title: "Review recovery stalled",
     tone: "danger",
@@ -122,13 +122,13 @@ export function buildStrandedRecoveryEscalationNotice(input: {
       ? agentLinkRow("Recovery owner", input.recoveryOwner)
       : keyValueRow(
           "Recovery owner",
-          "Board escalation - Paperclip could not find an invokable manager, creator, or executive owner with budget available",
+          "Board decision required",
         ),
     keyValueRow(
       "Next action",
       input.recoveryOwner
         ? "The recovery owner should either restore a live execution path or record the manual resolution on the source issue"
-        : "A board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution",
+        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution",
     ),
   ];
 

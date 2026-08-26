@@ -35,11 +35,6 @@ export { environmentLeases } from "./environment_leases.js";
 export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
 export { adapterAuthSessions } from "./adapter_auth_sessions.js";
-export {
-  claudeSetupTokenSessions,
-  CLAUDE_SETUP_TOKEN_ACTIVE_STATES,
-  type ClaudeSetupTokenSessionState,
-} from "./claude_setup_token_sessions.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
@@ -116,6 +111,12 @@ export { documentAnnotationComments } from "./document_annotation_comments.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";
 export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
+export { completionContracts } from "./completion_contracts.js";
+export { nativeRunResults } from "./native_run_results.js";
+export { nativeRunFinalizations } from "./native_run_finalizations.js";
+export { workAssessments } from "./work_assessments.js";
+export { statusDecisions } from "./status_decisions.js";
+export { statusDecisionEffects } from "./status_decision_effects.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";
 export { smokeRuns, smokeRunSteps } from "./smoke_lab.js";
 export { costEvents } from "./cost_events.js";

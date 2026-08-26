@@ -586,7 +586,6 @@ export function agentService(db: Db) {
           companyId: input.companyId,
           ownerUserId: ownerUserId ?? "",
           adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
-          environmentId: input.environmentId ?? "",
         });
         if (!consumed) {
           throw claudeOAuthClaimRejectedError();

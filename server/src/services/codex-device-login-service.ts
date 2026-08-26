@@ -20,8 +20,20 @@ import {
   type DeviceLoginPrompt,
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
+import {
+  createLoginPtyTransport,
+  type LoginPtySessionOpener,
+} from "@paperclipai/adapter-utils/login-pty-transport";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
+import { runDescriptorBoundAuthRead } from "./codex-device-login-credential-read.js";
+import {
+  resolveLoginCommandKey,
+  validateLoginSessionHome,
+  type LoginCommandKey,
+} from "./login-command.js";
+import type { LoginPtyWorkerManagerLike } from "./setup-token-transport-binding.js";
 
 // The login-session service. It creates a login session, acquires a fresh
 // sandbox lease, runs `codex login --device-auth` through the runner, and owns
@@ -36,6 +48,17 @@ import { environmentService } from "./environments.js";
 
 /** The host timeout for the sandbox login command. It is exactly five minutes. */
 export const CODEX_DEVICE_LOGIN_TIMEOUT_MS = 300_000;
+
+// The fixed error for a sandbox provider that does not advertise the login
+// pseudo-terminal capability. The Codex device login runs the login command on a
+// real pseudo-terminal, so only a provider that advertises the capability can
+// host the login. The route returns this specific, typed error and starts no
+// session, so an unsupported provider never reaches a session row, a lease, or a
+// pseudo-terminal.
+export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED =
+  "The sandbox provider does not support the Codex device login.";
+export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE =
+  "codex_device_login_provider_unsupported";
 
 /**
  * The lease-metadata key that tags a login sandbox lease with its session
@@ -104,11 +127,12 @@ export interface LoginSessionRuntime {
 }
 
 /** The per-session context the promotion seam needs. The service knows the
- *  session, the company, and the adapter, so the promotion resolves the company
- *  scope and the sole-active-owner check for this exact session. */
+ *  session, the company, the owner, and the adapter, so the promotion resolves
+ *  the company slot and the sole-active-owner check for this exact session. */
 export interface CredentialPromotionContext {
   sessionId: string;
   companyId: string;
+  startedByUserId: string;
   adapterType: AgentAdapterType;
 }
 
@@ -210,6 +234,10 @@ export class AdapterAuthSessionConflictError extends Error {
 
 export interface AdapterAuthSessionRow {
   id: string;
+  /** The public, CSPRNG session identifier. The API returns and looks up this
+   *  value. It never equals the internal primary-key `id`, so a caller cannot
+   *  address a row by the internal id. */
+  publicSessionId: string;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -227,6 +255,9 @@ export interface AdapterAuthSessionRow {
 
 export interface InsertAdapterAuthSessionInput {
   id: string;
+  /** The public, CSPRNG session identifier. The service builds it and returns it
+   *  to the client; the store persists it in `public_session_id`. */
+  publicSessionId: string;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -272,33 +303,44 @@ export interface AdapterAuthSessionStore {
   /** A conditional status write. It returns true only when it changed one row. */
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
+  /**
+   * Read a session by its public session id, scoped to the company and the Codex
+   * device-login adapter. The predicate carries the company id, so a query never
+   * keys on the public session id alone, and a foreign-company caller reads
+   * nothing. It never accepts the internal primary-key `id`.
+   */
+  getByPublicId(publicSessionId: string, companyId: string): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
-   *  company and adapter. The reaper reclaims a stale `promoting` row inside this
-   *  lock, so a reclaim never interleaves with a live credential write. */
+   *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
+   *  row inside this lock, so a reclaim never interleaves with a live credential
+   *  write for the same slot. */
   withCompanyAdapterPromotionLock<T>(
     companyId: string,
+    startedByUserId: string,
     adapterType: AgentAdapterType,
     fn: () => Promise<T>,
   ): Promise<T>;
 }
 
 /** Build the advisory-lock key for the promotion critical section. The key is
- *  company-scoped and adapter-scoped, so two different company slots never
- *  contend. The credential-promotion path and the reaper reclaim both derive the
- *  key from this function, so they take the exact same lock. */
+ *  scoped to the company, the owner, and the adapter, so two different slots
+ *  never contend. The credential-promotion path and the reaper reclaim both
+ *  derive the key from this function, so they take the exact same lock. */
 export function adapterLoginPromotionLockKey(
   companyId: string,
+  startedByUserId: string,
   adapterType: AgentAdapterType,
 ): string {
-  return `paperclip:adapter-login-promotion:${companyId}:${adapterType}`;
+  return `paperclip:adapter-login-promotion:${companyId}:${startedByUserId}:${adapterType}`;
 }
 
 /**
- * Run `fn` inside the promotion critical section for one company and adapter.
+ * Run `fn` inside the promotion critical section for one company, owner, and
+ * adapter slot.
  *
  * The function opens a database transaction and takes a transaction-scoped
  * PostgreSQL advisory lock. The lock serializes the credential-promotion path
- * against the reaper reclaim, so a reaper never releases the company slot while a
+ * against the reaper reclaim, so a reaper never releases the slot while a
  * credential write runs, and a stale promotion never writes after the reaper
  * reclaims the slot. The transaction holds the lock through `fn`, so the caller
  * runs the ownership check and the credential write in one mutually-exclusive
@@ -308,10 +350,11 @@ export function adapterLoginPromotionLockKey(
 export async function withAdapterLoginPromotionLock<T>(
   db: Db,
   companyId: string,
+  startedByUserId: string,
   adapterType: AgentAdapterType,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const key = adapterLoginPromotionLockKey(companyId, adapterType);
+  const key = adapterLoginPromotionLockKey(companyId, startedByUserId, adapterType);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
     return fn();
@@ -354,10 +397,12 @@ export interface AdapterAuthReaperStore {
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
-   *  company and adapter. The reaper reclaims a stale `promoting` row inside this
-   *  lock, so a reclaim never interleaves with a live credential write. */
+   *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
+   *  row inside this lock, so a reclaim never interleaves with a live credential
+   *  write for the same slot. */
   withCompanyAdapterPromotionLock<T>(
     companyId: string,
+    startedByUserId: string,
     adapterType: AgentAdapterType,
     fn: () => Promise<T>,
   ): Promise<T>;
@@ -385,12 +430,16 @@ function isUniqueViolation(error: unknown): boolean {
 function toRow(row: typeof adapterAuthSessions.$inferSelect): AdapterAuthSessionRow {
   return {
     id: row.id,
+    publicSessionId: row.publicSessionId,
     companyId: row.companyId,
     environmentId: row.environmentId,
     adapterType: row.adapterType,
     startedByUserId: row.startedByUserId,
     providerLeaseId: row.providerLeaseId ?? null,
-    status: row.status,
+    // The unified `status` column type is the merged login-state union. A Codex
+    // device-login row only ever holds a Codex internal status, so narrow the
+    // read back to the internal union the service reasons about.
+    status: row.status as AdapterAuthSessionInternalStatus,
     expiresAt: row.expiresAt ?? null,
     promotionExpiresAt: row.promotionExpiresAt ?? null,
     finishedAt: row.finishedAt ?? null,
@@ -427,6 +476,11 @@ export function createDbAdapterAuthSessionStore(
           environmentId: input.environmentId,
           adapterType: input.adapterType,
           startedByUserId: input.startedByUserId,
+          // The unified table requires a unique public session id. The service
+          // builds it from a CSPRNG and returns it to the client, so the store
+          // persists that value here. It never uses the internal id, a timestamp,
+          // or a counter.
+          publicSessionId: input.publicSessionId,
           status: "starting",
           expiresAt: input.expiresAt,
           createdAt: input.at,
@@ -477,6 +531,25 @@ export function createDbAdapterAuthSessionStore(
       const row = rows[0];
       return row ? toRow(row) : null;
     },
+    async getByPublicId(publicSessionId, companyId) {
+      // The predicate carries the company id and the Codex device-login adapter,
+      // so a read never keys on the public session id alone. A foreign-company or
+      // foreign-adapter caller reads nothing. The internal primary-key `id` never
+      // matches, so a caller cannot address a row by the internal id.
+      const rows = await db
+        .select()
+        .from(adapterAuthSessions)
+        .where(
+          and(
+            eq(adapterAuthSessions.publicSessionId, publicSessionId),
+            eq(adapterAuthSessions.companyId, companyId),
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      return row ? toRow(row) : null;
+    },
     async listExpiredActiveSessions(nowAt) {
       // The partial index on the active statuses and the index on `expiresAt`
       // both support this scan. The scan is bounded by the active-status set, so
@@ -489,6 +562,9 @@ export function createDbAdapterAuthSessionStore(
         .from(adapterAuthSessions)
         .where(
           and(
+            // The shared table also holds the setup-token rows, so every reaper
+            // scan filters by the device-login adapter to reach only Codex rows.
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
             inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_ACTIVE_STATUSES]),
             isNotNull(adapterAuthSessions.expiresAt),
             lte(adapterAuthSessions.expiresAt, nowAt),
@@ -505,20 +581,30 @@ export function createDbAdapterAuthSessionStore(
       const rows = await db
         .select()
         .from(adapterAuthSessions)
-        .where(eq(adapterAuthSessions.status, "cleanup_pending"));
+        .where(
+          and(
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            eq(adapterAuthSessions.status, "cleanup_pending"),
+          ),
+        );
       return rows.map(toRow);
     },
     async listLeaseReferences() {
       const rows = await db
         .select({ providerLeaseId: adapterAuthSessions.providerLeaseId })
         .from(adapterAuthSessions)
-        .where(isNotNull(adapterAuthSessions.providerLeaseId));
+        .where(
+          and(
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            isNotNull(adapterAuthSessions.providerLeaseId),
+          ),
+        );
       return rows
         .map((row) => row.providerLeaseId)
         .filter((value): value is string => value != null);
     },
-    async withCompanyAdapterPromotionLock(companyId, adapterType, fn) {
-      return withAdapterLoginPromotionLock(db, companyId, adapterType, fn);
+    async withCompanyAdapterPromotionLock(companyId, startedByUserId, adapterType, fn) {
+      return withAdapterLoginPromotionLock(db, companyId, startedByUserId, adapterType, fn);
     },
   };
 }
@@ -644,6 +730,10 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     input: StartCodexDeviceLoginInput,
   ): Promise<StartCodexDeviceLoginResult> {
     const sessionId = randomUUID();
+    // The public session identifier the API returns and looks up. It is an
+    // independent CSPRNG value, so it never equals the internal `sessionId` and a
+    // caller cannot address the row by the internal id.
+    const publicSessionId = randomUUID();
     const startedAt = now();
     const ttlSeconds = input.ttlSeconds ?? CODEX_DEVICE_LOGIN_TIMEOUT_MS / 1000;
     const expiresAt = new Date(startedAt.getTime() + ttlSeconds * 1000);
@@ -662,6 +752,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     // acquires a lease for a losing start.
     await store.insert({
       id: sessionId,
+      publicSessionId,
       companyId: input.companyId,
       environmentId: input.environmentId,
       adapterType: input.adapterType,
@@ -726,7 +817,8 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     activity("lease_acquired");
 
     const session: AdapterAuthSessionResponse = {
-      sessionId,
+      // The API identifier is the public session id, never the internal `sessionId`.
+      sessionId: publicSessionId,
       environmentId: input.environmentId,
       status: "starting",
       expiresAt: expiresAt.toISOString(),
@@ -837,6 +929,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
         await promotion.promote(credential, {
           sessionId,
           companyId: input.companyId,
+          startedByUserId: input.startedByUserId,
           adapterType: input.adapterType,
         });
       } catch {
@@ -972,24 +1065,28 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   }
 
   async function readOwnerSession(
-    sessionId: string,
+    publicSessionId: string,
+    companyId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await store.get(sessionId);
+    // Look the row up by its public session id, scoped to the company. A
+    // foreign-company caller reads nothing, and the internal id never matches.
+    const row = await store.getByPublicId(publicSessionId, companyId);
     if (!row) return null;
     const isOwner = row.startedByUserId === requestingUserId;
     const status = resolvePublicStatus(row);
     // Deliver the one-time prompt to the owner principal exactly once. The read
     // and the delete run with no await between them, so the first authorized
     // owner read consumes the prompt and every later read returns null. This
-    // keeps the short-lived device code out of a repeated response.
+    // keeps the short-lived device code out of a repeated response. The prompt
+    // map keys on the internal id, so read it by `row.id`, not the public id.
     let prompt: DeviceLoginPrompt | null = null;
     if (isOwner) {
-      prompt = promptsBySession.get(sessionId) ?? null;
-      if (prompt) promptsBySession.delete(sessionId);
+      prompt = promptsBySession.get(row.id) ?? null;
+      if (prompt) promptsBySession.delete(row.id);
     }
     return {
-      sessionId: row.id,
+      sessionId: row.publicSessionId,
       environmentId: row.environmentId,
       status,
       expiresAt: row.expiresAt?.toISOString() ?? null,
@@ -1011,14 +1108,18 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   // row, so a cancel never interrupts an in-flight credential write; that
   // promotion runs to its own terminal.
   async function cancelOwnerSession(
-    sessionId: string,
+    publicSessionId: string,
+    companyId: string,
     requestingUserId: string,
   ): Promise<AdapterAuthSessionOwnerResponse | null> {
-    const row = await store.get(sessionId);
+    // Look the row up by its public session id, scoped to the company. The status
+    // write keys on the internal `row.id`, so a cancel never addresses a row by
+    // the public id alone.
+    const row = await store.getByPublicId(publicSessionId, companyId);
     if (!row || row.startedByUserId !== requestingUserId) return null;
     const write = terminalCleanupWrite(false, "cancelled", null);
     await store.compareAndSetStatus({
-      sessionId,
+      sessionId: row.id,
       expectedStatuses: ["starting", "waiting_for_user"],
       status: write.status,
       at: now(),
@@ -1026,7 +1127,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
       finishedAt: now(),
       promotionExpiresAt: null,
     });
-    return readOwnerSession(sessionId, requestingUserId);
+    return readOwnerSession(publicSessionId, companyId, requestingUserId);
   }
 
   return { start, readOwnerSession, cancelOwnerSession };
@@ -1072,80 +1173,197 @@ export function sessionCredentialPath(sessionId: string): string {
 
 /**
  * Build the sandbox login driver. This is the one helper the production runtime
- * and the tests share. It binds streamed execution and a credential read to the
- * environment runtime.
+ * and the tests share. It runs the login command over the shared login
+ * pseudo-terminal (PTY) transport and reads the credential with one
+ * descriptor-bound read.
  *
- * - `execStreaming` sets an empty session-specific Codex home before the fixed
- *   login command runs, exports `CODEX_HOME`, and streams standard output to the
- *   runner. It passes the command through `sh -c`, so the runtime runs the whole
- *   compound command in one shell. It sets `forceSession`, so the command opens
- *   the persistent session and streams each standard-output chunk while the
- *   login command waits for the user. A one-shot exec returns the output only at
- *   the end, so the login prompt would never reach the user in time.
- * - `readFile` reads the credential from the fixed session-specific path with a
- *   one-shot `cat` command. No caller controls the path.
- * - `dispose` is a no-op. The service owns the sandbox delete through a separate
- *   seam, so the runner's swallowed dispose must not delete the sandbox.
+ * - `start` runs the fixed login command on a real pseudo-terminal through the
+ *   shared {@link createLoginPtyTransport} and streams each terminal output chunk
+ *   to the runner while the login command waits for the user. The login command
+ *   needs a pseudo-terminal: pipe stdio emits no login prompt. The pseudo-terminal
+ *   opener sets the session-specific `CODEX_HOME` to the same verified session
+ *   home this driver reads.
+ * - `readFile` runs one descriptor-bound read. It opens the verified session home
+ *   and the fixed credential file with no symlink follow, checks the opened
+ *   descriptor, and reads only from that same descriptor. It ignores the path the
+ *   runner passes, so no caller controls the read target. It reads the fixed
+ *   `auth.json` under the server-controlled session home.
+ * - `dispose` releases the pseudo-terminal transport, so the host frees the login
+ *   pseudo-terminal slot. The service owns the sandbox delete through a separate
+ *   seam, so this dispose never deletes the sandbox.
  *
- * The runtime passes `command` and `args` to the provider as a program and its
- * argument vector. The provider quotes each element as one shell token. So a
- * compound command must run through a shell (`sh -c "<script>"`); a bare
- * compound string in `command` becomes one token and never runs.
+ * The session home is server-controlled and shared: the pseudo-terminal opener
+ * sets `CODEX_HOME` to it, and the descriptor-bound read opens it. So the login
+ * command writes `auth.json` into the exact directory the read opens.
  */
 export function buildSandboxLoginDriver(deps: {
+  openPtySession: LoginPtySessionOpener;
   environmentRuntime: Pick<EnvironmentRuntimeService, "execute">;
   environment: Environment;
   lease: EnvironmentLease;
   sessionHome: string;
   timeoutMs: number;
 }): SandboxLoginDriver {
-  const { environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
+  const { openPtySession, environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
+  const transport = createLoginPtyTransport(openPtySession);
   return {
-    async execStreaming(command, onStdout) {
-      const script = `rm -rf ${sessionHome} && mkdir -p ${sessionHome} && CODEX_HOME=${sessionHome} ${command}`;
-      const result = await environmentRuntime.execute({
-        environment,
-        lease,
-        command: "sh",
-        args: ["-c", script],
-        timeoutMs,
-        // Open the persistent session, so the runtime streams each output chunk
-        // to the runner while the login command waits. A one-shot exec returns
-        // the output only at the end, so the prompt would arrive too late.
-        forceSession: true,
-        onLog: (stream, chunk) => {
-          if (stream === "stdout") onStdout(chunk);
-        },
-      });
-      return { exitCode: result.exitCode };
+    async start(command, onData) {
+      return transport.start(command, onData);
     },
-    async readFile(path) {
-      const result = await environmentRuntime.execute({
+    async readFile(_path) {
+      // The read ignores the runner path. It runs one fixed, server-controlled,
+      // descriptor-bound operation against the verified session home. So a swap of
+      // the credential file between a check and the read cannot steer the read.
+      return runDescriptorBoundAuthRead({
+        environmentRuntime,
         environment,
         lease,
-        command: "cat",
-        args: [path],
+        sessionHome,
         timeoutMs,
-        bypassSession: true,
       });
-      return Buffer.from(result.stdout ?? "", "utf8");
     },
     async dispose() {
-      // The service owns the sandbox delete. This dispose is a no-op.
+      // Free the host pseudo-terminal slot before the service deletes the sandbox.
+      // The service owns the sandbox delete through a separate seam.
+      await transport.dispose();
     },
+  };
+}
+
+/**
+ * The verified binding one login session hands to the live pseudo-terminal
+ * opener. The opener sets the sandbox `CODEX_HOME` to `sessionHome`, so the login
+ * command writes `auth.json` into the exact directory the descriptor-bound read
+ * opens.
+ */
+export interface LoginPtySessionBinding {
+  companyId: string;
+  environmentId: string;
+  adapterType: AgentAdapterType;
+  /** The provider lease that binds the sandbox worker. */
+  providerLeaseId: string;
+  /** The server-controlled session home. The opener sets `CODEX_HOME` to it. */
+  sessionHome: string;
+  /** The resolved environment for the acquired lease. */
+  environment: Environment;
+  /** The acquired environment lease. */
+  lease: EnvironmentLease;
+}
+
+/**
+ * Opens the live pseudo-terminal for one login session and returns the shared
+ * transport opener. The Daytona provider runs as a plugin worker, so the real
+ * opener binds inside the worker through the plugin worker manager route. A test
+ * injects a fake opener to drive the full session path.
+ */
+export type OpenLoginPtySession = (
+  binding: LoginPtySessionBinding,
+) => Promise<LoginPtySessionOpener>;
+
+/** The fixed, non-secret error the Codex live opener throws when it cannot bind
+ *  the sandbox worker route. It carries no lease detail and no secret. */
+const CODEX_LOGIN_PTY_BIND_FAILED =
+  "device login failed: the sandbox pseudo-terminal transport is not bound.";
+
+/** The dependencies the worker-bound Codex live pseudo-terminal opener needs. */
+export interface CodexWorkerBoundLoginPtyOpenerDeps {
+  /** The plugin worker manager that owns the host route gate. */
+  workerManager: LoginPtyWorkerManagerLike;
+  /** A non-leaking status sink. It receives only fixed status lines. */
+  log?: (line: string) => void;
+}
+
+function readLeaseMetaString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Builds the production Codex `openLivePtySession`. It drives the sandbox worker
+ * through the manager route gate. The manager mints the host route identifier and
+ * owns the route lifecycle.
+ *
+ * The opener passes the binding's server-controlled `sessionHome` to the worker
+ * route. That home is the exact directory the descriptor-bound credential read
+ * opens, so the sandbox `CODEX_HOME` and the read target match. The opener never
+ * derives a fresh home: a fresh home would set `CODEX_HOME` to a directory the
+ * read never opens, and every Codex login would fail closed.
+ *
+ * The opener resolves the closed login command key from the trusted adapter type,
+ * never from the caller. It validates the session home shape before the worker
+ * RPC. It fails closed when the lease carries no sandbox worker binding.
+ */
+export function createCodexWorkerBoundLoginPtyOpener(
+  deps: CodexWorkerBoundLoginPtyOpenerDeps,
+): OpenLoginPtySession {
+  const log = deps.log ?? (() => {});
+  return async (binding) => {
+    const metadata =
+      binding.lease.metadata && typeof binding.lease.metadata === "object"
+        ? (binding.lease.metadata as Record<string, unknown>)
+        : {};
+    const pluginId = readLeaseMetaString(metadata.pluginId);
+    const driverKey =
+      readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
+    if (!binding.providerLeaseId || !pluginId || !driverKey) {
+      log("[paperclip] Device login: the lease carries no sandbox worker binding.");
+      throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
+    }
+    // Resolve the closed command key from the trusted adapter type. An unmapped
+    // adapter fails closed before the worker RPC.
+    let loginCommandKey: LoginCommandKey;
+    try {
+      loginCommandKey = resolveLoginCommandKey(binding.adapterType);
+    } catch {
+      log("[paperclip] Device login: the adapter type has no login command key.");
+      throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
+    }
+    // Validate the server-controlled session home shape before the worker RPC.
+    // The runtime derived it from the session id; the manager revalidates it too.
+    validateLoginSessionHome(binding.sessionHome);
+    // The opener argument is the runner's fixed command string. It confers no
+    // command authority, so the opener ignores it and returns a host-bound opener.
+    return (_command: string) =>
+      deps.workerManager.openLoginPtySession(pluginId, {
+        driverKey,
+        companyId: binding.companyId,
+        environmentId: binding.environmentId,
+        providerLeaseId: binding.providerLeaseId,
+        loginCommandKey,
+        sessionHome: binding.sessionHome,
+      });
   };
 }
 
 export interface ProductionLoginSessionRuntimeDeps {
   db: Db;
   environmentRuntime: EnvironmentRuntimeService;
+  /**
+   * Re-checks the provider login pseudo-terminal capability from current runtime
+   * state, immediately before the provider lease. The route gate already ran, so
+   * a managed reconciliation can rebind the environment to an unsupported
+   * provider between the route gate and this acquire. The check reads the current
+   * provider capability, not the stale route decision. It throws the fixed
+   * unsupported-provider error, so the runtime creates no lease and opens no
+   * pseudo-terminal for an unsupported provider.
+   */
+  assertProviderSupportsLoginPty: (environmentId: string) => Promise<void>;
+  /**
+   * Opens the live pseudo-terminal for the acquired lease. When a caller omits
+   * it, the runtime binds a fail-closed opener: the login run then fails and the
+   * service deletes the sandbox. The live opener binds the sandbox worker route.
+   */
+  openLivePtySession?: OpenLoginPtySession;
 }
+
+/** The fixed, non-secret error the fail-closed opener throws when no live
+ *  pseudo-terminal opener is bound. */
+const LOGIN_PTY_OPENER_UNBOUND = "device login failed: the sandbox pseudo-terminal transport is not bound.";
 
 /**
  * Build the production login-session runtime. It acquires a fresh lease with
  * reuse disabled (no heartbeat run, no execution workspace) and the active
- * custom-image template applied, binds the sandbox login driver, and owns the
- * delete and release seams.
+ * custom-image template applied, binds the sandbox login driver over the shared
+ * pseudo-terminal transport, and owns the delete and release seams.
  */
 export function createProductionLoginSessionRuntime(
   deps: ProductionLoginSessionRuntimeDeps,
@@ -1157,20 +1375,23 @@ export function createProductionLoginSessionRuntime(
       if (!environment) {
         throw new Error(`Environment "${input.environmentId}" is not found.`);
       }
-      const record = await deps.environmentRuntime.acquireRunLease({
-        companyId: input.companyId,
-        environment,
-        issueId: null,
-        agentId: null,
-        // A null heartbeat run and a null execution workspace disable lease
-        // reuse, so the login session always runs in a fresh sandbox.
-        heartbeatRunId: null,
-        persistedExecutionWorkspace: null,
-        adapterType: input.adapterType,
-        // Apply the active custom-image template, so the sandbox binds to the
-        // trusted image and runtime identity.
-        applyCustomImageTemplate: true,
-      });
+      // Re-check the provider login pseudo-terminal capability from current
+      // runtime state, immediately before the provider lease. A managed
+      // reconciliation can rebind the environment to an unsupported provider
+      // between the route gate and this acquire, so the check reads the current
+      // capability, not the stale route decision. It throws the fixed
+      // unsupported-provider error, so the runtime acquires no lease and opens no
+      // pseudo-terminal for an unsupported provider.
+      await deps.assertProviderSupportsLoginPty(input.environmentId);
+      const record = await deps.environmentRuntime.acquireRunLease(
+        buildLoginLeaseAcquireArgs({
+          metadata: {
+            companyId: input.companyId,
+            environment,
+            adapterType: input.adapterType,
+          },
+        }),
+      );
       // Tag the lease with the session identifier, so the reaper resolves an
       // orphan lease that no live session references. The tag carries no secret.
       await environmentsSvc.updateLeaseMetadata(record.lease.id, {
@@ -1180,7 +1401,23 @@ export function createProductionLoginSessionRuntime(
       const sessionHome = sessionCodexHomePath(input.sessionId);
       const authPath = sessionCredentialPath(input.sessionId);
       const providerLeaseId = record.lease.providerLeaseId ?? record.lease.id;
+      // Resolve the live pseudo-terminal opener for this lease. When no live
+      // opener is bound, use a fail-closed opener: the login run then fails and
+      // the service deletes the sandbox. The opener sets `CODEX_HOME` to the same
+      // `sessionHome` the descriptor-bound read opens.
+      const openPtySession: LoginPtySessionOpener = deps.openLivePtySession
+        ? await deps.openLivePtySession({
+            companyId: input.companyId,
+            environmentId: input.environmentId,
+            adapterType: input.adapterType,
+            providerLeaseId,
+            sessionHome,
+            environment: record.environment,
+            lease: record.lease,
+          })
+        : () => Promise.reject(new Error(LOGIN_PTY_OPENER_UNBOUND));
       const driver = buildSandboxLoginDriver({
+        openPtySession,
         environmentRuntime: deps.environmentRuntime,
         environment: record.environment,
         lease: record.lease,

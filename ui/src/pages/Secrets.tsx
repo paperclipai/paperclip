@@ -1793,7 +1793,7 @@ export function Secrets() {
 
   return (
     <TooltipProvider>
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div className="flex max-w-6xl flex-col gap-4">
       <div className="flex items-center gap-2">
         <KeyRound className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Secrets</h1>
@@ -1802,7 +1802,7 @@ export function Secrets() {
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as SecretsTab)}
-        className="flex min-h-0 flex-1 flex-col gap-4"
+        className="flex flex-col gap-4"
       >
         <PageTabBar
           items={[
@@ -1831,7 +1831,7 @@ export function Secrets() {
           onValueChange={(value) => setActiveTab(value as SecretsTab)}
         />
 
-        <TabsContent value="secrets" className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+        <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-48 sm:w-64 md:w-80">
@@ -1936,7 +1936,7 @@ export function Secrets() {
               </Button>
             </div>
           ) : null}
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div>
             {secretsQuery.isError || userDefinitionsQuery.isError ? (
               <div className="text-sm text-destructive flex items-center gap-2 py-4">
                 <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
@@ -2183,11 +2183,11 @@ export function Secrets() {
         </TabsContent>
         <TabsContent
           value="my-secrets"
-          className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+          className="flex flex-col gap-3"
         >
           <MyUserSecretsTab companyId={selectedCompanyId} />
         </TabsContent>
-        <TabsContent value="vaults" className="min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="vaults">
           <ProviderVaultsTab
             providers={providers}
             providerConfigs={providerConfigs}
@@ -2210,7 +2210,7 @@ export function Secrets() {
             }
           />
         </TabsContent>
-        <TabsContent value="proposals" className="min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="proposals">
           {selectedCompanyId ? (
             <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
           ) : null}

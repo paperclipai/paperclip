@@ -40,6 +40,9 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
     type,
     ...(typeof parsed.baseRef === "string" ? { baseRef: parsed.baseRef } : {}),
     ...(typeof parsed.branchTemplate === "string" ? { branchTemplate: parsed.branchTemplate } : {}),
+    ...(typeof parsed.existingBranch === "string" && parsed.existingBranch.trim().length > 0
+      ? { existingBranch: parsed.existingBranch.trim() }
+      : {}),
     ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
     ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
     ...(typeof parsed.runtimeProvisionCommand === "string"

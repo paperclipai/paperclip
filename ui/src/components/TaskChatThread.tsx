@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import { IssueChatThread } from "@/components/IssueChatThread";
+import { IssueChatThread, IssueAssigneePausedNotice } from "@/components/IssueChatThread";
 import {
   useLiveRunTranscripts,
   type RunTranscriptSource,
@@ -136,6 +136,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     blockedBy = [],
     blockerAttention,
     liveIssueIds,
+    onResumeAssignee,
+    resumeAssigneePending = false,
   } = props;
 
   const liveWorkLinks = useMemo(
@@ -642,6 +644,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  const assignedAgentForNotice = useMemo(() => {
+    if (!currentAssigneeValue?.startsWith("agent:")) return null;
+    const assigneeAgentId = currentAssigneeValue.slice("agent:".length);
+    return agentMap?.get(assigneeAgentId) ?? null;
+  }, [agentMap, currentAssigneeValue]);
+
   // Mobile (PAP-360): the app shell scrolls the DOCUMENT (Layout's main is
   // overflow-visible with auto height), so the desktop bounded h-dvh chain
   // collapses the absolute-inset transcript viewport to 0px. Render the thread
@@ -696,7 +704,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       emptyMessage={
                         tailStatus === "queued"
                           ? "Waiting to start..."
-                          : "Waiting for transcript..."
+                          : // Before the first transcript token, surface the run's
+                            // live runtime status (sandbox preparation phases like
+                            // "Syncing workspace to environment" emitted via
+                            // onRuntimeProgress) instead of an opaque wait message.
+                            (liveRun && liveRun.id === tailRunId
+                              ? liveRun.currentStatusMessage
+                              : null) || "Waiting for transcript..."
                       }
                     />
                   </div>
@@ -709,6 +723,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           />
         )}
       </div>
+      {assignedAgentForNotice?.status === "paused" ? (
+        <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
+          <IssueAssigneePausedNotice
+            agent={assignedAgentForNotice}
+            onResume={onResumeAssignee}
+            resuming={resumeAssigneePending}
+          />
+        </div>
+      ) : null}
       {showComposer ? (
         <div
           data-testid="task-chat-composer-dock"
@@ -726,9 +749,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             isMobile
               ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
               : "bottom-0 z-10",
-            // Match the thread width on mobile. Keep the intentionally
-            // narrower composer on larger screens.
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:w-(--pct-80)",
+            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
           )}
         >
           {composerAccessory}

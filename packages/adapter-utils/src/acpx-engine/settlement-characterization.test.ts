@@ -334,6 +334,7 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
             // The lease is still held while the sync-back runs; it releases only
             // afterward, in the cleanupRemoteBridges finally.
             leaseSizeDuringSyncBack = stagingLocks.size;
+            return { ok: true };
           },
         };
       },
@@ -890,12 +891,12 @@ describe("ACP settlement — Layer B: restoreWorkspace order + native-sync selec
     // Phase order: config_sync (staging) → restore → finalize (finalize last).
     expect(runtimeStatuses).toEqual(
       expect.arrayContaining([
-        "config_sync:Syncing workspace to sandbox",
-        "restore:Restoring workspace from sandbox",
-        "finalize:Finalizing sandbox workspace",
+        "config_sync:Syncing workspace to environment",
+        "restore:Restoring workspace from environment",
+        "finalize:Finalizing workspace",
       ]),
     );
-    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing sandbox workspace");
+    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing workspace");
   });
 
   it("test_git_backed_workspace_restore_phase_order", async () => {
@@ -1046,6 +1047,7 @@ describe("ACP settlement — Layer C: per-adapter sync-back teardown fires once 
               stagedRuntime,
               teardown: async () => {
                 teardownCalls += 1;
+                return { ok: true };
               },
             };
           },

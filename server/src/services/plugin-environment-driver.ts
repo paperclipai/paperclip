@@ -49,6 +49,31 @@ export const REUSABLE_LEASE_WORKER_METHODS = [
   "environmentDestroyLease",
 ] as const;
 
+/**
+ * The worker methods a sandbox provider must advertise before the customImage
+ * setup gate in `environment-custom-images.ts` allows an interactive setup
+ * session. The setup lifecycle starts a session through
+ * `environmentStartInteractiveSetup`, polls it through
+ * `environmentGetInteractiveSetup`, and cancels it through
+ * `environmentCancelInteractiveSetup`. A provider that omits any of the three
+ * can strand a setup session partway through the lifecycle.
+ */
+export const INTERACTIVE_SETUP_WORKER_METHODS = [
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCancelInteractiveSetup",
+] as const;
+
+/** The worker method the customImage template-capture gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_CAPTURE_WORKER_METHODS = [
+  "environmentCaptureTemplate",
+] as const;
+
+/** The worker method the customImage template-delete gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_DELETE_WORKER_METHODS = [
+  "environmentDeleteTemplate",
+] as const;
+
 export interface ReadyPluginWorkerRecovery {
   pluginKeys: readonly string[];
   startWorker(plugin: { id: string; pluginKey: string }): Promise<boolean>;
@@ -78,7 +103,7 @@ export interface ReadyPluginEnvironmentDriver {
   templateRefKind?: PluginEnvironmentDriverDeclaration["templateRefKind"];
   templateConfigBinding?: PluginEnvironmentDriverDeclaration["templateConfigBinding"];
   supportsTemplateDelete?: PluginEnvironmentDriverDeclaration["supportsTemplateDelete"];
-  supportsSetupTokenLogin?: PluginEnvironmentDriverDeclaration["supportsSetupTokenLogin"];
+  supportsLoginPty?: PluginEnvironmentDriverDeclaration["supportsLoginPty"];
 }
 
 export function pluginDriverProviderKey(config: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">): string {
@@ -257,7 +282,7 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
-          supportsSetupTokenLogin: driver.supportsSetupTokenLogin,
+          supportsLoginPty: driver.supportsLoginPty,
         })),
     );
   }

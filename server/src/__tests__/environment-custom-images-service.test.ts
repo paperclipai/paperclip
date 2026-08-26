@@ -66,7 +66,16 @@ function pluginManifest() {
   } as const;
 }
 
-function createWorkerManager() {
+const ALL_CUSTOM_IMAGE_WORKER_METHODS = [
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCancelInteractiveSetup",
+  "environmentCaptureTemplate",
+  "environmentDeleteTemplate",
+] as const;
+
+function createWorkerManager(options?: { workerMethods?: readonly string[] }) {
+  const supportedMethods = options?.workerMethods ?? ALL_CUSTOM_IMAGE_WORKER_METHODS;
   const call = vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
     if (method === "environmentStartInteractiveSetup") {
       return {
@@ -134,6 +143,7 @@ function createWorkerManager() {
   return {
     call,
     isRunning: vi.fn(() => true),
+    getWorker: vi.fn(() => ({ supportedMethods: [...supportedMethods] })),
   } as unknown as PluginWorkerManager & { call: typeof call };
 }
 
@@ -389,6 +399,99 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(cleanup).toMatchObject({ scanned: 1, timedOut: 1, failed: 0 });
     const timedOut = await service.getSessionById(expired.session.id);
     expect(timedOut?.status).toBe("timed_out");
+  });
+
+  it("rejects interactive setup when the provider declares it but the worker omits a setup method", async () => {
+    const { environmentId } = await seed();
+    // The manifest declares supportsInteractiveSetup, but the worker reports
+    // none of the three setup methods. The gate must name the first missing one.
+    const workerManager = createWorkerManager({
+      workerMethods: ["environmentCaptureTemplate", "environmentDeleteTemplate"],
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    await expect(service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    })).rejects.toThrow('does not report the "environmentStartInteractiveSetup" method');
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("rejects template capture when the provider declares it but the worker omits the capture method", async () => {
+    const { environmentId } = await seed();
+    // The worker reports every setup method, so the session starts and
+    // finishes the interactive part. It omits environmentCaptureTemplate, so
+    // finishing the session must fail at the capture gate.
+    const workerManager = createWorkerManager({
+      workerMethods: [
+        "environmentStartInteractiveSetup",
+        "environmentGetInteractiveSetup",
+        "environmentCancelInteractiveSetup",
+        "environmentDeleteTemplate",
+      ],
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    await expect(service.finishSetupSession({ sessionId: started.session.id }))
+      .rejects.toThrow('does not report the "environmentCaptureTemplate" method');
+  });
+
+  it("rejects template deletion when the provider declares it but the worker omits the delete method", async () => {
+    const { environmentId } = await seed();
+    // The worker reports every setup and capture method but omits
+    // environmentDeleteTemplate, so a delete-on-disable request must fail at
+    // the delete gate after the template is already captured.
+    const workerManager = createWorkerManager({
+      workerMethods: [
+        "environmentStartInteractiveSetup",
+        "environmentGetInteractiveSetup",
+        "environmentCancelInteractiveSetup",
+        "environmentCaptureTemplate",
+      ],
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    await expect(service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    })).rejects.toThrow('does not report the "environmentDeleteTemplate" method');
+  });
+
+  it("passes every gate when the provider declares each flag and the worker reports every matching method", async () => {
+    const { environmentId } = await seed();
+    // The default worker manager reports all five methods, matching every
+    // flag the manifest declares. Every gate must pass.
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    expect(promoted.template.status).toBe("active");
+
+    const disabled = await service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    });
+    expect(disabled.status).toBe("revoked");
+    expect(workerManager.call).toHaveBeenCalledWith(
+      expect.any(String),
+      "environmentDeleteTemplate",
+      expect.any(Object),
+      undefined,
+    );
   });
 
   it("rejects templates from another environment", async () => {
@@ -865,6 +968,52 @@ describeEmbeddedPostgres("environmentCustomImageService reconciliation", () => {
     const outOfSync = await service.getOverview({ environmentId });
     expect(outOfSync.activeTemplate).not.toBeNull();
     expect(outOfSync.activeTemplateMatchesConfig).toBe(false);
+    // A boot-source field changed, so the overview attributes the drift and
+    // names the field with its `from`/`to` values.
+    expect(outOfSync.activeTemplateDrift?.classification).toBe("boot_source_drift");
+    expect(outOfSync.activeTemplateDrift?.driftedPaths).toEqual(
+      expect.arrayContaining([{ path: "image", from: "fake:base", to: "fake:other" }]),
+    );
+  });
+
+  it("attributes a knob-only overview change without naming a boot-source field", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    // A non-boot-relevant field changes. The fingerprint no longer matches, but
+    // every boot-source value still matches, so the drift is knob-only.
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:base", reuseLease: false, region: "eu" } })
+      .where(eq(environments.id, environmentId));
+    const overview = await service.getOverview({ environmentId });
+    expect(overview.activeTemplateMatchesConfig).toBe(false);
+    expect(overview.activeTemplateDrift?.classification).toBe("knob_only");
+    expect(overview.activeTemplateDrift?.driftedPaths).toEqual([]);
+  });
+
+  it("attributes an unclassified overview drift for a legacy template with no snapshot", async () => {
+    const { environmentId } = await seed();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    // A legacy template carries no boot-relevant snapshot. The overview must
+    // fail closed and give no false "safe to relink" signal.
+    await db.insert(environmentCustomImageTemplates).values({
+      environmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-legacy",
+      sourceEnvironmentConfigFingerprint: "stale-fingerprint",
+      status: "active",
+      metadata: { runtimeConfigBinding: { field: "customTemplate", unsetFields: ["image"] } },
+    });
+
+    const overview = await service.getOverview({ environmentId });
+    expect(overview.activeTemplate).not.toBeNull();
+    expect(overview.activeTemplateDrift?.classification).toBe("unclassified");
+    expect(overview.activeTemplateDrift?.driftedPaths).toEqual([]);
   });
 });
 
@@ -1105,6 +1254,45 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
     expect(activityJson).not.toContain("cred-secret-value");
     // Drift detail carries path names only, never a fingerprint value.
     expect(activityJson).not.toContain(promoted.template.sourceEnvironmentConfigFingerprint);
+  });
+
+  it("keeps secret values and the fingerprint out of the overview payload", async () => {
+    const config = {
+      provider: "fake-secret-plugin",
+      image: "fake:base",
+      apiUrl: "https://secret-endpoint.example",
+      auth: "auth-secret-value",
+      credentials: { secret: "cred-secret-value", region: "eu" },
+      reuseLease: false,
+    };
+    const { environmentId } = await seed({ manifest: secretPluginManifest(), config });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    // A boot-source field changes, so the overview reports drift and carries the
+    // drifted paths. The payload must never leak a secret value or a fingerprint.
+    await db.update(environments)
+      .set({ config: { ...config, image: "fake:other" } })
+      .where(eq(environments.id, environmentId));
+    const overview = await service.getOverview({ environmentId });
+    // An excluded secret-ref path forces the fail-closed unclassified result.
+    expect(overview.activeTemplateDrift?.classification).toBe("unclassified");
+    // The full overview never leaks a secret value, and the server-internal
+    // snapshot never reaches the template response.
+    const overviewJson = JSON.stringify(overview);
+    expect(overviewJson).not.toContain("secret-endpoint.example");
+    expect(overviewJson).not.toContain("auth-secret-value");
+    expect(overviewJson).not.toContain("cred-secret-value");
+    expect(overviewJson).not.toContain("bootRelevantConfig");
+    // The drift attribution carries path names and non-secret values only, never
+    // a fingerprint value.
+    const driftJson = JSON.stringify(overview.activeTemplateDrift);
+    expect(driftJson).not.toContain(promoted.template.sourceEnvironmentConfigFingerprint);
+    expect(driftJson).not.toContain("secret-endpoint.example");
+    expect(driftJson).not.toContain("auth-secret-value");
+    expect(driftJson).not.toContain("cred-secret-value");
   });
 
   it("fails closed for legacy templates without a boot-relevant snapshot", async () => {

@@ -36,16 +36,24 @@ import {
 import { secretService } from "./secrets.js";
 import type { environmentService } from "./environments.js";
 import type { environmentRuntimeService } from "./environment-runtime.js";
+import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import type { Db } from "@paperclipai/db";
 import {
-  createSetupTokenPtyTransport,
-  type SetupTokenPtySession,
-  type SetupTokenPtySessionOpener,
-} from "@paperclipai/adapter-utils/setup-token-transport";
+  createLoginPtyTransport,
+  type LoginPtySession,
+  type LoginPtySessionOpener,
+} from "@paperclipai/adapter-utils/login-pty-transport";
 import {
   runSetupTokenLogin,
   CLAUDE_SETUP_TOKEN_COMMAND,
 } from "@paperclipai/adapter-claude-local/server";
+import { randomUUID } from "node:crypto";
+import {
+  deriveLoginSessionHome,
+  resolveLoginCommandKey,
+  validateLoginSessionHome,
+  type LoginCommandKey,
+} from "./login-command.js";
 
 /**
  * The sandbox provider for one login session. It acquires a fresh sandbox lease
@@ -63,7 +71,7 @@ export interface SetupTokenSandboxProvider {
   acquire(input: {
     scope: SetupTokenSessionScope;
     deadline: number;
-  }): Promise<{ leaseId: string; openPtySession: SetupTokenPtySessionOpener }>;
+  }): Promise<{ leaseId: string; openPtySession: LoginPtySessionOpener }>;
   /** Releases the lease by id. The service and the startup reaper call it. */
   release(leaseId: string): Promise<void>;
 }
@@ -200,7 +208,6 @@ export function createSetupTokenSecretWriter(deps: {
         companyId: scope.companyId,
         ownerUserId: scope.ownerUserId,
         adapterType: scope.adapterType,
-        environmentId: scope.environmentId,
       });
       if (!transitioned) {
         // Zero-row result: roll back the whole transaction. The session then marks
@@ -219,9 +226,11 @@ export function createSetupTokenSecretWriter(deps: {
   };
 }
 
-/** The immutable scope key that correlates one acquire with one factory call. */
+/** The immutable scope key that correlates one acquire with one factory call. It
+ *  is the company, the owner, and the adapter, so it matches the active-slot
+ *  scope. The per-slot session cap is one, so one scope holds one live acquire. */
 function scopeKey(scope: SetupTokenSessionScope): string {
-  return [scope.companyId, scope.ownerUserId, scope.adapterType, scope.environmentId].join("\u0000");
+  return [scope.companyId, scope.ownerUserId, scope.adapterType].join("\u0000");
 }
 
 /**
@@ -244,7 +253,7 @@ export function buildSetupTokenLoginTransport(
   // The service calls `leases.acquire` and then `factory` in sequence for one
   // session, so a per-scope handoff correlates them. The per-owner session cap is
   // one, so one scope holds at most one live acquire.
-  const pendingOpeners = new Map<string, { leaseId: string; openPtySession: SetupTokenPtySessionOpener }>();
+  const pendingOpeners = new Map<string, { leaseId: string; openPtySession: LoginPtySessionOpener }>();
   // The reverse map releases a handoff by lease id when the factory never
   // consumes it (a factory error path).
   const leaseScopeKeys = new Map<string, string>();
@@ -286,7 +295,7 @@ export function buildSetupTokenLoginTransport(
     pendingOpeners.delete(key);
     leaseScopeKeys.delete(pending.leaseId);
 
-    const transport = createSetupTokenPtyTransport(pending.openPtySession);
+    const transport = createLoginPtyTransport(pending.openPtySession);
 
     // Bridge the browser code. The service calls `submitCode` one time after the
     // single `awaiting_code` transition wins. The runner calls `provideCode` one
@@ -356,7 +365,7 @@ export interface ProductionSetupTokenSandboxProviderDeps {
     scope: SetupTokenSessionScope;
     environmentId: string;
     leaseId: string;
-  }) => Promise<SetupTokenPtySessionOpener>;
+  }) => Promise<LoginPtySessionOpener>;
   /** A non-leaking status sink. It receives only fixed status lines. */
   log?: (line: string) => void;
 }
@@ -407,29 +416,29 @@ export function createProductionSetupTokenSandboxProvider(
         return failClosed();
       }
 
-      const leaseRecord = await deps.environmentRuntime.acquireRunLease({
-        companyId: scope.companyId,
-        environment,
-        issueId: null,
-        agentId: scope.targetAgentId ?? null,
-        // A null heartbeat run and a null execution workspace disable lease
-        // reuse, so the login session always runs in a fresh sandbox.
-        heartbeatRunId: null,
-        persistedExecutionWorkspace: null,
-        adapterType: scope.adapterType,
-        // Apply the active custom-image template, so the sandbox binds to the
-        // trusted image and runtime identity.
-        applyCustomImageTemplate: true,
-        // Re-check the environment company binding inside the lease insert
-        // transaction. The route guard ran earlier, so a managed reconciliation
-        // can bind this sandbox to another company between the guard and this
-        // acquire. The lease insert then rejects a foreign-company environment
-        // with the 403 `environment_company_mismatch` and holds no lease.
-        assertCompanyBinding: true,
-        // Bound the lease expiry to the session deadline. The runtime records
-        // the earlier of this deadline and the provider expiry on the lease row.
-        requestedExpiresAt: new Date(deadline),
-      });
+      const leaseRecord = await deps.environmentRuntime.acquireRunLease(
+        buildLoginLeaseAcquireArgs({
+          metadata: {
+            companyId: scope.companyId,
+            environment,
+            adapterType: scope.adapterType,
+          },
+          // The setup-token login is company-and-environment scoped. It carries
+          // no target agent, so the lease binds no agent.
+          targetAgentId: null,
+          // Re-check the environment company binding inside the lease insert
+          // transaction. The route guard ran earlier, so a managed
+          // reconciliation can bind this sandbox to another company between the
+          // guard and this acquire. The lease insert then rejects a
+          // foreign-company environment with the 403
+          // `environment_company_mismatch` and holds no lease.
+          assertCompanyBinding: true,
+          // Bound the lease expiry to the session deadline. The runtime records
+          // the earlier of this deadline and the provider expiry on the lease
+          // row.
+          requestedExpiresAt: new Date(deadline),
+        }),
+      );
       const leaseId = leaseRecord.lease.id;
       leaseRecords.set(leaseId, leaseRecord);
 
@@ -533,21 +542,22 @@ export function createProductionSetupTokenCleanupStore(db: Db): SetupTokenCleanu
  * reserves one route per worker, drives the open, binds the worker session
  * identifier one time, routes output, and terminalizes the route.
  */
-export interface SetupTokenPtyWorkerManagerLike {
-  openSetupTokenPtySession(
+export interface LoginPtyWorkerManagerLike {
+  openLoginPtySession(
     pluginId: string,
     input: {
       driverKey: string;
       companyId: string;
       environmentId: string;
       providerLeaseId: string;
-      command: string;
+      loginCommandKey: LoginCommandKey;
+      sessionHome: string;
     },
-  ): Promise<SetupTokenPtySession>;
+  ): Promise<LoginPtySession>;
 }
 
 /** The narrow lease-lookup surface the live opener needs. */
-export interface SetupTokenPtyLeaseLookup {
+export interface LoginPtyLeaseLookup {
   getLeaseById(leaseId: string): Promise<
     | {
         providerLeaseId: string | null;
@@ -558,11 +568,11 @@ export interface SetupTokenPtyLeaseLookup {
 }
 
 /** The dependencies the worker-bound live pseudo-terminal opener needs. */
-export interface WorkerBoundSetupTokenPtyOpenerDeps {
+export interface WorkerBoundLoginPtyOpenerDeps {
   /** The plugin worker manager that owns the host route gate. */
-  workerManager: SetupTokenPtyWorkerManagerLike;
+  workerManager: LoginPtyWorkerManagerLike;
   /** The environment lease lookup that resolves the worker target for a lease. */
-  environments: SetupTokenPtyLeaseLookup;
+  environments: LoginPtyLeaseLookup;
   /** A non-leaking status sink. It receives only fixed status lines. */
   log?: (line: string) => void;
 }
@@ -577,9 +587,15 @@ function readLeaseMetaString(value: unknown): string | null {
  * drives the worker through the manager route gate. The manager mints the host
  * route identifier and owns the route lifecycle. The opener fails closed when the
  * lease carries no sandbox worker binding.
+ *
+ * The opener resolves the host launch descriptor. It reads the closed login
+ * command key from the trusted adapter type, and it derives the server-controlled
+ * session home from a fresh UUID. It validates the home shape before the worker
+ * RPC. It never reads a command from the caller: the incoming opener argument is
+ * unused, so the transport cannot influence the sandbox command.
  */
-export function createWorkerBoundSetupTokenPtyOpener(
-  deps: WorkerBoundSetupTokenPtyOpenerDeps,
+export function createWorkerBoundLoginPtyOpener(
+  deps: WorkerBoundLoginPtyOpenerDeps,
 ): NonNullable<ProductionSetupTokenSandboxProviderDeps["openLivePtySession"]> {
   const log = deps.log ?? (() => {});
   return async ({ scope, environmentId, leaseId }) => {
@@ -599,13 +615,30 @@ export function createWorkerBoundSetupTokenPtyOpener(
       log("[paperclip] Setup-token login: the lease carries no sandbox worker binding.");
       throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
     }
-    return (command: string) =>
-      deps.workerManager.openSetupTokenPtySession(pluginId, {
+    // Resolve the closed command key from the trusted adapter type. An unmapped
+    // adapter fails closed before the worker RPC.
+    let loginCommandKey: LoginCommandKey;
+    try {
+      loginCommandKey = resolveLoginCommandKey(scope.adapterType);
+    } catch {
+      log("[paperclip] Setup-token login: the adapter type has no login command key.");
+      throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
+    }
+    // The opener argument is the runner's fixed command string. It confers no
+    // command authority, so the opener ignores it and returns a host-bound opener.
+    return (_command: string) => {
+      // Generate the session UUID, then the home path, then validate the exact
+      // shape before the host sends the worker RPC.
+      const sessionHome = deriveLoginSessionHome(randomUUID());
+      validateLoginSessionHome(sessionHome);
+      return deps.workerManager.openLoginPtySession(pluginId, {
         driverKey,
         companyId: scope.companyId,
         environmentId,
         providerLeaseId,
-        command,
+        loginCommandKey,
+        sessionHome,
       });
+    };
   };
 }

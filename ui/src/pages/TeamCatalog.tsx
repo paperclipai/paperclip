@@ -95,7 +95,6 @@ import {
   Folder,
   FolderKanban,
   FolderOpen,
-  Github,
   KeyRound,
   Link2,
   Loader2,
@@ -108,6 +107,7 @@ import {
   XCircle,
   XOctagon,
 } from "lucide-react";
+import { GithubIcon } from "../components/icons/github-icon";
 
 // Matches design §11 breakpoints. Module-level so stories and the page agree.
 const DESKTOP_MIN = 1024;
@@ -330,7 +330,7 @@ function RiskBanner({ team }: { team: CatalogTeam }) {
 function sourceKindIcon(type: CatalogTeamSourceRef["type"]) {
   switch (type) {
     case "github":
-      return Github;
+      return GithubIcon;
     case "url":
       return Link2;
     case "local_path":

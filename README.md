@@ -311,7 +311,7 @@ fi
 bash install.sh
 ```
 
-The installer ensures Node.js 20 or newer is available, installs a managed
+The installer ensures Node.js 24.11 or newer is available, installs a managed
 Paperclip CLI under `~/.paperclip/cli`, and starts interactive onboarding. It
 can also install Paperclip as a background service on supported Linux and
 macOS systems. The checksum detects transfer or publishing mistakes, but it is
@@ -376,7 +376,7 @@ pnpm dev
 
 This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
-> **Requirements:** Node.js 20+, pnpm 9.15+
+> **Requirements:** Node.js 24.11+, pnpm 9.15+
 
 <br/>
 
@@ -468,6 +468,8 @@ Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-p
 ## Observability
 
 Paperclip ships with opt-in OpenTelemetry auto-instrumentation for the server (traces only). It activates when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and supports `grpc`, `http/protobuf`, and `http/json` via the standard `OTEL_EXPORTER_OTLP_PROTOCOL` env var. The `@opentelemetry/*` packages are optional peer dependencies — install them only if you want tracing. See [doc/observability.md](doc/observability.md) for install commands and the full env-var reference.
+
+Paperclip also ships with opt-in Sentry error monitoring for the server and the browser. Set `SENTRY_DSN` to activate it — the server and the browser then report to the same Sentry project. `@sentry/node` is an optional peer dependency for the server; install it only if you want error monitoring. See [doc/observability.md](doc/observability.md#sentry-error-monitoring) for the install command, the privacy settings, and the full default capture set.
 
 ## Telemetry
 

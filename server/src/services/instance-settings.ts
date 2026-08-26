@@ -219,6 +219,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
+      enableNativeRunner: parsed.data.enableNativeRunner ?? false,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
@@ -245,6 +246,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
+      enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
@@ -256,6 +258,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   }
   return {
     enableEnvironments: false,
+    enableNativeRunner: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
@@ -282,6 +285,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
+    enableSandboxDuplexBridge: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,

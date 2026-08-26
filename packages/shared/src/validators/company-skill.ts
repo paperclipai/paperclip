@@ -18,9 +18,9 @@ export const companySkillVersionFileInventoryEntrySchema = companySkillFileInven
 });
 
 export const companySkillSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
-  folderId: z.string().uuid().nullable().optional(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
+  folderId: z.string().guid().nullable().optional(),
   folderPath: z.string().nullable().optional(),
   key: z.string().min(1),
   slug: z.string().min(1),
@@ -41,12 +41,12 @@ export const companySkillSchema = z.object({
   categories: z.array(z.string().min(1)).default([]),
   sharingScope: companySkillSharingScopeSchema,
   publicShareToken: z.string().nullable(),
-  forkedFromSkillId: z.string().uuid().nullable(),
-  forkedFromCompanyId: z.string().uuid().nullable(),
+  forkedFromSkillId: z.string().guid().nullable(),
+  forkedFromCompanyId: z.string().guid().nullable(),
   starCount: z.number().int().nonnegative(),
   installCount: z.number().int().nonnegative(),
   forkCount: z.number().int().nonnegative(),
-  currentVersionId: z.string().uuid().nullable(),
+  currentVersionId: z.string().guid().nullable(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
@@ -71,7 +71,7 @@ export const companySkillListItemSchema = companySkillSchema.extend({
 });
 
 export const companySkillUsageAgentSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   name: z.string().min(1),
   urlKey: z.string().min(1),
   adapterType: z.string().min(1),
@@ -79,11 +79,11 @@ export const companySkillUsageAgentSchema = z.object({
   actualState: z.string().nullable().describe(
     "Runtime adapter skill state when explicitly fetched; company skill detail reads return null without probing agent runtimes.",
   ),
-  versionId: z.string().uuid().nullable(),
+  versionId: z.string().guid().nullable(),
 });
 
 export const companySkillOriginalSummarySchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   name: z.string().min(1),
   slug: z.string().min(1),
   sourceType: companySkillSourceTypeSchema,
@@ -93,9 +93,9 @@ export const companySkillOriginalSummarySchema = z.object({
 
 export const companySkillForkSummarySchema = companySkillOriginalSummarySchema.extend({
   key: z.string().min(1),
-  forkedFromSkillId: z.string().uuid().nullable(),
-  forkedFromCompanyId: z.string().uuid().nullable(),
-  currentVersionId: z.string().uuid().nullable(),
+  forkedFromSkillId: z.string().guid().nullable(),
+  forkedFromCompanyId: z.string().guid().nullable(),
+  currentVersionId: z.string().guid().nullable(),
   createdByCurrentActor: z.boolean(),
   diverged: z.boolean(),
   createdAt: z.coerce.date(),
@@ -108,7 +108,7 @@ export const companySkillListQuerySchema = z.object({
   categories: z.array(z.string().min(1)).optional(),
   scope: companySkillSharingScopeSchema.optional(),
   include: z.array(companySkillListIncludeSchema).optional(),
-  folderId: z.string().uuid().optional(),
+  folderId: z.string().guid().optional(),
   includeSubtree: z.boolean().optional(),
 });
 
@@ -118,13 +118,13 @@ export const companySkillCategoryCountSchema = z.object({
 });
 
 export const companySkillVersionSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
-  companySkillId: z.string().uuid(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
+  companySkillId: z.string().guid(),
   revisionNumber: z.number().int().positive(),
   label: z.string().nullable(),
   fileInventory: z.array(companySkillVersionFileInventoryEntrySchema).default([]),
-  authorAgentId: z.string().uuid().nullable(),
+  authorAgentId: z.string().guid().nullable(),
   authorUserId: z.string().nullable(),
   createdAt: z.coerce.date(),
 });
@@ -146,17 +146,17 @@ export const companySkillVersionCreateSchema = z.object({
 }).default({});
 
 export const companySkillStarResultSchema = z.object({
-  skillId: z.string().uuid(),
+  skillId: z.string().guid(),
   starred: z.boolean(),
   starCount: z.number().int().nonnegative(),
 });
 
 export const companySkillCommentSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
-  companySkillId: z.string().uuid(),
-  parentCommentId: z.string().uuid().nullable(),
-  authorAgentId: z.string().uuid().nullable(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
+  companySkillId: z.string().guid(),
+  parentCommentId: z.string().guid().nullable(),
+  authorAgentId: z.string().guid().nullable(),
   authorUserId: z.string().nullable(),
   body: z.string(),
   deletedAt: z.coerce.date().nullable(),
@@ -166,7 +166,7 @@ export const companySkillCommentSchema = z.object({
 
 export const companySkillCommentCreateSchema = z.object({
   body: z.string().min(1),
-  parentCommentId: z.string().uuid().nullable().optional(),
+  parentCommentId: z.string().guid().nullable().optional(),
 });
 
 export const companySkillCommentUpdateSchema = z.object({
@@ -177,11 +177,11 @@ export const companySkillForkSchema = z.object({
   name: z.string().min(1).nullable().optional(),
   slug: z.string().min(1).nullable().optional(),
   sharingScope: companySkillSharingScopeSchema.optional(),
-  reassignAgentIds: z.array(z.string().uuid()).optional(),
+  reassignAgentIds: z.array(z.string().guid()).optional(),
 }).default({});
 
 export const companySkillForkReassignmentSchema = z.object({
-  agentId: z.string().uuid(),
+  agentId: z.string().guid(),
   previousSkillKey: z.string().min(1),
   nextSkillKey: z.string().min(1),
 });
@@ -193,7 +193,7 @@ export const companySkillForkResultSchema = z.object({
 });
 
 export const companySkillForkPrecheckResultSchema = z.object({
-  skillId: z.string().uuid(),
+  skillId: z.string().guid(),
   original: companySkillOriginalSummarySchema,
   agentUsageCount: z.number().int().nonnegative(),
   usedByAgents: z.array(companySkillUsageAgentSchema),
@@ -253,7 +253,7 @@ export const companySkillAuditFindingSchema = z.object({
 });
 
 export const companySkillAuditResultSchema = z.object({
-  skillId: z.string().uuid(),
+  skillId: z.string().guid(),
   installedHash: z.string().nullable(),
   originHash: z.string().nullable(),
   verdict: z.enum(["pass", "warning", "fail"]),
@@ -276,19 +276,19 @@ export const companySkillImportSchema = z.object({
 });
 
 export const companySkillProjectScanRequestSchema = z.object({
-  projectIds: z.array(z.string().uuid()).optional(),
-  workspaceIds: z.array(z.string().uuid()).optional(),
+  projectIds: z.array(z.string().guid()).optional(),
+  workspaceIds: z.array(z.string().guid()).optional(),
   mode: z.enum(["import", "preview"]).optional(),
   selection: z.array(z.object({
-    workspaceId: z.string().uuid(),
+    workspaceId: z.string().guid(),
     path: z.string().min(1),
     slug: z.string().min(1).optional(),
   })).optional(),
 });
 
 export const companySkillProjectBrowseRequestSchema = z.object({
-  projectId: z.string().uuid(),
-  workspaceId: z.string().uuid(),
+  projectId: z.string().guid(),
+  workspaceId: z.string().guid(),
   path: z.string().nullable().optional(),
 });
 
@@ -300,8 +300,8 @@ export const companySkillProjectBrowseEntrySchema = z.object({
 });
 
 export const companySkillProjectBrowseResultSchema = z.object({
-  projectId: z.string().uuid(),
-  workspaceId: z.string().uuid(),
+  projectId: z.string().guid(),
+  workspaceId: z.string().guid(),
   workspaceName: z.string().min(1),
   path: z.string().min(1),
   parentPath: z.string().nullable(),
@@ -313,21 +313,21 @@ export const companySkillProjectScanCandidateSchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
   description: z.string().nullable(),
-  workspaceId: z.string().uuid(),
+  workspaceId: z.string().guid(),
   workspaceName: z.string().min(1),
-  projectId: z.string().uuid(),
+  projectId: z.string().guid(),
   projectName: z.string().min(1),
   directoryRoot: z.string().min(1),
   relativePath: z.string().min(1),
   status: z.enum(["new", "already_imported", "conflict", "skipped"]),
-  existingSkillId: z.string().uuid().optional(),
+  existingSkillId: z.string().guid().optional(),
   reason: z.string().min(1).optional(),
 });
 
 export const companySkillProjectScanSkippedSchema = z.object({
-  projectId: z.string().uuid().nullable(),
+  projectId: z.string().guid().nullable(),
   projectName: z.string().min(1).nullable(),
-  workspaceId: z.string().uuid().nullable(),
+  workspaceId: z.string().guid().nullable(),
   workspaceName: z.string().nullable(),
   path: z.string().nullable(),
   reason: z.string().min(1),
@@ -336,12 +336,12 @@ export const companySkillProjectScanSkippedSchema = z.object({
 export const companySkillProjectScanConflictSchema = z.object({
   slug: z.string().min(1),
   key: z.string().min(1),
-  projectId: z.string().uuid(),
+  projectId: z.string().guid(),
   projectName: z.string().min(1),
-  workspaceId: z.string().uuid(),
+  workspaceId: z.string().guid(),
   workspaceName: z.string().min(1),
   path: z.string().min(1),
-  existingSkillId: z.string().uuid(),
+  existingSkillId: z.string().guid(),
   existingSkillKey: z.string().min(1),
   existingSourceLocator: z.string().nullable(),
   reason: z.string().min(1),
@@ -360,7 +360,7 @@ export const companySkillProjectScanResultSchema = z.object({
 });
 
 export const companySkillCreateSchema = z.object({
-  folderId: z.string().uuid().nullable().optional(),
+  folderId: z.string().guid().nullable().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).nullable().optional(),
   description: z.string().nullable().optional(),
@@ -372,11 +372,11 @@ export const companySkillCreateSchema = z.object({
   homepageUrl: z.string().nullable().optional(),
   categories: z.array(z.string().min(1)).optional(),
   sharingScope: companySkillSharingScopeSchema.optional(),
-  forkedFromSkillId: z.string().uuid().nullable().optional(),
+  forkedFromSkillId: z.string().guid().nullable().optional(),
 });
 
 export const companySkillFileDetailSchema = z.object({
-  skillId: z.string().uuid(),
+  skillId: z.string().guid(),
   path: z.string().min(1),
   kind: z.enum(["skill", "markdown", "reference", "script", "asset", "other"]),
   content: z.string(),
@@ -398,9 +398,9 @@ export const companySkillFileDeleteSchema = z.object({
 export const companySkillTestRunStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "cancelled"]);
 
 export const companySkillTestInputSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
-  skillId: z.string().uuid(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
+  skillId: z.string().guid(),
   name: z.string().min(1),
   content: z.string(),
   createdBy: z.string().nullable(),
@@ -423,14 +423,14 @@ export const companySkillTestInputUpdateSchema = z.object({
 
 export const companySkillTestRunTemplateSchema = z.object({
   id: z.string().min(1),
-  companyId: z.string().uuid(),
+  companyId: z.string().guid(),
   name: z.string().min(1),
   description: z.string().nullable(),
   body: z.string().min(1),
   builtIn: z.boolean(),
-  createdByAgentId: z.string().uuid().nullable(),
+  createdByAgentId: z.string().guid().nullable(),
   createdByUserId: z.string().nullable(),
-  updatedByAgentId: z.string().uuid().nullable(),
+  updatedByAgentId: z.string().guid().nullable(),
   updatedByUserId: z.string().nullable(),
   deletedAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
@@ -471,15 +471,15 @@ export const companySkillTestRunCostSummarySchema = z.object({
 });
 
 export const companySkillTestRunSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
-  skillId: z.string().uuid(),
-  inputId: z.string().uuid().nullable(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
+  skillId: z.string().guid(),
+  inputId: z.string().guid().nullable(),
   inputSnapshot: z.string(),
-  skillVersionId: z.string().uuid(),
-  agentId: z.string().uuid(),
+  skillVersionId: z.string().guid(),
+  agentId: z.string().guid(),
   agentConfigSnapshot: z.record(z.string(), z.unknown()),
-  issueId: z.string().uuid(),
+  issueId: z.string().guid(),
   templateId: z.string().nullable(),
   templateName: z.string().nullable(),
   templateBody: z.string().nullable(),
@@ -500,20 +500,20 @@ export const companySkillTestRunSchema = z.object({
 });
 
 export const companySkillTestRunCreateSchema = z.object({
-  inputId: z.string().uuid().nullable().optional(),
+  inputId: z.string().guid().nullable().optional(),
   content: z.string().min(1).nullable().optional(),
-  agentId: z.string().uuid(),
+  agentId: z.string().guid(),
   templateId: z.string().min(1).nullable().optional(),
   templateSnapshot: companySkillTestRunTemplateSnapshotSchema.nullable().optional(),
   // Re-run pins the viewed run's skill version instead of the live head, so the
   // new run reproduces the same snapshots (golden-path step 5).
-  skillVersionId: z.string().uuid().nullable().optional(),
+  skillVersionId: z.string().guid().nullable().optional(),
 }).refine((value) => Boolean(value.inputId) || Boolean(value.content?.trim()), {
   message: "inputId or content is required",
 });
 
 export const companySkillTestRunListQuerySchema = z.object({
-  inputId: z.string().uuid().optional(),
+  inputId: z.string().guid().optional(),
 });
 
 export const catalogSkillKindSchema = z.enum(["bundled", "optional"]);

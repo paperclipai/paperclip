@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
-  claudeSetupTokenSessions,
+  adapterAuthSessions,
   companies,
   createDb,
   environments,
@@ -50,7 +50,6 @@ const SYNTH_TOKEN = "sk-ant-oat01-SYNTHETICSYNTHETICSYNTHETIC01";
 const OWNER_SCOPE: SetupTokenSessionScope = {
   companyId: "company-1",
   ownerUserId: "user-1",
-  targetAgentId: "agent-1",
   adapterType: "claude_local",
   environmentId: "env-1",
 };
@@ -171,7 +170,6 @@ function identityFromScope(scope: SetupTokenSessionScope, sessionId: string): Se
     companyId: scope.companyId,
     ownerUserId: scope.ownerUserId,
     adapterType: scope.adapterType,
-    environmentId: scope.environmentId,
   };
 }
 
@@ -179,8 +177,7 @@ function identityMatchesRow(row: SetupTokenCleanupRecord, identity: SetupTokenCl
   return (
     row.companyId === identity.companyId &&
     row.ownerUserId === identity.ownerUserId &&
-    row.adapterType === identity.adapterType &&
-    row.environmentId === identity.environmentId
+    row.adapterType === identity.adapterType
   );
 }
 
@@ -240,7 +237,7 @@ function buildService<L extends SetupTokenLeaseManager = FakeLeaseManager>(overr
   leases?: L;
   store?: FakeStore;
   rateLimiter?: SetupTokenRateLimiter;
-  caps?: { perOwner: number; perAgent: number; perCompany: number };
+  caps?: { perOwner: number; perCompany: number };
   ttlMs?: number;
   tokenRetentionMs?: number;
   now?: () => number;
@@ -276,7 +273,7 @@ function buildService<L extends SetupTokenLeaseManager = FakeLeaseManager>(overr
     store,
     completeCredential,
     rateLimiter: overrides.rateLimiter ?? allowAllRateLimiter(),
-    caps: overrides.caps ?? { perOwner: 5, perAgent: 5, perCompany: 5 },
+    caps: overrides.caps ?? { perOwner: 5, perCompany: 5 },
     ttlMs: overrides.ttlMs ?? 60_000,
     tokenRetentionMs: overrides.tokenRetentionMs,
     now: overrides.now,
@@ -321,10 +318,12 @@ describe("SetupTokenSessionService.start", () => {
     });
   });
 
-  it("rejects a caller over the per-owner cap with 429", async () => {
-    const { service } = buildService({ caps: { perOwner: 1, perAgent: 5, perCompany: 5 } });
+  it("rejects a second start on the same company, owner, and adapter slot with 429", async () => {
+    const { service } = buildService({ caps: { perOwner: 1, perCompany: 5 } });
     await service.start(OWNER_SCOPE);
-    await expect(service.start({ ...OWNER_SCOPE, targetAgentId: "agent-2" })).rejects.toMatchObject({
+    // The second start holds the same company, owner, and adapter slot, so it
+    // fails closed with the fixed cap error.
+    await expect(service.start(OWNER_SCOPE)).rejects.toMatchObject({
       status: 429,
       message: SETUP_TOKEN_CAP_EXCEEDED,
     });
@@ -332,7 +331,7 @@ describe("SetupTokenSessionService.start", () => {
 });
 
 describe("SetupTokenSessionService.start cap reservation (concurrency)", () => {
-  const capsPerOwnerOne = { perOwner: 1, perAgent: 5, perCompany: 5 };
+  const capsPerOwnerOne = { perOwner: 1, perCompany: 5 };
 
   it("reserves the owner slot synchronously, so a concurrent start fails closed with 429", async () => {
     const leases = new DeferredLeaseManager();
@@ -506,23 +505,19 @@ describe("SetupTokenSessionService.submitCode", () => {
 describe("SetupTokenSessionService authorization boundary", () => {
   const crossCompany: SetupTokenSessionScope = { ...OWNER_SCOPE, companyId: "company-2" };
   const sameCompanyOtherUser: SetupTokenSessionScope = { ...OWNER_SCOPE, ownerUserId: "user-9" };
-  const otherAgent: SetupTokenSessionScope = { ...OWNER_SCOPE, targetAgentId: "agent-9" };
   const otherAdapter: SetupTokenSessionScope = { ...OWNER_SCOPE, adapterType: "codex_local" };
-  const otherEnvironment: SetupTokenSessionScope = { ...OWNER_SCOPE, environmentId: "env-9" };
 
   it("returns the same not-found for a cross-scope caller on every operation", async () => {
     const { service, processes } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
 
-    // The full-scope match rejects a mismatch in any of the five scope fields:
-    // the company, the owner, the agent, the adapter, and the environment.
+    // The scope match rejects a mismatch in any of the three identity fields:
+    // the company, the owner, and the adapter.
     for (const scope of [
       crossCompany,
       sameCompanyOtherUser,
-      otherAgent,
       otherAdapter,
-      otherEnvironment,
     ]) {
       expect(() => service.readPrompt(sessionId, scope)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
       expect(() => service.submitCode(sessionId, scope, "code")).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
@@ -539,37 +534,25 @@ describe("SetupTokenSessionService authorization boundary", () => {
 });
 
 describe("SetupTokenSessionService company-and-environment scope", () => {
-  // The agentless company scope. It carries a null agent id.
-  const COMPANY_SCOPE: SetupTokenSessionScope = { ...OWNER_SCOPE, targetAgentId: null };
+  const COMPANY_SCOPE: SetupTokenSessionScope = OWNER_SCOPE;
   const companyKey = {
     companyId: COMPANY_SCOPE.companyId,
     ownerUserId: COMPANY_SCOPE.ownerUserId,
     adapterType: COMPANY_SCOPE.adapterType,
   };
 
-  it("resolves an agentless session by the company key and returns the intrinsic environment", async () => {
+  it("resolves a session by the company key and returns the intrinsic environment", async () => {
     const { service, processes } = buildService();
     const { sessionId } = await service.start(COMPANY_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
 
     const scope = service.resolveCompanyScope(sessionId, companyKey);
-    expect(scope.targetAgentId).toBeNull();
     expect(scope.environmentId).toBe(COMPANY_SCOPE.environmentId);
 
     const descriptor = service.describeOwned(sessionId, scope);
     expect(descriptor.sessionId).toBe(sessionId);
     expect(descriptor.environmentId).toBe(COMPANY_SCOPE.environmentId);
     expect(descriptor.loginUrl).toBe(FULL_LOGIN_URL);
-  });
-
-  it("rejects an agent-scoped session through the company key", async () => {
-    const { service } = buildService();
-    // The session carries a non-null agent id. The company key requires the
-    // agentless marker, so a company route cannot reach an agent session.
-    const { sessionId } = await service.start(OWNER_SCOPE);
-    expect(() => service.resolveCompanyScope(sessionId, companyKey)).toThrow(
-      SETUP_TOKEN_SESSION_NOT_FOUND,
-    );
   });
 
   it("returns the same not-found for a foreign company key", async () => {
@@ -1125,7 +1108,6 @@ describe("SetupTokenSessionService durable state scope", () => {
         companyId: OWNER_SCOPE.companyId,
         ownerUserId: "intruder",
         adapterType: OWNER_SCOPE.adapterType,
-        environmentId: OWNER_SCOPE.environmentId,
       },
       "submitting",
     );
@@ -1161,7 +1143,7 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
   });
 
   afterEach(async () => {
-    await db.delete(claudeSetupTokenSessions);
+    await db.delete(adapterAuthSessions);
     await db.delete(environments);
     await db.delete(companies);
   });
@@ -1170,10 +1152,12 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
     await stopDb?.();
   });
 
-  // Seed a company and an environment, then return one fresh record identity.
-  async function seedScope(): Promise<SetupTokenCleanupIdentity> {
+  // The seeded scope carries the intrinsic environment. The store record needs
+  // the environment for the non-null column, but the identity match drops it.
+  type SeededScope = SetupTokenCleanupIdentity & { environmentId: string };
+
+  async function seedCompany(): Promise<string> {
     const companyId = randomUUID();
-    const environmentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Acme",
@@ -1183,6 +1167,11 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    return companyId;
+  }
+
+  async function seedEnvironment(): Promise<string> {
+    const environmentId = randomUUID();
     await db.insert(environments).values({
       id: environmentId,
       name: `sandbox-${environmentId.slice(0, 8)}`,
@@ -1192,6 +1181,13 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    return environmentId;
+  }
+
+  // Seed a company and an environment, then return one fresh record scope.
+  async function seedScope(): Promise<SeededScope> {
+    const companyId = await seedCompany();
+    const environmentId = await seedEnvironment();
     return {
       sessionId: randomUUID(),
       companyId,
@@ -1202,13 +1198,13 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
   }
 
   async function insertRecord(
-    identity: SetupTokenCleanupIdentity,
+    scope: SeededScope,
     state: SetupTokenCleanupRecord["state"],
     deadlineMs: number,
   ): Promise<void> {
     const store = createDbSetupTokenCleanupStore(db);
     await store.record({
-      ...identity,
+      ...scope,
       leaseId: "lease-1",
       deadline: deadlineMs,
       state,
@@ -1219,21 +1215,51 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
   async function readRow(sessionId: string) {
     const rows = await db
       .select()
-      .from(claudeSetupTokenSessions)
-      .where(eq(claudeSetupTokenSessions.sessionId, sessionId));
+      .from(adapterAuthSessions)
+      .where(eq(adapterAuthSessions.publicSessionId, sessionId));
     return rows[0];
   }
 
-  it("records the non-secret cleanup record and reads it back", async () => {
-    const identity = await seedScope();
-    await insertRecord(identity, "starting", Date.now() + 60_000);
-    const row = await readRow(identity.sessionId);
-    expect(row?.companyId).toBe(identity.companyId);
-    expect(row?.ownerUserId).toBe(identity.ownerUserId);
-    expect(row?.adapterType).toBe(identity.adapterType);
-    expect(row?.environmentId).toBe(identity.environmentId);
-    expect(row?.state).toBe("starting");
+  it("records the non-secret cleanup record on the unified table and reads it back", async () => {
+    const scope = await seedScope();
+    await insertRecord(scope, "starting", Date.now() + 60_000);
+    const row = await readRow(scope.sessionId);
+    // The store writes the unified `adapter_auth_sessions` columns. The public
+    // session id holds the record session id, and the owner maps to
+    // `started_by_user_id`, the state to `status`.
+    expect(row?.publicSessionId).toBe(scope.sessionId);
+    expect(row?.companyId).toBe(scope.companyId);
+    expect(row?.startedByUserId).toBe(scope.ownerUserId);
+    expect(row?.adapterType).toBe(scope.adapterType);
+    expect(row?.environmentId).toBe(scope.environmentId);
+    expect(row?.status).toBe("starting");
     expect(row?.boundAt).toBeNull();
+  });
+
+  it("rejects a second active record on the same company, owner, and adapter slot", async () => {
+    const scope = await seedScope();
+    await insertRecord(scope, "awaiting_code", Date.now() + 60_000);
+
+    // A second active record for the same company, owner, and adapter conflicts
+    // on the active-slot unique index, even from a different environment. This
+    // proves the slot dropped the environment term.
+    const secondEnvironment = await seedEnvironment();
+    const sameSlot: SeededScope = {
+      ...scope,
+      sessionId: randomUUID(),
+      environmentId: secondEnvironment,
+    };
+    await expect(insertRecord(sameSlot, "awaiting_code", Date.now() + 60_000)).rejects.toThrow();
+
+    // A different owner in the same company holds an independent slot, so the
+    // insert succeeds.
+    const otherOwner: SeededScope = {
+      ...scope,
+      sessionId: randomUUID(),
+      ownerUserId: `user-${randomUUID().slice(0, 8)}`,
+    };
+    await insertRecord(otherOwner, "awaiting_code", Date.now() + 60_000);
+    expect((await readRow(otherOwner.sessionId))?.startedByUserId).toBe(otherOwner.ownerUserId);
   });
 
   it("consumes a stored claim once with one conditional write", async () => {
@@ -1258,6 +1284,31 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
     const store = createDbSetupTokenCleanupStore(db);
 
     const foreign = await store.consumeStoredClaim({ ...identity, ownerUserId: "intruder" });
+    expect(foreign).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+  });
+
+  it("returns no row for a cross-company consume and leaves the claim unconsumed", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    // A claim from another company does not match the stored row. The predicate
+    // scopes on company_id, so the consume returns no row and leaves bound_at null.
+    const otherCompanyId = await seedCompany();
+    const foreign = await store.consumeStoredClaim({ ...identity, companyId: otherCompanyId });
+    expect(foreign).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+  });
+
+  it("returns no row for a cross-adapter consume and leaves the claim unconsumed", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    // A claim for a different adapter does not match the stored row. The predicate
+    // scopes on adapter_type, so the consume returns no row and leaves bound_at null.
+    const foreign = await store.consumeStoredClaim({ ...identity, adapterType: "codex_local" });
     expect(foreign).toBeNull();
     expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
   });
@@ -1333,12 +1384,12 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
     });
     const lockHeld = lockDb.transaction(async (tx) => {
       await tx.execute(
-        sql`SELECT bound_at FROM claude_setup_token_sessions WHERE session_id = ${identity.sessionId} FOR UPDATE`,
+        sql`SELECT bound_at FROM adapter_auth_sessions WHERE public_session_id = ${identity.sessionId} FOR UPDATE`,
       );
       // Set a near deadline inside the locked transaction. The consume cannot see
       // this value until the transaction commits.
       await tx.execute(
-        sql`UPDATE claude_setup_token_sessions SET deadline_at = clock_timestamp() + interval '300 milliseconds' WHERE session_id = ${identity.sessionId}`,
+        sql`UPDATE adapter_auth_sessions SET expires_at = clock_timestamp() + interval '300 milliseconds' WHERE public_session_id = ${identity.sessionId}`,
       );
       signalLocked();
       await gate;

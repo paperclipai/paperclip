@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -20,6 +20,10 @@ import { agentInstructionsService } from "./agent-instructions.js";
 
 const MANAGED_AGENT_ENTITY_TYPE = "managed_agent";
 const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
+
+function managedAgentPauseReason(pluginKey: string) {
+  return `Provisioned paused by plugin ${pluginKey}; requires explicit activation.`;
+}
 
 interface PluginManagedAgentServiceOptions {
   pluginId: string;
@@ -416,9 +420,12 @@ export function pluginManagedAgentService(
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const adapterType = await resolveManagedAdapterType(companyId, declaration);
+    const initialStatus = requiresApproval ? "pending_approval" : declaration.status ?? "idle";
     let created = await agentSvc.create(companyId, {
       ...declarationPatch(declaration, { adapterType }),
-      status: requiresApproval ? "pending_approval" : declaration.status ?? "idle",
+      status: initialStatus,
+      pauseReason: initialStatus === "paused" ? managedAgentPauseReason(options.pluginKey) : null,
+      pausedAt: initialStatus === "paused" ? new Date() : null,
       metadata: managedMetadata(options.pluginId, options.pluginKey, declaration),
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
@@ -490,6 +497,57 @@ export function pluginManagedAgentService(
     return resolution(companyId, declaration, created as Agent, "created", approvalId);
   }
 
+  async function backfillManagedPauseReason(
+    companyId: string,
+    declaration: PluginManagedAgentDeclaration,
+    agent: Agent,
+  ) {
+    if (
+      declaration.status !== "paused"
+      || agent.status !== "paused"
+      || agent.pauseReason !== null
+    ) {
+      return agent;
+    }
+
+    const updated = await db
+      .update(agents)
+      .set({
+        pauseReason: managedAgentPauseReason(options.pluginKey),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(agents.id, agent.id),
+        eq(agents.companyId, companyId),
+        eq(agents.status, "paused"),
+        isNull(agents.pauseReason),
+      ))
+      .returning({ id: agents.id })
+      .then((rows) => rows[0] ?? null);
+
+    if (!updated) {
+      const current = await agentSvc.getById(agent.id) as Agent | null;
+      return current ?? agent;
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: "plugin",
+      actorId: options.pluginId,
+      action: "plugin.managed_agent.pause_reason_backfilled",
+      entityType: "agent",
+      entityId: updated.id,
+      details: {
+        sourcePluginKey: options.pluginKey,
+        managedResourceKey: declaration.agentKey,
+        pauseReason: managedAgentPauseReason(options.pluginKey),
+      },
+    });
+
+    const refreshed = await agentSvc.getById(updated.id) as Agent | null;
+    return refreshed ?? agent;
+  }
+
   async function get(agentKey: string, companyId: string) {
       const declaration = declarationFor(agentKey);
       const binding = await getBinding(companyId, agentKey);
@@ -506,15 +564,22 @@ export function pluginManagedAgentService(
       const declaration = declarationFor(agentKey);
       const current = await get(agentKey, companyId);
       if (current.agent) {
-        await upsertBinding(companyId, declaration, current.agent.id);
-        return current;
+        const agent = await backfillManagedPauseReason(companyId, declaration, current.agent);
+        await upsertBinding(companyId, declaration, agent.id);
+        return resolution(companyId, declaration, agent, current.status, current.approvalId);
       }
 
       const relinkCandidate = await findRelinkCandidate(companyId, declaration);
       if (relinkCandidate) {
         await upsertBinding(companyId, declaration, relinkCandidate.id);
-        const agent = await agentSvc.getById(relinkCandidate.id);
-        return resolution(companyId, declaration, agent as Agent, "relinked");
+        const relinkedAgent = await agentSvc.getById(relinkCandidate.id) as Agent | null;
+        if (!relinkedAgent) throw notFound("Managed agent not found");
+        const agent = await backfillManagedPauseReason(
+          companyId,
+          declaration,
+          relinkedAgent,
+        );
+        return resolution(companyId, declaration, agent, "relinked");
       }
 
       return createManagedAgent(companyId, declaration);

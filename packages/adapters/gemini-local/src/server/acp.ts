@@ -31,11 +31,12 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "20.0.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type GeminiExecutionEngine = "cli" | "acp";
 
@@ -162,19 +163,13 @@ async function prepareGeminiRemoteManagedHome(
   // the host. A restore miss is logged and never fails the run.
   const registerWorkspaceSyncBack = (
     stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
-  ): AcpxRemoteManagedHomeResult["teardown"] => async () => {
-    try {
-      await onLog("stdout", "[paperclip] Restoring workspace changes from the sandbox.\n");
-      await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
-    } catch (err) {
-      await onLog(
-        "stderr",
-        `[paperclip] Gemini ACP teardown workspace restore failed: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
-      );
-    }
-  };
+  ): AcpxRemoteManagedHomeResult["teardown"] =>
+    createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
+      failurePrefix: "[paperclip] Gemini ACP teardown workspace restore failed",
+    });
   const geminiSkillsHome = resolveGeminiSkillsHome(input.config);
   const stagedRuntime = await input.stage(
     geminiSkillsHome

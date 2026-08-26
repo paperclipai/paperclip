@@ -43,7 +43,7 @@ export function normalizeProviderFamily(key: string | undefined): string {
 
 /**
  * The common prefix for every sandbox-startup span attribute. One prefix keeps
- * the attribute namespace closed and easy to find in the telemetry backend.
+ * the attribute namespace closed and easy to find in the OpenTelemetry backend.
  */
 export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
 
@@ -109,6 +109,11 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   transferWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.wall_ms`,
   /** The number of serial guard round trips before one transfer. */
   transferGuardCount: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.guard.count`,
+  /** The transfer direction: `inbound` for an upload to the sandbox, `outbound`
+   * for a download from the sandbox. The parent span carries operation identity,
+   * so the transfer span never carries an operation label. The value stays in a
+   * closed set, so the attribute cardinality is bounded. */
+  transferDirection: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.direction`,
 } as const;
 
 /** The closed value set for the `outcome` attribute. */
@@ -789,11 +794,12 @@ export async function emitSkippedStartupStep(
 
 /**
  * Structured event emitted once per named run-lifecycle phase, so the duration
- * and the outcome of each phase land in the run-events stream. It is
- * observability-only and rides the existing `ctx.onEvent` bridge. The payload is
- * a closed shape: exactly `phase`, `durationMs`, and `outcome`. The phase name is
- * from a closed allowlist, so the event never carries a command, an argument, a
- * path, an environment value, or a raw identifier.
+ * and the outcome of each phase land in the run-events stream. It is a
+ * run-log event and rides the existing `ctx.onEvent` bridge. It never changes
+ * startup control flow. The payload is a closed shape: exactly `phase`,
+ * `durationMs`, and `outcome`. The phase name is from a closed allowlist, so
+ * the event never carries a command, an argument, a path, an environment
+ * value, or a raw identifier.
  */
 export const RUN_PHASE_TIMING_EVENT_TYPE = "run.phase.timing";
 

@@ -35,6 +35,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
@@ -48,7 +49,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "22.13.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type CodexExecutionEngine = "cli" | "acp";
 
@@ -236,26 +237,16 @@ async function prepareCodexRemoteManagedHome(
     // without its staged home. Host staged-temp removal is deliberately NOT here
     // — see `disposeStaged` — so caching this runtime for reuse never destroys
     // resources the next resume needs.
-    teardown: async () => {
-      try {
-        await onLog(
-          "stdout",
-          "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
-        );
-        await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
-      } catch (err) {
-        // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
-        // loudly as refresh_token_reused on the next host Codex use (re-auth
-        // recovers) — never silent host-credential corruption, so it must not
-        // mask the run result.
-        await onLog(
-          "stderr",
-          `[paperclip] Codex ACP teardown restore/copy-back failed: ${
-            err instanceof Error ? err.message : String(err)
-          }\n`,
-        );
-      }
-    },
+    // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
+    // loudly as refresh_token_reused on the next host Codex use (re-auth
+    // recovers) — never silent host-credential corruption, so it must not
+    // mask the run result.
+    teardown: createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+      failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+    }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
     // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
     // re-stage, idle eviction) — never on a clean turn that keeps the runtime
@@ -628,8 +619,8 @@ export async function testCodexAcpEnvironment(
       checks.push({
         code: ADAPTER_AUTH_MISSING_CHECK_CODE,
         level: "warn",
-        message: "The sandbox has no ready authentication for this adapter.",
-        hint: "Provide credentials for this adapter, or start login in the sandbox.",
+        message: "This environment has no ready authentication for this adapter.",
+        hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
   }

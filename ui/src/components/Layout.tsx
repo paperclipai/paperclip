@@ -113,7 +113,11 @@ export function Layout() {
   const location = useLocation();
   const navigationType = useNavigationType();
   const { enabled: appsEnabled } = useAppsEnabled();
-  const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  const isCompanySettingsRoute = [
+    "/company/settings",
+    "/company/export",
+    "/company/import",
+  ].some((settingsPath) => location.pathname.includes(settingsPath));
   const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
