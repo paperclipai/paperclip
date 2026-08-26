@@ -319,6 +319,18 @@ describe("probeClaudeAcpSandboxLogin", () => {
     });
 
     expect(checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const spawnedArgs = call[3] as string[];
+    const toolsIndex = spawnedArgs.indexOf("--tools");
+    expect(toolsIndex).toBeGreaterThanOrEqual(0);
+    expect(spawnedArgs[toolsIndex + 1]).toBe("");
+    expect(spawnedArgs).toContain("--safe-mode");
+    expect(spawnedArgs).toContain("--strict-mcp-config");
+    expect(spawnedArgs).not.toContain("--allowedTools");
+    expect(spawnedArgs).not.toContain("--dangerously-skip-permissions");
+    expect(JSON.stringify(spawnedArgs)).not.toContain("Bash");
+    expect(JSON.stringify(spawnedArgs)).not.toContain("Edit");
+    expect(JSON.stringify(spawnedArgs)).not.toContain("Write");
   });
 
   it("emits a distinct warn check, not a silent pass, when the probe cannot run", async () => {
