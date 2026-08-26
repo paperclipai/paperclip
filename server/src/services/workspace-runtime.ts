@@ -3215,6 +3215,24 @@ async function ensureProjectPrimaryGitRepo(cwd: string): Promise<string[]> {
     // shared workspace without tripping git's "please tell me who you are" guard.
     await runGit(["config", "user.email", "workspace@paperclip.local"], cwd).catch(() => undefined);
     await runGit(["config", "user.name", "Paperclip Workspace"], cwd).catch(() => undefined);
+    // TSMC-21586: PROVISION WITH A FIRST COMMIT, or the workspace is born unborn.
+    //
+    // `git init` alone leaves HEAD pointing at refs/heads/main with ZERO commits, so
+    // `git rev-parse HEAD` never resolves. That is not a cosmetic difference — an unborn
+    // checkout is what the 2026-08-25 ws-gc incident left behind fleet-wide, and it is a
+    // DEADLOCK: the thing that would create the first commit is an agent run, and a run
+    // cannot start against a checkout whose HEAD does not resolve. Seven of eight companies
+    // needed a hand repair that day, and TSR still needed one on 08-26 nine days later —
+    // twice by hand is the signal that provisioning, not repair, is the defect.
+    //
+    // An empty root commit costs nothing, resolves HEAD immediately, and stages NOTHING —
+    // so any untracked content already sitting in the directory is preserved exactly as it
+    // was. Best-effort like the config above: a workspace that somehow cannot commit is
+    // still more useful than a failed realization.
+    await runGit(
+      ["commit", "--allow-empty", "-m", "initialise workspace"],
+      cwd,
+    ).catch(() => undefined);
   } catch (error) {
     return [
       `Failed to initialize a git repository in project workspace "${cwd}": ${
