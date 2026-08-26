@@ -18,7 +18,8 @@ function buildPoisonedConfig(pcvtRoot: string) {
       source: "configure" as const,
     },
     database: {
-      mode: "embedded-postgres" as const,
+      mode: "embedded-postgres" as "embedded-postgres" | "postgres",
+      connectionString: undefined as string | undefined,
       embeddedPostgresDataDir: path.join(pcvtRoot, "db"),
       embeddedPostgresPort: 54329,
       backup: {
@@ -46,7 +47,7 @@ function buildPoisonedConfig(pcvtRoot: string) {
       disableSignUp: false,
     },
     storage: {
-      provider: "local_disk" as const,
+      provider: "local_disk" as "local_disk" | "s3",
       localDisk: {
         baseDir: path.join(pcvtRoot, "data", "storage"),
       },
@@ -58,7 +59,7 @@ function buildPoisonedConfig(pcvtRoot: string) {
       },
     },
     secrets: {
-      provider: "local_encrypted" as const,
+      provider: "local_encrypted" as "local_encrypted" | "aws_secrets_manager",
       strictMode: false,
       localEncrypted: {
         keyFilePath: path.join(pcvtRoot, "secrets", "master.key"),
@@ -128,6 +129,40 @@ describe("config integrity guard (KEWL-3955 / KEWL-3960)", () => {
       expect(config.databaseBackupDir).toBe(path.join(safeRoot, "env-backups"));
       expect(config.storageLocalDiskBaseDir).toBe(path.join(safeRoot, "env-storage"));
       expect(config.secretsMasterKeyFilePath).toBe(path.join(safeRoot, "env-secrets", "master.key"));
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT throw when stale pcvt-* paths are in inactive provider sections", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-integrity-guard-inactive-"));
+    try {
+      const instanceDir = path.join(home, "instances", "default");
+      await fs.mkdir(instanceDir, { recursive: true });
+      const configPath = path.join(instanceDir, "config.json");
+      const pcvtRoot = "/tmp/pcvt-84842-4-inactive";
+      const safeRoot = path.join(home, "safe-runtime");
+      const config = buildPoisonedConfig(safeRoot);
+      config.database.mode = "postgres";
+      config.database.connectionString = "postgresql://paperclip:paperclip@127.0.0.1:5432/paperclip";
+      config.database.embeddedPostgresDataDir = path.join(pcvtRoot, "db");
+      config.storage.provider = "s3";
+      config.storage.localDisk.baseDir = path.join(pcvtRoot, "data", "storage");
+      config.secrets.provider = "aws_secrets_manager";
+      config.secrets.localEncrypted.keyFilePath = path.join(pcvtRoot, "secrets", "master.key");
+      await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+
+      vi.stubEnv("PAPERCLIP_HOME", home);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("PAPERCLIP_CONFIG", configPath);
+      vi.stubEnv("PAPERCLIP_IN_WORKTREE", "");
+      vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+      vi.stubEnv("PAPERCLIP_SECRETS_PROVIDER", "aws_secrets_manager");
+
+      const loaded = loadConfig();
+      expect(loaded.databaseUrl).toBe(config.database.connectionString);
+      expect(loaded.storageProvider).toBe("s3");
+      expect(loaded.secretsProvider).toBe("aws_secrets_manager");
     } finally {
       await fs.rm(home, { recursive: true, force: true });
     }

@@ -187,6 +187,7 @@ export function loadConfig(): Config {
     fileDatabaseMode === "postgres"
       ? fileConfig?.database.connectionString
       : undefined;
+  const databaseUrl = process.env.DATABASE_URL ?? fileDbUrl;
   const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
@@ -344,11 +345,11 @@ export function loadConfig(): Config {
       resolveDefaultBackupDir(),
   );
   checkConfigIntegrity(fileConfig, resolvedConfigPath, {
-    databaseEmbeddedPostgresDataDir: embeddedPostgresDataDir,
-    databaseBackupDir,
+    databaseEmbeddedPostgresDataDir: databaseUrl ? undefined : embeddedPostgresDataDir,
+    databaseBackupDir: databaseBackupEnabled ? databaseBackupDir : undefined,
     loggingLogDir: fileConfig?.logging?.logDir,
-    storageLocalDiskBaseDir,
-    secretsMasterKeyFilePath,
+    storageLocalDiskBaseDir: storageProvider === "local_disk" ? storageLocalDiskBaseDir : undefined,
+    secretsMasterKeyFilePath: secretsProvider === "local_encrypted" ? secretsMasterKeyFilePath : undefined,
   });
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
@@ -397,7 +398,7 @@ export function loadConfig(): Config {
     authPublicBaseUrl,
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
-    databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+    databaseUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
     embeddedPostgresDataDir,
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
