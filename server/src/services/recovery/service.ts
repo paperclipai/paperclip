@@ -3531,6 +3531,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
   }
 
+  /**
+   * TSMC-21870: escalate UP THE CHAIN, not onto the operator.
+   *
+   * Recovery escalations were minted with `assigneeAgentId: null` unconditionally. Measured
+   * over 7 days: 126 `board_escalation_no_takeover` + 92 `recovery_loop_cap` landed on the
+   * operator, against only 4 `no_invokable_recovery_owner` — so 218 of 222 escalations parked
+   * on a human WITHOUT the company recovery owner ever being unavailable. All eight companies
+   * have `strandedRecoveryOwnerAgentId` configured.
+   *
+   * This does NOT weaken no-takeover. The SOURCE card's assignee is still never changed — that
+   * is the property `board_escalation_no_takeover` protects, and it holds. What changes is who
+   * owns the ESCALATION card, i.e. the "somebody decide what happens next" card. Routing that
+   * to a capable agent is the point of having a recovery owner; parking it on the operator
+   * stops the work.
+   *
+   * The operator stays the fallback and the board interaction is minted either way, so nothing
+   * becomes invisible — it just stops being the FIRST resort.
+   */
+  async function resolveEscalationReviewer(companyId: string, sourceIssue: {
+    originKind: string | null;
+    assigneeAgentId: string | null;
+  }): Promise<{ agentId: string | null; reason: string }> {
+    const company = await db
+      .select({ strandedRecoveryOwnerAgentId: companies.strandedRecoveryOwnerAgentId })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    const ownerId = company?.strandedRecoveryOwnerAgentId ?? null;
+    if (!ownerId) return { agentId: null, reason: "no company strandedRecoveryOwnerAgentId configured" };
+    const candidate = await getAgent(ownerId);
+    if (!candidate || candidate.companyId !== companyId) {
+      return { agentId: null, reason: "configured recovery owner is missing or in another company" };
+    }
+    const sourceAssignee = sourceIssue.assigneeAgentId ? await getAgent(sourceIssue.assigneeAgentId) : null;
+    // Same eligibility bar the recovery-ACTION router applies, so a shell handler never
+    // inherits non-routine judgment work.
+    if (!isRecoveryOwnerCandidateEligible(candidate, {
+      originKind: sourceIssue.originKind,
+      assigneeAdapterType: sourceAssignee?.adapterType ?? null,
+    })) {
+      return { agentId: null, reason: `recovery owner ${candidate.name} is not eligible for this source` };
+    }
+    if (!(await isAgentInvokable(candidate))) {
+      return { agentId: null, reason: `recovery owner ${candidate.name} is not invokable (status=${candidate.status})` };
+    }
+    if (!isHeartbeatWakeOnDemandEnabled(candidate)) {
+      return { agentId: null, reason: `recovery owner ${candidate.name} does not allow on-demand wakes` };
+    }
+    return { agentId: candidate.id, reason: `routed to company recovery owner ${candidate.name} for review` };
+  }
+
   async function ensureRecoveryLoopCapEscalationIssue(input: {
     issue: typeof issues.$inferSelect;
     kind: string;
@@ -3629,6 +3680,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         return existing;
       }
 
+      const reviewer = await resolveEscalationReviewer(input.issue.companyId, {
+        originKind: input.issue.originKind,
+        assigneeAgentId: input.issue.assigneeAgentId,
+      });
       const prefix = await getCompanyIssuePrefix(input.issue.companyId);
       const title = escalationReason === "no_invokable_recovery_owner"
         ? `BOARD ACTION REQUIRED: No invokable recovery owner — ${input.recoveryCause}`
@@ -3663,12 +3718,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           "",
           `- ${requiredBoardActionLine}`,
           "- This is a single root escalation; additional sources with the same signature link here rather than creating more board cards.",
+          "",
+          reviewer.agentId
+            ? `- Routed for review: ${reviewer.reason}. The source card's assignee is unchanged — this asks for a DECISION, not a takeover. Escalate to the operator only if the decision genuinely needs one.`
+            : `- Operator-owned: ${reviewer.reason}. No agent up the chain could take the review, so this is the fallback rather than the first resort.`,
         ].join("\n"),
         status: "todo",
         priority: "critical",
         projectId: input.issue.projectId,
         goalId: input.issue.goalId,
-        assigneeAgentId: null,
+          // TSMC-21870: route the ESCALATION to the company recovery owner for review
+          // before falling back to the operator. The SOURCE card's assignee is untouched,
+          // so no-takeover holds; what moves is who decides what happens next.
+          assigneeAgentId: reviewer.agentId,
         originKind: RECOVERY_LOOP_CAP_ESCALATION_ORIGIN,
         originId,
         originFingerprint: [
