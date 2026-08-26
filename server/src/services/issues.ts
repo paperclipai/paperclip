@@ -7697,7 +7697,10 @@ export function issueService(db: Db) {
         candidatesByCompany.set(candidate.companyId, companyCandidates);
       }
 
-      const resolved: Array<{ id: string; assigneeAgentId: string; blockerIssueIds: string[] }> = [];
+      // TSMC-21870: carry `status` through. The caller clears a `blocked` dependent
+      // at the same moment it emits the wake, and it cannot do that without knowing
+      // the status it is clearing.
+      const resolved: Array<{ id: string; assigneeAgentId: string; blockerIssueIds: string[]; status: string }> = [];
       for (const [companyId, companyCandidates] of candidatesByCompany) {
         const readinessMap = await listIssueDependencyReadinessMap(
           db,
@@ -7711,6 +7714,7 @@ export function issueService(db: Db) {
             id: candidate.id,
             assigneeAgentId: candidate.assigneeAgentId!,
             blockerIssueIds: readiness.blockerIssueIds,
+            status: candidate.status,
           });
         }
       }

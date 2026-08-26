@@ -3545,18 +3545,75 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const escalationReason = input.escalationReason ?? "recovery_loop_cap";
     const originId = `${input.kind}:${input.recoveryCause}`;
     return withRecoveryReceiptLock(`${input.issue.companyId}:${originId}`, async () => {
-      const existing = await db
+      // TSMC-21870: the collapse key is right; its SCOPE was wrong.
+      //
+      // `originId` is `kind:cause` — correctly CLASS-scoped, so every source with the
+      // same root signature should land on one card, exactly as the card body promises:
+      // "This is a single root escalation; additional sources with the same signature
+      // link here rather than creating more board cards."
+      //
+      // That promise held only while the card stayed open. `notInArray(status, [done,
+      // cancelled])` meant closing the card silently RE-ARMED the minter, so the next
+      // occurrence minted a fresh one. Measured 2026-08-26: 76 escalation cards in 30h
+      // fleet-wide, ONE distinct title shape per company. TSMC minted nine cards for the
+      // same originId (`missing_disposition:successful_run_missing_state`), each born and
+      // cancelled inside the SAME MINUTE, re-minted roughly hourly — TSMC-21561, 21566,
+      // 21582, 21717, 21732, 21754, 21768, 21776, 21781.
+      //
+      // Same defect as the [GUARD] card treadmill (services/guard-card-close-gate.ts) and
+      // the `Unblock:` remint loop: a machine-minted card's collapse key is scoped to the
+      // card being OPEN, and closing it is not gated on the condition being resolved.
+      //
+      // Fix, matching guard-bus: look up the newest card for this signature REGARDLESS of
+      // status. If it is open, reuse it as before. If it went terminal while the condition
+      // still recurs, REOPEN it — one card, one history — and only mint a replacement when
+      // the reopen fails, i.e. the card is genuinely unreachable.
+      const existingAnyStatus = await db
         .select()
         .from(issues)
         .where(and(
           eq(issues.companyId, input.issue.companyId),
           eq(issues.originKind, RECOVERY_LOOP_CAP_ESCALATION_ORIGIN),
           eq(issues.originId, originId),
-          notInArray(issues.status, ["done", "cancelled"]),
         ))
         .orderBy(desc(issues.updatedAt), desc(issues.id))
         .limit(1)
         .then((rows) => rows[0] ?? null);
+
+      let existing = existingAnyStatus
+        && existingAnyStatus.status !== "done"
+        && existingAnyStatus.status !== "cancelled"
+        ? existingAnyStatus
+        : null;
+
+      if (!existing && existingAnyStatus) {
+        try {
+          const reopened = await issuesSvc.update(existingAnyStatus.id, {
+            status: "todo",
+            actorAgentId: null,
+            actorUserId: null,
+          });
+          if (reopened) {
+            existing = reopened as typeof existingAnyStatus;
+            const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+            await issuesSvc.addComment(existingAnyStatus.id, [
+              `Reopened by recovery escalation: the \`${originId}\` signature recurred after this card was closed.`,
+              "",
+              "Closing a root escalation does not resolve the condition — it only causes a replacement card to be",
+              "minted on the next occurrence, which is the churn TSMC-21870 exists to stop. Reopening this card so",
+              "the signature keeps one card and one history.",
+              "",
+              `- Latest source observed: ${issueUiLink(input.issue, prefix)}`,
+              `- Prior actions on that source: ${input.priorActionCount}`,
+            ].join("\n"), {});
+          }
+        } catch (err) {
+          // Fall through to minting a replacement: an unreachable card must not
+          // swallow the escalation entirely — that is the black hole this whole
+          // family of fixes replaced.
+        }
+      }
+
       if (existing) {
         // Backfill: an escalation raised before the interaction fix below shipped
         // (or one raced past it under a different lock generation) can still be

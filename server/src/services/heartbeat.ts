@@ -128,6 +128,7 @@ import {
 } from "./automatic-retry-policy.js";
 import {
   classifyEquivalentFailure,
+  classifyRepeatedResourceCeiling,
   EQUIVALENT_FAILURE_WINDOW_MS,
   type FailureObservation,
 } from "./recovery/equivalent-failure.js";
@@ -27047,6 +27048,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     });
     let match = classifyEquivalentFailure(observations, now);
+
+    // TSMC-21870: resource-ceiling verdicts stay out of the LANE breaker above — pausing a
+    // healthy lane over one oversized card is the strand that exclusion exists to prevent.
+    // But nothing bounded the retries on the CARD, and that is where the money went:
+    // measured 2026-08-26, 16 cards absorbed 55 turn-exhausted claude runs costing $156.08,
+    // 50% of the entire claude bill, versus $18.37 for the 7 cards that failed once.
+    // Re-running an oversized card unchanged reads the same context and stops at the same
+    // wall, so every retry is ~$2.81 for nothing. Cancel the card's pending retries; leave
+    // the agent running.
+    if (!match) {
+      const ceilingMatch = classifyRepeatedResourceCeiling(observations, now);
+      if (ceilingMatch) {
+        const ceilingReason =
+          `Automatic retry cancelled after ${ceilingMatch.occurrences} \`${ceilingMatch.errorCode}\` verdicts on this issue `
+          + "within 24 hours. A resource ceiling is a verdict about the CARD, not the lane: re-running it "
+          + "unchanged cannot succeed. Re-scope or split the card, or raise its budget deliberately. "
+          + "The assigned lane is left running for its other work.";
+        const pendingForIssue = await db
+          .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+          ));
+        let cancelled = 0;
+        for (const candidate of pendingForIssue) {
+          if (issueIdFromRunContext(candidate.contextSnapshot) !== ceilingMatch.issueId) continue;
+          await cancelRunInternal(candidate.id, ceilingReason, {
+            errorCode: "resource_ceiling_retry_bounded",
+          });
+          cancelled += 1;
+        }
+        await logActivity(db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "resource_ceiling_retry_bound",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "recovery.resource_ceiling_retry_bounded",
+          entityType: "issue",
+          entityId: ceilingMatch.issueId,
+          details: {
+            label: "Bounded retries on a card that keeps exhausting its resource budget",
+            errorCode: ceilingMatch.errorCode,
+            occurrences: ceilingMatch.occurrences,
+            cancelledPendingRuns: cancelled,
+          },
+        });
+      }
+    }
+
     const currentIssue = issueById.get(currentIssueId) ?? null;
     if (!match && currentIssue?.originKind === "routine_execution" && currentIssue.originId) {
       const routineId = currentIssue.originId;

@@ -248,6 +248,77 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
+  // TSMC-21870. The wake said "there is work" while the status still said "no work
+  // is possible", and the status is the one the lane acts on: the agent woke, saw
+  // `blocked`, exited without a disposition, and nothing ever re-evaluated the card
+  // (the wake is idempotency-keyed on (dependent, blockers), so it does not repeat).
+  // Measured 2026-08-26: 671 of 2,475 runs in 30h landed on still-blocked cards.
+  it("clears a blocked dependent to todo at the same moment it emits the wake", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1", companyId: "company-1", identifier: "PAP-100", title: "Finish blocker",
+      description: null, status: "blocked", priority: "medium", parentId: null,
+      assigneeAgentId: "agent-1", assigneeUserId: null, createdByAgentId: null,
+      createdByUserId: null, executionWorkspaceId: null, labels: [], labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1", companyId: "company-1", identifier: "PAP-100", title: "Finish blocker",
+      description: null, status: "done", priority: "medium", parentId: null,
+      assigneeAgentId: "agent-1", assigneeUserId: null, createdByAgentId: null,
+      createdByUserId: null, executionWorkspaceId: null, labels: [], labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      { id: "issue-2", assigneeAgentId: "agent-2", blockerIssueIds: ["issue-1"], status: "blocked" },
+    ]);
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    expect(res.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        "issue-2",
+        expect.objectContaining({ status: "todo" }),
+      );
+    });
+    // The wake must still fire — clearing the status is the addition, not a replacement.
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({ issueId: "issue-2" }),
+        }),
+      );
+    });
+  });
+
+  it("does NOT touch a dependent that is not blocked", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1", companyId: "company-1", identifier: "PAP-100", title: "Finish blocker",
+      description: null, status: "blocked", priority: "medium", parentId: null,
+      assigneeAgentId: "agent-1", assigneeUserId: null, createdByAgentId: null,
+      createdByUserId: null, executionWorkspaceId: null, labels: [], labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1", companyId: "company-1", identifier: "PAP-100", title: "Finish blocker",
+      description: null, status: "done", priority: "medium", parentId: null,
+      assigneeAgentId: "agent-1", assigneeUserId: null, createdByAgentId: null,
+      createdByUserId: null, executionWorkspaceId: null, labels: [], labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      { id: "issue-2", assigneeAgentId: "agent-2", blockerIssueIds: ["issue-1"], status: "in_progress" },
+    ]);
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith("agent-2", expect.anything());
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "issue-2",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
   it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {
     const parentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const childIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
