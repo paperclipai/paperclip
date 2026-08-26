@@ -287,8 +287,7 @@ describe("buildSentryInitOptions", () => {
       httpIntegration: () => ({ name: "Http" }),
       onUnhandledRejectionIntegration,
     });
-    const integrationsFn = options.integrations as (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-    const resolved = integrationsFn(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const resolved = options.integrations(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
 
     expect(onUnhandledRejectionIntegration).toHaveBeenCalledWith({ mode: "strict" });
     const rejectionIntegration = resolved.find((i) => i.name === "OnUnhandledRejection");
@@ -304,8 +303,7 @@ describe("buildSentryInitOptions", () => {
       httpIntegration: () => ({ name: "Http" }),
       onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
     });
-    const integrationsFn = options.integrations as (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-    const resolved = integrationsFn(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const resolved = options.integrations(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
     const names = resolved.map((i) => i.name);
 
     expect(names).not.toContain("Console");
@@ -319,8 +317,7 @@ describe("buildSentryInitOptions", () => {
       httpIntegration: () => ({ name: "Http" }),
       onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
     });
-    const integrationsFn = options.integrations as (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-    const resolved = integrationsFn(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const resolved = options.integrations(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
     const names = resolved.map((i) => i.name);
 
     // The full error-capture set the plan requires, not just the four named
@@ -347,8 +344,7 @@ describe("buildSentryInitOptions", () => {
       httpIntegration,
       onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
     });
-    const integrationsFn = options.integrations as (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-    const resolved = integrationsFn(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const resolved = options.integrations(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
 
     expect(httpIntegration).toHaveBeenCalledWith({ breadcrumbs: false });
     expect(resolved.filter((i) => i.name === "Http")).toHaveLength(1);

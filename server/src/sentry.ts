@@ -100,6 +100,15 @@ interface SentryModuleLike {
   onUnhandledRejectionIntegration(options: { mode: string }): { name: string };
 }
 
+/** The `Sentry.init` options this gate builds. */
+export interface SentryInitOptions {
+  dsn: string;
+  skipOpenTelemetrySetup: boolean;
+  tracesSampleRate: number;
+  sendDefaultPii: boolean;
+  integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+}
+
 /**
  * Build the `Sentry.init` options object. A pure function, split out from
  * `bootstrapSentry` so a test can call it with a real `@sentry/node` module
@@ -109,7 +118,7 @@ interface SentryModuleLike {
 export function buildSentryInitOptions(
   dsn: string,
   Sentry: SentryModuleLike,
-): Record<string, unknown> {
+): SentryInitOptions {
   return {
     dsn,
     skipOpenTelemetrySetup: true,
