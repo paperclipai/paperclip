@@ -11573,6 +11573,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const interactionsSvc = issueThreadInteractionService(db);
     const interaction = await interactionsSvc.create(issue, {
       kind: "request_confirmation",
+      // human_only: this card exists to force a human decision when a run
+      // stalls without a terminal disposition. The kind default is "anyone",
+      // which let a second run's identical max-turn escalation auto-accept
+      // the first one (see TSR-5840, 2026-08-26) without any operator ever
+      // seeing it — the same failure mode toolAction/secretProposal cards
+      // are already upgraded to human_only to prevent.
+      resolverPolicy: "human_only",
       continuationPolicy: "wake_assignee",
       idempotencyKey: `max_turn_missing_disposition:${issue.id}:${input.run.id}`,
       sourceRunId: input.run.id,

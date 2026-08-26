@@ -9206,6 +9206,34 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+
+        // An agent that closes the issue while its own operator-facing ask on
+        // it is still pending is almost certainly destroying an ask no one
+        // ever saw, not making a deliberate call — that's a human close's
+        // prerogative (actorUserId), not an agent's. See TSBC-2092
+        // (2026-08-26): a request_confirmation and a done transition landed
+        // 5 seconds apart from the same run, and the card was gone before
+        // anyone could act on it.
+        if (
+          actorAgentId
+          && (issueData.status === "done" || issueData.status === "cancelled")
+          && receiptExisting.status !== "done"
+          && receiptExisting.status !== "cancelled"
+        ) {
+          const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+          const hasSelfCreatedAsk = await issueThreadInteractionService(tx).hasPendingSelfCreatedOperatorAsk(
+            id,
+            actorAgentId,
+          );
+          if (hasSelfCreatedAsk) {
+            throw conflict(
+              "Cannot close an issue while an operator-facing ask you raised on it is still pending. "
+              + "Resolve or withdraw the interaction first, or hand the close off to the board.",
+              { issueId: id, actorAgentId, targetStatus: issueData.status },
+            );
+          }
+        }
+
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])

@@ -371,4 +371,25 @@ describe("issueThreadInteractionService", () => {
     expect(state.toolActionRequestUpdates).toHaveLength(1);
     expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "expired", resolvedByUserId: "local-board" });
   });
+
+  it("reports a pending self-created operator ask so a terminal close can be refused", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    // The real query filters by issueId/status/createdByAgentId/kind in the WHERE
+    // clause; this fake stands in for "the DB found a matching row" rather than
+    // re-evaluating drizzle's generated SQL.
+    const db: any = { select: () => ({ from: () => ({ where: () => Promise.resolve([{ id: "interaction-self" }]) }) }) };
+    const svc = issueThreadInteractionService(db);
+    await expect(
+      svc.hasPendingSelfCreatedOperatorAsk("11111111-1111-4111-8111-111111111111", "agent-1"),
+    ).resolves.toBe(true);
+  });
+
+  it("does not report when no matching pending ask exists (e.g. a different creator)", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const db: any = { select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) };
+    const svc = issueThreadInteractionService(db);
+    await expect(
+      svc.hasPendingSelfCreatedOperatorAsk("11111111-1111-4111-8111-111111111111", "agent-1"),
+    ).resolves.toBe(false);
+  });
 });
