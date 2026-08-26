@@ -33,24 +33,30 @@ async function importFreshSentry() {
  */
 function mockSentryPackage() {
   let nextClientId = 0;
-  let attachedClient: { id: string } | null = null;
+  let attachedClient: { id: string; close: (timeout?: number) => Promise<boolean> } | null = null;
 
+  // One shared `close` mock, attached to every client `init` creates. The
+  // fix reads the client with `getClient()` and calls `client.close()`
+  // directly, so the mocked client — not the mocked module — needs the
+  // `close` method a test can hold open or reject.
+  const close = vi.fn(async () => true);
   const init = vi.fn((_options: Record<string, unknown>) => {
-    attachedClient = { id: `client-${nextClientId++}` };
+    attachedClient = { id: `client-${nextClientId++}`, close };
   });
   const captureException = vi.fn(() => (attachedClient ? "event-id" : undefined));
-  const close = vi.fn(async () => true);
-  const setClient = vi.fn((client: { id: string } | undefined) => {
+  const getClient = vi.fn(() => attachedClient ?? undefined);
+  const setClient = vi.fn((client: typeof attachedClient | undefined) => {
     attachedClient = client ?? null;
   });
   const getCurrentScope = vi.fn(() => ({ setClient }));
 
-  vi.doMock("@sentry/browser", () => ({ init, captureException, close, getCurrentScope }));
+  vi.doMock("@sentry/browser", () => ({ init, captureException, close, getClient, getCurrentScope }));
 
   return {
     init,
     captureException,
     close,
+    getClient,
     getCurrentScope,
     setClient,
     /** The `id` of whichever client `init`/`setClient` last attached, or `null` if none is. */
@@ -139,6 +145,30 @@ describe("teardownBrowserErrorMonitoring", () => {
 
     expect(mocks.close).toHaveBeenCalledTimes(1);
     expect(mocks.setClient).toHaveBeenCalledWith(undefined);
+  });
+
+  it("detaches the client from the current scope before close() settles", async () => {
+    // The client stays attached, and stays enabled, for the whole `close()`
+    // call — a signed-out page can still reach it until detach runs. Hold
+    // `close()` open and assert the detach already ran while it is still
+    // pending, so a regression back to close-then-detach fails this test.
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const releaseClose = holdCloseOpen(mocks);
+
+    const teardownDone = teardownBrowserErrorMonitoring();
+    // Give the queued teardown operation a few turns of the microtask queue
+    // to run up to its `await client.close()` call, without waiting for
+    // `close()` itself to settle — the gate above holds that call open.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.setClient).toHaveBeenCalledWith(undefined);
+    expect(mocks.close).toHaveBeenCalledTimes(1);
+
+    releaseClose();
+    await expect(teardownDone).resolves.toBeUndefined();
   });
 
   it("detaches the client from the current scope even when close() rejects, and still resolves", async () => {

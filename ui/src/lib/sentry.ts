@@ -6,11 +6,15 @@
 // no DSN, calls this module never — see `SentryGate.tsx`.
 //
 // Sign-out must stop monitoring, not just stop starting it: `SentryGate`
-// calls `teardownBrowserErrorMonitoring` when the session's DSN goes away,
-// which closes the running client (`Sentry.close`) and detaches it from the
-// current scope (`Sentry.getCurrentScope().setClient(undefined)`), so the
-// global handlers `Sentry.init` installed send no more events. Both are
-// built-in Sentry client calls — no custom filter code.
+// calls `teardownBrowserErrorMonitoring` when the session's DSN goes away.
+// The function detaches the client from the current scope first
+// (`Sentry.getCurrentScope().setClient(undefined)`), then closes that same
+// client (`client.close()`), so a signed-out page's global handlers find no
+// attached client at any point. Detach runs first because a client stays
+// attached, and stays enabled, for the whole close call — closing first
+// would leave the signed-out page able to send one more event to Sentry for
+// as long as the close call takes. Both calls are built-in Sentry client
+// calls — no custom filter code.
 //
 // `initBrowserErrorMonitoring`, `teardownBrowserErrorMonitoring`, and
 // `captureBrowserException` each queue their work on one shared promise
@@ -82,32 +86,46 @@ export function initBrowserErrorMonitoring(dsn: string): Promise<void> {
  * Stop browser error monitoring and forget the started client. Call this on
  * sign-out, so the browser sends Sentry no more events and no more
  * breadcrumbs after the session ends. A no-op when monitoring never started.
+ *
+ * Detaches the client from the current scope, then closes that same client.
+ * A client stays attached, and stays enabled, for the whole close call — a
+ * signed-out page's `window.onerror` or `window.onunhandledrejection`
+ * handler would still reach it for as long as the close call takes.
+ * Detaching first removes that window instead of leaving it open.
  */
 export function teardownBrowserErrorMonitoring(): Promise<void> {
   return enqueue(async () => {
     const Sentry = sentry;
     sentry = null;
     if (!Sentry) return;
-    try {
-      // Awaiting matters: the client flushes buffered events to Sentry
-      // during close; detaching before it settles silently drops them.
-      await Sentry.close(2_000);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[paperclip] Sentry teardownBrowserErrorMonitoring failed", err);
-    }
-    // Detach even when the close rejects. An attached client keeps the
-    // global handlers that Sentry.init installed, so a signed-out page
-    // would keep reporting errors. A separate guarded try keeps this
-    // operation unable to reject, unlike a bare finally block: a thrown
-    // error here would still reach the caller, and SentryGate.tsx discards
-    // this promise with a bare `void` call, so a rejection would surface
-    // as an unhandled promise rejection in the browser.
+    // Read the client before detaching it. The scope holds no client after
+    // detach, so the close step below needs this reference to flush and
+    // close the right client.
+    const client = Sentry.getClient();
+    // Detach first, close second — the opposite order from a plain
+    // `Sentry.close()` call, which reads the client off the current scope
+    // and would find nothing to close if detach ran first. A separate
+    // guarded try keeps this step unable to reject, unlike a bare finally
+    // block: a thrown error here would still reach the caller, and
+    // `SentryGate.tsx` discards this function's returned promise with a
+    // bare `void` call, so a rejection would surface as an unhandled
+    // promise rejection in the browser.
     try {
       Sentry.getCurrentScope().setClient(undefined);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Sentry client detach failed", err);
+    }
+    // A second, separate guarded try, for the same reason as the one
+    // above: this step must never reject the returned promise.
+    try {
+      // Awaiting matters: the client flushes buffered events to Sentry
+      // during close; a caller that does not wait may navigate away, or
+      // the page may unload, before the flush finishes.
+      await client?.close(2_000);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[paperclip] Sentry teardownBrowserErrorMonitoring failed", err);
     }
   });
 }
