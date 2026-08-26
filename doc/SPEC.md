@@ -383,7 +383,7 @@ Flow:
 | -------- | ------------------------------------------------------------ |
 | Frontend | React + Vite                                                 |
 | Backend  | TypeScript + Express (REST API, not tRPC — need non-TS clients) |
-| Database | PostgreSQL (see [doc/DATABASE.md](./doc/DATABASE.md) for details — PGlite embedded for dev, Docker or hosted Supabase for production) |
+| Database | PostgreSQL (see [doc/DATABASE.md](./doc/DATABASE.md) for details — embedded PostgreSQL for dev, Docker or hosted Supabase for production) |
 | Auth     | [Better Auth](https://www.better-auth.com/)                  |
 
 ### Concurrency Model: Atomic Task Checkout
@@ -485,7 +485,7 @@ Each is a distinct page/route:
 - [ ] **REST API** — full API for agent interaction (Express)
 - [ ] **Web UI** — React/Vite: org chart, task board, dashboard, cost views
 - [ ] **Agent auth** — connection string generation with URL + key + instructions
-- [ ] **One-command dev setup** — embedded PGlite, everything local
+- [ ] **One-command dev setup** — embedded PostgreSQL, everything local
 - [ ] **Multiple Adapter types** (HTTP, OpenClaw gateway, and local coding adapters)
 
 ### Not V1

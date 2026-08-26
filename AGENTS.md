@@ -37,7 +37,7 @@ Before making changes, read in this order:
 
 ## 4. Dev Setup (Auto DB)
 
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
+Use embedded PostgreSQL in dev by leaving `DATABASE_URL` unset. The server starts and manages it for you. See `doc/DATABASE.md` for the Docker and external-PostgreSQL modes.
 
 ```sh
 pnpm install
@@ -59,9 +59,11 @@ curl http://localhost:3100/api/companies
 Reset local dev DB:
 
 ```sh
-rm -rf data/pglite
+rm -rf ~/.paperclip/instances/default/db
 pnpm dev
 ```
+
+The embedded data directory is `$PAPERCLIP_HOME/instances/$PAPERCLIP_INSTANCE_ID/db`, defaulting to `~/.paperclip/instances/default/db`. Config files may still carry `mode: "pglite"`; that key is a legacy alias mapped onto the embedded-PostgreSQL fields in `packages/db/src/runtime-config.ts`, not a separate engine.
 
 ## 5. Core Engineering Rules
 
