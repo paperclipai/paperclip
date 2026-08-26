@@ -2508,10 +2508,14 @@ function nextProbeFileName() {
 // the inode number repeats. Node's filesystem API has no call that removes a
 // path only when its identity still matches an earlier read as one atomic
 // step, so a gap remains between this wrapper's final identity read and the
-// removal call itself. A peer that wins that single-syscall gap still only
-// ever destroys an entry it created a moment earlier at this exact probe
-// path, never a file that predates the probe and never a path outside
-// dirPath.
+// removal call itself. A peer that wins this gap can put any entry at the
+// probe path before the removal call runs. This can include a pre-existing
+// file the peer renames into place, not only a file the peer creates fresh.
+// The removal call then removes whatever entry sits at the probe path at
+// that moment. Two bounds still hold on that removal. The path always
+// stays under dirPath. If the entry is a symbolic link, the removal call
+// removes the link itself instead of following it to a different target.
+// A non-recursive removal call also fails if the entry is a directory.
 async function birthtimeSurvivesProbe(dirPath) {
   let before;
   try {
@@ -2544,9 +2548,10 @@ async function birthtimeSurvivesProbe(dirPath) {
   if (ownedIdentity) {
     // The one gap the fs API cannot close: this lstat and the removal below
     // are two separate calls, not one atomic "remove if identity still
-    // matches" step. A peer that wins this narrow gap still only ever
-    // destroys an entry it created a moment earlier at this exact probe
-    // path, never a file that predates the probe.
+    // matches" step. A peer that wins this narrow gap can put any entry at
+    // the probe path, including a pre-existing file it renames into place,
+    // and the removal call below removes whatever entry is there when it
+    // runs.
     const currentStats = await fs.lstat(probePath).catch(() => null);
     const stillOwned =
       currentStats !== null &&
