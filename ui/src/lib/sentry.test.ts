@@ -141,14 +141,17 @@ describe("teardownBrowserErrorMonitoring", () => {
     expect(mocks.setClient).toHaveBeenCalledWith(undefined);
   });
 
-  it("detaches the client from the current scope even when close() rejects", async () => {
+  it("detaches the client from the current scope even when close() rejects, and still resolves", async () => {
     const mocks = mockSentryPackage();
     mocks.close.mockRejectedValueOnce(new Error("close timed out"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring } = await importFreshSentry();
     await initBrowserErrorMonitoring(DSN);
 
-    await teardownBrowserErrorMonitoring();
+    // The returned promise must resolve, not reject: SentryGate.tsx discards
+    // it with a bare `void` call, so a rejection would surface as an
+    // unhandled promise rejection in the browser.
+    await expect(teardownBrowserErrorMonitoring()).resolves.toBeUndefined();
 
     expect(mocks.setClient).toHaveBeenCalledWith(undefined);
     expect(consoleErrorSpy).toHaveBeenCalled();

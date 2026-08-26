@@ -95,8 +95,19 @@ export function teardownBrowserErrorMonitoring(): Promise<void> {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Sentry teardownBrowserErrorMonitoring failed", err);
-    } finally {
+    }
+    // Detach even when the close rejects. An attached client keeps the
+    // global handlers that Sentry.init installed, so a signed-out page
+    // would keep reporting errors. A separate guarded try keeps this
+    // operation unable to reject, unlike a bare finally block: a thrown
+    // error here would still reach the caller, and SentryGate.tsx discards
+    // this promise with a bare `void` call, so a rejection would surface
+    // as an unhandled promise rejection in the browser.
+    try {
       Sentry.getCurrentScope().setClient(undefined);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[paperclip] Sentry client detach failed", err);
     }
   });
 }
