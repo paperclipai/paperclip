@@ -244,7 +244,10 @@ import {
   UNBLOCK_CARD_TERMINAL_SUPPRESSION_MS,
   findReusableMetaIssue,
 } from "./meta-issue-dedup.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  buildIssueBlockersResolvedWakeStateKey,
+} from "./issue-dependency-wakeups.js";
 
 // TSMC-21480 / TSMC-21879 (re-cut). `completion_continuation` re-offers the
 // same card to the same agent immediately after a productive run. Two states
@@ -12678,6 +12681,69 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sourceRunId: run.id,
             },
           });
+
+          // TSMC-21870: this path never notified dependents AT ALL — not even the wake.
+          // A card closed via PAPERCLIP_DISPOSITION left every card it was blocking stuck
+          // `blocked` behind a `done` blocker, with nothing scheduled to re-evaluate it.
+          // Observed the day the first cut of this fix shipped: TSM-7112 closed by
+          // disposition at 16:05:18, parent TSM-7055 still blocked behind it. That first
+          // cut only covered the PATCH route — gating one path and missing the other, the
+          // exact mistake TSMC-21479/21607 already paid for once.
+          if (appliedStatus === "done") {
+            try {
+              const dependents = await issuesSvc.listWakeableBlockedDependents(issue.id);
+              const cleared = await issuesSvc.clearResolvedBlockedDependents(issue.id, dependents);
+              for (const dependentIssueId of cleared) {
+                await logActivity(db, {
+                  companyId: issue.companyId,
+                  actorType: "system",
+                  actorId: "heartbeat",
+                  agentId: run.agentId,
+                  runId: run.id,
+                  action: "issue.blocked_cleared_on_blockers_resolved",
+                  entityType: "issue",
+                  entityId: dependentIssueId,
+                  details: {
+                    label: "Cleared blocked status because every blocker reached a terminal state",
+                    resolvedBlockerIssueId: issue.id,
+                    dispositionSource: "paperclip_disposition_token",
+                  },
+                });
+              }
+              for (const dependent of dependents) {
+                if (!dependent.assigneeAgentId) continue;
+                await enqueueWakeup(dependent.assigneeAgentId, {
+                  source: "automation",
+                  triggerDetail: "system",
+                  reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+                  payload: {
+                    issueId: dependent.id,
+                    resolvedBlockerIssueId: issue.id,
+                    blockerIssueIds: dependent.blockerIssueIds,
+                    mutation: "blocker_done",
+                  },
+                  idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+                    dependentIssueId: dependent.id,
+                    blockerIssueIds: dependent.blockerIssueIds,
+                  }),
+                  contextSnapshot: {
+                    issueId: dependent.id,
+                    taskId: dependent.id,
+                    wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+                    source: "heartbeat.disposition.blockers_resolved",
+                    resolvedBlockerIssueId: issue.id,
+                    blockerIssueIds: dependent.blockerIssueIds,
+                  },
+                });
+              }
+            } catch (err) {
+              logger.warn(
+                { err, runId: run.id, issueId: issue.id },
+                "failed to release blocked dependents after a stated done disposition",
+              );
+            }
+          }
+
           return; // gap closed deterministically — skip the corrective re-wake
         }
       } catch (err) {

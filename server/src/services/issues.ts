@@ -6574,7 +6574,9 @@ export function issueService(db: Db) {
     return row;
   }
 
-  return {
+  // TSMC-21870: named so methods can call siblings (clearResolvedBlockedDependents
+  // reuses listWakeableBlockedDependents and update).
+  const issueSvc = {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
@@ -7652,6 +7654,41 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
     ) => {
       return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
+    },
+
+    /**
+     * TSMC-21870 follow-up: clear every dependent that this blocker was holding.
+     *
+     * The first cut of this lived ONLY in the PATCH route, so a card closed through the
+     * heartbeat disposition path (`PAPERCLIP_DISPOSITION` -> `issue.disposition_applied`)
+     * left its dependents blocked — that path does not notify dependents at all, not even
+     * the wake. Observed the same day it shipped: TSM-7112 closed by disposition at
+     * 16:05:18 and its parent TSM-7055 stayed `blocked` behind a `done` child.
+     *
+     * That is the identical mistake the guard close gate was written to avoid — gate one
+     * path, miss the other (TSMC-21479/21607). So the clear lives HERE, once, and every
+     * caller shares it. Returns the ids it cleared so callers can log or wake.
+     */
+    clearResolvedBlockedDependents: async (
+      blockerIssueId: string,
+      dependents?: Array<{ id: string; status: string }>,
+    ): Promise<string[]> => {
+      const rows = dependents ?? (await issueSvc.listWakeableBlockedDependents(blockerIssueId));
+      const cleared: string[] = [];
+      for (const dependent of rows) {
+        if (dependent.status !== "blocked") continue;
+        try {
+          await issueSvc.update(dependent.id, {
+            status: "todo",
+            actorAgentId: null,
+            actorUserId: null,
+          });
+          cleared.push(dependent.id);
+        } catch {
+          // Never let a status write break the caller: the wake is the load-bearing half.
+        }
+      }
+      return cleared;
     },
 
     listWakeableBlockedDependents: async (blockerIssueId: string) => {
@@ -11145,4 +11182,6 @@ export function issueService(db: Db) {
       }));
     },
   };
+
+  return issueSvc;
 }
