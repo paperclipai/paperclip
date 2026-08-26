@@ -738,7 +738,7 @@ export type UnblockBlockerCardResult =
  */
 export async function ensureUnblockBlockerCard(
   db: Db,
-  issuesSvc: Pick<ReturnType<typeof issueService>, "create" | "addComment">,
+  issuesSvc: Pick<ReturnType<typeof issueService>, "create" | "addComment" | "update">,
   input: {
     sourceIssue: {
       id: string;
@@ -780,6 +780,47 @@ export async function ensureUnblockBlockerCard(
     now: input.now,
   });
   if (duplicate?.outcome === "terminal_suppressed") {
+    // TSMC-21870: REOPEN the card rather than sitting out a timer.
+    //
+    // Issue-scoped reuse (originId = source issue) already keeps ONE open Unblock card per
+    // source. But reuse only matches an OPEN card, so a lane closing the Unblock card
+    // re-arms the minter, and the only thing in the way is a 24h suppression window. Same
+    // defect as the [GUARD] treadmill and the recovery-escalation remint, both now fixed by
+    // reopening: a machine-minted card's collapse key is scoped to the card being OPEN, and
+    // closing it is not gated on the underlying condition being resolved.
+    //
+    // Measured 2026-08-26, 5.5h after the first two were fixed: `Unblock:` cards became 77%
+    // of everything minted (16.5/hr) while GUARD cards fell 44 -> 1 and escalations 87 -> 0.
+    // TWO source issues produced 50 of 91 cards; TSMC-21884 alone minted 29. The source was
+    // genuinely blocked throughout — every report was true, and each made a NEW card only
+    // because the previous one had been closed.
+    //
+    // Reopening keeps one card and one history per source. Fall through to the suppression
+    // contract only if the reopen fails, i.e. the card is genuinely unreachable — an
+    // unreachable card must not swallow the report, which is the black hole this whole
+    // family of fixes replaced.
+    try {
+      const reopened = await issuesSvc.update(duplicate.issue.id, {
+        status: "todo",
+        actorAgentId: null,
+        actorUserId: null,
+      });
+      if (reopened) {
+        await issuesSvc.addComment(duplicate.issue.id, [
+          `Blocker reported again at ${(input.now ?? new Date()).toISOString()}, after this card was closed.`,
+          "",
+          `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
+          `- Run: ${input.runId ? `\`${input.runId}\`` : "none"}`,
+          `- Blocker: ${input.blocker}`,
+          "",
+          "Reopened rather than minting a replacement. Closing an Unblock card does not resolve",
+          "the blocker on its source; it only causes a new card on the next report.",
+        ].join("\n"), input.runId ? { runId: input.runId } : {});
+        return { outcome: "reused", issue: { id: duplicate.issue.id } };
+      }
+    } catch {
+      // fall through to the suppression contract below
+    }
     return {
       outcome: "terminal_suppressed",
       existingIssueId: duplicate.issue.id,
