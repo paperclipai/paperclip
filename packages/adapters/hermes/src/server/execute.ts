@@ -532,34 +532,73 @@ export async function execute(
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
   // Wrap onLog to reclassify benign stderr lines as stdout.
-  const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
-    if (stream === "stderr") {
-      const trimmed = chunk.trimEnd();
-      // Benign patterns that should NOT appear as errors:
-      // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
-      // - MCP server registration messages
-      // - Python import/site noise
-      const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
-        /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
-        /Successfully registered all tools/.test(trimmed) ||
-        /MCP [Ss]erver/.test(trimmed) ||
-        /tool registered successfully/.test(trimmed) ||
-        /Application initialized/.test(trimmed);
-      if (isBenign) {
-        return ctx.onLog("stdout", chunk);
+  let adapterLogWrite: Promise<void> = Promise.resolve();
+  const wrappedOnLog = (stream: "stdout" | "stderr", chunk: string) => {
+    const write = adapterLogWrite.then(async () => {
+      if (stream === "stderr") {
+        const trimmed = chunk.trimEnd();
+        // Benign patterns that should NOT appear as errors:
+        // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
+        // - MCP server registration messages
+        // - Python import/site noise
+        const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
+          /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
+          /Successfully registered all tools/.test(trimmed) ||
+          /MCP [Ss]erver/.test(trimmed) ||
+          /tool registered successfully/.test(trimmed) ||
+          /Application initialized/.test(trimmed);
+        if (isBenign) {
+          await ctx.onLog("stdout", chunk);
+          return;
+        }
       }
-    }
-    return ctx.onLog(stream, chunk);
+      await ctx.onLog(stream, chunk);
+    });
+    adapterLogWrite = write.catch(() => undefined);
+    return write;
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  const quietHeartbeatIntervalMs = 15_000;
+  let quietHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let quietHeartbeatClosed = false;
+  let quietHeartbeatStartedAt = 0;
+  let quietHeartbeatWrite = Promise.resolve();
+  const startQuietHeartbeat = () => {
+    if (quietHeartbeatClosed || quietHeartbeatTimer) return;
+    quietHeartbeatStartedAt = Date.now();
+    quietHeartbeatTimer = setInterval(() => {
+      const elapsedSeconds = Math.max(1, Math.round((Date.now() - quietHeartbeatStartedAt) / 1000));
+      quietHeartbeatWrite = quietHeartbeatWrite
+        .then(() => wrappedOnLog("stdout", `[hermes] alive: ${elapsedSeconds}s\n`))
+        .catch((err) => {
+          console.warn({ err, runId: ctx.runId }, "failed to append Hermes quiet heartbeat log");
+        });
+    }, quietHeartbeatIntervalMs);
+    quietHeartbeatTimer.unref?.();
+  };
+  const onSpawn = useQuiet
+    ? async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+        await ctx.onSpawn?.(meta);
+        startQuietHeartbeat();
+      }
+    : ctx.onSpawn;
+
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn,
+    });
+  } finally {
+    quietHeartbeatClosed = true;
+    if (quietHeartbeatTimer) clearInterval(quietHeartbeatTimer);
+    await quietHeartbeatWrite;
+    await adapterLogWrite;
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");

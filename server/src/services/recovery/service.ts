@@ -321,6 +321,7 @@ export type RunOutputSilenceSummary = {
   evaluationIssueId: string | null;
   evaluationIssueIdentifier: string | null;
   evaluationIssueAssigneeAgentId: string | null;
+  processAlive: boolean | null;
 };
 
 function readNonEmptyString(value: unknown): string | null {
@@ -1455,6 +1456,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row != null;
   }
 
+  async function readQuietHermesProcessAlive(companyId: string, runId: string): Promise<boolean | null> {
+    const [record] = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        processPid: heartbeatRuns.processPid,
+        processGroupId: heartbeatRuns.processGroupId,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
+      .limit(1);
+    const launchConfig = parseObject(parseObject(record?.contextSnapshot).paperclipAdapterExecution);
+    if (
+      !record ||
+      record.status !== "running" ||
+      launchConfig.adapterType !== "hermes_local" ||
+      launchConfig.quiet !== true
+    ) {
+      return null;
+    }
+
+    const running = runningProcesses.get(runId);
+    if (!running) {
+      return typeof record.processPid === "number" || typeof record.processGroupId === "number"
+        ? false
+        : null;
+    }
+    if (running.child.exitCode !== null || running.child.signalCode !== null) return false;
+    const processPid = running.child.pid;
+    const processGroupId = running.processGroupId;
+    if (typeof processPid !== "number" && typeof processGroupId !== "number") return null;
+    return (
+      (typeof processPid === "number" && isPidAlive(processPid)) ||
+      (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId))
+    );
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1462,9 +1500,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     >,
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
-    const [quietUntilDecision, evaluation] = await Promise.all([
+    const [quietUntilDecision, evaluation, processAlive] = await Promise.all([
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
+      readQuietHermesProcessAlive(run.companyId, run.id),
     ]);
     const silenceStartedAt = silenceStartedAtForRun(run);
     const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
@@ -1472,6 +1511,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ? "not_applicable"
       : quietUntilDecision
         ? "snoozed"
+        : processAlive
+          ? "ok"
         : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
           ? "critical"
           : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
@@ -1492,6 +1533,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueId: evaluation?.id ?? null,
       evaluationIssueIdentifier: evaluation?.identifier ?? null,
       evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
+      processAlive,
     };
   }
 
@@ -2346,6 +2388,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const run of candidates) {
+      if (await readQuietHermesProcessAlive(run.companyId, run.id)) {
+        result.skipped += 1;
+        continue;
+      }
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
         continue;
