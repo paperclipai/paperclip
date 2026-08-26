@@ -2033,13 +2033,15 @@ describe.sequential("agent permission routes", () => {
       expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
     });
 
-    it("ignores a caller-supplied scope object instead of persisting it unscoped", async () => {
+    it("rejects (fails closed) a request that includes a scope field, instead of silently persisting it unscoped", async () => {
       // Regression guard: scopeAllows() in authorization.ts treats any
       // unrecognized scope key as unconstrained, so accepting an arbitrary
       // scope record on this route would let a malformed/attacker scope
       // silently widen a sensitive grant like agents:configure to
-      // unrestricted company-wide access. This route must always call
-      // setPrincipalPermission with scope: null, regardless of request body.
+      // unrestricted company-wide access. The schema is .strict(), so a
+      // request that includes any scope (or other unknown field) fails
+      // closed with 400 instead of succeeding with the field silently
+      // stripped and an unrestricted grant persisted.
       mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
         allowed: input.action === "agents:configure",
         reason: "allow_test_grant",
@@ -2061,6 +2063,29 @@ describe.sequential("agent permission routes", () => {
           enabled: true,
           scope: { unrecognizedKey: "anything" },
         }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+    });
+
+    it("grants a permissionKey with an unscoped (null) grant when no scope field is sent", async () => {
+      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action === "agents:configure",
+        reason: "allow_test_grant",
+        explanation: "Allowed by test grant",
+      }));
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-admin",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${agentId}/grants`)
+        .send({ permissionKey: "agents:configure", enabled: true }));
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(

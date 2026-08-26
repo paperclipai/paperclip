@@ -252,18 +252,20 @@ export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema
  * this schema there was no REST route that could grant an arbitrary
  * `PermissionKey` to an agent principal after creation.
  *
- * Deliberately does not accept a `scope` object: `scopeAllows()` in
- * authorization.ts treats any unrecognized scope key as unconstrained, so an
- * arbitrary caller-supplied scope on a sensitive grant like `agents:configure`
- * can silently widen to an unrestricted company-wide grant instead of the
- * intended narrower one. This route only ever calls
- * `setPrincipalPermission(..., scope: null)`. If a scoped grant is ever
- * needed here, validate against the specific recognized scope keys (see
- * scopeAllows), not an open record.
+ * Deliberately `.strict()` and does not accept a `scope` field: `scopeAllows()`
+ * in authorization.ts treats any unrecognized scope key as unconstrained, so
+ * an arbitrary caller-supplied scope on a sensitive grant like
+ * `agents:configure` could silently widen to an unrestricted company-wide
+ * grant instead of the intended narrower one. `.strict()` makes a request
+ * that includes `scope` (or any other unknown field) fail closed with a 400
+ * instead of silently stripping it and persisting an unrestricted grant. This
+ * route only ever calls `setPrincipalPermission(..., scope: null)`. If a
+ * scoped grant is ever needed here, validate against the specific recognized
+ * scope keys (see scopeAllows), not an open record.
  */
 export const updateAgentGrantSchema = z.object({
   permissionKey: z.enum(PERMISSION_KEYS),
   enabled: z.boolean(),
-});
+}).strict();
 
 export type UpdateAgentGrant = z.infer<typeof updateAgentGrantSchema>;
