@@ -2545,22 +2545,30 @@ async function birthtimeSurvivesProbe(dirPath) {
   } finally {
     await handle.close().catch(() => undefined);
   }
-  if (ownedIdentity) {
-    // The one gap the fs API cannot close: this lstat and the removal below
-    // are two separate calls, not one atomic "remove if identity still
-    // matches" step. A peer that wins this narrow gap can put any entry at
-    // the probe path, including a pre-existing file it renames into place,
-    // and the removal call below removes whatever entry is there when it
-    // runs.
-    const currentStats = await fs.lstat(probePath).catch(() => null);
-    const stillOwned =
-      currentStats !== null &&
-      currentStats.dev === ownedIdentity.dev &&
-      currentStats.ino === ownedIdentity.ino &&
-      currentStats.ctimeMs === ownedIdentity.ctimeMs;
-    if (stillOwned) {
-      await fs.rm(probePath, { force: true }).catch(() => undefined);
-    }
+  if (!ownedIdentity) {
+    // fstat on this call's own just-opened descriptor failed. This call then
+    // has no verified identity for the probe file it created, so it must not
+    // check or remove that file by path: a peer could already own the entry
+    // at that path, and a path-based removal here could delete the peer's
+    // entry instead of this call's own file. Fail closed right here instead
+    // of falling through to the birthtime comparison below, so a failed
+    // identity read can never let this probe report success.
+    return "its own probe file's identity could not be read from the open file descriptor";
+  }
+  // The one gap the fs API cannot close: this lstat and the removal below
+  // are two separate calls, not one atomic "remove if identity still
+  // matches" step. A peer that wins this narrow gap can put any entry at
+  // the probe path, including a pre-existing file it renames into place,
+  // and the removal call below removes whatever entry is there when it
+  // runs.
+  const currentStats = await fs.lstat(probePath).catch(() => null);
+  const stillOwned =
+    currentStats !== null &&
+    currentStats.dev === ownedIdentity.dev &&
+    currentStats.ino === ownedIdentity.ino &&
+    currentStats.ctimeMs === ownedIdentity.ctimeMs;
+  if (stillOwned) {
+    await fs.rm(probePath, { force: true }).catch(() => undefined);
   }
   let after;
   try {

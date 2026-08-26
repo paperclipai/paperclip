@@ -802,6 +802,53 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     return probeSwapPreloadPath;
   }
 
+  // A test-only preload for PAP-5374: it simulates fstat() failing on the
+  // wrapper's own just-opened probe file descriptor, the one signal the real
+  // filesystem in this sandbox never produces on demand. nextProbeFileName()
+  // is deterministic (pid + call sequence), so this preload knows which
+  // fs.promises.open() call is the wrapper's probe write and patches only the
+  // FileHandle that call returns, leaving every other open() untouched. It
+  // never runs unless a test opts in, and it never touches this test file's
+  // own process.
+  let fstatFailurePreloadDir: string | null = null;
+  afterAll(async () => {
+    if (fstatFailurePreloadDir) await rm(fstatFailurePreloadDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+  let fstatFailurePreloadPath: Promise<string> | null = null;
+  async function getFstatFailurePreloadPath(): Promise<string> {
+    if (!fstatFailurePreloadPath) {
+      fstatFailurePreloadPath = (async () => {
+        const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-fstat-failure-preload-"));
+        fstatFailurePreloadDir = dir;
+        const preloadPath = path.join(dir, "fstat-failure-preload.cjs");
+        await writeFile(
+          preloadPath,
+          [
+            `const fs = require("fs");`,
+            `const path = require("path");`,
+            `const seq = process.env.PAPERCLIP_TEST_FSTAT_FAILURE_SEQ;`,
+            `if (seq) {`,
+            `  const expectedName = ".paperclip-birthtime-probe-" + process.pid + "-" + seq;`,
+            `  const originalOpen = fs.promises.open.bind(fs.promises);`,
+            `  fs.promises.open = async (targetPath, flags, mode) => {`,
+            `    const handle = await originalOpen(targetPath, flags, mode);`,
+            `    if (path.basename(String(targetPath)) === expectedName) {`,
+            `      handle.stat = async () => {`,
+            `        throw new Error("EIO: simulated fstat failure for test");`,
+            `      };`,
+            `    }`,
+            `    return handle;`,
+            `  };`,
+            `}`,
+          ].join("\n"),
+          "utf8",
+        );
+        return preloadPath;
+      })();
+    }
+    return fstatFailurePreloadPath;
+  }
+
   // Run the real emitted wrapper (either variant) as a node process, with no
   // sandbox and no bridge in front of it. The test owns the wrapper's node
   // ChildProcess handle directly, so it can observe the wrapper's own exit
@@ -827,6 +874,11 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     // its birth-time probe file, through the preload above (PAP-5355). seq 1
     // is sessionDir's probe (the first one captureSessionIdentity() runs).
     probeSwap?: { seq: 1 | 2; mode: "file" | "dir" | "symlink"; symlinkTarget?: string };
+    // Makes the wrapper's own process observe an fstat() failure on the open
+    // descriptor for its own birth-time probe file, through the preload above
+    // (PAP-5374). seq 1 is sessionDir's probe (the first one
+    // captureSessionIdentity() runs).
+    fstatFailure?: { seq: 1 | 2 };
   }) {
     const sessionDir = await mkdtemp(path.join(options?.parentDir ?? os.tmpdir(), "paperclip-wrapper-lifecycle-"));
     cleanupDirs.push(sessionDir);
@@ -860,6 +912,10 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       env.PAPERCLIP_TEST_PROBE_SWAP_MODE = options.probeSwap.mode;
       if (options.probeSwap.symlinkTarget) env.PAPERCLIP_TEST_PROBE_SWAP_SYMLINK_TARGET = options.probeSwap.symlinkTarget;
       execArgv.push("--require", await getProbeSwapPreloadPath());
+    }
+    if (options?.fstatFailure) {
+      env.PAPERCLIP_TEST_FSTAT_FAILURE_SEQ = String(options.fstatFailure.seq);
+      execArgv.push("--require", await getFstatFailurePreloadPath());
     }
 
     const child = spawn(process.execPath, [...execArgv, wrapperPath], {
@@ -2045,5 +2101,36 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     expect((await lstat(probePath)).isSymbolicLink()).toBe(true);
     expect(await readlink(probePath)).toBe(linkTarget);
     expect(await readFile(linkTarget, "utf8")).toBe(knownContent);
+  }, 15_000);
+
+  it("T25 fails closed at capture when its own probe file's identity cannot be read, so no orphan wrapper or child ever starts polling", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-probe-fstat-failure-"));
+    cleanupDirs.push(rootDir);
+    const pidFile = path.join(rootDir, "t25-child.pid");
+    const childPath = path.join(rootDir, "t25-child.mjs");
+    await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      command: process.execPath,
+      args: [childPath],
+      fstatFailure: { seq: 1 },
+    });
+
+    await Promise.race([
+      wrapper.exited,
+      delay(8_000).then(() => {
+        throw new Error("The wrapper process did not exit.");
+      }),
+    ]);
+    expect(wrapper.stderrText()).toMatch(/its own probe file's identity could not be read/);
+    await expectNoLiveProcessByArgvSubstring(childPath);
+
+    // With no verified identity for the probe file, the wrapper must not
+    // remove it by path alone: it leaves the file exactly as it created it,
+    // rather than risking removal of a different entry a peer may have put
+    // at the same path.
+    const probePath = path.join(wrapper.sessionDir, `.paperclip-birthtime-probe-${wrapper.pid}-1`);
+    expect((await lstat(probePath)).isFile()).toBe(true);
   }, 15_000);
 });
