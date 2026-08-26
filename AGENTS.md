@@ -247,6 +247,7 @@ This section is local to the ThinkStack served tree (not upstream).
 - A close that cites a run, model, or benchmark result must quote the artifact — run id, file path, or ledger row. A prose description of work is not evidence. Model labels name the REQUEST; served-model truth requires the retirement/alias map (grok-4-fast→grok-4.3 class).
 - Before declaring an artifact missing through a search-class door or agent procedure, inspect `ARCHIVED.txt` pointers in its expected parent work-products tree (and `DR-ARCHIVE-INDEX.tsv` when present); an archived pointer is a location, not absence.
 - An incident or defect close must name its recurrence mechanism AND the layer it is encoded in, preferring the highest that fits: platform guard > pipeline script/driver > standing rule (this registry) > skill > KB note. A lesson that exists only as prose in a comment is NOT closed.
+- An implementation card (`[impl]`, platform/code change, or any card whose deliverable is a commit) closes ONLY with the commit SHA(s) in the closing comment, and the SHA must be reachable in the target repo (`git log --all`). If the change must be live to count, cite the promote receipt too. A `done` without a reachable SHA is a false close and will be reopened (TSMC-21553/54/55 class, 2026-08-25: three P0s closed with zero commits anywhere).
 <!-- END THINKSTACK OPS RULE: verify-by-artifact-block -->
 
 <!-- BEGIN THINKSTACK OPS RULE: operating-model-qec-block -->
@@ -400,3 +401,38 @@ A card that names its inputs makes Gate SRCH1 unnecessary. A card that does not 
 
 > Measurements behind these rules: TSMC-21369, TSMC-21370. Mechanical ceiling: `maxToolCallsPerRun` (TSMC-21368).
 <!-- END THINKSTACK OPS RULE: search-scope-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: deploy-scripts-operator-only-block -->
+## Gate DEPLOY1 — pinned deploy scripts are operator/TSMC-only
+
+`pinned-deploy-promote.sh` and any wrapper that can move a production deploy
+pointer are operator/TSMC execution surfaces. Agent lanes must not invoke them,
+delete or recreate their deployment lease, or receive the break-glass
+`PAPERCLIP_PINNED_DEPLOY_ALLOW_AGENT_CALLER=1` environment variable. The script
+itself refuses any mutating sub-command when it detects `PAPERCLIP_AGENT_ID` or
+`PAPERCLIP_RUN_ID` in its environment (the signature Paperclip injects into
+every agent run), unless an operator explicitly sets that override outside an
+adapter wrapper. Read-only sub-commands (`show-receipt`, `assert-green`,
+`lint-plists`) stay available to lanes. Implemented in
+`scripts/pinned-deploy-promote.sh` (`assert_not_agent_lane`, commit `618796ffb`
+in `~/paperclip-deploy`).
+
+If a promotion is needed, an agent prepares evidence and hands the exact command
+and candidate SHA to the operator/TSMC deploy owner; it does not attempt to
+unblock itself by modifying the lease directory.
+<!-- END THINKSTACK OPS RULE: deploy-scripts-operator-only-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: episode-pipeline-block -->
+## Gate EP1 — episode plans: write prose, never deck JSON (standing rule)
+
+- **The deck spec is DERIVED, never hand-authored.** Run `~/scripts/deck/plan-to-episode.sh <ISSUE-ID> --channel <slug> --title "<Episode Title>"` — it lints the script, derives the deck, gates it, generates chapters + ad markers, and gates every banked artifact. **Exit 0 is the close bar; nothing else counts.** It is idempotent and there is no `--force`. On 2026-08-25 three lanes each hand-authored a deck spec, banked eight artifacts and closed: all three decks failed preflight and one had invented its own schema (`episode/runtime_s/canon/deck` where the pipeline reads `channel/slides/endScreen`). Full brief: `~/scripts/deck/EPISODE-PLAN-BRIEF.md`.
+- **`channel` is the SLUG** — `vault-cases`, `cashflow-compass`, `stack-lab`, `jessica-james`. "Cashflow Compass" and "Stack Lab" are display names and fail the runtime-band gate silently.
+- **A spoken line contains ONLY what is said.** Visual cues go on `[VISUAL]` lines and never enter the voice track. Real defects: `Ursa: "Lower-third: Flight 305 | 1971 Boeing 727..."` and three Cashflow paragraphs ending `[Disclaimers: Data from LendingTree / NY Fed Q1 2026...]` — both would have been read aloud, brackets and all. Disclosures belong on screen and in the description.
+- **Write to the runtime band in WORDS.** ⛔ Timing headers do not add narration — only words do. All three 08-25 scripts declared a runtime in their own header and carried under half the prose to reach it. Targets: vault-cases 1638–2418 · cashflow-compass 897–1170 · stack-lab 1014–1482 · jessica-james 468–780.
+- **B-roll must PROVE the claim it sits under.** ⛔ Never cover a spoken claim with an unrelated clip — that is what produced the slideshow corpus, and round-robin assignment produces it automatically ("a plane shot in a pirate episode"). Where the library has nothing relevant the converter declares a GAP with a generation prompt in `05-broll-gaps.json`; gate G9 blocks the build until gaps are filled. **A declared gap is honest; a wrong clip is a lie the viewer can see.** Atmosphere clips are backdrop for chapter/bullet slides only, never the sole visual under a fact.
+- **Narrators come from `~/scripts/deck/canon-voices.json`.** That file is the lock, not a board comment. Narration is non-deterministic — use `deck/tts-take.sh` to generate N takes and bank them, because a performance cannot be regenerated.
+- **Recommend what your research supports.** A tool we do not run internally is not disqualified on a teardown channel; sourcing is the standard, not our own stack (operator, 2026-08-25). An unsourced figure is a sourcing defect, not a topic defect.
+- **A gate that counts artifacts is not a gate.** Existence was never the question — `artifact-gate.sh` validates, and `artifact-gate-sweep.sh` re-checks closed cards daily. A close bar written in a card description is prose, not enforcement.
+- **Storyboard in STILLS before rendering video.** An image costs 200,000,000 ticks; a video costs 4,000,000,000 — **20×**. Run `deck/storyboard-frames.sh` to see every shot, review the contact sheet, mark `approved: true`, then convert survivors with `deck/fill-broll-gaps.sh --from-frames`, which passes the approved frame to the video call as `image_url` so the clip inherits the look that was signed off. ⛔ Rendering video straight from text is how a "1971 Boeing 727" prompt returned a modern widebody twice at full price; naming the three tail engines explicitly fixed it for 0.2 of one video's cost. `approved: null` is unreviewed, and unreviewed is not approved.
+- **Storyboard frames cost nothing — render them.** `deck/storyboard-frames.sh` defaults to the **ChatGPT/Codex subscription** (`deck/gen-image-codex.py`) — off the Grok video allowance and off the Studio; `IMAGE_PROVIDER=xai` only when the frame must pass to the video call as `image_url`. ⛔ **No local/on-device image generation on the Studio** — FLUX on MLX peaked at 8.46 GB on the box running the live fleet and was removed; if we want it, it goes on the Mini. Review with `deck/review-frames.sh --approve 1,4,7`. ⛔ Every clip entering a library goes through `deck/clip-qa.sh` first — it catches burned-in garbage text, watermark residue, wrong aspect, a stray generated audio track and frozen footage, all of which have shipped before. Use `--kind ui_capture` when readable text is the proof rather than the defect. For Stack Lab's `ui_capture` beats use `deck/ui-capture.py`, which drives a real browser through real pages; ⛔ never log in and never capture anything behind a credential.
+<!-- END THINKSTACK OPS RULE: episode-pipeline-block -->
