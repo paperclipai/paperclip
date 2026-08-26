@@ -79,7 +79,12 @@ describe("plugin host HTTP fetch timeout", () => {
   });
 
   it("applies the requested timeout while DNS resolution is pending", async () => {
-    dnsLookupMock.mockImplementation(() => new Promise(() => undefined));
+    vi.useFakeTimers();
+    let resolveDns: ((value: Array<{ address: string; family: number }>) => void) | undefined;
+    dnsLookupMock.mockImplementation(() => new Promise((resolve) => {
+      resolveDns = resolve;
+    }));
+    const removeAbortListener = vi.spyOn(AbortSignal.prototype, "removeEventListener");
 
     const services = buildHostServices(
       {} as never,
@@ -89,13 +94,27 @@ describe("plugin host HTTP fetch timeout", () => {
     );
 
     try {
-      await expect(services.http.fetch({
+      const pendingFetch = services.http.fetch({
         url: "https://weknora.example/api/v1/knowledge-bases",
-        timeoutMs: 25,
-      })).rejects.toThrow("Plugin fetch timed out after 25ms");
+        timeoutMs: 6000,
+      });
+      const rejection = expect(pendingFetch).rejects.toThrow("Plugin fetch timed out after 6000ms");
+      await vi.advanceTimersByTimeAsync(6000);
+      await rejection;
       expect(httpRequestMock).not.toHaveBeenCalled();
+      expect(removeAbortListener).toHaveBeenCalledWith("abort", expect.any(Function));
+      expect(vi.getTimerCount()).toBe(0);
+
+      // dns.lookup is not cancellable. A late result must be absorbed without
+      // reviving the request or leaving another timer behind.
+      resolveDns?.([{ address: "93.184.216.34", family: 4 }]);
+      await vi.runAllTimersAsync();
+      expect(httpRequestMock).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       services.dispose();
+      removeAbortListener.mockRestore();
+      vi.useRealTimers();
     }
   });
 });

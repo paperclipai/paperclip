@@ -99,33 +99,49 @@ function resolvePluginFetchTimeoutMs(value: unknown): number {
   return Math.min(Math.max(Math.trunc(value), 1), PLUGIN_FETCH_TIMEOUT_MS);
 }
 
-function racePluginFetchDeadline<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
+type DnsLookupResult = Array<{ address: string; family: number }>;
+
+function resolveDnsWithDeadline(
+  hostname: string,
+  signal: AbortSignal,
+  callerTimeoutMs: number,
+): Promise<DnsLookupResult> {
+  const dnsTimeoutMs = callerTimeoutMs;
+
+  return new Promise<DnsLookupResult>((resolve, reject) => {
     let settled = false;
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      signal.removeEventListener("abort", onAbort);
+    };
     const settle = (callback: () => void) => {
       if (settled) return;
       settled = true;
       cleanup();
       callback();
     };
-    const onAbort = () => settle(() => reject(new Error(`Plugin fetch timed out after ${timeoutMs}ms`)));
+    const onAbort = () => settle(() => reject(new Error(`Plugin fetch timed out after ${callerTimeoutMs}ms`)));
 
     if (signal.aborted) {
       onAbort();
       return;
     }
 
+    timeout = setTimeout(
+      () => settle(() => reject(new Error(`DNS lookup timed out after ${dnsTimeoutMs}ms for ${hostname}`))),
+      dnsTimeoutMs,
+    );
     signal.addEventListener("abort", onAbort, { once: true });
-    void promise.then(
-      (value) => settle(() => resolve(value)),
+
+    // dns.lookup cannot be cancelled. Keep both continuations attached so a
+    // late settlement after the caller deadline is absorbed without leaking.
+    void dnsLookup(hostname, { all: true }).then(
+      (results) => settle(() => resolve(results)),
       (error: unknown) => settle(() => reject(error)),
     );
   });
 }
-
-/** Maximum time (ms) to wait for a DNS lookup before aborting. */
-const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Only these protocols are allowed for plugin HTTP requests. */
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
@@ -189,7 +205,11 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+async function validateAndResolveFetchUrl(
+  urlString: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -209,19 +229,8 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   const originalHostname = parsed.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   const hostHeader = parsed.host; // includes port if non-default
 
-  // Race the DNS lookup against a timeout to prevent indefinite hangs
-  // when DNS is misconfigured or unresponsive.
-  const dnsPromise = dnsLookup(originalHostname, { all: true });
-  let dnsTimeout: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    dnsTimeout = setTimeout(
-      () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),
-      DNS_LOOKUP_TIMEOUT_MS,
-    );
-  });
-
   try {
-    const results = await Promise.race([dnsPromise, timeoutPromise]);
+    const results = await resolveDnsWithDeadline(originalHostname, signal, timeoutMs);
     if (results.length === 0) {
       throw new Error(`DNS resolution returned no results for ${originalHostname}`);
     }
@@ -251,11 +260,10 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     if (err instanceof Error && (
       err.message.startsWith("All resolved IPs") ||
       err.message.startsWith("DNS resolution returned") ||
-      err.message.startsWith("DNS lookup timed out")
+      err.message.startsWith("DNS lookup timed out") ||
+      err.message.startsWith("Plugin fetch timed out")
     )) throw err;
     throw new Error(`DNS resolution failed for ${originalHostname}: ${(err as Error).message}`);
-  } finally {
-    if (dnsTimeout !== undefined) clearTimeout(dnsTimeout);
   }
 }
 
@@ -1650,11 +1658,7 @@ export function buildHostServices(
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
         try {
-          const target = await racePluginFetchDeadline(
-            validateAndResolveFetchUrl(params.url),
-            controller.signal,
-            timeoutMs,
-          );
+          const target = await validateAndResolveFetchUrl(params.url, controller.signal, timeoutMs);
           const init = params.init as RequestInit | undefined;
           return await executePinnedHttpRequest(target, init, controller.signal);
         } finally {

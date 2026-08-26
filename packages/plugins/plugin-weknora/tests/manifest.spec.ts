@@ -25,6 +25,12 @@ describe("WeKnora manifest and config contract", () => {
     expect(manifest.agents?.every((agent) => agent.status === "paused")).toBe(true);
     expect(manifest.routines?.every((routine) => routine.status === "paused" && routine.triggers?.every((trigger) => trigger.enabled === false))).toBe(true);
     expect(manifest.instanceConfigSchema?.properties).toMatchObject({ apiKeyRef: { format: "secret-ref" }, resourceUrls: { default: "handle" }, enableWriteActions: { default: false } });
+    const instanceConfigProperties = manifest.instanceConfigSchema?.properties as Record<string, unknown> | undefined;
+    expect(instanceConfigProperties?.requestTimeoutMs).toMatchObject({
+      minimum: 1000,
+      maximum: 30000,
+      default: 30000,
+    });
   });
 
   it("normalizes the API root and validates the secret boundary", () => {
