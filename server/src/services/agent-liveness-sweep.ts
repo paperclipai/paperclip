@@ -20,7 +20,7 @@
  * stale-heartbeat branch.
  */
 
-import { and, desc, eq, gt, isNotNull, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies } from "@paperclipai/db";
 import {
@@ -35,6 +35,16 @@ const log = logger.child({ service: "agent-liveness-sweep" });
 
 /** Activity-log action recorded for each newly-detected non-live agent. */
 export const AGENT_NON_LIVE_DETECTED_ACTION = "agent.non_live_detected";
+
+/**
+ * Deterministic advisory-lock key for the sweep (single-flight per database).
+ * Derived from a stable hash of the action name so overlapping scheduler
+ * ticks, or multiple server processes sharing one database, cannot both run
+ * the check-then-insert dedup path concurrently and double-flag an agent.
+ * Transaction-scoped (pg_try_advisory_xact_lock): released automatically at
+ * transaction end, so it cannot leak across a connection pool.
+ */
+const SWEEP_ADVISORY_LOCK_KEY = -2080456281; // hash64("agent.non_live_detected") as int32
 
 export interface SweepStaleAgentsOptions {
   /** Override the default ~24h threshold before a non-live agent is flagged. */
@@ -67,6 +77,28 @@ export async function sweepStaleAgents(
   const thresholdMs = typeof options.thresholdMs === "number" && options.thresholdMs > 0
     ? options.thresholdMs
     : DEFAULT_STALE_AGENT_RECONCILIATION_THRESHOLD_MS;
+
+  // Single-flight: the whole sweep runs in one transaction holding a
+  // transaction-scoped advisory lock. When an overlapping scheduler tick or a
+  // second server process already holds it, this tick is skipped instead of
+  // racing the per-agent check-then-insert dedup below and double-flagging.
+  return db.transaction(async (tx) => {
+    const lockResult = await tx.execute<{ locked: boolean }>(
+      sql`select pg_try_advisory_xact_lock(${SWEEP_ADVISORY_LOCK_KEY}) as locked`,
+    );
+    if (!lockResult[0]?.locked) {
+      log.debug("stale-agent reconciliation sweep skipped: another sweep holds the lock");
+      return { checked: 0, flagged: 0, logged: 0 };
+    }
+    return sweepStaleAgentsLocked(tx as unknown as Db, now, thresholdMs);
+  });
+}
+
+async function sweepStaleAgentsLocked(
+  db: Db,
+  now: Date,
+  thresholdMs: number,
+): Promise<SweepStaleAgentsResult> {
 
   // Candidate set: any agent that could plausibly be non-live. The index on
   // (companyId, status) covers the status='error' disjunct; the errorReason

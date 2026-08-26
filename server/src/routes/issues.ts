@@ -182,6 +182,7 @@ import {
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
 } from "../services/onboarding-greeting.js";
 import { getAssignmentLivenessWarnings, getAssignmentLivenessState, listAssignmentLivenessByAgentIds } from "../services/agent-assignability.js";
+import type { AssigneeLiveness } from "@paperclipai/shared";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
@@ -2402,6 +2403,19 @@ function toCompactIssue(issue: any): CompactIssue {
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
   };
+}
+
+/**
+ * List/board surfaces expose the assignee liveness state without the reason
+ * string: the reason derives from the assignee agent's errorReason, and list
+ * responses do not pass the per-issue run-secret redactor. Detail endpoints
+ * (GET /issues/:id, heartbeat-context) do redact and may include the reason.
+ */
+function stripAssigneeLivenessReason(
+  liveness: AssigneeLiveness | null,
+): AssigneeLiveness | null {
+  if (!liveness) return null;
+  return { state: liveness.state };
 }
 
 function compactIssueListEtag(issues: CompactIssue[]): string {
@@ -6125,9 +6139,15 @@ export function issueRoutes(
               ...issue,
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
               successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-              assigneeLiveness: issue.assigneeAgentId
-                ? (assigneeLivenessByAgent.get(issue.assigneeAgentId) ?? null)
-                : null,
+              // State-only on list surfaces: the reason string comes from the
+              // assignee agent's errorReason, which is not redacted for issue
+              // readers here. Detail endpoints (GET /:id, heartbeat-context)
+              // pass the run-secret redactor and may carry the reason.
+              assigneeLiveness: stripAssigneeLivenessReason(
+                issue.assigneeAgentId
+                  ? (assigneeLivenessByAgent.get(issue.assigneeAgentId) ?? null)
+                  : null,
+              ),
             }));
           return {
             kind: "compact",
@@ -6160,9 +6180,12 @@ export function issueRoutes(
             ...issue,
             successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-            assigneeLiveness: issue.assigneeAgentId
-              ? (assigneeLivenessByAgent.get(issue.assigneeAgentId) ?? null)
-              : null,
+            // State-only on list surfaces (see compact branch note).
+            assigneeLiveness: stripAssigneeLivenessReason(
+              issue.assigneeAgentId
+                ? (assigneeLivenessByAgent.get(issue.assigneeAgentId) ?? null)
+                : null,
+            ),
           })),
         };
       },
@@ -10040,6 +10063,9 @@ export function issueRoutes(
       normalizedAssigneeAgentId !== undefined && issue.assigneeAgentId
         ? await getAssignmentLivenessWarnings(db, issue.companyId, issue.assigneeAgentId)
         : [];
+    // LEG-1928: include the structured liveness snapshot so the UI badge
+    // reflects the new assignee immediately, without a follow-up refetch.
+    const assigneeLiveness = await getAssignmentLivenessState(db, issue.companyId, issue.assigneeAgentId);
 
     if (enteringBlocked) {
       const blockedIssue = issue;
@@ -10950,12 +10976,19 @@ export function issueRoutes(
         identifier: issueResponse.identifier,
         updatedAt: issueResponse.updatedAt,
         changes,
+        assigneeLiveness,
         ...(warnings.length > 0 ? { warnings } : {}),
         comment,
       });
       return;
     }
-    res.json({ ...issueResponse, changes, ...(warnings.length > 0 ? { warnings } : {}), comment });
+    res.json({
+      ...issueResponse,
+      changes,
+      assigneeLiveness,
+      ...(warnings.length > 0 ? { warnings } : {}),
+      comment,
+    });
   });
 
   router.delete("/issues/:id", async (req, res) => {

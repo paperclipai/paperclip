@@ -190,6 +190,19 @@ export const runningLabelText = "text-[#1D4ED8] dark:text-[#2563EB]";
 export const liveBlueBadge = "bg-blue-500/10 border-blue-500/30 text-blue-600 dark:text-blue-400";
 
 /**
+ * Assignee-liveness badge recipes (non-live assignee chip). Derived from the
+ * same brand hue anchors as `brandBanner.danger` / `brandBanner.warning`:
+ * `error` (assignee agent failed) reads as danger red, `paused` and
+ * `stale_heartbeat` read as warning amber. One source of truth so the issue
+ * row, kanban card, and issue detail chips all render the same tones and the
+ * component stays free of raw palette utilities.
+ */
+export const assigneeLivenessDangerBadge =
+  "border-[#DC2626]/40 bg-red-500/10 text-red-600 dark:border-[#EF4444]/35 dark:bg-[#EF4444]/10 dark:text-[#F87171]";
+export const assigneeLivenessWarningBadge =
+  "border-[#F59E0B]/40 bg-amber-500/10 text-amber-700 dark:border-[#FBBF24]/35 dark:bg-[#FBBF24]/10 dark:text-[#FBBF24]";
+
+/**
  * Issue/task status → brand colour name (PAP-75). `in_progress` is blue
  * (liveness), `todo` amber (queued), `in_review` violet (awaiting review),
  * `done` green, `blocked` red, `backlog`/`cancelled` gray (inert).

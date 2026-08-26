@@ -201,35 +201,48 @@ export function readHeartbeatLivenessConfig(runtimeConfig: unknown): {
  * assignee looks live or cannot be found / is cross-company. Used by the issue
  * update path to surface LEG-1924-style dead-assignee assignments rather than
  * accepting them silently.
+ *
+ * These lookups are advisory only and fail open: a broken/unavailable db
+ * handle must never fail the request carrying them.
  */
 export async function getAssignmentLivenessWarnings(
   db: Db,
   companyId: string,
   agentId: string | null | undefined,
 ): Promise<string[]> {
-  const agent = await loadAssignmentLivenessAgent(db, companyId, agentId);
-  return agent ? getAgentAssignmentLivenessWarnings(agent.input) : [];
+  try {
+    const agent = await loadAssignmentLivenessAgent(db, companyId, agentId);
+    return agent ? getAgentAssignmentLivenessWarnings(agent.input) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
  * Structured liveness summary for an issue's assignee agent (LEG-1928).
  * Returns `{ state: "live" }` for a healthy assignee, or the first-class
  * non-live state otherwise. Returns `null` when the issue has no agent
- * assignee, or the agent cannot be found / is cross-company.
+ * assignee, the agent cannot be found / is cross-company, or the lookup
+ * itself fails (advisory: fail open).
  */
 export async function getAssignmentLivenessState(
   db: Db,
   companyId: string,
   agentId: string | null | undefined,
 ): Promise<AssigneeLiveness | null> {
-  const agent = await loadAssignmentLivenessAgent(db, companyId, agentId);
-  return agent ? getAgentAssignmentLivenessState(agent.input) : null;
+  try {
+    const agent = await loadAssignmentLivenessAgent(db, companyId, agentId);
+    return agent ? getAgentAssignmentLivenessState(agent.input) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Batched liveness lookup keyed by assignee agent id, for the issue list/board.
  * Resolves each distinct agent id once and returns a Map<agentId, liveness>.
  * Agents that cannot be found or are cross-company are omitted from the map.
+ * Advisory: returns an empty map if the lookup fails.
  */
 export async function listAssignmentLivenessByAgentIds(
   db: Db,
@@ -243,13 +256,17 @@ export async function listAssignmentLivenessByAgentIds(
   );
   const result = new Map<string, AssigneeLiveness>();
   if (distinct.length === 0) return result;
-  const rows = await db
-    .select(AGENT_LIVENESS_COLUMNS)
-    .from(agents)
-    .where(inArray(agents.id, distinct));
-  for (const row of rows) {
-    if (row.companyId !== companyId) continue;
-    result.set(row.id, getAgentAssignmentLivenessState(agentRowToLivenessInput(row)));
+  try {
+    const rows = await db
+      .select(AGENT_LIVENESS_COLUMNS)
+      .from(agents)
+      .where(inArray(agents.id, distinct));
+    for (const row of rows) {
+      if (row.companyId !== companyId) continue;
+      result.set(row.id, getAgentAssignmentLivenessState(agentRowToLivenessInput(row)));
+    }
+  } catch {
+    return new Map();
   }
   return result;
 }

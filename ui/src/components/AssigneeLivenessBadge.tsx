@@ -2,6 +2,10 @@ import type { ReactNode } from "react";
 import { AlertTriangle, Clock, Pause } from "lucide-react";
 import type { AssigneeLiveness, AssigneeLivenessState } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
+import {
+  assigneeLivenessDangerBadge,
+  assigneeLivenessWarningBadge,
+} from "@/lib/status-colors";
 import { cn } from "@/lib/utils";
 
 interface AssigneeLivenessTone {
@@ -13,22 +17,19 @@ interface AssigneeLivenessTone {
 
 const ASSIGNEE_LIVENESS_TONE: Record<Exclude<AssigneeLivenessState, "live">, AssigneeLivenessTone> = {
   error: {
-    className:
-      "border-red-500/40 bg-red-500/10 text-red-600 dark:border-red-400/35 dark:bg-red-400/10 dark:text-red-400",
+    className: assigneeLivenessDangerBadge,
     icon: AlertTriangle,
     label: "Assignee in error",
     title: "Assignee agent is in an error state and will not run this work until it recovers.",
   },
   paused: {
-    className:
-      "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300",
+    className: assigneeLivenessWarningBadge,
     icon: Pause,
     label: "Assignee paused",
     title: "Assignee agent is paused. Work will queue but will not run until it is resumed.",
   },
   stale_heartbeat: {
-    className:
-      "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300",
+    className: assigneeLivenessWarningBadge,
     icon: Clock,
     label: "Assignee stale",
     title: "Assignee agent has not heartbeated recently and may not be live.",

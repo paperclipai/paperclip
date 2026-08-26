@@ -168,4 +168,12 @@ describe("listAssignmentLivenessByAgentIds (board batch lookup)", () => {
     const map = await listAssignmentLivenessByAgentIds(db, COMPANY_ID, [AGENT_ID]);
     expect(map.has(AGENT_ID)).toBe(false);
   });
+
+  it("fails open when the db handle is degenerate (advisory signal must not break the request)", async () => {
+    const broken: any = {};
+    await expect(getAssignmentLivenessWarnings(broken, COMPANY_ID, AGENT_ID)).resolves.toEqual([]);
+    await expect(getAssignmentLivenessState(broken, COMPANY_ID, AGENT_ID)).resolves.toBeNull();
+    const map = await listAssignmentLivenessByAgentIds(broken, COMPANY_ID, [AGENT_ID]);
+    expect(map.size).toBe(0);
+  });
 });
