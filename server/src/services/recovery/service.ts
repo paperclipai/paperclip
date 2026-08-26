@@ -3582,6 +3582,69 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { agentId: candidate.id, reason: `routed to company recovery owner ${candidate.name} for review` };
   }
 
+  /**
+   * TSMC-21870 (operator directive 2026-08-27): FOLLOW THE REPORTING LINE.
+   *
+   * `strandedRecoveryOwnerAgentId` is one hand-set field per company, and it had drifted into
+   * four different shapes across eight companies — engineer x2, general x4, pm x1, and a
+   * devops SHELL HANDLER for Media that the eligibility bar correctly refuses, leaving Media
+   * with no path above the operator at all. A single field cannot express a chain, and an
+   * unset or badly-set field silently means "park it on the human".
+   *
+   * The escalation ladder is the org chart: an engineer's stalled decision goes to the CTO,
+   * the CTO's to the CEO, and only the CEO's reaches the operator. Every non-executive role
+   * reports into the CTO for this purpose — the question being escalated is always "this work
+   * stalled, what now?", which is a technical-leadership call regardless of who was doing it.
+   */
+  const ESCALATION_LADDER = ["cto", "ceo"] as const;
+
+  function nextRungsForRole(role: string | null | undefined): readonly string[] {
+    const normalized = (role ?? "").toLowerCase();
+    if (normalized === "ceo") return [];          // above the CEO is the operator
+    if (normalized === "cto") return ["ceo"];
+    return ESCALATION_LADDER;                      // everyone else escalates via the CTO
+  }
+
+  /**
+   * Walk up the reporting line from the source assignee's role, returning the first agent
+   * that clears the same eligibility bar the recovery-action router applies. Returns null
+   * when the chain is exhausted — that, and only that, is when the operator is the answer.
+   */
+  async function resolveChainReviewer(companyId: string, sourceIssue: {
+    originKind: string | null;
+    assigneeAgentId: string | null;
+  }): Promise<{ agentId: string | null; reason: string }> {
+    const sourceAssignee = sourceIssue.assigneeAgentId ? await getAgent(sourceIssue.assigneeAgentId) : null;
+    const recoverySource = {
+      originKind: sourceIssue.originKind,
+      assigneeAdapterType: sourceAssignee?.adapterType ?? null,
+    };
+    const rungs = nextRungsForRole(sourceAssignee?.role);
+    for (const rung of rungs) {
+      const candidates = await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.role, rung)));
+      for (const candidate of candidates) {
+        if (candidate.id === sourceIssue.assigneeAgentId) continue;   // never escalate to yourself
+        if (!isRecoveryOwnerCandidateEligible(candidate, recoverySource)) continue;
+        if (!(await isAgentInvokable(candidate))) continue;
+        if (!isHeartbeatWakeOnDemandEnabled(candidate)) continue;
+        return {
+          agentId: candidate.id,
+          reason: `escalated up the reporting line to ${candidate.name} (${rung})`
+            + (sourceAssignee?.role ? ` from ${sourceAssignee.role}` : ""),
+        };
+      }
+    }
+    return {
+      agentId: null,
+      reason: rungs.length === 0
+        ? "source is already at CEO level; the operator is the next rung"
+        : `no eligible agent at ${rungs.join(" or ")} level could take the review`,
+    };
+  }
+
   async function ensureRecoveryLoopCapEscalationIssue(input: {
     issue: typeof issues.$inferSelect;
     kind: string;
@@ -3680,10 +3743,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         return existing;
       }
 
-      const reviewer = await resolveEscalationReviewer(input.issue.companyId, {
+      // Configured owner first (an operator setting it deliberately should win), then the
+      // reporting line, then — only then — the operator.
+      let reviewer = await resolveEscalationReviewer(input.issue.companyId, {
         originKind: input.issue.originKind,
         assigneeAgentId: input.issue.assigneeAgentId,
       });
+      if (!reviewer.agentId) {
+        const chain = await resolveChainReviewer(input.issue.companyId, {
+          originKind: input.issue.originKind,
+          assigneeAgentId: input.issue.assigneeAgentId,
+        });
+        if (chain.agentId) reviewer = { agentId: chain.agentId, reason: `${reviewer.reason}; ${chain.reason}` };
+        else reviewer = { agentId: null, reason: `${reviewer.reason}; ${chain.reason}` };
+      }
       const prefix = await getCompanyIssuePrefix(input.issue.companyId);
       const title = escalationReason === "no_invokable_recovery_owner"
         ? `BOARD ACTION REQUIRED: No invokable recovery owner — ${input.recoveryCause}`
