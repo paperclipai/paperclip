@@ -2495,7 +2495,7 @@ async function birthtimeSurvivesProbe(dirPath) {
   try {
     before = (await fs.lstat(dirPath)).birthtimeMs;
   } catch {
-    return "its reported creation time changed after a probe write";
+    return "its reported creation time could not be read";
   }
   const probePath = path.posix.join(dirPath, nextProbeFileName());
   let probeCreatedByThisCall = false;
@@ -2513,7 +2513,7 @@ async function birthtimeSurvivesProbe(dirPath) {
   try {
     after = (await fs.lstat(dirPath)).birthtimeMs;
   } catch {
-    return "its reported creation time changed after a probe write";
+    return "its reported creation time could not be read";
   }
   return before === after ? null : "its reported creation time changed after a probe write";
 }
