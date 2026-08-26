@@ -79,6 +79,9 @@ importers:
       '@paperclipai/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
+      '@paperclipai/adapter-openrouter':
+        specifier: workspace:*
+        version: link:../packages/adapters/openrouter
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
@@ -338,6 +341,22 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+
+  packages/adapters/openrouter:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.13.3
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
 
   packages/adapters/pi-local:
     dependencies:
@@ -811,6 +830,9 @@ importers:
       '@paperclipai/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
+      '@paperclipai/adapter-openrouter':
+        specifier: workspace:*
+        version: link:../packages/adapters/openrouter
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
@@ -989,6 +1011,9 @@ importers:
       '@paperclipai/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
+      '@paperclipai/adapter-openrouter':
+        specifier: workspace:*
+        version: link:../packages/adapters/openrouter
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
@@ -4895,6 +4920,9 @@ packages:
 
   '@types/multer@2.2.0':
     resolution: {integrity: sha512-3U1troeqGV8Ntp7Q3klwf4zr23VEoqYVocYXaswm9+8z3O9UHDYAqLxjJ/h550iRADTjKdOdhhasXw6gD6kYtg==}
+
+  '@types/node@24.13.3':
+    resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
@@ -12392,6 +12420,10 @@ snapshots:
   '@types/multer@2.2.0':
     dependencies:
       '@types/express': 5.0.6
+
+  '@types/node@24.13.3':
+    dependencies:
+      undici-types: 7.18.2
 
   '@types/node@24.13.3':
     dependencies:
