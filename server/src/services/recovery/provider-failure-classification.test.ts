@@ -35,6 +35,25 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("classifies ACPX turn failures from the persisted assistant summary", () => {
+    const now = new Date("2026-08-26T07:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "Internal error",
+      resultJson: {
+        status: "failed",
+        stopReason: "adapter_failed",
+        summary: "You've hit your usage limit. Try again at 8:20 AM.",
+      },
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-26T08:20:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
   it("treats timezone-less provider reset clocks as UTC", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({

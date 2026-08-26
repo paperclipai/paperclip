@@ -470,6 +470,7 @@ export function classifyAdapterFailureForRecovery(
 ): AdapterFailureRecoveryClassification {
   if (
     latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "acpx_turn_failed" &&
     latestRun.errorCode !== "provider_quota" &&
     latestRun.errorCode !== "configuration_incomplete"
   ) {

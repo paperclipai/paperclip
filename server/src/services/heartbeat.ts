@@ -248,7 +248,11 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, recoveryService } from "./recovery/service.js";
+import {
+  ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  classifyAdapterFailureForRecovery,
+  recoveryService,
+} from "./recovery/service.js";
 import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
@@ -16466,7 +16470,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-      const runErrorCode =
+      const adapterResultErrorCode =
         outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
@@ -16474,6 +16478,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : outcome === "failed"
               ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
               : null;
+      const adapterFailureRecoveryClassification = outcome === "failed"
+        ? classifyAdapterFailureForRecovery({
+            errorCode: adapterResultErrorCode,
+            error: runErrorMessage,
+            resultJson: {
+              ...parseObject(adapterResult.resultJson),
+              ...(adapterResult.summary ? { summary: adapterResult.summary } : {}),
+            },
+          })
+        : null;
+      const runErrorCode = adapterFailureRecoveryClassification?.kind ?? adapterResultErrorCode;
+      const runErrorFamily = adapterFailureRecoveryClassification?.kind ?? adapterResult.errorFamily ?? null;
+      const runRetryNotBefore = adapterFailureRecoveryClassification?.kind === "provider_quota"
+        ? adapterFailureRecoveryClassification.retryAt.toISOString()
+        : adapterResult.retryNotBefore ?? null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -16541,8 +16560,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
               },
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
+              errorFamily: runErrorFamily,
+              retryNotBefore: runRetryNotBefore,
             }),
             modelProfileApplication,
           ),
