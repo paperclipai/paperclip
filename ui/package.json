@@ -69,7 +69,8 @@
     "react-resizable-panels": "^4.12.3",
     "react-router-dom": "^7.18.2",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "yjs": "13.6.29"
   },
   "devDependencies": {
     "@sentry/browser": "^10.71.0",

@@ -88,6 +88,86 @@ describe("instrumentationReady", () => {
   });
 });
 
+describe("checkExactPeerVersions", () => {
+  it("passes when the installed version matches the declared version exactly", async () => {
+    const { checkExactPeerVersions } = await importFreshInstrumentation();
+    const require = createRequire(import.meta.url);
+    const vitestVersion = (require("vitest/package.json") as { version: string }).version;
+
+    const result = checkExactPeerVersions(["vitest"], { vitest: vitestVersion });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("reports a package as missing when it cannot be resolved", async () => {
+    const { checkExactPeerVersions } = await importFreshInstrumentation();
+
+    const result = checkExactPeerVersions(["@paperclipai/does-not-exist-anywhere"], {
+      "@paperclipai/does-not-exist-anywhere": "1.0.0",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.diagnostic).toContain("@opentelemetry/* packages are not installed");
+      expect(result.diagnostic).toContain("@paperclipai/does-not-exist-anywhere");
+    }
+  });
+
+  it("reports a package as mismatched when the installed version differs from the declared version", async () => {
+    const { checkExactPeerVersions } = await importFreshInstrumentation();
+    const require = createRequire(import.meta.url);
+    const vitestVersion = (require("vitest/package.json") as { version: string }).version;
+
+    const result = checkExactPeerVersions(["vitest"], {
+      vitest: "0.0.0-not-the-installed-version",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.diagnostic).toContain("a package is installed at an unsupported version");
+      expect(result.diagnostic).toContain(`vitest@${vitestVersion}`);
+      expect(result.diagnostic).toContain("expected 0.0.0-not-the-installed-version");
+    }
+  });
+});
+
+describe("bootstrapOtel exact-version gate", () => {
+  it("does not mention the two exporters OTEL_EXPORTER_OTLP_PROTOCOL did not select", async () => {
+    process.env[ENDPOINT_ENV] = "http://collector:4318";
+    process.env[PROTOCOL_ENV] = "http/json";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { instrumentationReady } = await importFreshInstrumentation();
+    await instrumentationReady;
+
+    // The OTel packages are absent in this test environment, so the gate
+    // reports every checked package as missing. It must have checked the
+    // selected exporter (http/json → exporter-trace-otlp-http) and skipped
+    // the two the protocol did not select.
+    const diagnosticCall = warn.mock.calls.find((call) =>
+      String(call[0]).includes("@opentelemetry/* packages are not installed"),
+    );
+    expect(diagnosticCall).toBeDefined();
+    const message = String(diagnosticCall![0]);
+    expect(message).toContain("@opentelemetry/exporter-trace-otlp-http");
+    expect(message).not.toContain("@opentelemetry/exporter-trace-otlp-grpc");
+    expect(message).not.toContain("@opentelemetry/exporter-trace-otlp-proto");
+  });
+
+  it("emits exactly one diagnostic when the endpoint is set and packages are absent", async () => {
+    process.env[ENDPOINT_ENV] = "http://collector:4318";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { instrumentationReady } = await importFreshInstrumentation();
+    await instrumentationReady;
+
+    const diagnosticCalls = warn.mock.calls.filter((call) =>
+      String(call[0]).includes("@opentelemetry/* packages are not installed"),
+    );
+    expect(diagnosticCalls).toHaveLength(1);
+  });
+});
+
 describe("getStartupTracer", () => {
   it("returns a usable tracer-shaped object when OTEL_EXPORTER_OTLP_ENDPOINT is unset", async () => {
     const { getStartupTracer } = await importFreshInstrumentation();
