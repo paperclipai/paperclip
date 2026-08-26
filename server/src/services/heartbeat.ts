@@ -246,28 +246,24 @@ import {
 } from "./meta-issue-dedup.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 
-// TSMC-21480. `completion_continuation` re-offers the same card to the same
-// agent immediately after a productive run. Two states make that offer pure
-// burn, and neither was checked — the only gate was TSMC-21372's chain cap,
-// which bounds the loop at 3 but does not stop it starting:
+// TSMC-21480 / TSMC-21879 (re-cut). `completion_continuation` re-offers the
+// same card to the same agent immediately after a productive run. Two states
+// make that offer pure burn, and neither was checked — the only gate was
+// TSMC-21372's chain cap, which bounds the loop at 3 but does not stop it
+// starting:
 //
 //  1. The agent already STATED it was not continuing (done / cancelled /
-//     in_review / blocked). Re-offering asks it to restate the same thing. This
-//     matters more since TSMC-21479: a stated `done` refused by the
-//     close-evidence gate leaves the issue `in_progress`, which is exactly the
-//     shape that looks continuable and is not.
-//  2. The issue is waiting on a HUMAN — a pending operator-ask interaction.
-//     No agent run can advance it, so every continuation is wasted.
+//     in_review / blocked), including when the status write failed (e.g.
+//     close-evidence gate refusal leaves the issue `in_progress` while
+//     resultJson.disposition — or a streamed PAPERCLIP_DISPOSITION folded into
+//     resultJson at finalization — still says done). Re-offering asks it to
+//     restate the same thing.
+//  2. The issue is waiting on a person or board path — any pending issue-thread
+//     interaction or pending/revision_requested approval. Same predicates the
+//     successful-run handoff uses via hasPendingInteractionOrApproval
+//     (successful-run-handoff.ts). No agent run can advance it, so every
+//     continuation is wasted.
 const STATED_NON_CONTINUATION_DISPOSITIONS = new Set(["done", "cancelled", "in_review", "blocked"]);
-
-// Same kinds the Operator Console derives a board ask from; a pending one of
-// these means the card is parked on a person.
-const OPERATOR_ASK_INTERACTION_KINDS = [
-  "request_confirmation",
-  "request_checkbox_confirmation",
-  "ask_user_questions",
-  "request_item_verdicts",
-] as const;
 
 /** Read the disposition status an adapter stated on a run, if any. */
 export function readStatedDispositionStatus(resultJson: unknown): string | null {
@@ -17257,34 +17253,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const lastIssueId = readNonEmptyString(parseObject(lastRun?.contextSnapshot ?? null).issueId);
           if (lastRun && lastIssueId) {
             const stillOpen = await db
-              .select({ id: issues.id, status: issues.status })
+              .select({ id: issues.id, status: issues.status, companyId: issues.companyId })
               .from(issues)
               .where(and(eq(issues.id, lastIssueId), inArray(issues.status, ["todo", "in_progress"])))
               .limit(1)
               .then((rows) => rows[0] ?? null);
-            // TSMC-21480: do not re-offer a card the agent said it was done with,
-            // or one that is parked on a person. Checked BEFORE the progress
-            // query so a parked card costs nothing.
+            // TSMC-21480 / TSMC-21879: do not re-offer a card the agent said it
+            // was done with, or one parked on pending interaction/approval.
+            // Mirrors handoff hasPendingInteractionOrApproval predicates.
+            // Checked BEFORE the progress query so a parked card costs nothing.
+            // resultJson.disposition already includes streamed PAPERCLIP_DISPOSITION
+            // when finalization folded it in (dispositionSource: streamed_terminal_tail).
             const statedNoContinue = statedDispositionBlocksContinuation(lastRun.resultJson);
-            const pendingOperatorAsk = stillOpen
-              ? await db
-                  .select({ id: issueThreadInteractions.id })
-                  .from(issueThreadInteractions)
-                  .where(and(
-                    eq(issueThreadInteractions.issueId, lastIssueId),
-                    eq(issueThreadInteractions.status, "pending"),
-                    inArray(issueThreadInteractions.kind, [...OPERATOR_ASK_INTERACTION_KINDS]),
-                  ))
-                  .limit(1)
-                  .then((rows) => rows.length > 0)
-              : false;
-            if (stillOpen && (statedNoContinue || pendingOperatorAsk)) {
+            const [pendingInteraction, pendingApproval] = stillOpen
+              ? await Promise.all([
+                  db
+                    .select({ id: issueThreadInteractions.id })
+                    .from(issueThreadInteractions)
+                    .where(and(
+                      eq(issueThreadInteractions.companyId, stillOpen.companyId),
+                      eq(issueThreadInteractions.issueId, lastIssueId),
+                      eq(issueThreadInteractions.status, "pending"),
+                    ))
+                    .limit(1)
+                    .then((rows) => rows[0] ?? null),
+                  db
+                    .select({ id: issueApprovals.approvalId })
+                    .from(issueApprovals)
+                    .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+                    .where(and(
+                      eq(issueApprovals.companyId, stillOpen.companyId),
+                      eq(issueApprovals.issueId, lastIssueId),
+                      inArray(approvals.status, ["pending", "revision_requested"]),
+                    ))
+                    .limit(1)
+                    .then((rows) => rows[0] ?? null),
+                ])
+              : [null, null];
+            const pendingInteractionOrApproval = Boolean(pendingInteraction || pendingApproval);
+            if (stillOpen && (statedNoContinue || pendingInteractionOrApproval)) {
               logger.debug(
                 {
                   agentId,
                   issueId: lastIssueId,
                   continuedFromRunId: lastRun.id,
-                  reason: statedNoContinue ? "stated_disposition" : "pending_operator_ask",
+                  reason: statedNoContinue
+                    ? "stated_disposition"
+                    : pendingApproval
+                      ? "pending_approval"
+                      : "pending_interaction",
                   statedStatus: readStatedDispositionStatus(lastRun.resultJson),
                 },
                 "skipped completion_continuation: the card is finished or parked on a person",
