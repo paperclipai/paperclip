@@ -5,7 +5,10 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
   return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };
 });
 
-import { ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+import {
+  applyOpenCodeAllowAllModelsDefault,
+  ensureRemoteOpenCodeModelConfiguredAndAvailable,
+} from "./execute.js";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 
 const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
@@ -22,6 +25,36 @@ function probeResult(overrides: Record<string, unknown>) {
     ...overrides,
   } as never;
 }
+
+describe("applyOpenCodeAllowAllModelsDefault", () => {
+  it("bakes the flag on by default when neither run env nor process env set it", () => {
+    const env: Record<string, string> = {};
+    applyOpenCodeAllowAllModelsDefault(env, {});
+    expect(env.OPENCODE_ALLOW_ALL_MODELS).toBe("1");
+  });
+
+  it("never overrides a persisted adapterConfig.env value already merged into the run env", () => {
+    const env: Record<string, string> = { OPENCODE_ALLOW_ALL_MODELS: "0" };
+    applyOpenCodeAllowAllModelsDefault(env, {});
+    expect(env.OPENCODE_ALLOW_ALL_MODELS).toBe("0");
+  });
+
+  // A remote (SSH/sandbox) target does not inherit the host's process env — it
+  // only ever sees this map. Deferring to the process env by leaving the key out
+  // therefore drops the operator's override on exactly the paths that cannot
+  // recover it, so the value is copied through rather than merely deferred to.
+  it("propagates an explicit process-env disable so remote targets honour it", () => {
+    const env: Record<string, string> = {};
+    applyOpenCodeAllowAllModelsDefault(env, { OPENCODE_ALLOW_ALL_MODELS: "0" });
+    expect(env.OPENCODE_ALLOW_ALL_MODELS).toBe("0");
+  });
+
+  it("propagates an explicit process-env enable so remote targets honour it", () => {
+    const env: Record<string, string> = {};
+    applyOpenCodeAllowAllModelsDefault(env, { OPENCODE_ALLOW_ALL_MODELS: "1" });
+    expect(env.OPENCODE_ALLOW_ALL_MODELS).toBe("1");
+  });
+});
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {

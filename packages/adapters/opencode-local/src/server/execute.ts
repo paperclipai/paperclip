@@ -70,6 +70,48 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+/**
+ * Bake OPENCODE_ALLOW_ALL_MODELS on as the fleet-wide provisioning default for
+ * every opencode_local run (BLU-26616; follow-up to BLU-26278/BLU-26279).
+ *
+ * The model probe (ensureOpenCodeModelConfiguredAndAvailable /
+ * ensureRemoteOpenCodeModelConfiguredAndAvailable) resolves the configured model
+ * against `opencode models`. That catalog intermittently serves a live-refreshed
+ * list whose bundled fallback OMITS new/edge models (e.g. openrouter/z-ai/glm-5.2)
+ * when a live fetch is unavailable, turning a perfectly valid model into a
+ * spurious "Configured OpenCode model is unavailable" adapter_failed. Defaulting
+ * the flag on skips that probe (provider/model format is still enforced), taking
+ * the model catalog out of the resolution critical path for the whole fleet —
+ * not just the two agents (estimation-agent, Newsletter Editor) that carry it in
+ * persisted adapterConfig.env today.
+ *
+ * This is a SOFT default, unlike the OPENCODE_DISABLE_PROJECT_CONFIG guard which
+ * is force-set: call this AFTER the adapterConfig.env merge so a persisted
+ * config value wins, and yield to the process env when it sets the flag
+ * explicitly, so an operator can still disable it with
+ * OPENCODE_ALLOW_ALL_MODELS=0.
+ *
+ * Yielding means COPYING the process-env value through, not skipping the write.
+ * Remote targets (SSH/sandbox) do not inherit the host process env — this map is
+ * the only channel they get — so leaving the key unset would silently drop a
+ * deployment-level override on exactly the paths that cannot recover it. Copying
+ * "0" through is equivalent to omitting it (isTruthyEnvFlag("0") is false), and
+ * copying "1" through is what makes the override reach the remote process. The
+ * local path is unaffected either way: it already reads
+ * `env.X ?? process.env.X`. Pure for testability.
+ */
+export function applyOpenCodeAllowAllModelsDefault(
+  env: Record<string, string>,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): void {
+  if (env.OPENCODE_ALLOW_ALL_MODELS !== undefined) return;
+  if (processEnv.OPENCODE_ALLOW_ALL_MODELS !== undefined) {
+    env.OPENCODE_ALLOW_ALL_MODELS = processEnv.OPENCODE_ALLOW_ALL_MODELS;
+    return;
+  }
+  env.OPENCODE_ALLOW_ALL_MODELS = "1";
+}
+
 function parseModelProvider(model: string | null): string | null {
   if (!model) return null;
   const trimmed = model.trim();
@@ -319,6 +361,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+  // Default the model-availability probe OFF fleet-wide (BLU-26616). Runs after
+  // the envConfig merge above so a persisted adapterConfig.env value still wins,
+  // and flows into preparedRuntimeConfig.env below so both the local and remote
+  // probes honour it. See applyOpenCodeAllowAllModelsDefault for the full why.
+  applyOpenCodeAllowAllModelsDefault(env);
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
