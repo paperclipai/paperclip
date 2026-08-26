@@ -1,6 +1,7 @@
 import { CircleDot, ExternalLink, FolderGit2, GitBranch } from "lucide-react";
 import { Link } from "@/lib/router";
 import type { WorkReference } from "../lib/pipeline-references";
+import { t } from "@/i18n";
 
 /**
  * Renders a case's typed work references — workspace folders, external URLs,
@@ -8,7 +9,7 @@ import type { WorkReference } from "../lib/pipeline-references";
  */
 export function PipelineWorkReferences({ references }: { references: WorkReference[] }) {
   if (references.length === 0) {
-    return <p className="py-3 text-sm text-muted-foreground">No linked work yet.</p>;
+    return <p className="py-3 text-sm text-muted-foreground">{t("app.pipelineWorkReferences.noLinkedWorkYet", { defaultValue: "No linked work yet." })}</p>;
   }
   return (
     <ul className="min-w-0 space-y-2">
@@ -67,7 +68,7 @@ function WorkReferenceRow({ reference }: { reference: WorkReference }) {
     <div className="flex items-start gap-2 text-sm text-foreground">
       <FolderGit2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
       <span className="min-w-0 [overflow-wrap:anywhere]">
-        <span className="block text-xs text-muted-foreground">Folder</span>
+        <span className="block text-xs text-muted-foreground">{t("app.pipelineWorkReferences.folder", { defaultValue: "Folder" })}</span>
         <span className="font-normal">{reference.label}</span>
         {reference.path ? (
           <span className="block font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{reference.path}</span>

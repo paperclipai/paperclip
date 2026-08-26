@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { t } from "@/i18n";
 
 /* ------------------------------------------------------------------ */
 /*  Canonical verb table — one verb per action, used on every card.    */
@@ -78,7 +79,7 @@ function formatVerb(
       return "deleted";
 
     case "approval.created":
-      return context === "pinned" ? "needs approval on" : "requested approval on";
+      return context === "pinned" ? t("app.feedCard.needsApprovalOn", { defaultValue: "needs approval on" }) : t("app.feedCard.requestedApprovalOn", { defaultValue: "requested approval on" });
     case "approval.approved":
       return "approved";
     case "approval.rejected":
@@ -87,7 +88,7 @@ function formatVerb(
       return "requested changes on";
 
     case "agent.created":
-      return context === "pinned" ? "wants to hire" : "hired";
+      return context === "pinned" ? t("app.feedCard.wantsToHire", { defaultValue: "wants to hire" }) : "hired";
     case "agent.paused":
       return "paused";
     case "agent.resumed":
@@ -293,9 +294,9 @@ function resolveContent(
   const actorName =
     actor?.name ??
     (event.actorType === "system"
-      ? "System"
+      ? t("app.feedCard.system", { defaultValue: "System" })
       : event.actorType === "user"
-        ? "Board"
+        ? t("app.feedCard.board", { defaultValue: "Board" })
         : event.actorId || "Unknown");
 
   const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`) ?? null;
@@ -468,7 +469,7 @@ export function FeedCard({
         )}
       </span>
       {isPinned && (
-        <span className="shrink-0 text-xs text-muted-foreground">Review →</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{t("app.feedCard.review", { defaultValue: "Review →" })}</span>
       )}
       <span data-fc="time" className="shrink-0 text-muted-foreground">
         {timeAgo(event.createdAt)}

@@ -3,6 +3,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import { attachmentDownloadPath, attachmentFilename } from "@/lib/issue-attachments";
 import { isVideoLikeOutput } from "@/lib/issue-output";
+import { t } from "@/i18n";
 
 export interface GalleryMediaItem {
   id: string;
@@ -104,7 +105,7 @@ export function ImageGalleryModal({
                 href={attachmentDownloadPath(current)}
                 download={filename}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Download"
+                title={t("app.imageGalleryModal.download", { defaultValue: "Download" })}
                 aria-label={`Download ${filename}`}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -114,7 +115,7 @@ export function ImageGalleryModal({
                 type="button"
                 onClick={() => onOpenChange(false)}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Close"
+                title={t("common.close", { defaultValue: "Close" })}
               >
                 <X className="h-5 w-5" />
               </button>
@@ -130,7 +131,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goPrev}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Previous"
+                  title={t("app.imageGalleryModal.previous", { defaultValue: "Previous" })}
                 >
                   <ChevronLeft className="h-7 w-7" />
                 </button>
@@ -165,7 +166,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goNext}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Next"
+                  title={t("app.imageGalleryModal.next", { defaultValue: "Next" })}
                 >
                   <ChevronRight className="h-7 w-7" />
                 </button>

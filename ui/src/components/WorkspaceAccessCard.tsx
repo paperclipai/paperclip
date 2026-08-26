@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "../lib/utils";
 import type { WorkspaceAccessState } from "../lib/workspace-access-state";
+import { t } from "@/i18n";
 
 /**
  * Workspace access surface (PAP-17572).
@@ -112,12 +113,12 @@ export function WorkspaceAccessCard({
           </Button>
           {access.state === "ready" && !access.handoffAvailable ? (
             <span className="text-xs text-muted-foreground">
-              Signs in with the snapshot-local credentials captured when this clone was made.
+              {t("app.workspaceAccessCard.signsInWithTheSnapshotLocalCredentialsCapturedWhenThisCloneWasMade", { defaultValue: "Signs in with the snapshot-local credentials captured when this clone was made." })}
             </span>
           ) : null}
           {access.state === "ready" && access.handoffAvailable ? (
             <span className="text-xs text-muted-foreground">
-              Uses a single-use login handoff — no password needed.
+              {t("app.workspaceAccessCard.usesASingleUseLoginHandoffNoPasswordNeeded", { defaultValue: "Uses a single-use login handoff — no password needed." })}
             </span>
           ) : null}
         </div>

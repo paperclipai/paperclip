@@ -13,6 +13,7 @@ import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 
 // -- Tree types --------------------------------------------------------------
 
@@ -223,7 +224,7 @@ export const FRONTMATTER_FIELD_LABELS: Record<string, string> = {
   reportsTo: "Reports to",
   skills: "Skills",
   status: "Status",
-  description: "Description",
+  description: t("app.fileTree.description", { defaultValue: "Description" }),
   priority: "Priority",
   assignee: "Responsible",
   project: "Project",
@@ -275,7 +276,7 @@ export function FileTree({
   loading = false,
   error,
   empty,
-  ariaLabel = "Files",
+  ariaLabel = t("app.fileTree.files", { defaultValue: "Files" }),
 }: FileTreeProps) {
   const effectiveCheckedFiles = checkedFiles ?? new Set<string>();
   const visibleNodes = useMemo(
@@ -369,9 +370,7 @@ export function FileTree({
             <span className="min-w-0 text-destructive">{error.message}</span>
           </div>
           {error.retry && (
-            <Button type="button" size="xs" variant="outline" onClick={error.retry}>
-              Retry
-            </Button>
+            <Button type="button" size="xs" variant="outline" onClick={error.retry}> { t("app.fileTree.retry", { defaultValue: "Retry" }) } </Button>
           )}
         </div>
       </div>

@@ -6,6 +6,7 @@ import {
   type IssueWriteDenialTone,
 } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import { t } from "@/i18n";
 
 /**
  * Renders actionable copy for a denied issue write (the open cross-task write design (failure UX)).
@@ -99,11 +100,11 @@ export function IssueWriteDenialNotice({
               label and the first words of the value together at every width. */}
           <dl className={cn("space-y-0.5 text-xs leading-5", tone.action)}>
             <div className="min-w-0">
-              <dt className="inline font-medium">Who can act:</dt>{" "}
+              <dt className="inline font-medium">{t("app.issueWriteDenialNotice.whoCanAct", { defaultValue: "Who can act:" })}</dt>{" "}
               <dd className="inline">{copy.whoCanAct}</dd>
             </div>
             <div className="min-w-0">
-              <dt className="inline font-medium">Try this:</dt>{" "}
+              <dt className="inline font-medium">{t("app.issueWriteDenialNotice.tryThis", { defaultValue: "Try this:" })}</dt>{" "}
               <dd className="inline">{copy.sanctionedPath}</dd>
             </div>
           </dl>

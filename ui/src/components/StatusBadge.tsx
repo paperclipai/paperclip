@@ -10,16 +10,17 @@ import {
   taskStatusVarDefault,
 } from "../lib/status-colors";
 import { StatusGlyph } from "./StatusGlyph";
+import { t } from "@/i18n";
 
 /** Inline `--sc` local var pointing a status helper at a base-hue CSS var. */
 function scStyle(cssVar: string): CSSProperties {
   return { "--sc": `var(${cssVar})` } as CSSProperties;
 }
 
-/** "in_review" → "In review" (sentence case). */
-function sentenceCaseStatus(status: string): string {
-  const s = status.replace(/_/g, " ");
-  return s.charAt(0).toUpperCase() + s.slice(1);
+/** Translate a status key via i18n `app.status.<status>`, falling back to the
+ *  English status with `_`/`-` replaced by spaces when no translation exists. */
+function statusLabel(status: string): string {
+  return t("app.status." + status, { defaultValue: status.replace(/[_-]/g, " ") });
 }
 
 /**
@@ -35,7 +36,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {label ?? status.replace(/[_-]/g, " ")}
+      {label ?? statusLabel(status)}
     </span>
   );
 }
@@ -53,7 +54,7 @@ export function AgentStatusBadge({ status }: { status: string }) {
       className="status-chip inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0"
       style={scStyle(cssVar)}
     >
-      {label.replace(/_/g, " ")}
+      {statusLabel(label)}
     </span>
   );
 }
@@ -94,7 +95,7 @@ export function IssueStatusBadge({ status }: { status: string }) {
       style={scStyle(cssVar)}
     >
       <StatusGlyph status={status} size="sm" />
-      {sentenceCaseStatus(status)}
+      {statusLabel(status)}
     </span>
   );
 }

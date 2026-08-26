@@ -159,6 +159,7 @@ import {
   warnTeam,
 } from "@/pages/TeamCatalog.fixtures";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 /* ------------------------------------------------------------------ */
 /*  Sample data for the Issue Output surface showcase                  */
@@ -568,8 +569,8 @@ export function DesignGuide() {
           <div className="flex items-center gap-2 flex-wrap">
             <Button><Plus /> New Issue</Button>
             <Button variant="outline"><Upload /> Upload</Button>
-            <Button variant="destructive"><Trash2 /> Delete</Button>
-            <Button size="sm"><Plus /> Add</Button>
+            <Button variant="destructive"><Trash2 /> {t("common.delete", { defaultValue: "Delete" })}</Button>
+            <Button size="sm"><Plus /> {t("common.add", { defaultValue: "Add" })}</Button>
           </div>
         </SubSection>
 
@@ -966,8 +967,8 @@ export function DesignGuide() {
               </div>
             </div>
             <SheetFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{t("common.cancel", { defaultValue: "Cancel" })}</Button>
+              <Button>{t("common.save", { defaultValue: "Save" })}</Button>
             </SheetFooter>
           </SheetContent>
         </Sheet>
@@ -1059,7 +1060,7 @@ export function DesignGuide() {
             </CardContent>
             <CardFooter className="gap-2">
               <Button size="sm">Action</Button>
-              <Button variant="outline" size="sm">Cancel</Button>
+              <Button variant="outline" size="sm">{t("common.cancel", { defaultValue: "Cancel" })}</Button>
             </CardFooter>
           </Card>
         </SubSection>
@@ -1362,8 +1363,8 @@ export function DesignGuide() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{t("common.cancel", { defaultValue: "Cancel" })}</Button>
+              <Button>{t("common.save", { defaultValue: "Save" })}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -2023,7 +2024,7 @@ export function DesignGuide() {
           <InlineBanner
             tone="danger"
             title="Summary generation failed."
-            actions={<Button size="sm">Retry</Button>}
+            actions={<Button size="sm">{t("common.retry", { defaultValue: "Retry" })}</Button>}
           >
             The linked issue reached a terminal state before a summary was written.
           </InlineBanner>

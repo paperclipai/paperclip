@@ -10,6 +10,7 @@ import {
   type WaitingBlockerStep,
 } from "@/lib/issue-blockers";
 import { Link } from "@/lib/router";
+import { t } from "@/i18n";
 
 function isUnresolved(blocker: IssueRelationIssueSummary): boolean {
   return blocker.status !== "done" && blocker.status !== "cancelled";
@@ -118,7 +119,7 @@ function BlockerRow({
 }
 
 function LiveWorkGlyph({ status }: { status: WaitingBlockerStatus }) {
-  const label = status === "done" ? "Done" : status === "running" ? "Running" : "Waiting";
+  const label = status === "done" ? t("app.taskChatBlockerLinks.done", { defaultValue: "Done" }) : status === "running" ? t("app.taskChatBlockerLinks.running", { defaultValue: "Running" }) : t("app.taskChatBlockerLinks.waiting", { defaultValue: "Waiting" });
   if (status === "done") {
     return (
       <CheckCircle2
@@ -173,14 +174,14 @@ export function TaskChatBlockerLinks({
 }) {
   return (
     <div
-      aria-label="Task blockers"
+      aria-label={t("app.taskChatBlockerLinks.taskBlockers", { defaultValue: "Task blockers" })}
       data-placement={placement}
       data-testid="task-chat-blocker-links"
       className="flex min-w-0 flex-col gap-1 overflow-hidden text-(length:--text-micro) leading-4 text-amber-700 dark:text-amber-300"
     >
-      <BlockerRow label="Blocked by" blocker={directBlocker} />
+      <BlockerRow label={t("app.taskChatBlockerLinks.blockedBy", { defaultValue: "Blocked by" })} blocker={directBlocker} />
       {ultimateBlocker ? (
-        <BlockerRow label="Ultimately blocked by" blocker={ultimateBlocker} />
+        <BlockerRow label={t("app.taskChatBlockerLinks.ultimatelyBlockedBy", { defaultValue: "Ultimately blocked by" })} blocker={ultimateBlocker} />
       ) : null}
     </div>
   );
@@ -195,7 +196,7 @@ export function TaskChatLiveWorkLinks({
 }) {
   return (
     <div
-      aria-label="Tasks waiting on live work"
+      aria-label={t("app.taskChatBlockerLinks.tasksWaitingOnLiveWork", { defaultValue: "Tasks waiting on live work" })}
       data-placement={placement}
       data-testid="task-chat-live-work-links"
       className="flex min-w-0 flex-col gap-1.5 overflow-hidden text-(length:--text-micro) leading-4 text-blue-700 dark:text-blue-300"
@@ -204,7 +205,7 @@ export function TaskChatLiveWorkLinks({
         <span className="flex h-3.5 w-3.5 items-center justify-center" aria-hidden>
           <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" />
         </span>
-        Waiting on live work
+        {t("app.taskChatBlockerLinks.waitingOnLiveWork", { defaultValue: "Waiting on live work" })}
       </div>
       <ol className="flex min-w-0 flex-col gap-1">
         {liveWork.steps.map(({ blocker, status }, index) => (
@@ -223,7 +224,7 @@ export function TaskChatLiveWorkLinks({
       </ol>
       {liveWork.nowRunning.map((blocker) => (
         <div key={blocker.id} className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
-          <span className="shrink-0 font-medium">Now running</span>
+          <span className="shrink-0 font-medium">{t("app.taskChatBlockerLinks.nowRunning", { defaultValue: "Now running" })}</span>
           <LiveWorkLink blocker={blocker} />
         </div>
       ))}

@@ -30,6 +30,7 @@ import type { PendingAnchor } from "./DocumentAnnotationLayer";
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "@/lib/company-members";
 import { useDocumentAnnotationMutations } from "@/hooks/useDocumentAnnotationMutations";
+import { t } from "@/i18n";
 
 export interface AnnotationPanelProps {
   open: boolean;
@@ -188,7 +189,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
             props.onFocusThread(null);
             props.onOpenChange(false);
           }}
-          aria-label="Close annotation panel"
+          aria-label={t("app.documentAnnotationPanel.closeAnnotationPanel", { defaultValue: "Close annotation panel" })}
         >
           <X className="h-4 w-4" />
         </Button>
@@ -278,7 +279,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
                 }
               }
             }}
-            placeholder="Write a comment…"
+            placeholder={t("app.documentAnnotationPanel.writeAComment", { defaultValue: "Write a comment…" })}
             disabled={props.newCommentDisabled}
             className="resize-y rounded-none text-sm"
           />
@@ -291,9 +292,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
                 props.onClearPendingAnchor();
                 setComposerValue("");
               }}
-            >
-              Cancel
-            </Button>
+            > { t("app.documentAnnotationPanel.cancel", { defaultValue: "Cancel" }) } </Button>
             <Button
               type="button"
               size="sm"
@@ -305,7 +304,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
               }
               onClick={() => createThread.mutate(composerValue.trim())}
             >
-              {createThread.isPending ? "Posting…" : "Comment"}
+              {createThread.isPending ? t("app.documentAnnotationPanel.posting", { defaultValue: "Posting…" }) : t("app.documentAnnotationPanel.comment", { defaultValue: "Comment" })}
             </Button>
           </div>
         </div>
@@ -382,7 +381,7 @@ export function ThreadCard(props: {
                   }
                 }
               }}
-              placeholder="Reply…"
+              placeholder={t("app.documentAnnotationPanel.reply", { defaultValue: "Reply…" })}
               className="resize-y rounded-none text-sm"
               disabled={props.pendingReply}
             />
@@ -411,7 +410,7 @@ export function ThreadCard(props: {
                 disabled={!props.replyDraft.trim() || props.pendingReply}
                 onClick={props.onSubmitReply}
               >
-                {props.pendingReply ? "Sending…" : "Reply"}
+                {props.pendingReply ? t("app.documentAnnotationPanel.sending", { defaultValue: "Sending…" }) : t("app.documentAnnotationPanel.reply2", { defaultValue: "Reply" })}
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -420,8 +419,8 @@ export function ThreadCard(props: {
                     variant="ghost"
                     size="icon-xs"
                     className="text-muted-foreground"
-                    title="More actions"
-                    aria-label="More thread actions"
+                    title={t("app.documentAnnotationPanel.moreActions", { defaultValue: "More actions" })}
+                    aria-label={t("app.documentAnnotationPanel.moreThreadActions", { defaultValue: "More thread actions" })}
                   >
                     <MoreHorizontal className="h-3.5 w-3.5" />
                   </Button>
@@ -434,7 +433,7 @@ export function ThreadCard(props: {
                     }}
                   >
                     <Copy className="h-3.5 w-3.5" />
-                    Copy link
+                    {t("app.documentAnnotationPanel.copyLink", { defaultValue: "Copy link" })}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -490,7 +489,7 @@ function CommentRow({
           </Avatar>
           <span className="truncate font-medium text-foreground">{author.name}</span>
           {author.role === "agent" ? (
-            <span className="text-muted-foreground">· agent</span>
+            <span className="text-muted-foreground">{ t("app.documentAnnotationPanel.agent2", { defaultValue: "· agent" }) }</span>
           ) : null}
         </span>
         <span className="shrink-0 text-muted-foreground">{relativeTime(comment.createdAt)}</span>
@@ -528,7 +527,7 @@ function resolveAuthor(
       imageUrl: profile?.image ?? null,
     };
   }
-  return { name: comment.authorType === "agent" ? "Agent" : "Board", role: comment.authorType === "agent" ? "agent" : "board" };
+  return { name: comment.authorType === "agent" ? t("app.documentAnnotationPanel.agent", { defaultValue: "Agent" }) : t("app.documentAnnotationPanel.board", { defaultValue: "Board" }), role: comment.authorType === "agent" ? "agent" : "board" };
 }
 
 export function truncate(value: string, limit: number) {

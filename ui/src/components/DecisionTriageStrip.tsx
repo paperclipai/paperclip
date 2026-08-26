@@ -21,21 +21,22 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { t } from "@/i18n";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 /** Snooze presets shared with the row menu, resolved at click time. */
 const SNOOZE_PRESETS: ReadonlyArray<{ label: string; resolve: () => string }> = [
-  { label: "1 hour", resolve: () => new Date(Date.now() + HOUR_MS).toISOString() },
-  { label: "4 hours", resolve: () => new Date(Date.now() + 4 * HOUR_MS).toISOString() },
-  { label: "Tomorrow", resolve: () => {
+  { label: t("app.decisionTriageStrip.1Hour", { defaultValue: "1 hour" }), resolve: () => new Date(Date.now() + HOUR_MS).toISOString() },
+  { label: t("app.decisionTriageStrip.4Hours", { defaultValue: "4 hours" }), resolve: () => new Date(Date.now() + 4 * HOUR_MS).toISOString() },
+  { label: t("app.decisionTriageStrip.tomorrow", { defaultValue: "Tomorrow" }), resolve: () => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
     d.setHours(9, 0, 0, 0);
     return d.toISOString();
   } },
-  { label: "Next week", resolve: () => new Date(Date.now() + 7 * DAY_MS).toISOString() },
+  { label: t("app.decisionTriageStrip.nextWeek", { defaultValue: "Next week" }), resolve: () => new Date(Date.now() + 7 * DAY_MS).toISOString() },
 ];
 
 /** Slugify a queue title into a URL-safe kebab key the API will accept. */
@@ -95,7 +96,7 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
   const onError = (verb: string) => (error: unknown) =>
     pushToast({
       title: `Could not ${verb}`,
-      body: error instanceof Error ? error.message : "Please try again.",
+      body: error instanceof Error ? error.message: t("app.decisionTriageStrip.pleaseTryAgain", { defaultValue: "Please try again." }),
       tone: "error",
     });
 
@@ -163,8 +164,8 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
 
       {/* When to decide — the importance signal that drives desk ordering. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium text-muted-foreground">When to decide</span>
-        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="When to decide">
+        <span className="text-xs font-medium text-muted-foreground">{ t("app.decisionTriageStrip.whenToDecide", { defaultValue: "When to decide" }) }</span>
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label={t("app.decisionTriageStrip.whenToDecide", { defaultValue: "When to decide" })}>
           {DECIDE_BY_OPTIONS.map(([value, label]) => (
             <SegmentButton
               key={value}
@@ -179,7 +180,7 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
             <PopoverTrigger asChild>
               <SegmentButton active={isDatePreset} disabled={pending}>
                 <CalendarClock className="h-3.5 w-3.5" />
-                {isDatePreset ? decideByLabel(decideBy) : "Pick date"}
+                {isDatePreset ? decideByLabel(decideBy) : t("app.decisionTriageStrip.pickDate", { defaultValue: "Pick date" })}
               </SegmentButton>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-auto p-2">
@@ -201,7 +202,7 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
 
       {/* Queues — current membership as removable chips + add/create. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium text-muted-foreground">Queues</span>
+        <span className="text-xs font-medium text-muted-foreground">{ t("app.decisionTriageStrip.queues", { defaultValue: "Queues" }) }</span>
         {item.queues.map((queue) => (
           <span
             key={queue.key}
@@ -238,9 +239,7 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
               className="text-muted-foreground hover:text-foreground"
               disabled={pending}
               onClick={() => setSnooze.mutate(null)}
-            >
-              Clear
-            </button>
+            > { t("app.decisionTriageStrip.clear", { defaultValue: "Clear" }) } </button>
           </span>
         ) : (
           <DropdownMenu>
@@ -264,7 +263,7 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
         <AskAgentPicker
           agents={agents ?? []}
           disabled={routeToAgent.isPending || !relatedIssueId}
-          disabledReason={!relatedIssueId ? "No linked task to ask about" : undefined}
+          disabledReason={!relatedIssueId ? t("app.decisionTriageStrip.noLinkedTaskToAskAbout", { defaultValue: "No linked task to ask about" }) : undefined}
           onRoute={(agent) => routeToAgent.mutate(agent)}
         />
         {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
@@ -336,7 +335,7 @@ function QueuePicker({
     onError: (error) =>
       pushToast({
         title: "Could not create queue",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: error instanceof Error ? error.message: t("app.decisionTriageStrip.pleaseTryAgain", { defaultValue: "Please try again." }),
         tone: "error",
       }),
   });
@@ -348,7 +347,7 @@ function QueuePicker({
       <PopoverTrigger asChild>
         <Button type="button" variant="outline" size="xs" className="h-7 gap-1" disabled={disabled}>
           <Plus className="h-3.5 w-3.5" />
-          Queue
+          {t("app.decisionTriageStrip.queue", { defaultValue: "Queue" })}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-56 p-1">
@@ -362,13 +361,11 @@ function QueuePicker({
                 if (event.key === "Enter" && title.trim()) create.mutate(title);
                 if (event.key === "Escape") setCreating(false);
               }}
-              placeholder="New queue name…"
+              placeholder={t("app.decisionTriageStrip.newQueueName", { defaultValue: "New queue name…" })}
               className="w-full rounded-sm border border-border bg-background px-2 py-1 text-xs"
             />
             <div className="flex justify-end gap-1">
-              <Button type="button" variant="ghost" size="xs" onClick={() => setCreating(false)}>
-                Cancel
-              </Button>
+              <Button type="button" variant="ghost" size="xs" onClick={() => setCreating(false)}> { t("app.decisionTriageStrip.cancel", { defaultValue: "Cancel" }) } </Button>
               <Button type="button" size="xs" disabled={!title.trim() || create.isPending} onClick={() => create.mutate(title)}>
                 {create.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
                 Create
@@ -378,7 +375,7 @@ function QueuePicker({
         ) : (
           <div className="max-h-64 space-y-0.5 overflow-y-auto">
             {available.length === 0 && (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">No other queues yet.</p>
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">{ t("app.decisionTriageStrip.noOtherQueuesYet", { defaultValue: "No other queues yet." }) }</p>
             )}
             {available.map((queue) => (
               <button
@@ -405,7 +402,7 @@ function QueuePicker({
               onClick={() => setCreating(true)}
             >
               <Plus className="h-3.5 w-3.5" />
-              New queue…
+              {t("app.decisionTriageStrip.newQueue", { defaultValue: "New queue…" })}
             </button>
           </div>
         )}

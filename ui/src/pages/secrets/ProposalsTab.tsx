@@ -27,6 +27,7 @@ import {
   bindingSecretLabel,
   useProposalReview,
 } from "./proposal-review";
+import { t } from "@/i18n";
 
 /** ISO expiry → "expires in 12d" / "expires in 5h" / "expired". */
 function expiryLabel(expiresAt: string): { text: string; urgent: boolean } {
@@ -91,7 +92,7 @@ function ProposalRow({
         {/* Provenance meta */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
-            by <AgentRefChip agent={proposal.proposedBy} className="font-medium text-foreground" />
+            {t("app.proposalsTab.by", { defaultValue: "by " })}<AgentRefChip agent={proposal.proposedBy} className="font-medium text-foreground" />
           </span>
           {proposal.originIssue ? (
             <>
@@ -167,16 +168,14 @@ export function ProposalsTab({
   if (proposalsQuery.isError) {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-destructive">
-        <AlertCircle className="size-4" /> Couldn’t load proposals. Try again.
-      </div>
+        <AlertCircle className="size-4" /> {t("app.proposalsTab.couldnTLoadProposalsTryAgain", { defaultValue: "Couldn’t load proposals. Try again." })}</div>
     );
   }
 
   if (proposalsQuery.isPending) {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" /> Loading proposals…
-      </div>
+        <Loader2 className="size-4 animate-spin" /> {t("app.proposalsTab.loadingProposals", { defaultValue: "Loading proposals…" })}</div>
     );
   }
 
@@ -184,8 +183,8 @@ export function ProposalsTab({
     return (
       <EmptyState
         icon={Inbox}
-        title="No pending proposals"
-        message="When an agent proposes a secret or an access binding, it shows up here for review."
+        title={t("app.proposalsTab.noPendingProposals", { defaultValue: "No pending proposals" })}
+        message={t("app.proposalsTab.whenAnAgentProposesASecretOrAnAccessBindingItShowsUpHereForReview", { defaultValue: "When an agent proposes a secret or an access binding, it shows up here for review." })}
       />
     );
   }
@@ -193,9 +192,7 @@ export function ProposalsTab({
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted-foreground">
-        Agents propose credentials and access bindings; you approve or reject them here. Proposed
-        values are never shown — only a fingerprint and length.
-      </p>
+        {t("app.proposalsTab.agentsProposeCredentialsAndAccessBindingsYouApproveOrRejectThemHereProposedValuesAreNeverShownOnlyAFingerprintAndLength", { defaultValue: "Agents propose credentials and access bindings; you approve or reject them here. Proposed values are never shown — only a fingerprint and length." })}</p>
       {sorted.map((proposal) => (
         <ProposalRow
           key={proposal.id}

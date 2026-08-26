@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { gatewaysQueryKey } from "../NewGatewayDialog";
 import { maskedTokenLabel, TOKEN_STATUS_LABEL, tokenStatus, type TokenStatus } from "../gateway-helpers";
+import { t } from "@/i18n";
 
 const DEFAULT_ACTIONS: ToolMcpGatewayTokenAction[] = ["tools/list", "tools/call"];
 
@@ -94,7 +95,7 @@ export function TokensPanel({
       setOwnerNote("");
       setExpiresAt(defaultExpiry());
       pushToast({
-        title: "Token minted",
+        title: t("app.tokensPanel.tokenMinted", { defaultValue: "Token minted" }),
         body: "Copy it now — you won’t see the full value again.",
         tone: "success",
       });
@@ -103,7 +104,7 @@ export function TokensPanel({
     },
     onError: (error) =>
       pushToast({
-        title: "Token was not minted",
+        title: t("app.tokensPanel.tokenWasNotMinted", { defaultValue: "Token was not minted" }),
         body: error instanceof Error ? error.message : String(error),
         tone: "error",
       }),
@@ -114,12 +115,12 @@ export function TokensPanel({
     onSuccess: async (token) => {
       setConfirmToken(null);
       setRevokeName("");
-      pushToast({ title: "Token revoked", body: `${token.name} can no longer connect.`, tone: "success" });
+      pushToast({ title: t("app.tokensPanel.tokenRevoked", { defaultValue: "Token revoked" }), body: `${token.name} can no longer connect.`, tone: "success" });
       await invalidate();
     },
     onError: (error) =>
       pushToast({
-        title: "Token was not revoked",
+        title: t("app.tokensPanel.tokenWasNotRevoked", { defaultValue: "Token was not revoked" }),
         body: error instanceof Error ? error.message : String(error),
         tone: "error",
       }),
@@ -128,11 +129,11 @@ export function TokensPanel({
   async function copyToken(value: string) {
     try {
       await copyTextToClipboard(value);
-      pushToast({ title: "Copied", body: "Access token", tone: "success" });
+      pushToast({ title: t("app.tokensPanel.copied", { defaultValue: "Copied" }), body: "Access token", tone: "success" });
     } catch (error) {
       pushToast({
-        title: "Copy failed",
-        body: error instanceof Error ? error.message : "Clipboard access is unavailable.",
+        title: t("app.tokensPanel.copyFailed", { defaultValue: "Copy failed" }),
+        body: error instanceof Error ? error.message : t("app.tokensPanel.clipboardAccessIsUnavailable", { defaultValue: "Clipboard access is unavailable." }),
         tone: "error",
       });
     }
@@ -156,46 +157,44 @@ export function TokensPanel({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
-          Each token is a separate way in. Revoke any one without breaking the others.
-        </p>
+          {t("app.tokensPanel.eachTokenIsASeparateWayInRevokeAnyOneWithoutBreakingTheOthers", { defaultValue: "Each token is a separate way in. Revoke any one without breaking the others." })}</p>
         <Button size="sm" onClick={() => setMinting((value) => !value)}>
           <Plus className="mr-1.5 h-3.5 w-3.5" />
-          Mint token
-        </Button>
+          {t("app.tokensPanel.mintToken", { defaultValue: "Mint token" })}</Button>
       </div>
 
       {minting ? (
         <form className="space-y-3 rounded-md border border-border p-4" onSubmit={submit}>
           <div className="grid gap-3 md:grid-cols-2">
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Name</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("app.tokensPanel.name", { defaultValue: "Name" })}</span>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="cto-cursor" required autoFocus />
             </label>
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Owner / client</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("app.tokensPanel.ownerClient", { defaultValue: "Owner / client" })}</span>
               <Input
                 value={clientLabel}
                 onChange={(e) => setClientLabel(e.target.value)}
-                placeholder="Cursor on work laptop"
+                placeholder={t("app.tokensPanel.cursorOnWorkLaptop", { defaultValue: "Cursor on work laptop" })}
               />
             </label>
           </div>
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Note (why it exists)</span>
-              <Input value={ownerNote} onChange={(e) => setOwnerNote(e.target.value)} placeholder="Dotta’s MacBook" />
+              <span className="text-xs font-medium text-muted-foreground">{t("app.tokensPanel.noteWhyItExists", { defaultValue: "Note (why it exists)" })}</span>
+              <Input value={ownerNote} onChange={(e) => setOwnerNote(e.target.value)} placeholder={t("app.tokensPanel.dottaSMacbook", { defaultValue: "Dotta’s MacBook" })} />
             </label>
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Expires</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("app.tokensPanel.expires", { defaultValue: "Expires" })}</span>
               <Input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} required />
             </label>
           </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" onClick={() => setMinting(false)}>
-              Cancel
+              {t("common.cancel", { defaultValue: "Cancel" })}
             </Button>
             <Button type="submit" size="sm" disabled={createMutation.isPending || !name.trim()}>
-              {createMutation.isPending ? "Minting…" : "Mint token"}
+              {createMutation.isPending ? "Minting…" : t("app.tokensPanel.mintToken", { defaultValue: "Mint token" })}
             </Button>
           </div>
         </form>
@@ -205,14 +204,12 @@ export function TokensPanel({
         <div className="space-y-2 rounded-md border-2 border-foreground/80 bg-muted/40 p-4">
           <div className="flex items-center justify-between gap-2">
             <div>
-              <div className="text-sm font-semibold text-foreground">New token — copy now</div>
+              <div className="text-sm font-semibold text-foreground">{t("app.tokensPanel.newTokenCopyNow", { defaultValue: "New token — copy now" })}</div>
               <div className="text-xs text-muted-foreground">
-                You won’t see the full value again. Store it in your client’s config or your secret manager.
-              </div>
+                {t("app.tokensPanel.youWonTSeeTheFullValueAgainStoreItInYourClientSConfigOrYourSecretManager", { defaultValue: "You won’t see the full value again. Store it in your client’s config or your secret manager." })}</div>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setCreated(null)} aria-label="Dismiss new token">
-              Dismiss
-            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setCreated(null)} aria-label={t("app.tokensPanel.dismissNewToken", { defaultValue: "Dismiss new token" })}>
+              {t("app.tokensPanel.dismiss", { defaultValue: "Dismiss" })}</Button>
           </div>
           <div className="flex items-center gap-2">
             <code className="min-w-0 flex-1 truncate rounded bg-background px-3 py-2 font-mono text-xs text-foreground">
@@ -221,12 +218,11 @@ export function TokensPanel({
             {revealed ? (
               <Button variant="outline" size="sm" onClick={() => void copyToken(created.token)}>
                 <Copy className="mr-1 h-3.5 w-3.5" />
-                Copy
+                {t("common.copy", { defaultValue: "Copy" })}
               </Button>
             ) : (
               <Button variant="outline" size="sm" onClick={() => setRevealed(true)}>
-                Show
-              </Button>
+                {t("app.tokensPanel.show", { defaultValue: "Show" })}</Button>
             )}
           </div>
         </div>
@@ -234,8 +230,7 @@ export function TokensPanel({
 
       {tokens.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No tokens yet. Mint one for the client that will connect to this gateway.
-        </div>
+          {t("app.tokensPanel.noTokensYetMintOneForTheClientThatWillConnectToThisGateway", { defaultValue: "No tokens yet. Mint one for the client that will connect to this gateway." })}</div>
       ) : (
         <>
           {/* Desktop / tablet: full table. */}
@@ -243,12 +238,12 @@ export function TokensPanel({
             <table className="w-full min-w-(--sz-44rem) text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5">Token</th>
-                  <th className="px-4 py-2.5">Owner</th>
-                  <th className="px-4 py-2.5">Created</th>
-                  <th className="px-4 py-2.5">Last used</th>
-                  <th className="px-4 py-2.5">Expires</th>
-                  <th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5">{t("app.tokensPanel.token", { defaultValue: "Token" })}</th>
+                  <th className="px-4 py-2.5">{t("app.tokensPanel.owner", { defaultValue: "Owner" })}</th>
+                  <th className="px-4 py-2.5">{t("app.tokensPanel.created", { defaultValue: "Created" })}</th>
+                  <th className="px-4 py-2.5">{t("app.tokensPanel.lastUsed", { defaultValue: "Last used" })}</th>
+                  <th className="px-4 py-2.5">{t("app.tokensPanel.expires", { defaultValue: "Expires" })}</th>
+                  <th className="px-4 py-2.5">{t("app.tokensPanel.status", { defaultValue: "Status" })}</th>
                   <th className="px-4 py-2.5 text-right" />
                 </tr>
               </thead>
@@ -268,7 +263,7 @@ export function TokensPanel({
                         {token.lastUsedAt ? <RelativeTime value={token.lastUsedAt} /> : "—"}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {token.revokedAt ? "—" : token.expiresAt ? <RelativeTime value={token.expiresAt} /> : "no expiry"}
+                        {token.revokedAt ? "—" : token.expiresAt ? <RelativeTime value={token.expiresAt} /> : t("app.tokensPanel.noExpiry", { defaultValue: "no expiry" })}
                       </td>
                       <td className="px-4 py-3">
                         <StatusBadge status={status} />
@@ -284,8 +279,7 @@ export function TokensPanel({
                               setRevokeName("");
                             }}
                           >
-                            Revoke
-                          </Button>
+                            {t("app.tokensPanel.revoke", { defaultValue: "Revoke" })}</Button>
                         ) : null}
                       </td>
                     </tr>
@@ -310,16 +304,16 @@ export function TokensPanel({
                     <StatusBadge status={status} />
                   </div>
                   <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                    <TokenField label="Owner" value={token.clientLabel || token.ownerNote || "—"} />
-                    <TokenField label="Created" value={<RelativeTime value={token.createdAt} />} />
+                    <TokenField label={t("app.tokensPanel.owner", { defaultValue: "Owner" })} value={token.clientLabel || token.ownerNote || "—"} />
+                    <TokenField label={t("app.tokensPanel.created", { defaultValue: "Created" })} value={<RelativeTime value={token.createdAt} />} />
                     <TokenField
-                      label="Last used"
+                      label={t("app.tokensPanel.lastUsed", { defaultValue: "Last used" })}
                       value={token.lastUsedAt ? <RelativeTime value={token.lastUsedAt} /> : "—"}
                     />
                     <TokenField
-                      label="Expires"
+                      label={t("app.tokensPanel.expires", { defaultValue: "Expires" })}
                       value={
-                        token.revokedAt ? "—" : token.expiresAt ? <RelativeTime value={token.expiresAt} /> : "no expiry"
+                        token.revokedAt ? "—" : token.expiresAt ? <RelativeTime value={token.expiresAt} /> : t("app.tokensPanel.noExpiry", { defaultValue: "no expiry" })
                       }
                     />
                   </dl>
@@ -333,8 +327,7 @@ export function TokensPanel({
                         setRevokeName("");
                       }}
                     >
-                      Revoke
-                    </Button>
+                      {t("app.tokensPanel.revoke", { defaultValue: "Revoke" })}</Button>
                   ) : null}
                 </div>
               );
@@ -345,24 +338,21 @@ export function TokensPanel({
 
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <KeyRound className="h-3.5 w-3.5" />
-        Every mint, reveal, and revoke is recorded in Activity.
-      </p>
+        {t("app.tokensPanel.everyMintRevealAndRevokeIsRecordedInActivity", { defaultValue: "Every mint, reveal, and revoke is recorded in Activity." })}</p>
 
       {confirmToken ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
           <div className="w-full max-w-md space-y-3 rounded-lg border border-border bg-card p-5 shadow-lg">
             <div>
-              <h3 className="text-sm font-semibold text-foreground">Revoke this token?</h3>
+              <h3 className="text-sm font-semibold text-foreground">{t("app.tokensPanel.revokeThisToken", { defaultValue: "Revoke this token?" })}</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                Any client using <span className="font-medium text-foreground">{confirmToken.name}</span> goes
-                silent immediately. This can’t be undone. Type the token name to confirm.
-              </p>
+                {t("app.tokensPanel.anyClientUsing", { defaultValue: "Any client using " })}<span className="font-medium text-foreground">{confirmToken.name}</span> {t("app.tokensPanel.goesSilentImmediatelyThisCanTBeUndoneTypeTheTokenNameToConfirm", { defaultValue: "goes silent immediately. This can’t be undone. Type the token name to confirm." })}</p>
             </div>
             <Input
               value={revokeName}
               onChange={(e) => setRevokeName(e.target.value)}
               placeholder={confirmToken.name}
-              aria-label="Type the token name to confirm"
+              aria-label={t("app.tokensPanel.typeTheTokenNameToConfirm", { defaultValue: "Type the token name to confirm" })}
               autoFocus
             />
             <div className="flex justify-end gap-2">
@@ -374,7 +364,7 @@ export function TokensPanel({
                   setRevokeName("");
                 }}
               >
-                Cancel
+                {t("common.cancel", { defaultValue: "Cancel" })}
               </Button>
               <Button
                 variant="destructive"
@@ -382,7 +372,7 @@ export function TokensPanel({
                 disabled={revokeName.trim() !== confirmToken.name || revokeMutation.isPending}
                 onClick={() => revokeMutation.mutate(confirmToken.id)}
               >
-                {revokeMutation.isPending ? "Revoking…" : "Revoke token"}
+                {revokeMutation.isPending ? "Revoking…" : t("app.tokensPanel.revokeToken", { defaultValue: "Revoke token" })}
               </Button>
             </div>
           </div>

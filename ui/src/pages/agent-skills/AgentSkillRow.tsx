@@ -6,6 +6,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SkillCardIcon, type SkillIconCard } from "../../components/SkillCardIcon";
 import type { AgentSkillSearchFields } from "./agent-skill-filter";
+import { t } from "@/i18n";
 
 export type AgentSkillRowVariant = "enabled" | "available" | "readonly";
 
@@ -120,7 +121,7 @@ export function AgentSkillRow({
   );
 
   const trailing = readOnly ? (
-    <Lock className="h-4 w-4 shrink-0 text-muted-foreground/60" aria-label="Read-only" />
+    <Lock className="h-4 w-4 shrink-0 text-muted-foreground/60" aria-label={t("app.agentSkillRow.readOnly", { defaultValue: "Read-only" })} />
   ) : (
     (() => {
       const toggle = (

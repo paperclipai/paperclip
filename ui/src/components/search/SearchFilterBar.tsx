@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { useMemo } from "react";
 import { User, UserX } from "lucide-react";
 import {
@@ -163,7 +164,7 @@ export function SearchFilterBar({
   return (
     <div className="flex flex-wrap items-center gap-1.5" data-testid="search-filter-bar">
       <SearchFilterMenu
-        label="Status"
+        label={t("app.searchFilterBar.status", { defaultValue: "Status" })}
         multi
         options={options.status}
         selected={filters.status ?? []}
@@ -172,36 +173,36 @@ export function SearchFilterBar({
         presets={[{ label: "Open items", values: OPEN_STATUS_PRESET }]}
       />
       <SearchFilterMenu
-        label="Assignee"
+        label={t("app.searchFilterBar.assignee", { defaultValue: "Assignee" })}
         options={options.assignee}
         selected={selectedAssignee ? [selectedAssignee] : []}
         onSelect={(value) => onChange(applyAssigneeToken(filters, value, data.currentUserId))}
         searchable
         searchPlaceholder="Search assignees…"
-        emptyMessage="No assignees"
+        emptyMessage={t("app.searchFilterBar.noAssignees", { defaultValue: "No assignees" })}
       />
       <SearchFilterMenu
-        label="Project"
+        label={t("app.searchFilterBar.project", { defaultValue: "Project" })}
         options={options.project}
         selected={filters.projectId ? [filters.projectId] : []}
         onSelect={(value) => onChange({ ...filters, projectId: value })}
         searchable
         searchPlaceholder="Search projects…"
-        emptyMessage="No projects"
+        emptyMessage={t("app.searchFilterBar.noProjects", { defaultValue: "No projects" })}
       />
       <SearchFilterMenu
-        label="Label"
+        label={t("app.searchFilterBar.label", { defaultValue: "Label" })}
         options={options.label}
         selected={filters.labelId ? [filters.labelId] : []}
         onSelect={(value) => onChange({ ...filters, labelId: value })}
         searchable
         searchPlaceholder="Search labels…"
-        emptyMessage="No labels"
+        emptyMessage={t("app.searchFilterBar.noLabels", { defaultValue: "No labels" })}
       />
       {/* PAP-411: Priority filter menu hidden behind SHOW_TASK_PRIORITY_UI (search DSL stays intact). */}
       {SHOW_TASK_PRIORITY_UI && (
       <SearchFilterMenu
-        label="Priority"
+        label={t("app.searchFilterBar.priority", { defaultValue: "Priority" })}
         multi
         options={options.priority}
         selected={filters.priority ?? []}
@@ -210,7 +211,7 @@ export function SearchFilterBar({
       />
       )}
       <SearchFilterMenu
-        label="Updated"
+        label={t("app.searchFilterBar.updated", { defaultValue: "Updated" })}
         options={options.updated}
         selected={filters.updatedWithin ? [filters.updatedWithin] : []}
         onSelect={(value) => onChange({ ...filters, updatedWithin: value })}

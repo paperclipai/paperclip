@@ -7,6 +7,7 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
 import { DecisionCard, type DecisionIssueRef } from "./DecisionCard";
+import { t } from "@/i18n";
 
 interface DecisionResolverProps {
   companyId: string;
@@ -173,9 +174,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
 
   if (detail.error || !decision) {
     return (
-      <p className="py-3 text-xs text-muted-foreground">
-        This decision is no longer available — it may have been resolved elsewhere.
-      </p>
+      <p className="py-3 text-xs text-muted-foreground"> { t("app.decisionResolver.thisDecisionIsNoLongerAvailableItMayHaveBeenResolvedElsewhere", { defaultValue: "This decision is no longer available — it may have been resolved elsewhere." }) } </p>
     );
   }
 

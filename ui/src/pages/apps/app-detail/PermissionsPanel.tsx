@@ -16,6 +16,7 @@ import {
 } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+import { t } from "@/i18n";
 
 type ActionPermission = "off" | "allowed" | "ask";
 
@@ -104,7 +105,7 @@ function AccessSection({
 
   const summary =
     access.mode === "all"
-      ? "Every agent can use it"
+      ? t("app.permissionsPanel.everyAgentCanUseIt", { defaultValue: "Every agent can use it" })
       : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} can use it`;
 
   const canSave = draft.mode === "all" || draft.agentIds.size > 0;
@@ -113,13 +114,12 @@ function AccessSection({
     <section className="rounded-xl border border-border bg-card">
       <div className="flex items-center justify-between px-5 py-4">
         <div>
-          <h2 className="text-sm font-bold text-foreground">Who can use it</h2>
+          <h2 className="text-sm font-bold text-foreground">{t("app.permissionsPanel.whoCanUseIt", { defaultValue: "Who can use it" })}</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">{summary}</p>
         </div>
         {!editing && (
           <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-            Change
-          </Button>
+            {t("app.permissionsPanel.change", { defaultValue: "Change" })}</Button>
         )}
       </div>
 
@@ -133,8 +133,8 @@ function AccessSection({
               onChange={() => setDraft({ mode: "all", agentIds: new Set() })}
             />
             <span>
-              <span className="text-sm font-semibold text-foreground">All agents</span>
-              <span className="block text-xs text-muted-foreground">Anyone you've added to Paperclip.</span>
+              <span className="text-sm font-semibold text-foreground">{t("app.permissionsPanel.allAgents", { defaultValue: "All agents" })}</span>
+              <span className="block text-xs text-muted-foreground">{t("app.permissionsPanel.anyoneYouVeAddedToPaperclip", { defaultValue: "Anyone you've added to Paperclip." })}</span>
             </span>
           </label>
           <label className="flex items-start gap-3">
@@ -145,8 +145,8 @@ function AccessSection({
               onChange={() => setDraft({ mode: "specific", agentIds: new Set(draft.agentIds) })}
             />
             <span>
-              <span className="text-sm font-semibold text-foreground">Only specific agents</span>
-              <span className="block text-xs text-muted-foreground">Pick who can use it.</span>
+              <span className="text-sm font-semibold text-foreground">{t("app.permissionsPanel.onlySpecificAgents", { defaultValue: "Only specific agents" })}</span>
+              <span className="block text-xs text-muted-foreground">{t("app.permissionsPanel.pickWhoCanUseIt", { defaultValue: "Pick who can use it." })}</span>
             </span>
           </label>
 
@@ -168,10 +168,10 @@ function AccessSection({
                 setEditing(false);
               }}
             >
-              Save
+              {t("common.save", { defaultValue: "Save" })}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setEditing(false)} disabled={disabled}>
-              Cancel
+              {t("common.cancel", { defaultValue: "Cancel" })}
             </Button>
           </div>
         </div>
@@ -209,21 +209,19 @@ function InstalledSection({
     <section className="rounded-xl border border-border bg-card">
       <div className="flex items-center justify-between gap-3 px-5 py-4">
         <div>
-          <h2 className="text-sm font-bold text-foreground">Installed on agents</h2>
+          <h2 className="text-sm font-bold text-foreground">{t("app.permissionsPanel.installedOnAgents", { defaultValue: "Installed on agents" })}</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            Whose harness carries {appName}'s tools on every run.
-          </p>
+            {t("app.permissionsPanel.whoseHarnessCarries", { defaultValue: "Whose harness carries " })}{appName}{t("app.permissionsPanel.sToolsOnEveryRun", { defaultValue: "'s tools on every run." })}</p>
         </div>
         <div className="flex items-center gap-2">
-          {disabled && <span className="text-xs text-muted-foreground">Saving…</span>}
+          {disabled && <span className="text-xs text-muted-foreground">{t("app.permissionsPanel.saving", { defaultValue: "Saving…" })}</span>}
           {install.onAll ? (
-            <InstalledBadge label="Installed on all agents" />
+            <InstalledBadge label={t("app.permissionsPanel.installedOnAllAgents", { defaultValue: "Installed on all agents" })} />
           ) : install.agentIds.size > 0 ? (
             <InstalledBadge label={`${installedCount} installed`} />
           ) : (
             <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-              Permitted only — not installed on any agent
-            </span>
+              {t("app.permissionsPanel.permittedOnlyNotInstalledOnAnyAgent", { defaultValue: "Permitted only — not installed on any agent" })}</span>
           )}
         </div>
       </div>
@@ -240,15 +238,14 @@ function InstalledSection({
             disabled={disabled}
             triggerLabel={
               install.agentIds.size === 0
-                ? "Choose agents to install on"
+                ? t("app.permissionsPanel.chooseAgentsToInstallOn", { defaultValue: "Choose agents to install on" })
                 : `${install.agentIds.size} ${install.agentIds.size === 1 ? "agent" : "agents"} installed`
             }
-            getDescription={(agent) => (hasAccess(agent.id) ? "has access" : "no access yet")}
+            getDescription={(agent) => (hasAccess(agent.id) ? t("app.permissionsPanel.hasAccess", { defaultValue: "has access" }) : t("app.permissionsPanel.noAccessYet", { defaultValue: "no access yet" }))}
             renderNameSuffix={(agent) =>
               !hasAccess(agent.id) && install.agentIds.has(agent.id) ? (
                 <span className={cn("rounded border px-1 py-0 text-xs font-medium", brandChipBadge.amber)}>
-                  will grant access
-                </span>
+                  {t("app.permissionsPanel.willGrantAccess", { defaultValue: "will grant access" })}</span>
               ) : null
             }
             onChange={(agentIds) => onSave({ onAll: false, agentIds })}
@@ -264,13 +261,13 @@ function InstalledSection({
           <Checkbox
             checked={install.onAll}
             disabled={disabled}
-            aria-label="Install on all agents"
+            aria-label={t("app.permissionsPanel.installOnAllAgents", { defaultValue: "Install on all agents" })}
             onCheckedChange={(checked) =>
               onSave(checked ? { onAll: true, agentIds: new Set() } : { onAll: false, agentIds: new Set() })
             }
           />
           <span className="text-xs text-foreground">
-            <span className="font-semibold">Install on all agents</span>
+            <span className="font-semibold">{t("app.permissionsPanel.installOnAllAgents", { defaultValue: "Install on all agents" })}</span>
             <span className="mt-0.5 block text-muted-foreground">
               {INSTALL_ALL_WARNING}
             </span>
@@ -282,12 +279,11 @@ function InstalledSection({
             <span>
               {autoExtendNotice(
                 extendingAgents.length === 1
-                  ? liveAgents.find((a) => a.id === extendingAgents[0])?.name ?? "1 agent"
+                  ? liveAgents.find((a) => a.id === extendingAgents[0])?.name ?? t("app.permissionsPanel.1Agent", { defaultValue: "1 agent" })
                   : `${extendingAgents.length} agents`,
               )}{" "}
               <span className="font-medium">
-                Review the {extendingAgents.length} access change
-                {extendingAgents.length === 1 ? "" : "s"}
+                {t("app.permissionsPanel.reviewThe", { defaultValue: "Review the " })}{extendingAgents.length} {t("app.permissionsPanel.accessChange", { defaultValue: "access change" })}{extendingAgents.length === 1 ? "" : "s"}
               </span>
             </span>
           </InlineBanner>
@@ -335,13 +331,12 @@ function ActionsSection({
     <section className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-sm font-bold text-foreground">Action permissions</h2>
+          <h2 className="text-sm font-bold text-foreground">{t("app.permissionsPanel.actionPermissions", { defaultValue: "Action permissions" })}</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            Choose what agents can do and what needs a human first.
-          </p>
+            {t("app.permissionsPanel.chooseWhatAgentsCanDoAndWhatNeedsAHumanFirst", { defaultValue: "Choose what agents can do and what needs a human first." })}</p>
         </div>
         <div className="flex items-center gap-2">
-          {disabled && <span className="text-xs text-muted-foreground">Saving...</span>}
+          {disabled && <span className="text-xs text-muted-foreground">{t("app.permissionsPanel.saving", { defaultValue: "Saving..." })}</span>}
           <Button
             variant="outline"
             size="sm"
@@ -353,8 +348,7 @@ function ActionsSection({
             ) : (
               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
             )}
-            Refresh actions
-          </Button>
+            {t("app.permissionsPanel.refreshActions", { defaultValue: "Refresh actions" })}</Button>
         </div>
       </div>
 
@@ -367,8 +361,8 @@ function ActionsSection({
       )}
 
       <ActionGroup
-        title="Read only"
-        hint="Can look up context without changing anything."
+        title={t("app.permissionsPanel.readOnly", { defaultValue: "Read only" })}
+        hint={t("app.permissionsPanel.canLookUpContextWithoutChangingAnything", { defaultValue: "Can look up context without changing anything." })}
         actions={readOnly}
         enabledIds={enabledIds}
         askFirstIds={askFirstIds}
@@ -377,8 +371,8 @@ function ActionsSection({
         onSetPermission={onSetPermission}
       />
       <ActionGroup
-        title="Can make changes"
-        hint="Can change something in another app."
+        title={t("app.permissionsPanel.canMakeChanges", { defaultValue: "Can make changes" })}
+        hint={t("app.permissionsPanel.canChangeSomethingInAnotherApp", { defaultValue: "Can change something in another app." })}
         actions={canChange}
         enabledIds={enabledIds}
         askFirstIds={askFirstIds}
@@ -420,7 +414,7 @@ function ActionGroup({
     <div className="rounded-xl border border-border bg-card">
       <div className="border-b border-border px-5 py-3 text-sm">
         <span className="font-bold text-foreground">{title}</span>
-        <span className="ml-2 text-muted-foreground">- {hint}</span>
+        <span className="ml-2 text-muted-foreground">{t("app.permissionsPanel.text", { defaultValue: "- " })}{hint}</span>
       </div>
       <div className="divide-y divide-border">
         {actions.map((action) => {
@@ -453,9 +447,9 @@ function ActionGroup({
                 disabled={disabled}
                 onChange={(event) => onSetPermission(action.id, event.currentTarget.value as ActionPermission)}
               >
-                <option value="off">Off</option>
-                <option value="allowed">Allowed</option>
-                <option value="ask">Ask a human first</option>
+                <option value="off">{t("app.permissionsPanel.off", { defaultValue: "Off" })}</option>
+                <option value="allowed">{t("app.permissionsPanel.allowed", { defaultValue: "Allowed" })}</option>
+                <option value="ask">{t("app.permissionsPanel.askAHumanFirst", { defaultValue: "Ask a human first" })}</option>
               </select>
             </div>
           );

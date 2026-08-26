@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
+import { t } from "@/i18n";
 
 /**
  * Company-context plugin page. Renders a plugin's `page` slot at
@@ -119,7 +120,7 @@ export function PluginPage() {
       return;
     }
     setBreadcrumbs([
-      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: t("app.pluginPage.plugins", { defaultValue: "Plugins" }), href: "/company/settings/instance/plugins" },
       { label: pageSlot.pluginDisplayName },
     ]);
   }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
@@ -130,13 +131,13 @@ export function PluginPage() {
     }
     return (
       <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">Select a company to view this page.</p>
+        <p className="text-sm text-muted-foreground">{t("app.pluginPage.selectACompanyToViewThisPage", { defaultValue: "Select a company to view this page." })}</p>
       </div>
     );
   }
 
   if (!contributions) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return <div className="text-sm text-muted-foreground">{t("app.pluginPage.loading", { defaultValue: "Loading…" })}</div>;
   }
 
   if (!pluginId && pluginRoutePath) {
@@ -146,8 +147,7 @@ export function PluginPage() {
     if (duplicateMatches.length > 1) {
       return (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          Multiple plugins declare the route <code>{pluginRoutePath}</code>. Use the plugin-id route until the conflict is resolved.
-        </div>
+          {t("app.pluginPage.multiplePluginsDeclareTheRoute", { defaultValue: "Multiple plugins declare the route " })}<code>{pluginRoutePath}</code>{t("app.pluginPage.useThePluginIdRouteUntilTheConflictIsResolved", { defaultValue: ". Use the plugin-id route until the conflict is resolved." })}</div>
       );
     }
   }
@@ -170,8 +170,7 @@ export function PluginPage() {
           <Button variant="ghost" size="sm" asChild>
             <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
               <ArrowLeft className="h-4 w-4 mr-1" />
-              Back
-            </Link>
+              {t("app.pluginPage.back", { defaultValue: "Back" })}</Link>
           </Button>
         </div>
       )}

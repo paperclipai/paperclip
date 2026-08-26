@@ -16,6 +16,7 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { ErrorState, LoadingState, RelativeTime, ToolsPageHeader } from "./shared";
+import { t } from "@/i18n";
 
 type CreateGatewayDraft = {
   name: string;
@@ -101,7 +102,7 @@ function formatAllowedTools(profile: ToolProfileWithDetails | undefined) {
   if (profile.summary.accessMode === "all_except") {
     return `${pluralize(Math.max(profile.summary.totalToolCount - profile.summary.excludedToolCount, 0), "tool")} allowed`;
   }
-  return allowed === 0 ? "No tools allowed" : `${pluralize(allowed, "tool")} allowed`;
+  return allowed === 0 ? t("app.gatewaysTab.noToolsAllowed", { defaultValue: "No tools allowed" }) : `${pluralize(allowed, "tool")} allowed`;
 }
 
 function formatSnippetConfig(config: Record<string, unknown>) {
@@ -171,11 +172,11 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     onSuccess: async (gateway) => {
       setCreateDraft({ name: "", description: "", profileId: activeProfiles[0]?.id ?? "" });
       setCreating(false);
-      pushToast({ title: "Gateway created", body: gateway.name, tone: "success" });
+      pushToast({ title: t("app.gatewaysTab.gatewayCreated", { defaultValue: "Gateway created" }), body: gateway.name, tone: "success" });
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Gateway was not created", body: error instanceof Error ? error.message : String(error), tone: "error" });
+      pushToast({ title: t("app.gatewaysTab.gatewayWasNotCreated", { defaultValue: "Gateway was not created" }), body: error instanceof Error ? error.message : String(error), tone: "error" });
     },
   });
 
@@ -194,11 +195,11 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
       setCreatedTokens((current) => ({ ...current, [token.gatewayId]: token }));
       setIssuingGatewayId(null);
       setTokenDrafts((current) => ({ ...current, [token.gatewayId]: defaultTokenDraft() }));
-      pushToast({ title: "Token issued", body: `${token.name} was created. Copy it now; it will not be shown again.`, tone: "success" });
+      pushToast({ title: t("app.gatewaysTab.tokenIssued", { defaultValue: "Token issued" }), body: `${token.name} was created. Copy it now; it will not be shown again.`, tone: "success" });
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Token was not issued", body: error instanceof Error ? error.message : String(error), tone: "error" });
+      pushToast({ title: t("app.gatewaysTab.tokenWasNotIssued", { defaultValue: "Token was not issued" }), body: error instanceof Error ? error.message : String(error), tone: "error" });
     },
   });
 
@@ -206,20 +207,20 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     mutationFn: (tokenId: string) => toolsApi.revokeGatewayToken(companyId, tokenId),
     onSuccess: async (token) => {
       setConfirmingRevokeTokenId(null);
-      pushToast({ title: "Token revoked", body: token.name, tone: "success" });
+      pushToast({ title: t("app.gatewaysTab.tokenRevoked", { defaultValue: "Token revoked" }), body: token.name, tone: "success" });
       await invalidateGateways();
     },
     onError: (error) => {
-      pushToast({ title: "Token was not revoked", body: error instanceof Error ? error.message : String(error), tone: "error" });
+      pushToast({ title: t("app.gatewaysTab.tokenWasNotRevoked", { defaultValue: "Token was not revoked" }), body: error instanceof Error ? error.message : String(error), tone: "error" });
     },
   });
 
   async function copyText(value: string, label: string) {
     try {
       await copyTextToClipboard(value);
-      pushToast({ title: "Copied to clipboard", body: label, tone: "success" });
+      pushToast({ title: t("app.gatewaysTab.copiedToClipboard", { defaultValue: "Copied to clipboard" }), body: label, tone: "success" });
     } catch (error) {
-      pushToast({ title: "Copy failed", body: error instanceof Error ? error.message : "Clipboard access is unavailable.", tone: "error" });
+      pushToast({ title: t("app.gatewaysTab.copyFailed", { defaultValue: "Copy failed" }), body: error instanceof Error ? error.message : t("app.gatewaysTab.clipboardAccessIsUnavailable", { defaultValue: "Clipboard access is unavailable." }), tone: "error" });
     }
   }
 
@@ -236,7 +237,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
   function submitCreateGateway(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!createDraft.profileId) {
-      pushToast({ title: "Pick a profile", body: "A gateway needs an access profile before it can be created.", tone: "warn" });
+      pushToast({ title: t("app.gatewaysTab.pickAProfile", { defaultValue: "Pick a profile" }), body: "A gateway needs an access profile before it can be created.", tone: "warn" });
       return;
     }
     createGatewayMutation.mutate();
@@ -246,13 +247,13 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     event.preventDefault();
     const draft = tokenDrafts[gatewayId] ?? defaultTokenDraft();
     if (draft.allowedActions.length === 0) {
-      pushToast({ title: "Pick token actions", body: "Gateway tokens need at least one allowed MCP action.", tone: "warn" });
+      pushToast({ title: t("app.gatewaysTab.pickTokenActions", { defaultValue: "Pick token actions" }), body: "Gateway tokens need at least one allowed MCP action.", tone: "warn" });
       return;
     }
     createTokenMutation.mutate(gatewayId);
   }
 
-  if (gatewaysQuery.isLoading) return <LoadingState label="Loading gateways..." />;
+  if (gatewaysQuery.isLoading) return <LoadingState label={t("app.gatewaysTab.loadingGateways", { defaultValue: "Loading gateways..." })} />;
   if (gatewaysQuery.isError) return <ErrorState error={gatewaysQuery.error} />;
 
   const gateways = gatewaysQuery.data?.gateways ?? [];
@@ -263,8 +264,8 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <ToolsPageHeader
-          title="Named MCP gateways"
-          description="Stable endpoints for external clients that use the same profiles, rules, and audit trail as agent tool access."
+          title={t("app.gatewaysTab.namedMcpGateways", { defaultValue: "Named MCP gateways" })}
+          description={t("app.gatewaysTab.stableEndpointsForExternalClientsThatUseTheSameProfilesRulesAndAuditTrailAsAgentToolAccess", { defaultValue: "Stable endpoints for external clients that use the same profiles, rules, and audit trail as agent tool access." })}
         />
         <Button
           type="button"
@@ -276,25 +277,24 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
           disabled={profileLoading}
         >
           <Plus className="mr-1.5 h-3.5 w-3.5" />
-          Create gateway
-        </Button>
+          {t("app.gatewaysTab.createGateway", { defaultValue: "Create gateway" })}</Button>
       </div>
 
       {creating ? (
         <form className="space-y-3 rounded-md border border-border p-4" onSubmit={submitCreateGateway}>
           <div className="grid gap-3 md:grid-cols-(--gtc-60)">
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Gateway name</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.gatewayName", { defaultValue: "Gateway name" })}</span>
               <input
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={createDraft.name}
                 onChange={(event) => setCreateDraft((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Engineering laptops"
+                placeholder={t("app.gatewaysTab.engineeringLaptops", { defaultValue: "Engineering laptops" })}
                 required
               />
             </label>
             <label className="space-y-1.5 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Access profile</span>
+              <span className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.accessProfile", { defaultValue: "Access profile" })}</span>
               <select
                 className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 value={createDraft.profileId}
@@ -303,34 +303,34 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                 disabled={activeProfiles.length === 0}
               >
                 <option value="" disabled>
-                  {profileLoading ? "Loading profiles..." : "Choose a profile"}
+                  {profileLoading ? t("app.gatewaysTab.loadingProfiles", { defaultValue: "Loading profiles..." }) : t("app.gatewaysTab.chooseAProfile", { defaultValue: "Choose a profile" })}
                 </option>
                 {activeProfiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
-                    {profile.name} - {formatAllowedTools(profile)}
+                    {profile.name} {t("app.gatewaysTab.text", { defaultValue: "- " })}{formatAllowedTools(profile)}
                   </option>
                 ))}
               </select>
             </label>
           </div>
           <label className="space-y-1.5 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Description</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.description", { defaultValue: "Description" })}</span>
             <textarea
               className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={createDraft.description}
               onChange={(event) => setCreateDraft((current) => ({ ...current, description: event.target.value }))}
-              placeholder="Who this endpoint is for and when it should be rotated."
+              placeholder={t("app.gatewaysTab.whoThisEndpointIsForAndWhenItShouldBeRotated", { defaultValue: "Who this endpoint is for and when it should be rotated." })}
             />
           </label>
           {activeProfiles.length === 0 && !profileLoading ? (
-            <p className="text-xs text-muted-foreground">Create an access profile before adding a gateway.</p>
+            <p className="text-xs text-muted-foreground">{t("app.gatewaysTab.createAnAccessProfileBeforeAddingAGateway", { defaultValue: "Create an access profile before adding a gateway." })}</p>
           ) : null}
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>
-              Cancel
+              {t("common.cancel", { defaultValue: "Cancel" })}
             </Button>
             <Button type="submit" size="sm" disabled={createDisabled || !createDraft.name.trim() || !createDraft.profileId}>
-              {createGatewayMutation.isPending ? "Creating..." : "Create gateway"}
+              {createGatewayMutation.isPending ? t("app.gatewaysTab.creating", { defaultValue: "Creating..." }) : t("app.gatewaysTab.createGateway", { defaultValue: "Create gateway" })}
             </Button>
           </div>
         </form>
@@ -338,8 +338,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
 
       {gateways.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-5 text-sm text-muted-foreground">
-          No named gateways yet. Create one here, then issue a token for the client that will connect to it.
-        </div>
+          {t("app.gatewaysTab.noNamedGatewaysYetCreateOneHereThenIssueATokenForTheClientThatWillConnectToIt", { defaultValue: "No named gateways yet. Create one here, then issue a token for the client that will connect to it." })}</div>
       ) : (
         <div className="divide-y divide-border rounded-md border border-border">
           {gateways.map((gateway) => {
@@ -365,12 +364,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                   <div className="flex flex-wrap gap-2">
                     <Button type="button" variant="outline" size="sm" onClick={() => void copyText(endpoint, "Gateway endpoint")}>
                       <Copy className="mr-1.5 h-3.5 w-3.5" />
-                      Copy endpoint
-                    </Button>
+                      {t("app.gatewaysTab.copyEndpoint", { defaultValue: "Copy endpoint" })}</Button>
                     <Button type="button" variant="outline" size="sm" onClick={() => startIssuing(gateway.id)}>
                       <KeyRound className="mr-1.5 h-3.5 w-3.5" />
-                      Issue token
-                    </Button>
+                      {t("app.gatewaysTab.issueToken", { defaultValue: "Issue token" })}</Button>
                   </div>
                 </div>
 
@@ -380,23 +377,23 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
 
                 <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Owner</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.owner", { defaultValue: "Owner" })}</dt>
                     <dd className="mt-0.5 text-foreground">{formatOwner(gateway, agentNames)}</dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Scope</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.scope", { defaultValue: "Scope" })}</dt>
                     <dd className="mt-0.5 text-foreground">{formatScope(gateway, projectNames, agentNames)}</dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Allowed tools</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.allowedTools", { defaultValue: "Allowed tools" })}</dt>
                     <dd className="mt-0.5 text-foreground">
                       {profile ? `${formatAllowedTools(profile)} via ${profile.name}` : `Profile ${shortId(gateway.profileId)}`}
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-xs font-medium text-muted-foreground">Last activity</dt>
+                    <dt className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.lastActivity", { defaultValue: "Last activity" })}</dt>
                     <dd className="mt-0.5 text-foreground">
-                      {lastActivity ? <RelativeTime value={lastActivity} /> : "Never used"}
+                      {lastActivity ? <RelativeTime value={lastActivity} /> : t("app.gatewaysTab.neverUsed", { defaultValue: "Never used" })}
                     </dd>
                   </div>
                 </dl>
@@ -405,7 +402,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                   <form className="space-y-3 rounded-md border border-border p-3" onSubmit={(event) => submitCreateToken(event, gateway.id)}>
                     <div className="grid gap-3 md:grid-cols-2">
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Token name</span>
+                        <span className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.tokenName", { defaultValue: "Token name" })}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={tokenDraft.name}
@@ -415,12 +412,12 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                               [gateway.id]: { ...tokenDraft, name: event.target.value },
                             }))
                           }
-                          placeholder="Dotta's MacBook"
+                          placeholder={t("app.gatewaysTab.dottaSMacbook", { defaultValue: "Dotta's MacBook" })}
                           required
                         />
                       </label>
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Client label</span>
+                        <span className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.clientLabel", { defaultValue: "Client label" })}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={tokenDraft.clientLabel}
@@ -430,14 +427,14 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                               [gateway.id]: { ...tokenDraft, clientLabel: event.target.value },
                             }))
                           }
-                          placeholder="Cursor on work laptop"
+                          placeholder={t("app.gatewaysTab.cursorOnWorkLaptop", { defaultValue: "Cursor on work laptop" })}
                           required
                         />
                       </label>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[1fr_auto]">
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Owner note</span>
+                        <span className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.ownerNote", { defaultValue: "Owner note" })}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           value={tokenDraft.ownerNote}
@@ -447,12 +444,12 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                               [gateway.id]: { ...tokenDraft, ownerNote: event.target.value },
                             }))
                           }
-                          placeholder="Who owns this token and why it exists"
+                          placeholder={t("app.gatewaysTab.whoOwnsThisTokenAndWhyItExists", { defaultValue: "Who owns this token and why it exists" })}
                           required
                         />
                       </label>
                       <label className="space-y-1.5 text-sm">
-                        <span className="text-xs font-medium text-muted-foreground">Expires</span>
+                        <span className="text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.expires", { defaultValue: "Expires" })}</span>
                         <input
                           className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                           type="date"
@@ -486,7 +483,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                     </div>
                     <div className="flex flex-wrap justify-end gap-2">
                       <Button type="button" variant="ghost" size="sm" onClick={() => setIssuingGatewayId(null)}>
-                        Cancel
+                        {t("common.cancel", { defaultValue: "Cancel" })}
                       </Button>
                       <Button
                         type="submit"
@@ -499,7 +496,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                           !tokenDraft.expiresAt
                         }
                       >
-                        {createTokenMutation.isPending ? "Issuing..." : "Issue token"}
+                        {createTokenMutation.isPending ? t("app.gatewaysTab.issuing", { defaultValue: "Issuing..." }) : t("app.gatewaysTab.issueToken", { defaultValue: "Issue token" })}
                       </Button>
                     </div>
                   </form>
@@ -508,11 +505,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                 {createdToken ? (
                   <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="font-medium text-foreground">New token for {createdToken.name}</div>
+                      <div className="font-medium text-foreground">{t("app.gatewaysTab.newTokenFor", { defaultValue: "New token for " })}{createdToken.name}</div>
                       <Button type="button" variant="outline" size="sm" onClick={() => void copyText(createdToken.token, "Gateway bearer token")}>
                         <Copy className="mr-1.5 h-3.5 w-3.5" />
-                        Copy token
-                      </Button>
+                        {t("app.gatewaysTab.copyToken", { defaultValue: "Copy token" })}</Button>
                     </div>
                     <div className="break-all rounded bg-background px-3 py-2 font-mono text-xs text-muted-foreground">
                       {createdToken.token}
@@ -524,11 +520,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                   <div>
                     <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       <KeyRound className="h-3.5 w-3.5" />
-                      Tokens
-                    </div>
+                      {t("app.gatewaysTab.tokens", { defaultValue: "Tokens" })}</div>
                     <div className="space-y-1 text-sm">
                       {gateway.tokens.length === 0 ? (
-                        <p className="text-muted-foreground">No tokens issued.</p>
+                        <p className="text-muted-foreground">{t("app.gatewaysTab.noTokensIssued", { defaultValue: "No tokens issued." })}</p>
                       ) : (
                         gateway.tokens.map((token) => {
                           const revoked = Boolean(token.revokedAt);
@@ -539,18 +534,18 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                 <div className="min-w-0">
                                   <div className="truncate text-foreground">{token.name}</div>
                                   <div className="text-xs text-muted-foreground">
-                                    {token.clientLabel || token.tokenPrefix} · {token.allowedActions.join(", ")}
+                                    {token.clientLabel || token.tokenPrefix} {t("app.gatewaysTab.text2", { defaultValue: "· " })}{token.allowedActions.join(", ")}
                                   </div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-2">
                                   <span className="text-xs text-muted-foreground">
                                     {token.revokedAt ? (
                                       <>
-                                        revoked <RelativeTime value={token.revokedAt} />
+                                        {t("app.gatewaysTab.revoked", { defaultValue: "revoked " })}<RelativeTime value={token.revokedAt} />
                                       </>
                                     ) : token.expiresAt ? (
                                       <>
-                                        expires <RelativeTime value={token.expiresAt} />
+                                        {t("app.gatewaysTab.expires2", { defaultValue: "expires " })}<RelativeTime value={token.expiresAt} />
                                       </>
                                     ) : (
                                       "no expiry"
@@ -566,14 +561,13 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                       aria-label={`Revoke ${token.name}`}
                                     >
                                       <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                                      Revoke
-                                    </Button>
+                                      {t("app.gatewaysTab.revoke", { defaultValue: "Revoke" })}</Button>
                                   ) : null}
                                 </div>
                               </div>
                               {confirming ? (
                                 <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-muted-foreground">
-                                  <span>Revoke this token now?</span>
+                                  <span>{t("app.gatewaysTab.revokeThisTokenNow", { defaultValue: "Revoke this token now?" })}</span>
                                   <Button
                                     type="button"
                                     variant="ghost"
@@ -582,7 +576,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                     onClick={() => setConfirmingRevokeTokenId(null)}
                                   >
                                     <X className="mr-1 h-3.5 w-3.5" />
-                                    Cancel
+                                    {t("common.cancel", { defaultValue: "Cancel" })}
                                   </Button>
                                   <Button
                                     type="button"
@@ -593,7 +587,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                     disabled={revokeTokenMutation.isPending}
                                   >
                                     <Check className="mr-1 h-3.5 w-3.5" />
-                                    Confirm
+                                    {t("common.confirm", { defaultValue: "Confirm" })}
                                   </Button>
                                 </div>
                               ) : null}
@@ -605,10 +599,10 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                   </div>
 
                   <div>
-                    <div className="mb-1.5 text-xs font-medium text-muted-foreground">Client snippets</div>
+                    <div className="mb-1.5 text-xs font-medium text-muted-foreground">{t("app.gatewaysTab.clientSnippets", { defaultValue: "Client snippets" })}</div>
                     <div className="space-y-1 text-sm">
                       {snippets.length === 0 ? (
-                        <p className="text-muted-foreground">No snippets available.</p>
+                        <p className="text-muted-foreground">{t("app.gatewaysTab.noSnippetsAvailable", { defaultValue: "No snippets available." })}</p>
                       ) : (
                         snippets.map((snippet) => (
                           <details key={snippet.client} className="rounded px-2 py-1 open:bg-muted/40">
@@ -628,7 +622,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                 }}
                               >
                                 <Copy className="mr-1 h-3.5 w-3.5" />
-                                Copy
+                                {t("common.copy", { defaultValue: "Copy" })}
                               </Button>
                             </summary>
                             <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 text-xs text-muted-foreground">

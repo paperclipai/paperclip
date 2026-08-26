@@ -14,6 +14,7 @@ import { cn } from "../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Eye, ShieldCheck } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
+import { t } from "@/i18n";
 
 type StageType = "review" | "approval";
 
@@ -89,7 +90,7 @@ export function ExecutionParticipantPicker({
     updatePolicy(next);
   };
 
-  const label = stageType === "review" ? "Reviewers" : "Approvers";
+  const label = stageType === "review" ? t("app.executionParticipantPicker.reviewers", { defaultValue: "Reviewers" }) : t("app.executionParticipantPicker.approvers", { defaultValue: "Approvers" });
   const Icon = stageType === "review" ? Eye : ShieldCheck;
 
   return (
@@ -140,7 +141,7 @@ export function ExecutionParticipantPicker({
               onClick={() => toggle(`user:${currentUserId}`)}
             >
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              Assign to me
+              {t("app.executionParticipantPicker.assignToMe", { defaultValue: "Assign to me" })}
             </button>
           )}
           {issue.createdByUserId && issue.createdByUserId !== currentUserId && (

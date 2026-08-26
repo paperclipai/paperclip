@@ -4,6 +4,7 @@ import { ExternalObjectPill } from "./ExternalObjectPill";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import { externalObjectToneSeverity } from "../lib/external-objects";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 
 type GroupedSource = {
   label: string;
@@ -111,10 +112,8 @@ function ExternalObjectsSection({
   return (
     <section className="space-y-3 rounded-lg border border-border p-3">
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold">External objects</h3>
-        <p className="text-xs text-muted-foreground">
-          Remote work referenced from this issue — pull requests, deployments, tickets in other systems, and more.
-        </p>
+        <h3 className="text-sm font-semibold">{ t("app.issueRelatedWorkPanel.externalObjects", { defaultValue: "External objects" }) }</h3>
+        <p className="text-xs text-muted-foreground"> { t("app.issueRelatedWorkPanel.remoteWorkReferencedFromThisIssuePullRequestsDeploymentsTicketsInOtherSystemsAndMore", { defaultValue: "Remote work referenced from this issue — pull requests, deployments, tickets in other systems, and more." }) } </p>
       </div>
 
       {isError ? (
@@ -125,17 +124,13 @@ function ExternalObjectsSection({
               type="button"
               onClick={onRetry}
               className="text-primary underline-offset-2 hover:underline"
-            >
-              Retry
-            </button>
+            > { t("app.issueRelatedWorkPanel.retry", { defaultValue: "Retry" }) } </button>
           ) : null}
         </p>
       ) : isLoading ? (
-        <p className="text-xs text-muted-foreground">Loading external objects…</p>
+        <p className="text-xs text-muted-foreground">{ t("app.issueRelatedWorkPanel.loadingExternalObjects", { defaultValue: "Loading external objects…" }) }</p>
       ) : sorted.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          This issue does not reference any external objects yet.
-        </p>
+        <p className="text-xs text-muted-foreground"> { t("app.issueRelatedWorkPanel.thisIssueDoesNotReferenceAnyExternalObjectsYet", { defaultValue: "This issue does not reference any external objects yet." }) } </p>
       ) : (
         <ul className="-mx-1 flex flex-col">
           {sorted.map(({ pill, mentionCount, sourceLabels, group }) => {
@@ -191,10 +186,10 @@ export function IssueRelatedWorkPanel({
   return (
     <div className="space-y-3">
       <Section
-        title="References"
-        description="Other tasks this task currently points at in its title, description, comments, or documents."
+        title={t("app.issueRelatedWorkPanel.references", { defaultValue: "References" })}
+        description={t("app.issueRelatedWorkPanel.otherTasksThisTaskCurrentlyPointsAtInItsTitleDescriptionCommentsOrDocuments", { defaultValue: "Other tasks this task currently points at in its title, description, comments, or documents." })}
         items={outbound}
-        emptyLabel="This task does not reference any other tasks yet."
+        emptyLabel={t("app.issueRelatedWorkPanel.thisTaskDoesNotReferenceAnyOtherTasksYet", { defaultValue: "This task does not reference any other tasks yet." })}
       />
       {externalObjectsEnabled ? (
         <ExternalObjectsSection
@@ -205,10 +200,10 @@ export function IssueRelatedWorkPanel({
         />
       ) : null}
       <Section
-        title="Referenced by"
-        description="Other tasks that currently point at this task."
+        title={t("app.issueRelatedWorkPanel.referencedBy", { defaultValue: "Referenced by" })}
+        description={t("app.issueRelatedWorkPanel.otherTasksThatCurrentlyPointAtThisTask", { defaultValue: "Other tasks that currently point at this task." })}
         items={inbound}
-        emptyLabel="No other tasks reference this task yet."
+        emptyLabel={t("app.issueRelatedWorkPanel.noOtherTasksReferenceThisTaskYet", { defaultValue: "No other tasks reference this task yet." })}
       />
     </div>
   );

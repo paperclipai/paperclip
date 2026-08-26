@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SecretBindingPicker, type SecretBindingValue } from "./SecretBindingPicker";
+import { t } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -525,12 +526,12 @@ const EnumField = React.memo(({
         disabled={disabled}
       >
         <SelectTrigger className="w-full">
-          <SelectValue placeholder="Select an option" />
+          <SelectValue placeholder={t("app.jsonSchemaForm.selectAnOption", { defaultValue: "Select an option" })} />
         </SelectTrigger>
         <SelectContent>
           {showUnsetOption && (
             <SelectItem value={ENUM_UNSET_VALUE} textValue="None">
-              <span className="text-muted-foreground">None</span>
+              <span className="text-muted-foreground">{ t("app.jsonSchemaForm.none", { defaultValue: "None" }) }</span>
             </SelectItem>
           )}
           {options.map((option) => (
@@ -659,7 +660,7 @@ const SecretField = React.memo(({
           <Eye className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="sr-only">
-          {isVisible ? "Hide secret" : "Show secret"}
+          {isVisible ? t("app.jsonSchemaForm.hideSecret", { defaultValue: "Hide secret" }) : t("app.jsonSchemaForm.showSecret", { defaultValue: "Show secret" })}
         </span>
       </Button>
     </div>
@@ -688,7 +689,7 @@ const SecretField = React.memo(({
           <Eye className="h-4 w-4 text-muted-foreground" />
         )}
         <span className="sr-only">
-          {isVisible ? "Hide secret" : "Show secret"}
+          {isVisible ? t("app.jsonSchemaForm.hideSecret", { defaultValue: "Hide secret" }) : t("app.jsonSchemaForm.showSecret", { defaultValue: "Show secret" })}
         </span>
       </Button>
     </div>
@@ -710,7 +711,7 @@ const SecretField = React.memo(({
           value={bindingValue}
           onChange={handlePickerChange}
           label=""
-          placeholder="Select an existing secret"
+          placeholder={t("app.jsonSchemaForm.selectAnExistingSecret", { defaultValue: "Select an existing secret" })}
           allowVersionSelector={false}
           emptyHint="No active secrets yet. Create one or paste a raw value below."
           disabled={disabled}
@@ -728,9 +729,7 @@ const SecretField = React.memo(({
                     setIsVisible(false);
                   }}
                   disabled={disabled}
-                >
-                  Hide raw value input
-                </button>
+                > { t("app.jsonSchemaForm.hideRawValueInput", { defaultValue: "Hide raw value input" }) } </button>
               ) : null}
             </div>
           ) : (
@@ -739,9 +738,7 @@ const SecretField = React.memo(({
               className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
               onClick={() => setShowRawInput(true)}
               disabled={disabled}
-            >
-              Or paste a raw value
-            </button>
+            > { t("app.jsonSchemaForm.orPasteARawValue", { defaultValue: "Or paste a raw value" }) } </button>
           )
         ) : null}
       </div>
@@ -935,7 +932,7 @@ const ArrayField = React.memo(({
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
-          {isComplex ? "Add item" : "Add"}
+          {isComplex ? t("app.jsonSchemaForm.addItem", { defaultValue: "Add item" }) : t("app.jsonSchemaForm.add", { defaultValue: "Add" })}
         </Button>
       </div>
 
@@ -980,14 +977,12 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">Remove item</span>
+              <span className="sr-only">{ t("app.jsonSchemaForm.removeItem", { defaultValue: "Remove item" }) }</span>
             </Button>
           </div>
         ))}
         {items.length === 0 && (
-          <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            No items added yet.
-          </div>
+          <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground"> { t("app.jsonSchemaForm.noItemsAddedYet", { defaultValue: "No items added yet." }) } </div>
         )}
       </div>
       {error && (
@@ -1213,7 +1208,7 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
-  advancedLabel = "Advanced options",
+  advancedLabel = t("app.jsonSchemaForm.advancedOptions", { defaultValue: "Advanced options" }),
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
 
@@ -1318,9 +1313,7 @@ export function JsonSchemaForm({
           "py-4 text-center text-sm text-muted-foreground",
           className,
         )}
-      >
-        No configuration options available.
-      </div>
+      > { t("app.jsonSchemaForm.noConfigurationOptionsAvailable", { defaultValue: "No configuration options available." }) } </div>
     );
   }
 

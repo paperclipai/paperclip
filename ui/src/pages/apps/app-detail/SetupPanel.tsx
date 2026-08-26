@@ -6,6 +6,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { appDefinitionSlug } from "../app-definition-display";
 import type { AppDetailSectionProps } from "./types";
 import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-sheets";
+import { t } from "@/i18n";
 
 export function SetupPanel({
   connection,
@@ -46,7 +47,7 @@ export function SetupPanel({
       {hasOAuthSignIn && (
         <OAuthConnectionSection
           connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
-          providerName={appDefinitionSlug(galleryEntry) === "notion" ? "Notion" : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
+          providerName={appDefinitionSlug(galleryEntry) === "notion" ? t("app.setupPanel.notion", { defaultValue: "Notion" }) : isSmokeLabFixture ? t("app.setupPanel.smokeOauth", { defaultValue: "Smoke OAuth" }) : t("app.setupPanel.oauth", { defaultValue: "OAuth" })}
           disabled={oauthStartDisabled}
           onStart={onStartOAuth}
         />
@@ -76,12 +77,12 @@ function OAuthConnectionSection({
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             {connected
-              ? "Your workspace authorization is active. Reconnect any time to replace it."
-              : "Open the provider's consent page to finish connecting this app."}
+              ? t("app.setupPanel.yourWorkspaceAuthorizationIsActiveReconnectAnyTimeToReplaceIt", { defaultValue: "Your workspace authorization is active. Reconnect any time to replace it." })
+              : t("app.setupPanel.openTheProviderSConsentPageToFinishConnectingThisApp", { defaultValue: "Open the provider's consent page to finish connecting this app." })}
           </p>
         </div>
         <Button type="button" disabled={disabled} onClick={onStart}>
-          {connected ? "Reconnect" : `Connect with ${providerName}`}
+          {connected ? t("app.setupPanel.reconnect", { defaultValue: "Reconnect" }) : `Connect with ${providerName}`}
         </Button>
       </div>
     </section>
@@ -115,15 +116,14 @@ function GoogleSheetsAllowlistSection({
   return (
     <section className="rounded-xl border border-border bg-card px-5 py-4">
       <div>
-        <h2 className="text-sm font-bold text-foreground">Sheets agents can use</h2>
+        <h2 className="text-sm font-bold text-foreground">{t("app.setupPanel.sheetsAgentsCanUse", { defaultValue: "Sheets agents can use" })}</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          Agents can only use the sheets listed here.
-        </p>
+          {t("app.setupPanel.agentsCanOnlyUseTheSheetsListedHere", { defaultValue: "Agents can only use the sheets listed here." })}</p>
       </div>
 
       <div className="mt-4 space-y-2">
         {ids.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No sheets are connected yet.</div>
+          <div className="text-sm text-muted-foreground">{t("app.setupPanel.noSheetsAreConnectedYet", { defaultValue: "No sheets are connected yet." })}</div>
         ) : (
           ids.map((id) => {
             const sheetUrl = googleSheetsUrlForId(id);
@@ -135,12 +135,12 @@ function GoogleSheetsAllowlistSection({
                   rel="noreferrer"
                   className="min-w-0 flex-1 text-sm font-medium text-foreground underline-offset-2 hover:underline"
                 >
-                  <span className="block truncate">Open sheet</span>
+                  <span className="block truncate">{t("app.setupPanel.openSheet", { defaultValue: "Open sheet" })}</span>
                   <span className="block truncate font-mono text-xs font-normal text-muted-foreground">
                     {sheetUrl}
                   </span>
                   <span className="block truncate font-mono text-(length:--text-micro) font-normal text-muted-foreground/80">
-                    ID: {id}
+                    {t("app.setupPanel.id", { defaultValue: "ID: " })}{id}
                   </span>
                 </a>
                 <Button
@@ -148,10 +148,10 @@ function GoogleSheetsAllowlistSection({
                   size="sm"
                   variant="outline"
                   disabled={disabled || ids.length <= 1}
-                  title={ids.length <= 1 ? "Add another sheet before removing this one." : undefined}
+                  title={ids.length <= 1 ? t("app.setupPanel.addAnotherSheetBeforeRemovingThisOne", { defaultValue: "Add another sheet before removing this one." }) : undefined}
                   onClick={() => saveIds(ids.filter((current) => current !== id))}
                 >
-                  Remove
+                  {t("common.remove", { defaultValue: "Remove" })}
                 </Button>
               </div>
             );
@@ -187,8 +187,7 @@ function GoogleSheetsAllowlistSection({
             setDraft("");
           }}
         >
-          Add sheet
-        </Button>
+          {t("app.setupPanel.addSheet", { defaultValue: "Add sheet" })}</Button>
       </div>
       {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
     </section>
@@ -210,16 +209,16 @@ export function AppLifecycleSection({
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-bold text-foreground">
-            {enabled ? "Agents can use this app" : "This app is paused"}
+            {enabled ? t("app.setupPanel.agentsCanUseThisApp", { defaultValue: "Agents can use this app" }) : t("app.setupPanel.thisAppIsPaused", { defaultValue: "This app is paused" })}
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             {enabled
-              ? "Pause it to stop every agent from using its actions."
-              : "Resume it when agents should be able to use its actions again."}
+              ? t("app.setupPanel.pauseItToStopEveryAgentFromUsingItsActions", { defaultValue: "Pause it to stop every agent from using its actions." })
+              : t("app.setupPanel.resumeItWhenAgentsShouldBeAbleToUseItsActionsAgain", { defaultValue: "Resume it when agents should be able to use its actions again." })}
           </p>
         </div>
         <ToggleSwitch
-          aria-label={enabled ? "Pause this app" : "Resume this app"}
+          aria-label={enabled ? t("app.setupPanel.pauseThisApp", { defaultValue: "Pause this app" }) : t("app.setupPanel.resumeThisApp", { defaultValue: "Resume this app" })}
           checked={enabled}
           disabled={disabled}
           onCheckedChange={onToggle}
@@ -247,11 +246,10 @@ export function QuarantinedActionsReview({
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
         <div>
           <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-            Review {count} new {count === 1 ? "action" : "actions"}
+            {t("app.setupPanel.review", { defaultValue: "Review " })}{count} {t("app.setupPanel.new", { defaultValue: "new " })}{count === 1 ? "action" : "actions"}
           </div>
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-            Turn on the actions agents may use. Anything left off stays blocked when you save.
-          </p>
+            {t("app.setupPanel.turnOnTheActionsAgentsMayUseAnythingLeftOffStaysBlockedWhenYouSave", { defaultValue: "Turn on the actions agents may use. Anything left off stays blocked when you save." })}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -260,16 +258,14 @@ export function QuarantinedActionsReview({
             disabled={disabled}
             onClick={() => setEnabledIds(new Set(entries.map((entry) => entry.id)))}
           >
-            Turn all on
-          </button>
+            {t("app.setupPanel.turnAllOn", { defaultValue: "Turn all on" })}</button>
           <button
             type="button"
             className="text-xs font-medium text-amber-800 hover:text-amber-950 dark:text-amber-200 dark:hover:text-amber-50"
             disabled={disabled}
             onClick={() => setEnabledIds(new Set())}
           >
-            Turn all off
-          </button>
+            {t("app.setupPanel.turnAllOff", { defaultValue: "Turn all off" })}</button>
         </div>
       </div>
       <div className="divide-y divide-amber-500/25 border-y border-amber-500/25 bg-background">
@@ -303,10 +299,9 @@ export function QuarantinedActionsReview({
       </div>
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
-          {selectedIds.length} of {count} will be on
-        </span>
+          {selectedIds.length} {t("app.setupPanel.of", { defaultValue: "of " })}{count} {t("app.setupPanel.willBeOn", { defaultValue: "will be on" })}</span>
         <Button size="sm" disabled={disabled} onClick={() => onSubmit(selectedIds)}>
-          {disabled ? "Saving…" : "Save choices"}
+          {disabled ? "Saving…" : t("app.setupPanel.saveChoices", { defaultValue: "Save choices" })}
         </Button>
       </div>
     </section>

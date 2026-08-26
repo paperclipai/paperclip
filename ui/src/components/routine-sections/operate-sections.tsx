@@ -17,6 +17,7 @@ import { LiveRunWidget } from "../LiveRunWidget";
 import { RoutineHistoryTab } from "../RoutineHistoryTab";
 import { RoutineActivityRow } from "../RoutineActivityRow";
 import { useRoutineDetail } from "./context";
+import { t } from "@/i18n";
 
 const DATE_WINDOW_OPTIONS: { value: string; label: string; ms: number | null }[] = [
   { value: "any", label: "Any time", ms: null },
@@ -88,7 +89,7 @@ export function RunsSection() {
       {runs.length === 0 ? (
         <EmptyState
           icon={Play}
-          message="No runs yet. Trigger a run from the header or wait for the schedule."
+          message={t("app.operateSections.noRunsYetTriggerARunFromTheHeaderOrWaitForTheSchedule", { defaultValue: "No runs yet. Trigger a run from the header or wait for the schedule." })}
           action="Run now"
           onAction={onOpenRunDialog}
         />
@@ -98,12 +99,12 @@ export function RunsSection() {
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Select value={sourceFilter} onValueChange={setSourceFilter}>
-                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label="Filter by source">
-                  <span className="text-muted-foreground">Source:</span>
+                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label={t("app.operateSections.filterBySource", { defaultValue: "Filter by source" })}>
+                  <span className="text-muted-foreground">{t("app.operateSections.source", { defaultValue: "Source:" })}</span>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="any">any</SelectItem>
+                  <SelectItem value="any">{t("app.operateSections.any", { defaultValue: "any" })}</SelectItem>
                   {sourceOptions.map((source) => (
                     <SelectItem key={source} value={source}>
                       {source}
@@ -112,12 +113,12 @@ export function RunsSection() {
                 </SelectContent>
               </Select>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label="Filter by status">
-                  <span className="text-muted-foreground">Status:</span>
+                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label={t("app.operateSections.filterByStatus", { defaultValue: "Filter by status" })}>
+                  <span className="text-muted-foreground">{t("app.operateSections.status", { defaultValue: "Status:" })}</span>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="any">any</SelectItem>
+                  <SelectItem value="any">{t("app.operateSections.any", { defaultValue: "any" })}</SelectItem>
                   {statusOptions.map((status) => (
                     <SelectItem key={status} value={status}>
                       {status.replaceAll("_", " ")}
@@ -126,8 +127,8 @@ export function RunsSection() {
                 </SelectContent>
               </Select>
               <Select value={dateFilter} onValueChange={setDateFilter}>
-                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label="Filter by date">
-                  <span className="text-muted-foreground">Date:</span>
+                <SelectTrigger size="sm" className="h-8 w-auto gap-1.5 text-xs" aria-label={t("app.operateSections.filterByDate", { defaultValue: "Filter by date" })}>
+                  <span className="text-muted-foreground">{t("app.operateSections.date", { defaultValue: "Date:" })}</span>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -145,7 +146,7 @@ export function RunsSection() {
           {filtered.length === 0 ? (
             <EmptyState
               icon={SlidersHorizontal}
-              message="No runs match these filters."
+              message={t("app.operateSections.noRunsMatchTheseFilters", { defaultValue: "No runs match these filters." })}
               action="Clear filters"
               onAction={clearFilters}
             />
@@ -153,7 +154,7 @@ export function RunsSection() {
             <div className="rounded-lg border border-border">
               {filtered.map((run) => {
                 const label = dedupedTriggerLabel(run.trigger);
-                const title = run.linkedIssue?.title ?? label ?? "Run";
+                const title = run.linkedIssue?.title ?? label ?? t("app.operateSections.run", { defaultValue: "Run" });
                 return (
                   <EntityRow
                     key={run.id}
@@ -205,7 +206,7 @@ export function ActivitySection() {
   const groups = useMemo(() => {
     const byDay = new Map<string, typeof events>();
     for (const event of events) {
-      let label = "Earlier";
+      let label = t("app.operateSections.earlier", { defaultValue: "Earlier" });
       try {
         label = new Date(event.createdAt).toLocaleDateString(undefined, {
           weekday: "short",
@@ -223,7 +224,7 @@ export function ActivitySection() {
   }, [events]);
 
   if (events.length === 0) {
-    return <EmptyState icon={ActivityIcon} message="No activity yet." />;
+    return <EmptyState icon={ActivityIcon} message={t("app.operateSections.noActivityYet", { defaultValue: "No activity yet." })} />;
   }
 
   return (

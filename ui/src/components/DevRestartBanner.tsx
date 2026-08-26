@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, RotateCcw, TimerReset } from "lucide-react";
 import { healthApi, type DevServerHealthStatus } from "../api/health";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 
 const RESTART_PENDING_RESET_MS = 30_000;
 
@@ -53,7 +54,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
     const warning =
       currentDevServer.activeRunCount > 0
         ? `Restart Paperclip now? This may interrupt ${activeRunLabel}.`
-        : "Restart Paperclip now?";
+        : t("app.devRestartBanner.restartPaperclipNow", { defaultValue: "Restart Paperclip now?" });
     if (!window.confirm(warning)) return;
 
     setRestartPending(true);
@@ -61,7 +62,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
       await healthApi.requestDevServerRestart();
     } catch (error) {
       setRestartPending(false);
-      window.alert(error instanceof Error ? error.message : "Failed to request restart");
+      window.alert(error instanceof Error ? error.message: t("app.devRestartBanner.failedToRequestRestart", { defaultValue: "Failed to request restart" }));
     }
   }
 
@@ -71,11 +72,9 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-(--tracking-caps)">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-            <span>Restart Required</span>
+            <span>{ t("app.devRestartBanner.restartRequired", { defaultValue: "Restart Required" }) }</span>
             {devServer.autoRestartEnabled ? (
-              <Badge variant="ghost" className="bg-amber-900/10 text-(length:--text-nano) tracking-(--tracking-eyebrow) dark:bg-amber-100/10">
-                Auto-Restart On
-              </Badge>
+              <Badge variant="ghost" className="bg-amber-900/10 text-(length:--text-nano) tracking-(--tracking-eyebrow) dark:bg-amber-100/10"> { t("app.devRestartBanner.autoRestartOn", { defaultValue: "Auto-Restart On" }) } </Badge>
             ) : null}
           </div>
           <p className="mt-1 text-sm">
@@ -107,12 +106,12 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
           ) : devServer.autoRestartEnabled ? (
             <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
               <RotateCcw className="h-3.5 w-3.5" />
-              <span>Auto-restart will trigger when the instance is idle</span>
+              <span>{ t("app.devRestartBanner.autoRestartWillTriggerWhenTheInstanceIsIdle", { defaultValue: "Auto-restart will trigger when the instance is idle" }) }</span>
             </div>
           ) : (
             <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
               <RotateCcw className="h-3.5 w-3.5" />
-              <span>Restart <code>pnpm dev:once</code> after the active work is safe to interrupt</span>
+              <span>{ t("app.devRestartBanner.restart", { defaultValue: "Restart" }) } <code>pnpm dev:once</code> { t("app.devRestartBanner.afterTheActiveWorkIsSafeToInterrupt", { defaultValue: "after the active work is safe to interrupt" }) }</span>
             </div>
           )}
           <button
@@ -124,7 +123,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
             disabled={restartPending}
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            <span>{restartPending ? "Restart requested" : "Restart now"}</span>
+            <span>{restartPending ? t("app.devRestartBanner.restartRequested", { defaultValue: "Restart requested" }) : t("app.devRestartBanner.restartNow", { defaultValue: "Restart now" })}</span>
           </button>
         </div>
       </div>

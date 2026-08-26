@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { appTabHref } from "../app-tabs";
 import type { ActivityPanelProps } from "./types";
+import { t } from "@/i18n";
 
 export function ActivityPanel(props: ActivityPanelProps) {
   return <RecentActivity {...props} />;
@@ -76,7 +77,7 @@ function RecentActivity({
   return (
     <section className="space-y-2">
       <div>
-        <h2 className="text-sm font-bold text-foreground">Recent activity</h2>
+        <h2 className="text-sm font-bold text-foreground">{t("app.activityPanel.recentActivity", { defaultValue: "Recent activity" })}</h2>
       </div>
       {loading ? (
         <div className="space-y-2 py-4">
@@ -84,7 +85,7 @@ function RecentActivity({
           <Skeleton className="h-4 w-2/3" />
         </div>
       ) : rows.length === 0 ? (
-        <p className="py-5 text-sm text-muted-foreground">No activity yet.</p>
+        <p className="py-5 text-sm text-muted-foreground">{t("app.activityPanel.noActivityYet", { defaultValue: "No activity yet." })}</p>
       ) : (
         <ul className="divide-y divide-border">
           {rows.map((row) => (
@@ -95,7 +96,7 @@ function RecentActivity({
                 <span className="block truncate text-xs text-muted-foreground">
                   {row.issue ? (
                     <>
-                      while working on{" "}
+                      {t("app.activityPanel.whileWorkingOn", { defaultValue: "while working on" })}{" "}
                       <Link
                         to={`/issues/${row.issue.identifier}`}
                         className="font-medium text-muted-foreground hover:text-foreground hover:underline"
@@ -166,11 +167,11 @@ export function humanizeEvent(
   // For Test-tab calls, surface "<User> tested as <Agent>" so prosumer test runs are
   // distinguishable from real heartbeat agent activity in the audit trail (PAP-11415).
   const who = testRunnerLabel
-    ? `${testRunnerLabel} tested as ${agentName ?? "an agent"}`
-    : agentName ?? "An agent";
+    ? `${testRunnerLabel} ${t("app.activityPanel.testedAs", { defaultValue: "tested as" })} ${agentName ?? t("app.activityPanel.anAgent", { defaultValue: "an agent" })}`
+    : agentName ?? t("app.activityPanel.anAgent2", { defaultValue: "An agent" });
   // The raw gateway tool name is prefixed (e.g. `mcp.app-gallery-link-…:kv-set`);
   // humanize it to "Kv Set" to match the cross-app Activity view (PAP-11105).
-  const action = event.toolName ? humanizeConnectionDisplayName(event.toolName) : "an action";
+  const action = event.toolName ? humanizeConnectionDisplayName(event.toolName) : t("app.activityPanel.anAction", { defaultValue: "an action" });
   switch (event.eventType) {
     case "call_completed":
       return {
@@ -199,7 +200,7 @@ function humanizeApprovalResolved(
   action: string,
   actionRequest?: ActivityPanelProps["actionRequests"][string],
 ): string {
-  const resolver = actionRequest?.resolverDisplayName ?? "Someone";
+  const resolver = actionRequest?.resolverDisplayName ?? t("app.activityPanel.someone", { defaultValue: "Someone" });
   if (actionRequest?.status === "approved") return `${resolver} approved ${action}`;
   if (actionRequest?.status === "rejected") return `${resolver} said no to ${action}`;
   return `${resolver} reviewed ${action}`;
@@ -211,7 +212,7 @@ function humanizeLifecycleEvent(
   appName: string,
   agentName: string | null,
 ): string {
-  const who = event.actorDisplayName ?? agentName ?? "Someone";
+  const who = event.actorDisplayName ?? agentName ?? t("app.activityPanel.someone", { defaultValue: "Someone" });
   switch (event.type) {
     case "app_connected":
       return `${who} connected ${appName}`;
@@ -250,7 +251,7 @@ function humanizeAllowlistChange(who: string, details: Record<string, unknown> |
 }
 
 function lifecycleLinkLabel(event: ToolConnectionLifecycleEvent): string {
-  return event.type === "actions_quarantined" ? "Review in Setup" : "View in Setup";
+  return event.type === "actions_quarantined" ? t("app.activityPanel.reviewInSetup", { defaultValue: "Review in Setup" }) : t("app.activityPanel.viewInSetup", { defaultValue: "View in Setup" });
 }
 
 function numberFrom(value: unknown): number {
@@ -259,7 +260,7 @@ function numberFrom(value: unknown): number {
 }
 
 function lower(who: string): string {
-  return who === "An agent" ? "an agent" : who;
+  return who === "An agent" ? t("app.activityPanel.anAgent", { defaultValue: "an agent" }) : who;
 }
 
 function dotColor(event: ToolCallEvent): string {

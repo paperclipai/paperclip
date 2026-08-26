@@ -1,5 +1,6 @@
 import { ArrowLeft, ArrowRight, Loader2 } from "lucide-react";
 import { Button } from "../ui/button";
+import { t } from "@/i18n";
 
 /**
  * Shared footer for the arc's step cards: a ghost pill "Back" and a primary
@@ -37,7 +38,7 @@ export function FooterNav({
           disabled={loading}
         >
           <ArrowLeft className="mr-1 size-3.5" />
-          Back
+          {t("onboarding.back", { defaultValue: "Back" })}
         </Button>
       ) : (
         <span />

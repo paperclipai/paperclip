@@ -11,10 +11,11 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn, relativeTime } from "@/lib/utils";
 import { Diff } from "lucide-react";
+import { t } from "@/i18n";
 
 /** Author + via-issue attribution line for a revision. */
 function RevisionByline({ revision }: { revision: CaseDocumentRevision }) {
-  const author = revision.actorAgentName ?? (revision.createdByUserId ? "User" : "System");
+  const author = revision.actorAgentName ?? (revision.createdByUserId ? t("app.caseRevisionRail.user", { defaultValue: "User" }) : t("app.caseRevisionRail.system", { defaultValue: "System" }));
   return (
     <span className="flex flex-wrap items-center gap-x-1 text-(length:--text-micro) text-muted-foreground">
       <span>{author}</span>
@@ -82,16 +83,15 @@ function CaseDocumentDiffModal({
       <DialogContent className="!max-w-(--pct-90) flex max-h-(--sz-85vh) w-full flex-col overflow-hidden">
         <div className="flex items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
-            <DialogTitle>
-              Diff - <span className="font-mono text-sm">{documentKey}</span>
+            <DialogTitle> { t("app.caseRevisionRail.diff", { defaultValue: "Diff -" }) } <span className="font-mono text-sm">{documentKey}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="flex shrink-0 items-center gap-4">
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-red-400">Old</span>
+              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-red-400">{ t("app.caseRevisionRail.old", { defaultValue: "Old" }) }</span>
               <Select value={effectiveLeftId ?? ""} onValueChange={setLeftRevisionId}>
                 <SelectTrigger className="h-7 w-60 border-border/60 text-xs">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={t("app.caseRevisionRail.selectRevision", { defaultValue: "Select revision" })} />
                 </SelectTrigger>
                 <SelectContent>
                   {revisions.map((revision) => (
@@ -103,10 +103,10 @@ function CaseDocumentDiffModal({
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-green-400">New</span>
+              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-green-400">{ t("app.caseRevisionRail.new", { defaultValue: "New" }) }</span>
               <Select value={effectiveRightId ?? ""} onValueChange={setRightRevisionId}>
                 <SelectTrigger className="h-7 w-60 border-border/60 text-xs">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={t("app.caseRevisionRail.selectRevision", { defaultValue: "Select revision" })} />
                 </SelectTrigger>
                 <SelectContent>
                   {revisions.map((revision) => (
@@ -122,16 +122,16 @@ function CaseDocumentDiffModal({
 
         <div className="flex-1 overflow-auto rounded-md border border-border text-xs">
           {!leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-sm text-muted-foreground">Select two revisions to compare.</div>
+            <div className="p-6 text-center text-sm text-muted-foreground">{ t("app.caseRevisionRail.selectTwoRevisionsToCompare", { defaultValue: "Select two revisions to compare." }) }</div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-sm text-muted-foreground">Both sides are the same revision.</div>
+            <div className="p-6 text-center text-sm text-muted-foreground">{ t("app.caseRevisionRail.bothSidesAreTheSameRevision", { defaultValue: "Both sides are the same revision." }) }</div>
           ) : (
             <div className="font-mono text-xs leading-6">
               <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-                <span>Old</span>
-                <span>New</span>
+                <span>{ t("app.caseRevisionRail.old", { defaultValue: "Old" }) }</span>
+                <span>{ t("app.caseRevisionRail.new", { defaultValue: "New" }) }</span>
                 <span />
-                <span>Content</span>
+                <span>{ t("app.caseRevisionRail.content", { defaultValue: "Content" }) }</span>
               </div>
               {diffRows.map((row, index) => (
                 <div
@@ -190,13 +190,13 @@ export function CaseRevisionRail({
   }, [revisions, selectedId]);
 
   if (revisionsQuery.isLoading) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">Loading revisions…</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{ t("app.caseRevisionRail.loadingRevisions", { defaultValue: "Loading revisions…" }) }</p>;
   }
   if (revisionsQuery.isError) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">Could not load revisions.</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{ t("app.caseRevisionRail.couldNotLoadRevisions", { defaultValue: "Could not load revisions." }) }</p>;
   }
   if (revisions.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">No revisions yet.</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{ t("app.caseRevisionRail.noRevisionsYet", { defaultValue: "No revisions yet." }) }</p>;
   }
 
   const selected = revisions.find((r) => r.id === selectedId) ?? revisions[0]!;
@@ -206,9 +206,7 @@ export function CaseRevisionRail({
     <div className="grid gap-4 md:grid-cols-(--gtc-case-revisions)">
       <aside className="space-y-1">
         <div className="flex items-center justify-between gap-2 px-1">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Revisions
-          </h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"> { t("app.caseRevisionRail.revisions", { defaultValue: "Revisions" }) } </h3>
           {revisions.length > 1 ? (
             <Button
               type="button"
@@ -218,7 +216,7 @@ export function CaseRevisionRail({
               onClick={() => setDiffOpen(true)}
             >
               <Diff className="h-3.5 w-3.5" />
-              Diff
+              {t("app.caseRevisionRail.diff", { defaultValue: "Diff" })}
             </Button>
           ) : null}
         </div>
@@ -269,7 +267,7 @@ export function CaseRevisionRail({
             {selected.body}
           </MarkdownBody>
         ) : (
-          <p className="text-sm text-muted-foreground">This revision has no body.</p>
+          <p className="text-sm text-muted-foreground">{ t("app.caseRevisionRail.thisRevisionHasNoBody", { defaultValue: "This revision has no body." }) }</p>
         )}
       </Card>
       {revisions.length > 1 ? (

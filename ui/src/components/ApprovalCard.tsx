@@ -14,6 +14,7 @@ import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
+import { t } from "@/i18n";
 
 function statusIcon(status: string) {
   if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
@@ -70,7 +71,7 @@ export function ApprovalCard({
                 </Badge>
                 {requesterAgent && (
                   <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    <span>Requested by</span>
+                    <span>{ t("app.approvalCard.requestedBy", { defaultValue: "Requested by" }) }</span>
                     <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
                   </div>
                 )}
@@ -104,7 +105,7 @@ export function ApprovalCard({
 
       {approval.decisionNote && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
-          <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
+          <span className="font-medium text-foreground">{ t("app.approvalCard.decisionNote", { defaultValue: "Decision note." }) }</span> {approval.decisionNote}
         </div>
       )}
 
@@ -119,7 +120,7 @@ export function ApprovalCard({
                   onClick={onApprove}
                   disabled={isPending}
                 >
-                  {pendingAction === "approve" ? "Approving..." : "Approve"}
+                  {pendingAction === "approve" ? t("app.approvalCard.approving", { defaultValue: "Approving..." }) : t("app.approvalCard.approve", { defaultValue: "Approve" })}
                 </Button>
                 <Button
                   variant="destructive"
@@ -127,7 +128,7 @@ export function ApprovalCard({
                   onClick={onReject}
                   disabled={isPending}
                 >
-                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
+                  {pendingAction === "reject" ? t("app.approvalCard.rejecting", { defaultValue: "Rejecting..." }) : t("app.approvalCard.reject", { defaultValue: "Reject" })}
                 </Button>
               </>
             )}
@@ -137,13 +138,9 @@ export function ApprovalCard({
               <Link
                 to={detailLink}
                 className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
-              >
-                View details
-              </Link>
+              > { t("app.approvalCard.viewDetails", { defaultValue: "View details" }) } </Link>
             ) : (
-              <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>
-                View details
-              </Button>
+              <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}> { t("app.approvalCard.viewDetails", { defaultValue: "View details" }) } </Button>
             )
           ) : null}
         </div>

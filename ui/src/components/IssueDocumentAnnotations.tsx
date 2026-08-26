@@ -16,6 +16,7 @@ import { DocumentAnnotationLayer, type AnnotationAnchorRect, type PendingAnchor 
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import { DocumentAnnotationPopover } from "./DocumentAnnotationPopover";
 import type { CompanyUserProfile } from "@/lib/company-members";
+import { t } from "@/i18n";
 
 // Width of the right-hand comment gutter on desktop (lg+). The gutter is an
 // in-flow flex column beside the document, so it scrolls with the doc instead
@@ -130,13 +131,13 @@ export function IssueDocumentAnnotations({
 
   const newCommentDisabled = draftDirty || draftConflicted || historicalPreview || !doc.latestRevisionId;
   const newCommentDisabledReason = historicalPreview
-    ? "New comments are disabled while previewing a historical revision."
+    ? t("app.issueDocumentAnnotations.newCommentsAreDisabledWhilePreviewingAHistoricalRevision", { defaultValue: "New comments are disabled while previewing a historical revision." })
     : draftConflicted
-      ? "Resolve the document conflict before adding new comments."
+      ? t("app.issueDocumentAnnotations.resolveTheDocumentConflictBeforeAddingNewComments", { defaultValue: "Resolve the document conflict before adding new comments." })
       : draftDirty
-        ? "Save the draft to anchor new comments."
+        ? t("app.issueDocumentAnnotations.saveTheDraftToAnchorNewComments", { defaultValue: "Save the draft to anchor new comments." })
         : !doc.latestRevisionId
-          ? "Document has no saved revision yet."
+          ? t("app.issueDocumentAnnotations.documentHasNoSavedRevisionYet", { defaultValue: "Document has no saved revision yet." })
           : null;
 
   const handleSelectionAnchorChange = useCallback((anchor: PendingAnchor | null) => {

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { t } from "@/i18n";
 
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
@@ -70,8 +71,8 @@ export function BudgetIncidentCard({
           <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
             {incident.scopeType === "project"
-              ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
-              : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
+              ? t("app.budgetIncidentCard.projectExecutionIsPausedNewWorkInThisProjectWillNotStartUntilYouResolveTheBudgetIncident", { defaultValue: "Project execution is paused. New work in this project will not start until you resolve the budget incident." })
+              : t("app.budgetIncidentCard.thisScopeIsPausedNewHeartbeatsWillNotStartUntilYouResolveTheBudgetIncident", { defaultValue: "This scope is paused. New heartbeats will not start until you resolve the budget incident." })}
           </div>
         </div>
 
@@ -94,20 +95,16 @@ export function BudgetIncidentCard({
               }}
             >
               <ArrowUpRight className="h-4 w-4" />
-              {isMutating ? "Applying..." : "Raise budget & resume"}
+              {isMutating ? t("app.budgetIncidentCard.applying", { defaultValue: "Applying..." }) : t("app.budgetIncidentCard.raiseBudgetResume", { defaultValue: "Raise budget & resume" })}
             </Button>
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (
-            <p className="mt-2 text-xs text-red-700 dark:text-red-200/80">
-              The new budget must exceed current observed spend.
-            </p>
+            <p className="mt-2 text-xs text-red-700 dark:text-red-200/80"> { t("app.budgetIncidentCard.theNewBudgetMustExceedCurrentObservedSpend", { defaultValue: "The new budget must exceed current observed spend." }) } </p>
           ) : null}
         </div>
 
         <div className="flex justify-end">
-          <Button variant="ghost" className="text-muted-foreground" disabled={isMutating} onClick={onKeepPaused}>
-            Keep paused
-          </Button>
+          <Button variant="ghost" className="text-muted-foreground" disabled={isMutating} onClick={onKeepPaused}> { t("app.budgetIncidentCard.keepPaused", { defaultValue: "Keep paused" }) } </Button>
         </div>
       </CardContent>
     </Card>

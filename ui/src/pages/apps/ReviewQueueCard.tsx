@@ -10,6 +10,7 @@ import { timeAgo } from "@/lib/timeAgo";
 import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { t } from "@/i18n";
 
 /**
  * "Ask first" review queue (M1b float / M9 card, PAP-10859).
@@ -52,8 +53,7 @@ export function ReviewQueueCard({
     if (emptyState === "hidden") return null;
     return (
       <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">
-        Nothing is waiting for your OK right now.
-      </div>
+        {t("app.reviewQueueCard.nothingIsWaitingForYourOkRightNow", { defaultValue: "Nothing is waiting for your OK right now." })}</div>
     );
   }
 
@@ -89,7 +89,7 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
     mutationFn: () => toolsApi.approveActionRequest(companyId, item.request.id),
     onMutate: () => setResolving("allow"),
     onSuccess: () => {
-      pushToast({ title: "Allowed once", body: `${actionLabel(item)} can run this time.`, tone: "success" });
+      pushToast({ title: t("app.reviewQueueCard.allowedOnce", { defaultValue: "Allowed once" }), body: `${actionLabel(item)} can run this time.`, tone: "success" });
       invalidate();
     },
     onError: (error) => {
@@ -108,7 +108,7 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
     onMutate: () => setResolving("always"),
     onSuccess: () => {
       pushToast({
-        title: "Always allowed",
+        title: t("app.reviewQueueCard.alwaysAllowed", { defaultValue: "Always allowed" }),
         body: `${actionLabel(item)} won’t ask again.`,
         tone: "success",
       });
@@ -126,7 +126,7 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
     mutationFn: () => toolsApi.declineActionRequest(companyId, item.request.id),
     onMutate: () => setResolving("decline"),
     onSuccess: () => {
-      pushToast({ title: "Declined", body: `${actionLabel(item)} won’t run.`, tone: "info" });
+      pushToast({ title: t("app.reviewQueueCard.declined", { defaultValue: "Declined" }), body: `${actionLabel(item)} won’t run.`, tone: "info" });
       invalidate();
     },
     onError: (error) => {
@@ -145,10 +145,10 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
         <span className="font-bold text-foreground">{actionLabel(item)}</span>
         {item.applicationName && (
           <span className="text-muted-foreground">
-            in {humanizeConnectionDisplayName(item.applicationName)}
+            {t("app.reviewQueueCard.in", { defaultValue: "in " })}{humanizeConnectionDisplayName(item.applicationName)}
           </span>
         )}
-        <span className="text-xs text-muted-foreground">· asked {timeAgo(item.request.createdAt)}</span>
+        <span className="text-xs text-muted-foreground">{t("app.reviewQueueCard.asked", { defaultValue: "· asked " })}{timeAgo(item.request.createdAt)}</span>
       </div>
 
       {preview ? (
@@ -157,23 +157,19 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
         </div>
       ) : (
         <p className="mt-1 text-sm text-muted-foreground">
-          An agent wants to run this action. It can change something, so we’re checking with you first.
-        </p>
+          {t("app.reviewQueueCard.anAgentWantsToRunThisActionItCanChangeSomethingSoWeReCheckingWithYouFirst", { defaultValue: "An agent wants to run this action. It can change something, so we’re checking with you first." })}</p>
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => allowOnce.mutate()} disabled={busy}>
           {resolving === "allow" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1.5 h-3.5 w-3.5" />}
-          Allow once
-        </Button>
+          {t("app.reviewQueueCard.allowOnce", { defaultValue: "Allow once" })}</Button>
         <Button size="sm" variant="outline" onClick={() => alwaysAllow.mutate()} disabled={busy}>
           {resolving === "always" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-          Always allow
-        </Button>
+          {t("app.reviewQueueCard.alwaysAllow", { defaultValue: "Always allow" })}</Button>
         <Button size="sm" variant="ghost" onClick={() => decline.mutate()} disabled={busy}>
           {resolving === "decline" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <X className="mr-1.5 h-3.5 w-3.5" />}
-          Decline
-        </Button>
+          {t("app.reviewQueueCard.decline", { defaultValue: "Decline" })}</Button>
       </div>
     </div>
   );
@@ -189,8 +185,8 @@ function failToast(
   error: unknown,
 ) {
   pushToast({
-    title: "Couldn’t save that",
-    body: error instanceof Error ? error.message : "Please try again.",
+    title: t("app.reviewQueueCard.couldnTSaveThat", { defaultValue: "Couldn’t save that" }),
+    body: error instanceof Error ? error.message : t("app.reviewQueueCard.pleaseTryAgain", { defaultValue: "Please try again." }),
     tone: "error",
   });
 }

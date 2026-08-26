@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { secretsApi, type MyUserSecretEntry } from "../../api/secrets";
 import { queryKeys } from "../../lib/queryKeys";
 import { SetMyUserSecretDialog } from "./SetMyUserSecretDialog";
+import { t } from "@/i18n";
 
 /**
  * Warning surface for user secrets the current user has not yet set. Renders
@@ -20,7 +21,7 @@ import { SetMyUserSecretDialog } from "./SetMyUserSecretDialog";
 export function MissingUserSecretsBanner({
   companyId,
   definitionKeys,
-  title = "Set your user secrets",
+  title = t("app.missingUserSecretsBanner.setYourUserSecrets", { defaultValue: "Set your user secrets" }),
   secretsPath,
   className,
 }: {
@@ -61,10 +62,7 @@ export function MissingUserSecretsBanner({
         <div className="min-w-0 flex-1">
           <p className="font-medium">{title}</p>
           <p className="mt-0.5 text-amber-700/90 dark:text-amber-300/90">
-            {missing.length} user secret{missing.length === 1 ? "" : "s"} you are responsible for
-            {missing.length === 1 ? " has" : " have"} no value yet. Runs that require
-            {missing.length === 1 ? " it" : " them"} will fail until you set your value.
-          </p>
+            {missing.length} {t("app.missingUserSecretsBanner.userSecret", { defaultValue: "user secret" })}{missing.length === 1 ? "" : "s"} {t("app.missingUserSecretsBanner.youAreResponsibleFor", { defaultValue: "you are responsible for" })}{missing.length === 1 ? t("app.missingUserSecretsBanner.has", { defaultValue: " has" }) : t("app.missingUserSecretsBanner.have", { defaultValue: " have" })} {t("app.missingUserSecretsBanner.noValueYetRunsThatRequire", { defaultValue: "no value yet. Runs that require" })}{missing.length === 1 ? t("app.missingUserSecretsBanner.it", { defaultValue: " it" }) : t("app.missingUserSecretsBanner.them", { defaultValue: " them" })} {t("app.missingUserSecretsBanner.willFailUntilYouSetYourValue", { defaultValue: "will fail until you set your value." })}</p>
           <ul className="mt-2 space-y-1.5">
             {missing.map((entry) => (
               <li
@@ -76,8 +74,7 @@ export function MissingUserSecretsBanner({
                   <code className="text-(length:--text-micro) text-muted-foreground">{entry.definition.key}</code>
                 </span>
                 <Button size="sm" onClick={() => setDialogFor(entry)}>
-                  Set value
-                </Button>
+                  {t("app.missingUserSecretsBanner.setValue", { defaultValue: "Set value" })}</Button>
               </li>
             ))}
           </ul>
@@ -86,8 +83,7 @@ export function MissingUserSecretsBanner({
               to={secretsPath}
               className="mt-2 inline-block text-(length:--text-micro) font-medium underline underline-offset-2"
             >
-              Manage all my secrets
-            </Link>
+              {t("app.missingUserSecretsBanner.manageAllMySecrets", { defaultValue: "Manage all my secrets" })}</Link>
           ) : null}
         </div>
       </div>

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { EnforcementBanner } from "@/components/EnforcementBanner";
 import { CapabilityBadges, DecisionBadge, RiskBadge } from "@/pages/tools/shared";
+import { t } from "@/i18n";
 
 /**
  * Action approval card (PAP-10787 / PAP-10778, surfaces 11/12/99).
@@ -133,10 +134,10 @@ function initials(name: string): string {
 function bindingRows(binding: ActionCardBinding, isStale: boolean): BindingRow[] {
   const catalogValue = isStale && binding.previousCatalogSha256 ? (
     <span className="inline-flex flex-wrap items-center gap-1.5">
-      <span className="text-muted-foreground line-through decoration-amber-500" title="Previous catalog hash">
+      <span className="text-muted-foreground line-through decoration-amber-500" title={t("app.actionCard.previousCatalogHash", { defaultValue: "Previous catalog hash" })}>
         {shortSha(binding.previousCatalogSha256)}
       </span>
-      <span className="text-amber-600 dark:text-amber-400" title="Current catalog hash">
+      <span className="text-amber-600 dark:text-amber-400" title={t("app.actionCard.currentCatalogHash", { defaultValue: "Current catalog hash" })}>
         {shortSha(binding.catalogSha256)}
       </span>
     </span>
@@ -150,7 +151,7 @@ function bindingRows(binding: ActionCardBinding, isStale: boolean): BindingRow[]
       value: (
         <span>
           {binding.application}
-          <span className="ml-1.5 text-xs text-muted-foreground">manifest v{binding.manifestVersion}</span>
+          <span className="ml-1.5 text-xs text-muted-foreground">{t("app.actionCard.manifestV", { defaultValue: "manifest v" })}{binding.manifestVersion}</span>
         </span>
       ),
     },
@@ -201,14 +202,14 @@ export function ActionCard({
       onClick={onApprove}
       disabled={isStale}
       className={mobile ? "w-full" : undefined}
-      title={isStale ? "Re-issue the request before approving — the catalog hash changed." : undefined}
+      title={isStale ? t("app.actionCard.reIssueTheRequestBeforeApprovingTheCatalogHashChanged", { defaultValue: "Re-issue the request before approving — the catalog hash changed." }) : undefined}
     >
-      Approve
+      {t("app.actionCard.approve", { defaultValue: "Approve" })}
     </Button>
   );
   const denyButton = (
     <Button size="sm" variant="outline" onClick={onDeny} className={mobile ? "w-full" : undefined}>
-      Deny
+      {t("app.actionCard.deny", { defaultValue: "Deny" })}
     </Button>
   );
   const editButton = (
@@ -236,7 +237,7 @@ export function ActionCard({
           </Avatar>
           <div className="min-w-0 flex-1">
             <p className="text-sm text-foreground">
-              <span className="font-medium">{agentName}</span> requested approval to call
+              <span className="font-medium">{agentName}</span> {t("app.actionCard.requestedApprovalToCall", { defaultValue: "requested approval to call" })}
             </p>
             <p className="mt-0.5 font-mono text-xs text-muted-foreground break-all">{toolName}</p>
           </div>
@@ -256,7 +257,7 @@ export function ActionCard({
         {isStale ? (
           <EnforcementBanner
             tone="warning"
-            title="Catalog changed since this request was signed."
+            title={t("app.actionCard.catalogChangedSinceThisRequestWasSigned", { defaultValue: "Catalog changed since this request was signed." })}
             body="The application's tool catalog hash no longer matches the one this approval was issued against. Approval is disabled — the agent must edit & re-sign to request again."
           />
         ) : null}
@@ -266,7 +267,7 @@ export function ActionCard({
 
         {/* JSON input */}
         <div className="space-y-1">
-          <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Input</p>
+          <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">{t("app.actionCard.input", { defaultValue: "Input" })}</p>
           <pre className="overflow-x-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground">
             {json}
           </pre>
@@ -280,7 +281,7 @@ export function ActionCard({
             {policyNumber != null ? (
               <>
                 {" "}
-                <span className="font-medium text-foreground">Policy #{policyNumber}</span> requires approval here.
+                <span className="font-medium text-foreground">{t("app.actionCard.policy", { defaultValue: "Policy #" })}{policyNumber}</span> {t("app.actionCard.requiresApprovalHere", { defaultValue: "requires approval here." })}
               </>
             ) : null}
           </p>

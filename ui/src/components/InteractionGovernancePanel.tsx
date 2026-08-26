@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { resolverPolicyLabel } from "../lib/interaction-audience";
+import { t } from "@/i18n";
 
 const INTERACTION_KIND_LABELS: Record<IssueThreadInteractionKind, string> = {
   suggest_tasks: "Suggested tasks",
@@ -237,20 +238,18 @@ export function InteractionGovernancePanel({
 }) {
   return (
     <div className="space-y-4" data-testid="company-settings-interaction-governance-section">
-      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-        Interaction governance
-      </div>
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide"> { t("app.interactionGovernancePanel.interactionGovernance", { defaultValue: "Interaction governance" }) } </div>
       <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Thread interactions are open by default:{" "}
-          <span className="font-medium text-foreground">Anyone</span> in the company — the
+          <span className="font-medium text-foreground">{ t("app.interactionGovernancePanel.anyone", { defaultValue: "Anyone" }) }</span> in the company — the
           board or any agent, including the one that asked — can respond. Narrow a kind
           only when you need to.{" "}
-          <span className="font-medium text-foreground">Default policy</span> is the
+          <span className="font-medium text-foreground">{ t("app.interactionGovernancePanel.defaultPolicy", { defaultValue: "Default policy" }) }</span> is the
           audience new cards get when the requester does not ask for one;{" "}
-          <span className="font-medium text-foreground">Cap</span> narrows every request of
+          <span className="font-medium text-foreground">{ t("app.interactionGovernancePanel.cap", { defaultValue: "Cap" }) }</span> narrows every request of
           that kind and can never widen one. Tool-approval confirmations always stay{" "}
-          <span className="font-medium text-foreground">Human only</span>.
+          <span className="font-medium text-foreground">{ t("app.interactionGovernancePanel.humanOnly", { defaultValue: "Human only" }) }</span>.
         </p>
         {/*
          * Responsive: below `sm` the row collapses to a single column so the
@@ -260,15 +259,9 @@ export function InteractionGovernancePanel({
          * its own inline label. At `sm`+ it restores the aligned 3-col grid.
          */}
         <div className="grid grid-cols-1 gap-y-4 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-x-4 sm:gap-y-2.5">
-          <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
-            Kind
-          </div>
-          <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
-            Default policy
-          </div>
-          <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
-            Cap
-          </div>
+          <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block"> { t("app.interactionGovernancePanel.kind", { defaultValue: "Kind" }) } </div>
+          <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block"> { t("app.interactionGovernancePanel.defaultPolicy", { defaultValue: "Default policy" }) } </div>
+          <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block"> { t("app.interactionGovernancePanel.cap", { defaultValue: "Cap" }) } </div>
           {ISSUE_THREAD_INTERACTION_KINDS.map((kind) => {
             const entry = governance[kind] ?? {};
             const kindLabel = INTERACTION_KIND_LABELS[kind];
@@ -279,7 +272,7 @@ export function InteractionGovernancePanel({
                   field="defaultPolicy"
                   testId={`governance-${kind}-default`}
                   ariaLabel={`Default resolver audience for ${kindLabel}`}
-                  mobileLabel="Default policy"
+                  mobileLabel={t("app.interactionGovernancePanel.defaultPolicy", { defaultValue: "Default policy" })}
                   value={toGovernanceSelectValue(entry.defaultPolicy)}
                   disabled={isPending}
                   onChange={(v) => onChange(kind, "defaultPolicy", v)}
@@ -288,7 +281,7 @@ export function InteractionGovernancePanel({
                   field="cap"
                   testId={`governance-${kind}-cap`}
                   ariaLabel={`Resolver cap for ${kindLabel}`}
-                  mobileLabel="Cap"
+                  mobileLabel={t("app.interactionGovernancePanel.cap", { defaultValue: "Cap" })}
                   value={toGovernanceSelectValue(entry.cap)}
                   disabled={isPending}
                   onChange={(v) => onChange(kind, "cap", v)}

@@ -25,32 +25,33 @@ import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { useToastActions } from "@/context/ToastContext";
+import { t } from "@/i18n";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
 
 /** Action-domain prefixes offered in the filter (server does a prefix match). */
 const ACTION_DOMAINS: { value: string; label: string }[] = [
-  { value: ALL, label: "All actions" },
-  { value: "issue.", label: "Tasks" },
-  { value: "agent.", label: "Agents" },
-  { value: "heartbeat.", label: "Runs" },
-  { value: "approval.", label: "Approvals" },
-  { value: "project.", label: "Projects" },
-  { value: "goal.", label: "Goals" },
-  { value: "tool_gateway.", label: "Tools" },
-  { value: "cost.", label: "Costs" },
-  { value: "company.", label: "Company" },
+  { value: ALL, label: t("app.auditFeed.allActions", { defaultValue: "All actions" }) },
+  { value: "issue.", label: t("app.auditFeed.tasks", { defaultValue: "Tasks" }) },
+  { value: "agent.", label: t("app.auditFeed.agents", { defaultValue: "Agents" }) },
+  { value: "heartbeat.", label: t("app.auditFeed.runs", { defaultValue: "Runs" }) },
+  { value: "approval.", label: t("app.auditFeed.approvals", { defaultValue: "Approvals" }) },
+  { value: "project.", label: t("app.auditFeed.projects", { defaultValue: "Projects" }) },
+  { value: "goal.", label: t("app.auditFeed.goals", { defaultValue: "Goals" }) },
+  { value: "tool_gateway.", label: t("app.auditFeed.tools", { defaultValue: "Tools" }) },
+  { value: "cost.", label: t("app.auditFeed.costs", { defaultValue: "Costs" }) },
+  { value: "company.", label: t("app.auditFeed.company", { defaultValue: "Company" }) },
 ];
 
 /** Entity types offered in the filter (server does an exact match). */
 const ENTITY_TYPES: { value: string; label: string }[] = [
-  { value: ALL, label: "All entities" },
-  { value: "issue", label: "Task" },
-  { value: "agent", label: "Agent" },
-  { value: "project", label: "Project" },
-  { value: "goal", label: "Goal" },
-  { value: "company", label: "Company" },
+  { value: ALL, label: t("app.auditFeed.allEntities", { defaultValue: "All entities" }) },
+  { value: "issue", label: t("app.auditFeed.task", { defaultValue: "Task" }) },
+  { value: "agent", label: t("app.auditFeed.agent", { defaultValue: "Agent" }) },
+  { value: "project", label: t("app.auditFeed.project", { defaultValue: "Project" }) },
+  { value: "goal", label: t("app.auditFeed.goal", { defaultValue: "Goal" }) },
+  { value: "company", label: t("app.auditFeed.company", { defaultValue: "Company" }) },
 ];
 
 /**
@@ -122,7 +123,7 @@ function AuditActor({
     const profile = userProfileMap.get(record.actorId);
     return (
       <Identity
-        name={profile?.label ?? "User"}
+        name={profile?.label ?? t("app.auditFeed.user", { defaultValue: "User" })}
         avatarUrl={profile?.image ?? null}
         size="sm"
         className="font-medium text-foreground"
@@ -133,12 +134,12 @@ function AuditActor({
   // deleted or authorization-filtered agents that are absent from the directory.
   const label =
     record.actorType === "plugin"
-      ? "Plugin"
+      ? t("app.auditFeed.plugin", { defaultValue: "Plugin" })
       : record.actorType === "agent"
-        ? "Agent"
+        ? t("app.auditFeed.agent", { defaultValue: "Agent" })
         : record.actorType === "user"
-          ? "User"
-          : "System";
+          ? t("app.auditFeed.user", { defaultValue: "User" })
+          : t("app.auditFeed.system", { defaultValue: "System" });
   return <Identity name={label} size="sm" className="font-medium text-foreground" />;
 }
 
@@ -156,7 +157,7 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
   if (issueRef) {
     return (
       <Link to={`/issues/${issueRef}`} className="font-medium text-primary hover:underline">
-        {issue?.identifier ? `${issue.identifier}${issue.title ? ` · ${issue.title}` : ""}` : "the task"}
+        {issue?.identifier ? `${issue.identifier}${issue.title ? ` · ${issue.title}` : ""}` : t("app.auditFeed.theTask", { defaultValue: "the task" })}
       </Link>
     );
   }
@@ -183,7 +184,7 @@ function AuditRow({
     record.responsibleUserId
       && !(record.actorType === "user" && record.actorId === record.responsibleUserId),
   );
-  const responsibleLabel = responsible?.label ?? (record.responsibleUserId ? "a user" : null);
+  const responsibleLabel = responsible?.label ?? (record.responsibleUserId ? t("app.auditFeed.aUser", { defaultValue: "a user" }) : null);
   const excerpt = record.entity.comment?.excerpt?.trim();
   // Show the document key only when it isn't already the linked entity node.
   const documentKey = record.entity.issue && record.entity.document ? record.entity.document.key : null;
@@ -204,13 +205,13 @@ function AuditRow({
           ) : null}
           {documentKey ? (
             <p className="text-xs text-muted-foreground">
-              Document <span className="font-mono text-(length:--text-micro)">{documentKey}</span>
+              {t("app.auditFeed.document", { defaultValue: "Document " })}<span className="font-mono text-(length:--text-micro)">{documentKey}</span>
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             {showOnBehalf && responsibleLabel ? (
               <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
-                on behalf of {responsibleLabel}
+                {t("app.auditFeed.onBehalfOf", { defaultValue: "on behalf of " })}{responsibleLabel}
               </span>
             ) : null}
             {record.runId && record.agentId ? (
@@ -218,8 +219,7 @@ function AuditRow({
                 to={`/agents/${record.agentId}/runs/${record.runId}`}
                 className="text-primary hover:underline"
               >
-                View run
-              </Link>
+                {t("app.auditFeed.viewRun", { defaultValue: "View run" })}</Link>
             ) : null}
             <span className="font-mono text-(length:--text-micro) opacity-70">{record.action}</span>
           </div>
@@ -243,14 +243,11 @@ function AuditUpsell() {
       <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
         <ShieldAlert className="h-10 w-10 text-muted-foreground/50" />
         <div>
-          <p className="text-sm font-medium text-foreground">Agent audit is a Paperclip Enterprise view</p>
+          <p className="text-sm font-medium text-foreground">{t("app.auditFeed.agentAuditIsAPaperclipEnterpriseView", { defaultValue: "Agent audit is a Paperclip Enterprise view" })}</p>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            The agent audit log gives you a searchable, exportable record of everything your agents
-            did — every comment, task change, approval, and run — with the responsible person for
-            each action. Ask an administrator to grant you the{" "}
+            {t("app.auditFeed.theAgentAuditLogGivesYouASearchableExportableRecordOfEverythingYourAgentsDidEveryCommentTaskChangeApprovalAndRunWithTheResponsiblePersonForEachActionAskAnAdministratorToGrantYouThe", { defaultValue: "The agent audit log gives you a searchable, exportable record of everything your agents did — every comment, task change, approval, and run — with the responsible person for each action. Ask an administrator to grant you the" })}{" "}
             <span className="font-mono text-(length:--text-micro)">audit:view_agent_actions</span>{" "}
-            permission to view it.
-          </p>
+            {t("app.auditFeed.permissionToViewIt", { defaultValue: "permission to view it." })}</p>
         </div>
       </CardContent>
     </Card>
@@ -444,11 +441,11 @@ export function AuditFeed({
       // Browsers may read blob URLs lazily after click(), so keep the URL alive
       // long enough for the download to start.
       window.setTimeout(() => URL.revokeObjectURL(url), 5_000);
-      pushToast({ title: "Audit exported", body: "Your CSV download has started.", tone: "success" });
+      pushToast({ title: t("app.auditFeed.auditExported", { defaultValue: "Audit exported" }), body: "Your CSV download has started.", tone: "success" });
     } catch (error) {
       pushToast({
-        title: "Export failed",
-        body: error instanceof Error ? error.message : "Could not export the audit log.",
+        title: t("app.auditFeed.exportFailed", { defaultValue: "Export failed" }),
+        body: error instanceof Error ? error.message : t("app.auditFeed.couldNotExportTheAuditLog", { defaultValue: "Could not export the audit log." }),
         tone: "error",
       });
     } finally {
@@ -465,11 +462,11 @@ export function AuditFeed({
       {!hideHeader ? (
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Activity</h1>
+            <h1 className="text-lg font-semibold text-foreground">{t("app.auditFeed.activity", { defaultValue: "Activity" })}</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
               {resolvedMode === "agents"
-                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
-                : "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action."}
+                ? t("app.auditFeed.everyRecordedAgentActionNewestFirstWithTheResponsiblePersonAndRunBehindEachOne", { defaultValue: "Every recorded agent action, newest first — with the responsible person and run behind each one." })
+                : t("app.auditFeed.everythingHappeningInYourCompanyNewestFirstPeopleAgentsAndTheSystemEachLineIsOneRecordedAction", { defaultValue: "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action." })}
             </p>
           </div>
         </div>
@@ -477,9 +474,9 @@ export function AuditFeed({
 
       {showModeToggle ? (
         <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList aria-label="Activity scope">
-            <TabsTrigger value="all">All activity</TabsTrigger>
-            <TabsTrigger value="agents">Agent actions</TabsTrigger>
+          <TabsList aria-label={t("app.auditFeed.activityScope", { defaultValue: "Activity scope" })}>
+            <TabsTrigger value="all">{t("app.auditFeed.allActivity", { defaultValue: "All activity" })}</TabsTrigger>
+            <TabsTrigger value="agents">{t("app.auditFeed.agentActions", { defaultValue: "Agent actions" })}</TabsTrigger>
           </TabsList>
         </Tabs>
       ) : null}
@@ -489,10 +486,10 @@ export function AuditFeed({
           {!lockedAgentId ? (
             <Select value={agent} onValueChange={setAgent}>
               <SelectTrigger className="w-40">
-                <SelectValue placeholder="Agent" />
+                <SelectValue placeholder={t("app.auditFeed.agent", { defaultValue: "Agent" })} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>All agents</SelectItem>
+                <SelectItem value={ALL}>{t("app.auditFeed.allAgents", { defaultValue: "All agents" })}</SelectItem>
                 {(agents.data ?? []).map((a) => (
                   <SelectItem key={a.id} value={a.id}>
                     {a.name}
@@ -504,10 +501,10 @@ export function AuditFeed({
           <Select value={responsibleUser} onValueChange={setResponsibleUser}>
             {/* Wide enough for "All responsible users" — w-44 truncated it. */}
             <SelectTrigger className="w-52">
-              <SelectValue placeholder="Responsible user" />
+              <SelectValue placeholder={t("app.auditFeed.responsibleUser", { defaultValue: "Responsible user" })} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL}>All responsible users</SelectItem>
+              <SelectItem value={ALL}>{t("app.auditFeed.allResponsibleUsers", { defaultValue: "All responsible users" })}</SelectItem>
               {(userDirectory.data?.users ?? []).map((u) => (
                 <SelectItem key={u.principalId} value={u.principalId}>
                   {u.user?.name ?? u.user?.email ?? u.principalId.slice(0, 8)}
@@ -517,7 +514,7 @@ export function AuditFeed({
           </Select>
           <Select value={actionDomain} onValueChange={setActionDomain}>
             <SelectTrigger className="w-36">
-              <SelectValue placeholder="Action" />
+              <SelectValue placeholder={t("app.auditFeed.action", { defaultValue: "Action" })} />
             </SelectTrigger>
             <SelectContent>
               {ACTION_DOMAINS.map((d) => (
@@ -529,7 +526,7 @@ export function AuditFeed({
           </Select>
           <Select value={entityType} onValueChange={setEntityType}>
             <SelectTrigger className="w-36">
-              <SelectValue placeholder="Entity" />
+              <SelectValue placeholder={t("app.auditFeed.entity", { defaultValue: "Entity" })} />
             </SelectTrigger>
             <SelectContent>
               {ENTITY_TYPES.map((e) => (
@@ -541,7 +538,7 @@ export function AuditFeed({
           </Select>
           <Input
             type="date"
-            aria-label="From date"
+            aria-label={t("app.auditFeed.fromDate", { defaultValue: "From date" })}
             value={dateFrom}
             max={dateTo || undefined}
             onChange={(e) => setDateFrom(e.target.value)}
@@ -549,7 +546,7 @@ export function AuditFeed({
           />
           <Input
             type="date"
-            aria-label="To date"
+            aria-label={t("app.auditFeed.toDate", { defaultValue: "To date" })}
             value={dateTo}
             min={dateFrom || undefined}
             onChange={(e) => setDateTo(e.target.value)}
@@ -557,8 +554,7 @@ export function AuditFeed({
           />
           {hasActiveFilters ? (
             <Button variant="ghost" size="sm" onClick={clearFilters}>
-              Clear filters
-            </Button>
+              {t("app.auditFeed.clearFilters", { defaultValue: "Clear filters" })}</Button>
           ) : null}
           <Button
             variant="outline"
@@ -568,7 +564,7 @@ export function AuditFeed({
             disabled={exporting || feed.isLoading || items.length === 0}
           >
             <Download className="mr-1.5 h-4 w-4" />
-            {exporting ? "Exporting…" : "Export CSV"}
+            {exporting ? "Exporting…" : t("app.auditFeed.exportCsv", { defaultValue: "Export CSV" })}
           </Button>
         </div>
       ) : null}
@@ -576,22 +572,20 @@ export function AuditFeed({
       {recoveringFromAccessDowngrade || fallingBackToAllActivity ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">
-            Refreshing audit access…
-          </CardContent>
+            {t("app.auditFeed.refreshingAuditAccess", { defaultValue: "Refreshing audit access…" })}</CardContent>
         </Card>
       ) : feed.isLoading ? (
         <Card>
-          <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
+          <CardContent className="py-14 text-center text-sm text-muted-foreground">{t("app.auditFeed.loading", { defaultValue: "Loading…" })}</CardContent>
         </Card>
       ) : feed.error ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
             <p className="text-sm text-muted-foreground">
-              {feed.error instanceof Error ? feed.error.message : "Failed to load the audit log."}
+              {feed.error instanceof Error ? feed.error.message : t("app.auditFeed.failedToLoadTheAuditLog", { defaultValue: "Failed to load the audit log." })}
             </p>
             <Button variant="outline" size="sm" onClick={() => feed.refetch()}>
-              Try again
-            </Button>
+              {t("app.auditFeed.tryAgain", { defaultValue: "Try again" })}</Button>
           </CardContent>
         </Card>
       ) : items.length === 0 ? (
@@ -600,20 +594,19 @@ export function AuditFeed({
             <ScrollText className="h-10 w-10 text-muted-foreground/40" />
             <div>
               <p className="text-sm font-medium text-foreground">
-                {hasActiveFilters ? "No actions match these filters" : "Nothing here yet"}
+                {hasActiveFilters ? t("app.auditFeed.noActionsMatchTheseFilters", { defaultValue: "No actions match these filters" }) : t("app.auditFeed.nothingHereYet", { defaultValue: "Nothing here yet" })}
               </p>
               <p className="mt-1 max-w-md text-sm text-muted-foreground">
                 {hasActiveFilters
-                  ? "Try a wider date range or different filters."
+                  ? t("app.auditFeed.tryAWiderDateRangeOrDifferentFilters", { defaultValue: "Try a wider date range or different filters." })
                   : resolvedMode === "agents"
-                    ? "As soon as your agents start doing things, their actions show up here."
-                    : "As soon as anyone in your company does something, it shows up here."}
+                    ? t("app.auditFeed.asSoonAsYourAgentsStartDoingThingsTheirActionsShowUpHere", { defaultValue: "As soon as your agents start doing things, their actions show up here." })
+                    : t("app.auditFeed.asSoonAsAnyoneInYourCompanyDoesSomethingItShowsUpHere", { defaultValue: "As soon as anyone in your company does something, it shows up here." })}
               </p>
             </div>
             {hasActiveFilters ? (
               <Button variant="outline" size="sm" onClick={clearFilters}>
-                Clear filters
-              </Button>
+                {t("app.auditFeed.clearFilters", { defaultValue: "Clear filters" })}</Button>
             ) : null}
           </CardContent>
         </Card>
@@ -642,14 +635,13 @@ export function AuditFeed({
             onClick={() => feed.fetchNextPage()}
             disabled={feed.isFetchingNextPage}
           >
-            {feed.isFetchingNextPage ? "Loading…" : "Load more"}
+            {feed.isFetchingNextPage ? t("app.auditFeed.loading", { defaultValue: "Loading…" }) : t("app.auditFeed.loadMore", { defaultValue: "Load more" })}
           </Button>
         </div>
       ) : null}
 
       <p className="text-xs text-muted-foreground">
-        Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.
-      </p>
+        {t("app.auditFeed.recordedByPaperclipEntriesCanTBeEditedSensitiveValuesAreNeverStored", { defaultValue: "Recorded by Paperclip — entries can't be edited. Sensitive values are never stored." })}</p>
     </div>
   );
 }

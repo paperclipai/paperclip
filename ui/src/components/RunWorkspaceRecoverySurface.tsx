@@ -16,6 +16,7 @@ import {
   canBoardManageRuntime,
   readRecoveryReconcileWorkspaceId,
 } from "../lib/recovery-reconcile";
+import { t } from "@/i18n";
 
 /** The run errorCode Paperclip stamps when it declines a run over a git workspace it can't validate. */
 export const WORKSPACE_VALIDATION_RUN_ERROR_CODE = "workspace_validation_failed";
@@ -117,7 +118,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     onError: (err) => {
       pushToast({
         title: "Reconcile failed",
-        body: err instanceof Error ? err.message : "Unable to reconcile the workspace branch.",
+        body: err instanceof Error ? err.message : t("app.runWorkspaceRecoverySurface.unableToReconcileTheWorkspaceBranch", { defaultValue: "Unable to reconcile the workspace branch." }),
         tone: "error",
       });
     },
@@ -161,7 +162,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
         title: "Isolated re-issue created",
         body: created.identifier
           ? `${created.identifier} will run on a fresh isolated workspace.`
-          : "A fresh isolated re-issue was created.",
+          : t("app.runWorkspaceRecoverySurface.aFreshIsolatedReIssueWasCreated", { defaultValue: "A fresh isolated re-issue was created." }),
         tone: "success",
       });
       if (created.identifier) {
@@ -171,7 +172,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     onError: (err) => {
       pushToast({
         title: "Re-issue failed",
-        body: err instanceof Error ? err.message : "Unable to create an isolated re-issue.",
+        body: err instanceof Error ? err.message : t("app.runWorkspaceRecoverySurface.unableToCreateAnIsolatedReIssue", { defaultValue: "Unable to create an isolated re-issue." }),
         tone: "error",
       });
     },
@@ -195,7 +196,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     onError: (err) => {
       pushToast({
         title: "Recovery resolution failed",
-        body: err instanceof Error ? err.message : "Unable to resolve recovery action",
+        body: err instanceof Error ? err.message : t("app.runWorkspaceRecoverySurface.unableToResolveRecoveryAction", { defaultValue: "Unable to resolve recovery action" }),
         tone: "error",
       });
     },
@@ -255,7 +256,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
   return (
     <div className="space-y-2" data-testid="run-workspace-recovery-surface">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">Workspace recovery</span>
+        <span className="text-xs font-medium text-muted-foreground">{t("app.runWorkspaceRecoverySurface.workspaceRecovery", { defaultValue: "Workspace recovery" })}</span>
         {issue?.identifier ? (
           <a
             href={`/issues/${issue.identifier}`}

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -17,7 +18,7 @@ export function HttpConfigFields({
   mark,
 }: AdapterConfigFieldsProps) {
   return (
-    <Field label="Webhook URL" hint={help.webhookUrl}>
+    <Field label={t("app.configFields.webhookUrl", { defaultValue: "Webhook URL" })} hint={help.webhookUrl}>
       <DraftInput
         value={
           isCreate

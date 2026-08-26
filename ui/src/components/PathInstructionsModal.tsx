@@ -8,6 +8,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 type Platform = "mac" | "windows" | "linux";
 
@@ -69,7 +70,7 @@ export function PathInstructionsModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">{t("app.pathInstructionsModal.howToGetAFullPath", { defaultValue: "How to get a full path" })}</DialogTitle>
           <DialogDescription>
             Paste the absolute path (e.g.{" "}
             <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
@@ -135,7 +136,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("app.pathInstructionsModal.choose", { defaultValue: "Choose" })}
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>

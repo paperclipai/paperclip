@@ -44,6 +44,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
+import { t } from "@/i18n";
 
 interface SidebarCompanyMenuProps {
   open?: boolean;
@@ -368,7 +369,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               )}
               title={currentName ?? undefined}
             >
-              {currentName ?? (isCloud ? "Select organization" : "Select company")}
+              {currentName ?? (isCloud ? t("app.sidebarCompanyMenu.selectOrganization", { defaultValue: "Select organization" }) : t("app.sidebarCompanyMenu.selectCompany", { defaultValue: "Select company" }))}
             </span>
           </span>
           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
@@ -377,7 +378,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <DropdownMenuLabel className="p-0 text-(length:--text-micro) font-semibold uppercase text-muted-foreground">
-            {isCloud ? "Switch organization" : "Switch company"}
+            {isCloud ? t("app.sidebarCompanyMenu.switchOrganization", { defaultValue: "Switch organization" }) : t("app.sidebarCompanyMenu.switchCompany", { defaultValue: "Switch company" })}
           </DropdownMenuLabel>
           {/* Stack order is owned by cloud's own portfolio in v1, so the
               drag-to-reorder affordance stays self-hosted-only. */}
@@ -391,7 +392,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               }}
               className="rounded px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              {isEditingOrder ? "Done" : "Edit"}
+              {isEditingOrder ? t("app.sidebarCompanyMenu.done", { defaultValue: "Done" }) : t("common.edit", { defaultValue: "Edit" })}
             </button>
           )}
         </div>
@@ -409,10 +410,10 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               {stacks.length === 0 ? (
                 <DropdownMenuItem disabled>
                   {stacksQuery.isLoading
-                    ? "Loading organizations..."
+                    ? t("app.sidebarCompanyMenu.loadingOrganizations", { defaultValue: "Loading organizations..." })
                     : stacksQuery.isError
-                      ? "Could not load organizations"
-                      : "No organizations"}
+                      ? t("app.sidebarCompanyMenu.couldNotLoadOrganizations", { defaultValue: "Could not load organizations" })
+                      : t("app.sidebarCompanyMenu.noOrganizations", { defaultValue: "No organizations" })}
                 </DropdownMenuItem>
               ) : null}
             </>
@@ -454,11 +455,11 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                       }}
                     >
                       <RefreshCw className="h-4 w-4 mr-2" />
-                      Try again
+                      {t("app.sidebarCompanyMenu.tryAgain", { defaultValue: "Try again" })}
                     </DropdownMenuItem>
                   </>
                 ) : (
-                  <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+                  <DropdownMenuItem disabled>{t("app.sidebarCompanyMenu.noCompanies", { defaultValue: "No companies" })}</DropdownMenuItem>
                 )
               ) : null}
             </>
@@ -475,7 +476,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder}
             >
               <Plus className="size-4" />
-              <span>Create new organization...</span>
+              <span>{t("app.sidebarCompanyMenu.createNewOrganization", { defaultValue: "Create new organization..." })}</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
@@ -493,7 +494,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           >
             <UserPlus className="size-4" />
             <span className="truncate">
-              {currentName ? `Invite people to ${currentName}` : "Invite people"}
+              {currentName ? `Invite people to ${currentName}` : t("app.sidebarCompanyMenu.invitePeople", { defaultValue: "Invite people" })}
             </span>
           </Link>
         </DropdownMenuItem>
@@ -506,7 +507,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder || signOutMutation.isPending}
             >
               <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span>{signOutMutation.isPending ? t("app.sidebarCompanyMenu.signingOut", { defaultValue: "Signing out..." }) : t("app.sidebarCompanyMenu.signOut", { defaultValue: "Sign out" })}</span>
             </DropdownMenuItem>
           </>
         ) : null}

@@ -7,6 +7,7 @@ import {
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { t } from "@/i18n";
 
 export interface AttentionCustomRange {
   from: string | null;
@@ -42,15 +43,13 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
               <CalendarRange className="h-3.5 w-3.5" />
               {value === "custom" && (custom.from || custom.to)
                 ? `${custom.from ?? "…"} → ${custom.to ?? "…"}`
-                : "Custom"}
+                : t("app.decisionDateChips.custom", { defaultValue: "Custom" })}
             </button>
           </ChipButton>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-auto space-y-2 p-3">
           <div className="flex flex-col gap-1.5">
-            <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-              From
-            </label>
+            <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground"> { t("app.decisionDateChips.from", { defaultValue: "From" }) } </label>
             <input
               type="date"
               value={custom.from ?? ""}
@@ -60,9 +59,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-              To
-            </label>
+            <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground"> { t("app.decisionDateChips.to", { defaultValue: "To" }) } </label>
             <input
               type="date"
               value={custom.to ?? ""}
@@ -80,9 +77,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
                 onChange("all", { from: null, to: null });
                 setOpen(false);
               }}
-            >
-              Clear
-            </Button>
+            > { t("app.decisionDateChips.clear", { defaultValue: "Clear" }) } </Button>
           </div>
         </PopoverContent>
       </Popover>

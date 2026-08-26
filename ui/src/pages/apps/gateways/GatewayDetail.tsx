@@ -23,6 +23,7 @@ import { AppsToolsPanel } from "./panels/AppsToolsPanel";
 import { TokensPanel } from "./panels/TokensPanel";
 import { GatewayActivityPanel } from "./panels/GatewayActivityPanel";
 import { GatewayAdvancedPanel } from "./panels/GatewayAdvancedPanel";
+import { t } from "@/i18n";
 
 export function GatewayDetail() {
   const { gatewayId = "", tab } = useParams<{ gatewayId: string; tab?: string }>();
@@ -96,9 +97,9 @@ export function GatewayDetail() {
   useEffect(() => {
     if (!gateway) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
-      { label: "Gateways", href: "/apps/gateways" },
+      { label: selectedCompany?.name ?? t("app.gatewayDetail.company", { defaultValue: "Company" }), href: "/dashboard" },
+      { label: t("app.gatewayDetail.apps", { defaultValue: "Apps" }), href: "/apps" },
+      { label: t("app.gatewayDetail.gateways", { defaultValue: "Gateways" }), href: "/apps/gateways" },
       { label: gateway.name },
     ]);
     return () => setBreadcrumbs([]);
@@ -111,7 +112,7 @@ export function GatewayDetail() {
       }),
     onSuccess: async (updated) => {
       pushToast({
-        title: updated.status === "active" ? "Gateway on" : "Gateway off",
+        title: updated.status === "active" ? t("app.gatewayDetail.gatewayOn", { defaultValue: "Gateway on" }) : t("app.gatewayDetail.gatewayOff", { defaultValue: "Gateway off" }),
         body:
           updated.status === "active"
             ? `${updated.name} is exposing its tools again.`
@@ -122,14 +123,14 @@ export function GatewayDetail() {
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't update the gateway",
+        title: t("app.gatewayDetail.couldnTUpdateTheGateway", { defaultValue: "Couldn't update the gateway" }),
         body: error instanceof Error ? error.message : String(error),
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("app.gatewayDetail.selectACompanyToManageGateways", { defaultValue: "Select a company to manage gateways." })}</div>;
   }
   if (!activeTab) {
     return <Navigate replace to={gatewayTabHref(gatewayId, "overview")} />;
@@ -149,10 +150,9 @@ export function GatewayDetail() {
   if (!gateway) {
     return (
       <div className="max-w-3xl p-6">
-        <p className="text-sm text-muted-foreground">We couldn’t find that gateway.</p>
+        <p className="text-sm text-muted-foreground">{t("app.gatewayDetail.weCouldnTFindThatGateway", { defaultValue: "We couldn’t find that gateway." })}</p>
         <Button className="mt-4" variant="outline" onClick={() => navigate("/apps/gateways")}>
-          Back to gateways
-        </Button>
+          {t("app.gatewayDetail.backToGateways", { defaultValue: "Back to gateways" })}</Button>
       </div>
     );
   }
@@ -171,19 +171,17 @@ export function GatewayDetail() {
         <div className="min-w-0">
           <div className="text-xs text-muted-foreground">
             <Link to="/apps/gateways" className="hover:underline">
-              Apps · Gateways
-            </Link>
+              {t("app.gatewayDetail.appsGateways", { defaultValue: "Apps · Gateways" })}</Link>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">{gateway.name}</h1>
           <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{endpointHost}</p>
         </div>
         <Button onClick={() => setSnippetOpen(true)}>
           <Send className="mr-1.5 h-4 w-4" />
-          Show snippet
-        </Button>
+          {t("app.gatewayDetail.showSnippet", { defaultValue: "Show snippet" })}</Button>
       </div>
 
-      <nav className="flex items-center gap-6 overflow-x-auto border-b border-border text-sm" aria-label="Gateway tabs">
+      <nav className="flex items-center gap-6 overflow-x-auto border-b border-border text-sm" aria-label={t("app.gatewayDetail.gatewayTabs", { defaultValue: "Gateway tabs" })}>
         {GATEWAY_TABS.map((item) => {
           const isActive = item.key === activeTab;
           return (

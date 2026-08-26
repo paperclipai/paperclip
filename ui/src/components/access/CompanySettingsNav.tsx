@@ -4,21 +4,22 @@ import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
+import { t } from "@/i18n";
 
 const items = [
-  { value: "general", label: "General", href: "/company/settings" },
-  { value: "export", label: "Export", href: "/company/export" },
-  { value: "import", label: "Import", href: "/company/import" },
-  { value: "members", label: "Members", href: "/company/settings/members" },
-  { value: "invites", label: "Invites", href: "/company/settings/invites" },
-  { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
-  { value: "instance-profile", label: "Profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
-  { value: "instance-environments", label: "Environments", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
-  { value: "instance-access", label: "Access", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
-  { value: "instance-heartbeats", label: "Heartbeats", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats` },
-  { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
-  { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
-  { value: "instance-adapters", label: "Adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
+  { value: "general", label: t("app.companySettings.general", { defaultValue: "General" }), href: "/company/settings" },
+  { value: "export", label: t("app.companySettings.export", { defaultValue: "Export" }), href: "/company/export" },
+  { value: "import", label: t("app.companySettings.import", { defaultValue: "Import" }), href: "/company/import" },
+  { value: "members", label: t("app.companySettings.members", { defaultValue: "Members" }), href: "/company/settings/members" },
+  { value: "invites", label: t("app.companySettings.invites", { defaultValue: "Invites" }), href: "/company/settings/invites" },
+  { value: "secrets", label: t("app.pages.secrets", { defaultValue: "Secrets" }), href: "/company/settings/secrets" },
+  { value: "instance-profile", label: t("app.companySettings.profile", { defaultValue: "Profile" }), href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
+  { value: "instance-environments", label: t("app.companySettings.environments", { defaultValue: "Environments" }), href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
+  { value: "instance-access", label: t("app.companySettings.access", { defaultValue: "Access" }), href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
+  { value: "instance-heartbeats", label: t("app.companySettings.heartbeats", { defaultValue: "Heartbeats" }), href: `${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats` },
+  { value: "instance-experimental", label: t("app.companySettings.experimental", { defaultValue: "Experimental" }), href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
+  { value: "instance-plugins", label: t("app.companySettings.plugins", { defaultValue: "Plugins" }), href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
+  { value: "instance-adapters", label: t("app.companySettings.adapters", { defaultValue: "Adapters" }), href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];

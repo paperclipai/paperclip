@@ -6,6 +6,7 @@ import type {
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { IssueChatFeedbackButtons } from "@/components/AgentBubbleActionRow";
 import { Check, Copy } from "lucide-react";
+import { t } from "@/i18n";
 
 /** Feedback-vote wiring for an agent bubble, resolved per comment by the host. */
 export interface TaskChatBubbleFeedback {
@@ -40,8 +41,8 @@ export function TaskChatBubbleActions({
       <button
         type="button"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        title="Copy message"
-        aria-label="Copy message"
+        title={t("app.taskChatBubbleActions.copyMessage", { defaultValue: "Copy message" })}
+        aria-label={t("app.taskChatBubbleActions.copyMessage", { defaultValue: "Copy message" })}
         onClick={() => {
           void copyTextToClipboard(copyText)
             .then(() => {

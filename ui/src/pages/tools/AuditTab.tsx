@@ -24,34 +24,35 @@ import {
 import { agentsApi } from "@/api/agents";
 import { ToolsPageHeader, LoadingState, ErrorState, RelativeTime } from "./shared";
 import { advancedTabHref } from "./tool-tabs";
+import { t } from "@/i18n";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
 
 /** Outcome chip vocabulary (spec §4C / §5): Allowed · Blocked · Asked first · Failed · Waiting. */
 const OUTCOME_META: Record<ToolAuditOutcome, { label: string; status: string }> = {
-  allowed: { label: "Allowed", status: "allowed" },
-  blocked: { label: "Blocked", status: "denied" },
-  asked_first: { label: "Asked first", status: "require-approval" },
-  waiting: { label: "Waiting", status: "deferred" },
-  failed: { label: "Failed", status: "failed" },
-  unknown: { label: "Recorded", status: "unchecked" },
+  allowed: { label: t("app.auditTab.allowed", { defaultValue: "Allowed" }), status: "allowed" },
+  blocked: { label: t("app.auditTab.blocked", { defaultValue: "Blocked" }), status: "denied" },
+  asked_first: { label: t("app.auditTab.askedFirst", { defaultValue: "Asked first" }), status: "require-approval" },
+  waiting: { label: t("app.auditTab.waiting", { defaultValue: "Waiting" }), status: "deferred" },
+  failed: { label: t("app.auditTab.failed", { defaultValue: "Failed" }), status: "failed" },
+  unknown: { label: t("app.auditTab.recorded", { defaultValue: "Recorded" }), status: "unchecked" },
 };
 
 const OUTCOME_FILTERS: { value: string; label: string }[] = [
-  { value: ALL, label: "All outcomes" },
-  { value: "allowed", label: "Allowed" },
-  { value: "blocked", label: "Blocked" },
-  { value: "asked_first", label: "Asked first" },
-  { value: "waiting", label: "Waiting" },
-  { value: "failed", label: "Failed" },
+  { value: ALL, label: t("app.auditTab.allOutcomes", { defaultValue: "All outcomes" }) },
+  { value: "allowed", label: t("app.auditTab.allowed", { defaultValue: "Allowed" }) },
+  { value: "blocked", label: t("app.auditTab.blocked", { defaultValue: "Blocked" }) },
+  { value: "asked_first", label: t("app.auditTab.askedFirst", { defaultValue: "Asked first" }) },
+  { value: "waiting", label: t("app.auditTab.waiting", { defaultValue: "Waiting" }) },
+  { value: "failed", label: t("app.auditTab.failed", { defaultValue: "Failed" }) },
 ];
 
 const WINDOW_FILTERS: { value: ToolAuditWindow; label: string }[] = [
-  { value: "1h", label: "Last 1 hour" },
-  { value: "24h", label: "Last 24 hours" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
+  { value: "1h", label: t("app.auditTab.last1Hour", { defaultValue: "Last 1 hour" }) },
+  { value: "24h", label: t("app.auditTab.last24Hours", { defaultValue: "Last 24 hours" }) },
+  { value: "7d", label: t("app.auditTab.last7Days", { defaultValue: "Last 7 days" }) },
+  { value: "30d", label: t("app.auditTab.last30Days", { defaultValue: "Last 30 days" }) },
 ];
 
 function detailString(details: Record<string, unknown> | null, key: string): string | undefined {
@@ -135,8 +136,8 @@ function ActivityRow({
   const [open, setOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
-  const who = event.agentDisplayName ?? "An agent";
-  const action = event.toolDisplayName ?? "an action";
+  const who = event.agentDisplayName ?? t("app.auditTab.anAgent", { defaultValue: "An agent" });
+  const action = event.toolDisplayName ?? t("app.auditTab.anAction", { defaultValue: "an action" });
   const app = event.appDisplayName ?? event.connectionDisplayName ?? event.applicationDisplayName ?? null;
   const rawTool = detailString(event.details, "tool") ?? detailString(event.details, "toolName");
 
@@ -182,17 +183,16 @@ function ActivityRow({
         <span className="min-w-0 flex-1">
           {isRuntimeMcpDeliveryDiagnostic ? (
             <span className="block text-foreground">
-              <span className="font-medium">{who}</span>'s run received 0 MCP servers —{" "}
+              <span className="font-medium">{who}</span>{t("app.auditTab.sRunReceived0McpServers", { defaultValue: "'s run received 0 MCP servers —" })}{" "}
               <span className="font-medium">{permittedNotInstalledCount ?? permittedNotInstalledConnections.length}</span>{" "}
-              permitted {(permittedNotInstalledCount ?? permittedNotInstalledConnections.length) === 1 ? "connection" : "connections"} not installed
-            </span>
+              {t("app.auditTab.permitted", { defaultValue: "permitted " })}{(permittedNotInstalledCount ?? permittedNotInstalledConnections.length) === 1 ? "connection" : "connections"} {t("app.auditTab.notInstalled", { defaultValue: "not installed" })}</span>
           ) : (
             <span className="block text-foreground">
-              <span className="font-medium">{who}</span> used <span className="font-medium">{action}</span>
+              <span className="font-medium">{who}</span> {t("app.auditTab.used", { defaultValue: "used " })}<span className="font-medium">{action}</span>
               {app ? (
                 <>
                   {" "}
-                  in <span className="font-medium">{app}</span>
+                  {t("app.auditTab.in", { defaultValue: "in " })}<span className="font-medium">{app}</span>
                 </>
               ) : null}
             </span>
@@ -201,7 +201,7 @@ function ActivityRow({
         <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
           <OutcomeChip outcome={event.normalizedOutcome} />
           <span className="text-xs text-muted-foreground">
-            · <RelativeTime value={event.createdAt} />
+            {t("app.auditTab.text", { defaultValue: "· " })}<RelativeTime value={event.createdAt} />
           </span>
         </span>
       </button>
@@ -223,13 +223,11 @@ function ActivityRow({
           <div className="flex flex-wrap gap-3 text-xs">
             {issueId ? (
               <Link to={`/issues/${issueId}`} className="text-primary hover:underline">
-                View task
-              </Link>
+                {t("app.auditTab.viewTask", { defaultValue: "View task" })}</Link>
             ) : null}
             {runId && agentId ? (
               <Link to={`/agents/${agentId}/runs/${runId}`} className="text-primary hover:underline">
-                View run
-              </Link>
+                {t("app.auditTab.viewRun", { defaultValue: "View run" })}</Link>
             ) : null}
           </div>
 
@@ -240,32 +238,31 @@ function ActivityRow({
               className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
             >
               {detailsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              Details
-            </button>
+              {t("app.auditTab.details", { defaultValue: "Details" })}</button>
             {detailsOpen ? (
               <div className="mt-2 space-y-1.5 text-xs">
-                {rawTool ? <DetailFact label="Action name" value={rawTool} mono /> : null}
-                <DetailFact label="Reason code" value={reasonCode} mono />
-                <DetailFact label="Actor type" value={event.actorType ?? "—"} />
-                {runId ? <DetailFact label="Run ID" value={runId} mono /> : null}
-                {transport ? <DetailFact label="Transport" value={transport} mono /> : null}
-                {requestMethod && endpoint ? <DetailFact label="HTTP request" value={`${requestMethod} ${endpoint}`} mono /> : null}
-                {mcpMethod ? <DetailFact label="MCP method" value={mcpMethod} mono /> : null}
-                {requestId ? <DetailFact label="Request ID" value={requestId} mono /> : null}
-                {request ? <DetailFact label="Dispatched" value={request.dispatched === true ? "Yes" : "No"} /> : null}
-                {httpStatus !== undefined ? <DetailFact label="HTTP status" value={String(httpStatus)} mono /> : null}
-                {contentType ? <DetailFact label="Content type" value={contentType} mono /> : null}
-                {responseBytes !== undefined ? <DetailFact label="Response size" value={`${responseBytes} bytes`} /> : null}
-                {upstreamRequestId ? <DetailFact label="Upstream ID" value={upstreamRequestId} mono /> : null}
+                {rawTool ? <DetailFact label={t("app.auditTab.actionName", { defaultValue: "Action name" })} value={rawTool} mono /> : null}
+                <DetailFact label={t("app.auditTab.reasonCode", { defaultValue: "Reason code" })} value={reasonCode} mono />
+                <DetailFact label={t("app.auditTab.actorType", { defaultValue: "Actor type" })} value={event.actorType ?? "—"} />
+                {runId ? <DetailFact label={t("app.auditTab.runId", { defaultValue: "Run ID" })} value={runId} mono /> : null}
+                {transport ? <DetailFact label={t("app.auditTab.transport", { defaultValue: "Transport" })} value={transport} mono /> : null}
+                {requestMethod && endpoint ? <DetailFact label={t("app.auditTab.httpRequest", { defaultValue: "HTTP request" })} value={`${requestMethod} ${endpoint}`} mono /> : null}
+                {mcpMethod ? <DetailFact label={t("app.auditTab.mcpMethod", { defaultValue: "MCP method" })} value={mcpMethod} mono /> : null}
+                {requestId ? <DetailFact label={t("app.auditTab.requestId", { defaultValue: "Request ID" })} value={requestId} mono /> : null}
+                {request ? <DetailFact label={t("app.auditTab.dispatched", { defaultValue: "Dispatched" })} value={request.dispatched === true ? t("app.auditTab.yes", { defaultValue: "Yes" }) : t("app.auditTab.no", { defaultValue: "No" })} /> : null}
+                {httpStatus !== undefined ? <DetailFact label={t("app.auditTab.httpStatus", { defaultValue: "HTTP status" })} value={String(httpStatus)} mono /> : null}
+                {contentType ? <DetailFact label={t("app.auditTab.contentType", { defaultValue: "Content type" })} value={contentType} mono /> : null}
+                {responseBytes !== undefined ? <DetailFact label={t("app.auditTab.responseSize", { defaultValue: "Response size" })} value={`${responseBytes} bytes`} /> : null}
+                {upstreamRequestId ? <DetailFact label={t("app.auditTab.upstreamId", { defaultValue: "Upstream ID" })} value={upstreamRequestId} mono /> : null}
                 {isRuntimeMcpDeliveryDiagnostic ? (
                   <>
-                    <DetailFact label="Delivered MCP servers" value="0" mono />
+                    <DetailFact label={t("app.auditTab.deliveredMcpServers", { defaultValue: "Delivered MCP servers" })} value="0" mono />
                     {permittedNotInstalledConnections.map((connection) => {
                       const connectionId = detailString(connection, "id");
-                      const connectionName = detailString(connection, "name") ?? "Unnamed connection";
+                      const connectionName = detailString(connection, "name") ?? t("app.auditTab.unnamedConnection", { defaultValue: "Unnamed connection" });
                       return connectionId ? (
                         <div key={connectionId} className="flex gap-2">
-                          <span className="shrink-0 text-muted-foreground">Not installed</span>
+                          <span className="shrink-0 text-muted-foreground">{t("app.auditTab.notInstalled2", { defaultValue: "Not installed" })}</span>
                           <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
                             {connectionName}
                           </Link>
@@ -276,7 +273,7 @@ function ActivityRow({
                 ) : null}
                 {argumentsText ? (
                   <div className="space-y-1">
-                    <span className="text-muted-foreground">Parameters (redacted)</span>
+                    <span className="text-muted-foreground">{t("app.auditTab.parametersRedacted", { defaultValue: "Parameters (redacted)" })}</span>
                     <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                       {argumentsText}
                     </pre>
@@ -364,17 +361,17 @@ export function AuditTab({ companyId }: { companyId: string }) {
   return (
     <div className="space-y-4">
       <ToolsPageHeader
-        title="Activity"
-        description="What your agents actually did with your apps, newest first. Each line is one decision — allowed, blocked, asked first, waiting, or failed."
+        title={t("app.auditTab.activity", { defaultValue: "Activity" })}
+        description={t("app.auditTab.whatYourAgentsActuallyDidWithYourAppsNewestFirstEachLineIsOneDecisionAllowedBlockedAskedFirstWaitingOrFailed", { defaultValue: "What your agents actually did with your apps, newest first. Each line is one decision — allowed, blocked, asked first, waiting, or failed." })}
       />
 
       <div className="flex flex-wrap items-center gap-2">
         <Select value={app} onValueChange={setApp}>
           <SelectTrigger className="w-40">
-            <SelectValue placeholder="App" />
+            <SelectValue placeholder={t("app.auditTab.app", { defaultValue: "App" })} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>All apps</SelectItem>
+            <SelectItem value={ALL}>{t("app.auditTab.allApps", { defaultValue: "All apps" })}</SelectItem>
             {(apps.data?.applications ?? []).map((a) => (
               <SelectItem key={a.id} value={a.id}>
                 {a.name}
@@ -384,10 +381,10 @@ export function AuditTab({ companyId }: { companyId: string }) {
         </Select>
         <Select value={agent} onValueChange={setAgent}>
           <SelectTrigger className="w-40">
-            <SelectValue placeholder="Agent" />
+            <SelectValue placeholder={t("app.auditTab.agent", { defaultValue: "Agent" })} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ALL}>All agents</SelectItem>
+            <SelectItem value={ALL}>{t("app.auditTab.allAgents", { defaultValue: "All agents" })}</SelectItem>
             {(agents.data ?? []).map((a) => (
               <SelectItem key={a.id} value={a.id}>
                 {a.name}
@@ -420,15 +417,14 @@ export function AuditTab({ companyId }: { companyId: string }) {
           </SelectContent>
         </Select>
         <Input
-          placeholder="Search activity…"
+          placeholder={t("app.auditTab.searchActivity", { defaultValue: "Search activity…" })}
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
           className="max-w-xs"
         />
         {hasActiveFilters ? (
           <Button variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
-          </Button>
+            {t("app.auditTab.clearFilters", { defaultValue: "Clear filters" })}</Button>
         ) : null}
       </div>
 
@@ -442,14 +438,12 @@ export function AuditTab({ companyId }: { companyId: string }) {
             <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
               <ScrollText className="h-10 w-10 text-muted-foreground/40" />
               <div>
-                <p className="text-sm font-medium text-foreground">No activity matches these filters</p>
+                <p className="text-sm font-medium text-foreground">{t("app.auditTab.noActivityMatchesTheseFilters", { defaultValue: "No activity matches these filters" })}</p>
                 <p className="mt-1 max-w-md text-sm text-muted-foreground">
-                  Try a wider time window or different filters.
-                </p>
+                  {t("app.auditTab.tryAWiderTimeWindowOrDifferentFilters", { defaultValue: "Try a wider time window or different filters." })}</p>
               </div>
               <Button variant="outline" size="sm" onClick={clearFilters}>
-                Clear filters
-              </Button>
+                {t("app.auditTab.clearFilters", { defaultValue: "Clear filters" })}</Button>
             </CardContent>
           </Card>
         ) : (
@@ -457,10 +451,9 @@ export function AuditTab({ companyId }: { companyId: string }) {
             <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
               <ScrollText className="h-10 w-10 text-muted-foreground/40" />
               <div>
-                <p className="text-sm font-medium text-foreground">Nothing here yet</p>
+                <p className="text-sm font-medium text-foreground">{t("app.auditTab.nothingHereYet", { defaultValue: "Nothing here yet" })}</p>
                 <p className="mt-1 max-w-md text-sm text-muted-foreground">
-                  As soon as your agents start using connected apps, what they do shows up here.
-                </p>
+                  {t("app.auditTab.asSoonAsYourAgentsStartUsingConnectedAppsWhatTheyDoShowsUpHere", { defaultValue: "As soon as your agents start using connected apps, what they do shows up here." })}</p>
               </div>
             </CardContent>
           </Card>
@@ -485,14 +478,13 @@ export function AuditTab({ companyId }: { companyId: string }) {
             onClick={() => activity.fetchNextPage()}
             disabled={activity.isFetchingNextPage}
           >
-            {activity.isFetchingNextPage ? "Loading…" : "Load more"}
+            {activity.isFetchingNextPage ? "Loading…" : t("app.auditTab.loadMore", { defaultValue: "Load more" })}
           </Button>
         </div>
       ) : null}
 
       <p className="text-xs text-muted-foreground">
-        Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.
-      </p>
+        {t("app.auditTab.recordedByPaperclipEntriesCanTBeEditedSensitiveValuesAreNeverStored", { defaultValue: "Recorded by Paperclip — entries can't be edited. Sensitive values are never stored." })}</p>
     </div>
   );
 }

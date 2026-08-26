@@ -26,6 +26,7 @@ import {
   bindingEnvKey,
   bindingSecretLabel,
 } from "../pages/secrets/proposal-review";
+import { t } from "@/i18n";
 
 /* -------------------------------------------------------------------------- */
 /* Pure model (exported for tests)                                            */
@@ -285,15 +286,13 @@ export function AgentSecretAccessEditor({
           ))}
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">No secrets are bound to this agent yet.</p>
+        <p className="text-sm text-muted-foreground">{ t("app.agentSecretAccessEditor.noSecretsAreBoundToThisAgentYet", { defaultValue: "No secrets are bound to this agent yet." }) }</p>
       )}
 
       {/* Pending binding proposals targeting this agent (PAP-14731). */}
       {bindingProposals.length > 0 && onApproveProposal && onRejectProposal ? (
         <div className="space-y-2">
-          <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-            Proposed access
-          </div>
+          <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground"> { t("app.agentSecretAccessEditor.proposedAccess", { defaultValue: "Proposed access" }) } </div>
           {bindingProposals.map((proposal) => {
             const secret = bindingSecretLabel(proposal);
             const envKey = bindingEnvKey(proposal);
@@ -356,8 +355,8 @@ export function AgentSecretAccessEditor({
                             if (suggested && suggested !== next) patchRow(row.id, { alias: suggested });
                           }
                         }}
-                        placeholder="ALIAS"
-                        aria-label="Access alias"
+                        placeholder={t("app.agentSecretAccessEditor.alias", { defaultValue: "ALIAS" })}
+                        aria-label={t("app.agentSecretAccessEditor.accessAlias", { defaultValue: "Access alias" })}
                         disabled={disabled}
                         className={cn(
                           "h-9 font-mono text-sm",
@@ -450,7 +449,7 @@ export function AgentSecretAccessEditor({
                           });
                         }}
                         disabled={disabled || !selectedSecret}
-                        aria-label="Version"
+                        aria-label={t("app.agentSecretAccessEditor.version", { defaultValue: "Version" })}
                       >
                         <option value="latest">latest</option>
                         {selectedSecret
@@ -470,7 +469,7 @@ export function AgentSecretAccessEditor({
                       type="button"
                       onClick={() => removeRow(row.id)}
                       disabled={disabled}
-                      aria-label="Remove API access"
+                      aria-label={t("app.agentSecretAccessEditor.removeApiAccess", { defaultValue: "Remove API access" })}
                       className="mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
                     >
                       <Trash2 className="size-3.5" />
@@ -481,7 +480,7 @@ export function AgentSecretAccessEditor({
                       Invalid alias — use letters, digits and _
                     </p>
                   ) : aliasDuplicate ? (
-                    <p className="pl-0.5 text-(length:--text-micro) text-destructive">Duplicate alias</p>
+                    <p className="pl-0.5 text-(length:--text-micro) text-destructive">{ t("app.agentSecretAccessEditor.duplicateAlias", { defaultValue: "Duplicate alias" }) }</p>
                   ) : null}
                 </div>
               );
@@ -496,7 +495,7 @@ export function AgentSecretAccessEditor({
           className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
         >
           <Plus className="size-3.5" />
-          Add API access
+          {t("app.agentSecretAccessEditor.addAPIAccess", { defaultValue: "Add API access" })}
         </button>
       </div>
 

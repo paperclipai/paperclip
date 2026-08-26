@@ -22,6 +22,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { MarkdownBody } from "./MarkdownBody";
+import { t } from "@/i18n";
 
 /**
  * Presentational card for a single Decisions-v1 decision (PAP-14966 / PAP-14939
@@ -161,7 +162,7 @@ function executionRow(
       return {
         key: execution.id,
         status: "executed",
-        summary: `Created ${created ? issueLabel(created, createdId!) : "a new issue"}`,
+        summary: `Created ${created ? issueLabel(created, createdId!) : t("app.decisionCard.aNewIssue", { defaultValue: "a new issue" })}`,
         link: created ?? targetRef,
       };
     }
@@ -271,18 +272,18 @@ export function DecisionCard({
             : "failed";
 
   const badgeLabel = open
-    ? "Pending"
+    ? t("app.decisionCard.pending", { defaultValue: "Pending" })
     : decision.status === "expired"
-      ? "Expired"
+      ? t("app.decisionCard.expired", { defaultValue: "Expired" })
       : decision.status === "cancelled"
-        ? "Cancelled"
+        ? t("app.decisionCard.cancelled", { defaultValue: "Cancelled" })
         : dismissed
-          ? "Dismissed"
+          ? t("app.decisionCard.dismissed", { defaultValue: "Dismissed" })
           : decision.executionStatus === "succeeded"
-            ? "Decided"
+            ? t("app.decisionCard.decided", { defaultValue: "Decided" })
             : decision.executionStatus === "partial"
-              ? "Partial"
-              : "Failed";
+              ? t("app.decisionCard.partial", { defaultValue: "Partial" })
+              : t("app.decisionCard.failed", { defaultValue: "Failed" });
 
   const requiredUnmet = (decision.inputs ?? []).some(
     (field) => field.required && !(inputValues[field.id] ?? "").trim(),
@@ -343,8 +344,7 @@ export function DecisionCard({
       </div>
 
       {/* Provenance */}
-      <p className="mt-1 text-xs text-muted-foreground">
-        Proposed by <span className="font-medium text-foreground">{originAgentName ?? "an agent"}</span>
+      <p className="mt-1 text-xs text-muted-foreground"> { t("app.decisionCard.proposedBy", { defaultValue: "Proposed by" }) } <span className="font-medium text-foreground">{originAgentName ?? "an agent"}</span>
         {originIssue && (
           <>
             {" "}while running{" "}
@@ -373,7 +373,7 @@ export function DecisionCard({
         {runHref && (
           <>
             {" · "}
-            <a href={runHref} className="hover:underline">view run</a>
+            <a href={runHref} className="hover:underline">{ t("app.decisionCard.viewRun", { defaultValue: "view run" }) }</a>
           </>
         )}
       </p>
@@ -406,9 +406,7 @@ export function DecisionCard({
               );
             })}
           </ul>
-          <p className="mt-1.5 text-xs text-amber-800/80 dark:text-amber-200/80">
-            Options that require an unchanged target are disabled below.
-          </p>
+          <p className="mt-1.5 text-xs text-amber-800/80 dark:text-amber-200/80"> { t("app.decisionCard.optionsThatRequireAnUnchangedTargetAreDisabledBelow", { defaultValue: "Options that require an unchanged target are disabled below." }) } </p>
         </div>
       )}
 
@@ -466,9 +464,7 @@ export function DecisionCard({
                       {option.label}
                     </span>
                     {blockedStale && (
-                      <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-800 dark:text-amber-200">
-                        Blocked · stale
-                      </span>
+                      <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-800 dark:text-amber-200"> { t("app.decisionCard.blockedStale", { defaultValue: "Blocked · stale" }) } </span>
                     )}
                   </div>
                   {option.description && (
@@ -516,18 +512,14 @@ export function DecisionCard({
                         </ul>
                       </>
                     ) : (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        This issue and every sub-issue beneath it will be cancelled.
-                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground"> { t("app.decisionCard.thisIssueAndEverySubIssueBeneathItWillBeCancelled", { defaultValue: "This issue and every sub-issue beneath it will be cancelled." }) } </p>
                     )}
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Type <span className="font-mono font-medium text-foreground">{confirmToken}</span> to confirm.
-                    </p>
+                    <p className="mt-2 text-xs text-muted-foreground"> { t("app.decisionCard.type", { defaultValue: "Type" }) } <span className="font-mono font-medium text-foreground">{confirmToken}</span> { t("app.decisionCard.toConfirm", { defaultValue: "to confirm." }) } </p>
                     <Input
                       value={confirmText}
                       onChange={(event) => setConfirmText(event.target.value)}
                       placeholder={confirmToken}
-                      aria-label="Type the issue identifier to confirm"
+                      aria-label={t("app.decisionCard.typeTheIssueIdentifierToConfirm", { defaultValue: "Type the issue identifier to confirm" })}
                       autoFocus
                       className="mt-1"
                     />
@@ -539,9 +531,7 @@ export function DecisionCard({
                           setConfirmOptionId(null);
                           setConfirmText("");
                         }}
-                      >
-                        Cancel
-                      </Button>
+                      > { t("app.decisionCard.cancel", { defaultValue: "Cancel" }) } </Button>
                       <Button
                         variant="destructive"
                         size="sm"
@@ -549,7 +539,7 @@ export function DecisionCard({
                         onClick={() => onDecide?.(option.id, inputValues)}
                       >
                         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                        {previewRows ? `Cancel ${pluralize(previewRows.length, "issue")}` : "Cancel tree"}
+                        {previewRows ? `Cancel ${pluralize(previewRows.length, "issue")}` : t("app.decisionCard.cancelTree", { defaultValue: "Cancel tree" })}
                       </Button>
                     </div>
                   </div>
@@ -561,10 +551,8 @@ export function DecisionCard({
           {/* Always-present zero-effect Dismiss (telemetered "no", distinct from expiry) */}
           {!decision.options.some((option) => option.effects.length === 0) && (
             <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="text-xs text-muted-foreground">Not now?</span>
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}>
-                Dismiss — no effects
-              </Button>
+              <span className="text-xs text-muted-foreground">{t("app.decisionCard.notNow", { defaultValue: "Not now?" })}</span>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}> { t("app.decisionCard.dismissNoEffects", { defaultValue: "Dismiss — no effects" }) } </Button>
             </div>
           )}
           {errorMessage && <p className="text-xs text-rose-600 dark:text-rose-400">{errorMessage}</p>}
@@ -581,23 +569,19 @@ export function DecisionCard({
               </div>
               <p className="mt-1">
                 {expiredReason === "target_gone"
-                  ? "A target issue was cancelled before this was decided."
+                  ? t("app.decisionCard.aTargetIssueWasCancelledBeforeThisWasDecided", { defaultValue: "A target issue was cancelled before this was decided." })
                   : expiredReason === "target_completed"
-                    ? "All target issues were completed before this was decided."
-                    : "No response before the expiry deadline."}
+                    ? t("app.decisionCard.allTargetIssuesWereCompletedBeforeThisWasDecided", { defaultValue: "All target issues were completed before this was decided." })
+                    : t("app.decisionCard.noResponseBeforeTheExpiryDeadline", { defaultValue: "No response before the expiry deadline." })}
                 {decision.continuationPolicy === "wake_origin_agent" && " The proposer was re-woken."}
               </p>
             </div>
           )}
           {decision.status === "cancelled" && (
-            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              This decision was withdrawn by the proposer before a response.
-            </p>
+            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"> { t("app.decisionCard.thisDecisionWasWithdrawnByTheProposerBeforeAResponse", { defaultValue: "This decision was withdrawn by the proposer before a response." }) } </p>
           )}
           {decision.status === "decided" && dismissed && (
-            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Dismissed — no effects were run.
-            </p>
+            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"> { t("app.decisionCard.dismissedNoEffectsWereRun", { defaultValue: "Dismissed — no effects were run." }) } </p>
           )}
           {decision.status === "decided" && !dismissed && (executions ?? []).length > 0 && (
             <>
@@ -614,9 +598,7 @@ export function DecisionCard({
                 })}
               </ul>
               {decision.executionStatus !== "succeeded" && (
-                <p className="text-xs text-muted-foreground">
-                  Some effects may already have been applied. Review the results before asking the proposer to re-propose.
-                </p>
+                <p className="text-xs text-muted-foreground"> { t("app.decisionCard.someEffectsMayAlreadyHaveBeenAppliedReviewTheResultsBeforeAskingTheProposerToRePropose", { defaultValue: "Some effects may already have been applied. Review the results before asking the proposer to re-propose." }) } </p>
               )}
             </>
           )}

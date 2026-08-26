@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
 import { cn } from "../lib/utils";
 import { Loader2, Send, CheckCircle2, ArrowRight } from "lucide-react";
+import { t } from "@/i18n";
 
 interface OnboardingChatProps {
   taskId: string;
@@ -34,24 +35,24 @@ function detectHiringPlan(body: string): boolean {
 }
 
 const QUEUED_MESSAGES = [
-  "Heartbeat triggered, waking up...",
+  t("onboarding.heartbeatTriggered", { defaultValue: "Heartbeat triggered, waking up..." }),
   "Initializing...",
-  "Getting ready...",
+  t("onboarding.gettingReady", { defaultValue: "Getting ready..." }),
 ];
 
 const RUNNING_MESSAGES = [
-  "Working on a response...",
-  "Reading the conversation...",
-  "Thinking through the plan...",
-  "Drafting a response...",
-  "Still working...",
-  "Almost there...",
+  t("onboarding.workingOnResponse", { defaultValue: "Working on a response..." }),
+  t("onboarding.readingConversation", { defaultValue: "Reading the conversation..." }),
+  t("onboarding.thinkingPlan", { defaultValue: "Thinking through the plan..." }),
+  t("onboarding.draftingResponse", { defaultValue: "Drafting a response..." }),
+  t("onboarding.stillWorking", { defaultValue: "Still working..." }),
+  t("onboarding.almostThere", { defaultValue: "Almost there..." }),
 ];
 
 const WAITING_MESSAGES = [
-  "Waiting to wake up...",
-  "Heartbeat pending...",
-  "Should wake up soon...",
+  t("onboarding.waitingWake", { defaultValue: "Waiting to wake up..." }),
+  t("onboarding.heartbeatPending", { defaultValue: "Heartbeat pending..." }),
+  t("onboarding.shouldWakeSoon", { defaultValue: "Should wake up soon..." }),
 ];
 
 function getCyclingMessage(messages: string[], elapsed: number, agentName: string): string {
@@ -249,7 +250,7 @@ export function OnboardingChat({
     return (
       <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-        Loading conversation...
+        {t("onboarding.loadingConversation", { defaultValue: "Loading conversation..." })}
       </div>
     );
   }
@@ -268,10 +269,10 @@ export function OnboardingChat({
           companyGoal={companyGoal}
           hasComments={Boolean(comments?.length)}
           onDiscuss={() => {
-            setInput("I want to discuss the plan before you get started.");
+            setInput(t("onboarding.wantDiscuss", { defaultValue: "I want to discuss the plan before you get started." }));
             inputRef.current?.focus();
           }}
-          onStart={() => sendMessage("Yes, get started on the hiring plan!")}
+          onStart={() => sendMessage(t("onboarding.yesHiringPlan", { defaultValue: "Yes, get started on the hiring plan!" }))}
         />
         {comments?.map((comment) => {
           const isAgent = Boolean(comment.authorAgentId);
@@ -301,7 +302,7 @@ export function OnboardingChat({
                 {isPlan && (
                   <span className="inline-flex items-center gap-0.5 text-(length:--text-nano) text-green-600 dark:text-green-400 font-medium">
                     <CheckCircle2 className="h-3 w-3" />
-                    Hiring plan detected
+                    {t("onboarding.hiringPlanDetected", { defaultValue: "Hiring plan detected" })}
                   </span>
                 )}
               </div>
@@ -353,12 +354,12 @@ export function OnboardingChat({
                   {agentName} has prepared a hiring plan
                 </p>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Review it, make edits, then approve.
+                  {t("onboarding.reviewEditApprove", { defaultValue: "Review it, make edits, then approve." })}
                 </p>
               </div>
             </div>
             <Button size="sm" onClick={onReviewPlan}>
-              Review plan
+              {t("onboarding.reviewPlan", { defaultValue: "Review plan" })}
               <ArrowRight className="h-3.5 w-3.5 ml-1" />
             </Button>
           </div>
@@ -432,13 +433,13 @@ function WelcomeMessage({
             </span>
           </div>
           <p>
-            Hi! Thanks for bringing me on to lead <strong>{companyName}</strong>.
+            {t("onboarding.hiThanksLead", { defaultValue: "Hi! Thanks for bringing me on to lead" })}{" "}<strong>{companyName}</strong>.
           </p>
           <p className="mt-1">
-            Our mission is: <em>{companyGoal}</em>
+            {t("onboarding.ourMission", { defaultValue: "Our mission is:" })} <em>{companyGoal}</em>
           </p>
           <p className="mt-1">
-            I'm ready to put together a plan for who we should bring on. Want me to get started?
+            {t("onboarding.readyToPlan", { defaultValue: "I'm ready to put together a plan for who we should bring on. Want me to get started?" })}
           </p>
         </div>
       )}
@@ -450,13 +451,13 @@ function WelcomeMessage({
             className="rounded-full border border-border px-3 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
             onClick={onDiscuss}
           >
-            Let's discuss first
+            {t("onboarding.discussFirst", { defaultValue: "Let's discuss first" })}
           </button>
           <button
             className="rounded-full border border-foreground bg-foreground text-background px-3 py-1 text-xs hover:opacity-90 transition-opacity"
             onClick={onStart}
           >
-            Yes, get started!
+            {t("onboarding.yesGetStarted", { defaultValue: "Yes, get started!" })}
           </button>
         </div>
       )}

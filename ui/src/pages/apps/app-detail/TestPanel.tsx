@@ -41,6 +41,7 @@ import {
 } from "@/components/JsonSchemaForm";
 import { cn, relativeTime } from "@/lib/utils";
 import { appTabHref } from "../app-tabs";
+import { t } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // Small format helpers
@@ -72,15 +73,15 @@ type DecisionMeta = { label: string; className: string };
 
 const DECISION_META: Record<ToolConnectionTestDecision, DecisionMeta> = {
   allowed: {
-    label: "Allowed",
+    label: t("app.testPanel.allowed", { defaultValue: "Allowed" }),
     className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   },
   ask_first: {
-    label: "Ask first",
+    label: t("app.testPanel.askFirst", { defaultValue: "Ask first" }),
     className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
   off: {
-    label: "Off",
+    label: t("app.testPanel.off", { defaultValue: "Off" }),
     className: "border-border bg-muted text-muted-foreground",
   },
 };
@@ -101,7 +102,7 @@ function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
 
 /** "Allowed for 1 action · Ask first for 2 · Off for 1" — singular gets " action". */
 function summaryCount(label: string, n: number): string {
-  return `${label} ${n}${n === 1 ? " action" : ""}`;
+  return `${label} ${n}${n === 1 ? t("app.testPanel.action", { defaultValue: " action" }) : ""}`;
 }
 
 function accessSummaryLine(summary: ToolConnectionAccessSummary): string {
@@ -213,14 +214,12 @@ export function TestPanel({
   if (agents.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-card p-6 text-center">
-        <p className="text-sm font-medium text-foreground">No agents to test as</p>
+        <p className="text-sm font-medium text-foreground">{t("app.testPanel.noAgentsToTestAs", { defaultValue: "No agents to test as" })}</p>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-          Only agents you can assign tasks to can preview {appName}. Give an agent access in{" "}
+          {t("app.testPanel.onlyAgentsYouCanAssignTasksToCanPreview", { defaultValue: "Only agents you can assign tasks to can preview " })}{appName}{t("app.testPanel.giveAnAgentAccessIn", { defaultValue: ". Give an agent access in" })}{" "}
           <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-            Permissions
-          </Link>{" "}
-          to test it here.
-        </p>
+            {t("app.testPanel.permissions", { defaultValue: "Permissions" })}</Link>{" "}
+          {t("app.testPanel.toTestItHere", { defaultValue: "to test it here." })}</p>
       </div>
     );
   }
@@ -251,8 +250,8 @@ export function TestPanel({
           <div className="relative min-w-(--sz-12rem) flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Find an action"
-              placeholder="Find an action…"
+              aria-label={t("app.testPanel.findAnAction", { defaultValue: "Find an action" })}
+              placeholder={t("app.testPanel.findAnAction2", { defaultValue: "Find an action…" })}
               className="pl-9"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -262,13 +261,12 @@ export function TestPanel({
           <FilterChip label={`Read ${readActions.length}`} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
           <FilterChip label={`Write ${writeActions.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
         </div>
-        <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
+        <p className="text-xs text-muted-foreground">{visibleCount} {t("app.testPanel.matchesSortedAZ", { defaultValue: "matches · sorted A–Z" })}</p>
       </div>
 
       {visibleCount === 0 ? (
         <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No actions match “{query}”. Clear the search to see them all.
-        </div>
+          {t("app.testPanel.noActionsMatch", { defaultValue: "No actions match “" })}{query}{t("app.testPanel.clearTheSearchToSeeThemAll", { defaultValue: "”. Clear the search to see them all." })}</div>
       ) : (
         <div className="space-y-6">
           {visibleRead.length > 0 && selectedAgent && (
@@ -312,12 +310,11 @@ export function TestPanel({
 function EmptyState({ connectionId, appName }: { connectionId: string; appName: string }) {
   return (
     <div className="rounded-lg border border-border bg-card p-8 text-center">
-      <p className="text-base font-bold text-foreground">Nothing to test yet</p>
+      <p className="text-base font-bold text-foreground">{t("app.testPanel.nothingToTestYet", { defaultValue: "Nothing to test yet" })}</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
-        Once {appName} is connected, the actions it offers will show up here so you can try them out.
-      </p>
+        {t("app.testPanel.once", { defaultValue: "Once " })}{appName} {t("app.testPanel.isConnectedTheActionsItOffersWillShowUpHereSoYouCanTryThemOut", { defaultValue: "is connected, the actions it offers will show up here so you can try them out." })}</p>
       <Button asChild className="mt-4" variant="outline">
-        <Link to={appTabHref(connectionId, "setup")}>Go to Setup</Link>
+        <Link to={appTabHref(connectionId, "setup")}>{t("app.testPanel.goToSetup", { defaultValue: "Go to Setup" })}</Link>
       </Button>
     </div>
   );
@@ -346,7 +343,7 @@ function TestAsHeader({
     return (
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <p className="text-sm text-muted-foreground">
-          Testing as{" "}
+          {t("app.testPanel.testingAs", { defaultValue: "Testing as" })}{" "}
           <AgentPicker
             agents={agents}
             selectedAgent={selectedAgent}
@@ -364,7 +361,7 @@ function TestAsHeader({
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Test as</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.testAs", { defaultValue: "Test as" })}</p>
           <AgentPicker
             agents={agents}
             selectedAgent={selectedAgent}
@@ -376,8 +373,7 @@ function TestAsHeader({
         <p className="text-sm text-muted-foreground">{accessSummaryLine(selectedAgent.effectiveAccess)}</p>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        Runs real actions in {appName}, exactly as this agent would.
-      </p>
+        {t("app.testPanel.runsRealActionsIn", { defaultValue: "Runs real actions in " })}{appName}{t("app.testPanel.exactlyAsThisAgentWould", { defaultValue: ", exactly as this agent would." })}</p>
     </div>
   );
 }
@@ -411,9 +407,9 @@ function AgentPicker({
           type="button"
           className={cn(
             "items-center gap-1.5 text-foreground outline-none hover:text-primary focus-visible:text-primary",
-            inline ? "inline-flex font-semibold underline-offset-2 hover:underline" : "mt-0.5 flex text-lg font-bold",
+            inline ? "inline-flex font-semibold underline-offset-2 hover:underline" : t("app.testPanel.mt05FlexTextLgFontBold", { defaultValue: "mt-0.5 flex text-lg font-bold" }),
           )}
-          aria-label="Choose which agent to test as"
+          aria-label={t("app.testPanel.chooseWhichAgentToTestAs", { defaultValue: "Choose which agent to test as" })}
         >
           {selectedAgent.name}
           <ChevronsUpDown className={cn("text-muted-foreground", inline ? "h-3.5 w-3.5" : "h-4 w-4")} />
@@ -424,8 +420,8 @@ function AgentPicker({
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Search agents"
-              placeholder="Search agents…"
+              aria-label={t("app.testPanel.searchAgents", { defaultValue: "Search agents" })}
+              placeholder={t("app.testPanel.searchAgents2", { defaultValue: "Search agents…" })}
               className="h-8 pl-8 text-sm"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -435,7 +431,7 @@ function AgentPicker({
         </div>
         <div className="max-h-60 overflow-y-auto p-1">
           {filtered.length === 0 ? (
-            <p className="px-3 py-4 text-center text-xs text-muted-foreground">No agents match.</p>
+            <p className="px-3 py-4 text-center text-xs text-muted-foreground">{t("app.testPanel.noAgentsMatch", { defaultValue: "No agents match." })}</p>
           ) : (
             filtered.map((agent) => {
               const summary = agent.effectiveAccess;
@@ -464,7 +460,7 @@ function AgentPicker({
                     <span className="block truncate text-sm font-medium text-foreground">{agent.name}</span>
                     <span className="block truncate text-xs text-muted-foreground">
                       {noAccess
-                        ? "No access — not allowed for any action"
+                        ? t("app.testPanel.noAccessNotAllowedForAnyAction", { defaultValue: "No access — not allowed for any action" })
                         : `Allowed ${summary.allowedCount} · Ask first ${summary.askFirstCount} · Off ${summary.offCount}`}
                     </span>
                   </span>
@@ -474,24 +470,22 @@ function AgentPicker({
           )}
         </div>
         <div className="border-t border-border px-3 py-2 text-(length:--text-micro) text-muted-foreground">
-          <p>Only agents you can assign tasks to are listed.</p>
-          <p>Pick one to preview what they'd see in {appName}.</p>
+          <p>{t("app.testPanel.onlyAgentsYouCanAssignTasksToAreListed", { defaultValue: "Only agents you can assign tasks to are listed." })}</p>
+          <p>{t("app.testPanel.pickOneToPreviewWhatTheyDSeeIn", { defaultValue: "Pick one to preview what they'd see in " })}{appName}.</p>
         </div>
         <div className="border-t border-border p-3">
-          <p className="text-xs font-semibold text-foreground">What the badges mean</p>
+          <p className="text-xs font-semibold text-foreground">{t("app.testPanel.whatTheBadgesMean", { defaultValue: "What the badges mean" })}</p>
           <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-            <li><span className="font-medium text-foreground">Allowed</span> — runs immediately when you press Run.</li>
-            <li><span className="font-medium text-foreground">Ask first</span> — Run is parked in Review for your OK.</li>
+            <li><span className="font-medium text-foreground">{t("app.testPanel.allowed", { defaultValue: "Allowed" })}</span> {t("app.testPanel.runsImmediatelyWhenYouPressRun", { defaultValue: "— runs immediately when you press Run." })}</li>
+            <li><span className="font-medium text-foreground">{t("app.testPanel.askFirst", { defaultValue: "Ask first" })}</span> {t("app.testPanel.runIsParkedInReviewForYourOk", { defaultValue: "— Run is parked in Review for your OK." })}</li>
             <li>
-              <span className="font-medium text-foreground">Off</span> — won't run. Change it in{" "}
+              <span className="font-medium text-foreground">{t("app.testPanel.off", { defaultValue: "Off" })}</span> {t("app.testPanel.wonTRunChangeItIn", { defaultValue: "— won't run. Change it in" })}{" "}
               <Link className="text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>.
+                {t("app.testPanel.permissions", { defaultValue: "Permissions" })}</Link>.
             </li>
           </ul>
           <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
-            Badges reflect this agent's current settings, not yours. Swap agents to see how an action would behave for each.
-          </p>
+            {t("app.testPanel.badgesReflectThisAgentSCurrentSettingsNotYoursSwapAgentsToSeeHowAnActionWouldBehaveForEach", { defaultValue: "Badges reflect this agent's current settings, not yours. Swap agents to see how an action would behave for each." })}</p>
         </div>
       </PopoverContent>
     </Popover>
@@ -802,10 +796,10 @@ function ActionTester({
           onChange={setValues}
           errors={errors}
           disabled={running}
-          advancedLabel="More options"
+          advancedLabel={t("app.testPanel.moreOptions", { defaultValue: "More options" })}
         />
       ) : (
-        <p className="text-xs text-muted-foreground">This action takes no inputs.</p>
+        <p className="text-xs text-muted-foreground">{t("app.testPanel.thisActionTakesNoInputs", { defaultValue: "This action takes no inputs." })}</p>
       )}
 
       <p className="text-xs text-muted-foreground">{GUT_CHECK[decision](appName, agent.name)}</p>
@@ -814,17 +808,16 @@ function ActionTester({
         <Button onClick={onRun} disabled={running} size="sm">
           {running ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Running…
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("app.testPanel.running", { defaultValue: "Running…" })}
             </>
           ) : (
             <>
-              <Play className="h-3.5 w-3.5" /> {outcome ? "Run again" : "Run"}
+              <Play className="h-3.5 w-3.5" /> {outcome ? t("app.testPanel.runAgain", { defaultValue: "Run again" }) : t("app.testPanel.run", { defaultValue: "Run" })}
             </>
           )}
         </Button>
         <Button onClick={onReset} disabled={running} size="sm" variant="ghost">
-          Reset
-        </Button>
+          {t("app.testPanel.reset", { defaultValue: "Reset" })}</Button>
       </div>
 
       {running && (
@@ -833,7 +826,7 @@ function ActionTester({
 
       {run.isError && !running && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          Couldn't reach {agent.name}. {run.error instanceof Error ? run.error.message : "Please try again."}
+          {t("app.testPanel.couldnTReach", { defaultValue: "Couldn't reach " })}{agent.name}{t("app.testPanel.text", { defaultValue: ". " })}{run.error instanceof Error ? run.error.message : t("app.testPanel.pleaseTryAgain", { defaultValue: "Please try again." })}
         </div>
       )}
 
@@ -861,20 +854,20 @@ function RunningCard({
   elapsedMs: number;
   onCancel: () => void;
 }) {
-  const verb = entry.isReadOnly ? "Reading from" : entry.isWrite ? "Writing to" : "Calling";
+  const verb = entry.isReadOnly ? t("app.testPanel.readingFrom", { defaultValue: "Reading from" }) : entry.isWrite ? t("app.testPanel.writingTo", { defaultValue: "Writing to" }) : t("app.testPanel.calling", { defaultValue: "Calling" });
   return (
     <div className="rounded-md border border-border bg-muted/30 p-4">
       <div className="flex items-center gap-2">
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-        <span className="text-sm font-medium text-foreground">Running…</span>
+        <span className="text-sm font-medium text-foreground">{t("app.testPanel.running", { defaultValue: "Running…" })}</span>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        {verb} {appName} as {agentName}.
+        {verb} {appName} {t("app.testPanel.as", { defaultValue: "as " })}{agentName}.
       </p>
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">Started {seconds(elapsedMs)} ago · Press cancel to stop</span>
+        <span className="text-xs text-muted-foreground">{t("app.testPanel.started", { defaultValue: "Started " })}{seconds(elapsedMs)} {t("app.testPanel.agoPressCancelToStop", { defaultValue: "ago · Press cancel to stop" })}</span>
         <Button onClick={onCancel} size="sm" variant="outline">
-          Cancel
+          {t("common.cancel", { defaultValue: "Cancel" })}
         </Button>
       </div>
     </div>
@@ -903,7 +896,7 @@ function ResultPanel({
   if (result.decision === "off") {
     return (
       <div className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
-        {result.error?.message ?? "This action is off and won't run."}
+        {result.error?.message ?? t("app.testPanel.thisActionIsOffAndWonTRun", { defaultValue: "This action is off and won't run." })}
       </div>
     );
   }
@@ -934,7 +927,7 @@ function mcpToolError(value: unknown): { message: string; reasonCode: string | n
   const message =
     (typeof envelope.content === "string" && envelope.content.trim() !== "" && envelope.content)
     || (typeof envelope.error === "string" && envelope.error.trim() !== "" && envelope.error)
-    || "The app returned an error result.";
+    || t("app.testPanel.theAppReturnedAnErrorResult", { defaultValue: "The app returned an error result." });
   return { message, reasonCode: "tool_error" };
 }
 
@@ -999,12 +992,12 @@ function AllowedResult({
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
-        Ran as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        {t("app.testPanel.ranAs", { defaultValue: "Ran as " })}{outcome.agentName} {t("app.testPanel.text2", { defaultValue: "· " })}{seconds(outcome.durationMs)} {t("app.testPanel.text2", { defaultValue: "· " })}{relTime(outcome.ranAt)}
       </p>
 
       {!isEmptyResult(value) && (
         <div className="mt-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Preview</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.preview", { defaultValue: "Preview" })}</p>
           <div className="mt-1.5">
             <PrettyPreview value={value} />
           </div>
@@ -1014,13 +1007,12 @@ function AllowedResult({
       <RawResponseDisclosure value={value} />
 
       <p className="mt-3 text-xs text-muted-foreground">
-        This call is in the{" "}
+        {t("app.testPanel.thisCallIsInThe", { defaultValue: "This call is in the" })}{" "}
         <Link className="text-primary hover:underline" to={appTabHref(connectionId, "activity")}>
-          Activity tab
-        </Link>
+          {t("app.testPanel.activityTab", { defaultValue: "Activity tab" })}</Link>
         .
       </p>
-      <p className="mt-1 text-xs text-muted-foreground">Last run finished in {seconds(outcome.durationMs)}.</p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("app.testPanel.lastRunFinishedIn", { defaultValue: "Last run finished in " })}{seconds(outcome.durationMs)}.</p>
     </div>
   );
 }
@@ -1052,7 +1044,7 @@ function PrettyPreview({ value }: { value: unknown }) {
           </tbody>
         </table>
         {rows.length > shown.length && (
-          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows</p>
+          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">{t("app.testPanel.text3", { defaultValue: "… " })}{rows.length - shown.length} {t("app.testPanel.moreRows", { defaultValue: "more rows" })}</p>
         )}
       </div>
     );
@@ -1095,7 +1087,7 @@ function RawResponseDisclosure({ value }: { value: unknown }) {
         onClick={() => setShowRaw((prev) => !prev)}
         className="text-xs font-semibold uppercase tracking-wide text-primary hover:underline"
       >
-        {showRaw ? "Hide raw response" : "Show raw response"}
+        {showRaw ? t("app.testPanel.hideRawResponse", { defaultValue: "Hide raw response" }) : t("app.testPanel.showRawResponse", { defaultValue: "Show raw response" })}
       </button>
       {showRaw && (
         <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground">
@@ -1124,31 +1116,30 @@ function ErrorResult({
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">It didn't work.</span>
+        <span className="text-sm font-medium text-foreground">{t("app.testPanel.itDidnTWork", { defaultValue: "It didn't work." })}</span>
       </div>
       <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="h-3 w-3" />
-        Tried as {outcome.agentName} · {seconds(outcome.durationMs)} · {relTime(outcome.ranAt)}
+        {t("app.testPanel.triedAs", { defaultValue: "Tried as " })}{outcome.agentName} {t("app.testPanel.text2", { defaultValue: "· " })}{seconds(outcome.durationMs)} {t("app.testPanel.text2", { defaultValue: "· " })}{relTime(outcome.ranAt)}
       </p>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What {appName} said</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.what", { defaultValue: "What " })}{appName} said</p>
         <p className="mt-1 break-words text-sm text-foreground">{error.message}</p>
-        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">code: {error.reasonCode}</p>}
+        {error.reasonCode && <p className="mt-0.5 text-xs text-muted-foreground">{t("app.testPanel.code", { defaultValue: "code: " })}{error.reasonCode}</p>}
       </div>
       <div className="mt-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What to try</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.whatToTry", { defaultValue: "What to try" })}</p>
         <ul className="mt-1 list-disc space-y-0.5 pl-4 text-sm text-foreground">
           {hints.map((hint) => (
             <li key={hint}>{hint}</li>
           ))}
         </ul>
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">Adjust the input above and try again.</p>
+      <p className="mt-3 text-xs text-muted-foreground">{t("app.testPanel.adjustTheInputAboveAndTryAgain", { defaultValue: "Adjust the input above and try again." })}</p>
       <p className="mt-1 text-xs text-muted-foreground">
-        Also visible in the{" "}
+        {t("app.testPanel.alsoVisibleInThe", { defaultValue: "Also visible in the" })}{" "}
         <Link className="text-primary hover:underline" to={appTabHref(connectionId, "activity")}>
-          Activity tab
-        </Link>
+          {t("app.testPanel.activityTab", { defaultValue: "Activity tab" })}</Link>
         .
       </p>
     </div>
@@ -1245,13 +1236,13 @@ function AskFirstResult({
   const where = formatWhere(status?.parameters);
   const statusLabel =
     phase === "running"
-      ? "Approved · running"
+      ? t("app.testPanel.approvedRunning", { defaultValue: "Approved · running" })
       : phase === "denied"
-        ? "Denied — see Review for why"
+        ? t("app.testPanel.deniedSeeReviewForWhy", { defaultValue: "Denied — see Review for why" })
         : phase === "cancelled"
-          ? "Cancelled"
+          ? t("app.testPanel.cancelled", { defaultValue: "Cancelled" })
           : phase === "expired"
-            ? "Expired — send it again"
+            ? t("app.testPanel.expiredSendItAgain", { defaultValue: "Expired — send it again" })
             : `Waiting · ${relTime(requestedAt)}`;
   const settled = phase === "denied" || phase === "cancelled" || phase === "expired";
 
@@ -1259,23 +1250,23 @@ function AskFirstResult({
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
       <div className="flex items-center gap-2">
         <ShieldQuestion className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-foreground">Sent for your OK.</span>
+        <span className="text-sm font-medium text-foreground">{t("app.testPanel.sentForYourOk", { defaultValue: "Sent for your OK." })}</span>
       </div>
-      <p className="mt-0.5 text-xs text-muted-foreground">{outcome.agentName} needs your approval before this runs.</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">{outcome.agentName} {t("app.testPanel.needsYourApprovalBeforeThisRuns", { defaultValue: "needs your approval before this runs." })}</p>
 
       <dl className="mt-3 space-y-1.5 text-sm">
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.action2", { defaultValue: "Action" })}</dt>
           <dd className="text-foreground">{entry.title ?? entry.toolName}</dd>
         </div>
         {where && (
           <div className="flex gap-3">
-            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Where</dt>
+            <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.where", { defaultValue: "Where" })}</dt>
             <dd className="break-words text-foreground">{where}</dd>
           </div>
         )}
         <div className="flex gap-3">
-          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</dt>
+          <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.status", { defaultValue: "Status" })}</dt>
           <dd className={cn("flex items-center gap-1.5 text-foreground", settled && "text-muted-foreground")}>
             {phase === "running" && <Loader2 className="h-3 w-3 animate-spin" />}
             {statusLabel}
@@ -1285,21 +1276,19 @@ function AskFirstResult({
 
       {!settled && (
         <p className="mt-3 text-sm text-foreground">
-          Approve it in the{" "}
+          {t("app.testPanel.approveItInThe", { defaultValue: "Approve it in the" })}{" "}
           <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "review")}>
-            Review tab
-          </Link>{" "}
-          to finish the test. You can also cancel the request.
-        </p>
+            {t("app.testPanel.reviewTab", { defaultValue: "Review tab" })}</Link>{" "}
+          {t("app.testPanel.toFinishTheTestYouCanAlsoCancelTheRequest", { defaultValue: "to finish the test. You can also cancel the request." })}</p>
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button asChild size="sm" variant="outline">
-          <Link to={appTabHref(connectionId, "review")}>Open Review tab</Link>
+          <Link to={appTabHref(connectionId, "review")}>{t("app.testPanel.openReviewTab", { defaultValue: "Open Review tab" })}</Link>
         </Button>
         {phase === "waiting" && actionRequestId && selectedCompanyId && (
           <Button size="sm" variant="ghost" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
-            {cancel.isPending ? "Cancelling…" : "Cancel this request"}
+            {cancel.isPending ? "Cancelling…" : t("app.testPanel.cancelThisRequest", { defaultValue: "Cancel this request" })}
           </Button>
         )}
       </div>
@@ -1338,9 +1327,9 @@ function OffExplanation({
   const allOff = allAgents.every((a) => decisionOf(a) === "off");
 
   const whyBody = entry.status === "quarantined"
-    ? "This action is new and hasn't been turned on yet."
+    ? t("app.testPanel.thisActionIsNewAndHasnTBeenTurnedOnYet", { defaultValue: "This action is new and hasn't been turned on yet." })
     : allOff
-      ? "An admin set it to Off for all agents using this app."
+      ? t("app.testPanel.anAdminSetItToOffForAllAgentsUsingThisApp", { defaultValue: "An admin set it to Off for all agents using this app." })
       : `${agent.name}'s access profile sets this action to Off.`;
 
   // "Last changed by {Actor} · {relativeTime}" — only the access config carries
@@ -1361,34 +1350,32 @@ function OffExplanation({
         <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">{title} is off for {agent.name}.</p>
-            <p className="mt-0.5">It won't run here, and it won't run from a task either.</p>
+            <p className="font-medium text-foreground">{title} {t("app.testPanel.isOffFor", { defaultValue: "is off for " })}{agent.name}.</p>
+            <p className="mt-0.5">{t("app.testPanel.itWonTRunHereAndItWonTRunFromATaskEither", { defaultValue: "It won't run here, and it won't run from a task either." })}</p>
             <p className="mt-2">
-              Want to test it? Turn it on for {agent.name} in{" "}
+              {t("app.testPanel.wantToTestItTurnItOnFor", { defaultValue: "Want to test it? Turn it on for " })}{agent.name} in{" "}
               <Link className="font-medium text-primary hover:underline" to={appTabHref(connectionId, "permissions")}>
-                Permissions
-              </Link>{" "}
-              — set it to Allowed or Ask first.
-            </p>
+                {t("app.testPanel.permissions", { defaultValue: "Permissions" })}</Link>{" "}
+              {t("app.testPanel.setItToAllowedOrAskFirst", { defaultValue: "— set it to Allowed or Ask first." })}</p>
           </div>
         </div>
         <Button asChild size="sm">
-          <Link to={permHref}>Open Permissions →</Link>
+          <Link to={permHref}>{t("app.testPanel.openPermissions", { defaultValue: "Open Permissions →" })}</Link>
         </Button>
-        <p className="text-xs text-muted-foreground">No call will be made — this action is off for {agent.name}.</p>
+        <p className="text-xs text-muted-foreground">{t("app.testPanel.noCallWillBeMadeThisActionIsOffFor", { defaultValue: "No call will be made — this action is off for " })}{agent.name}.</p>
       </div>
 
       <aside className="rounded-md border border-border bg-card p-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("app.testPanel.whyThisIsOff", { defaultValue: "Why this is off" })}</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
         {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}
         {otherSettings.length > 0 && (
           <div className="mt-3">
-            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Other agents using {appName}:</p>
+            <p className="text-(length:--text-micro) font-medium text-muted-foreground">{t("app.testPanel.otherAgentsUsing", { defaultValue: "Other agents using " })}{appName}:</p>
             <ul className="mt-1 space-y-0.5 text-(length:--text-micro) text-muted-foreground">
               {otherSettings.map((s) => (
                 <li key={s.name}>
-                  {s.name}: <span className="text-foreground">{DECISION_META[s.decision].label}</span>
+                  {s.name}{t("app.testPanel.text4", { defaultValue: ": " })}<span className="text-foreground">{DECISION_META[s.decision].label}</span>
                 </li>
               ))}
             </ul>
@@ -1396,7 +1383,7 @@ function OffExplanation({
         )}
         {tryAgents.length > 0 && (
           <div className="mt-3">
-            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Try as a different agent:</p>
+            <p className="text-(length:--text-micro) font-medium text-muted-foreground">{t("app.testPanel.tryAsADifferentAgent", { defaultValue: "Try as a different agent:" })}</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {tryAgents.slice(0, 4).map((other) => (
                 <button

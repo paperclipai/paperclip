@@ -13,6 +13,7 @@ import { useCompany } from "../context/CompanyContext";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
+import { t, useTranslation } from "@/i18n";
 
 type ProjectWorkspaceGroup = {
   projectId: string;
@@ -78,6 +79,7 @@ function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWor
 
 export function Workspaces() {
   const { selectedCompanyId } = useCompany();
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const experimentalSettingsQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -96,7 +98,7 @@ export function Workspaces() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Workspaces" }]);
+    setBreadcrumbs([{ label: t("app.pages.workspaces", { defaultValue: "Workspaces" }) }]);
   }, [setBreadcrumbs]);
 
   const overviewPages = overviewQuery.data?.pages ?? [];
@@ -118,18 +120,18 @@ export function Workspaces() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Workspaces</h2>
+        <h2 className="text-xl font-bold">{t("app.workspaces.workspaces", { defaultValue: "Workspaces" })}</h2>
       </div>
 
       <SummarySlotCard
         companyId={selectedCompanyId}
         scopeKind="workspaces_overview"
-        title="Workspace summary"
-        description="Summarizer tracks workspace activity, live services, and follow-up needs across projects."
+        title={t("app.workspaces.workspaceSummary", { defaultValue: "Workspace summary" })}
+        description={t("app.workspaces.summarizerTracksWorkspaceActivityLiveServicesAndFollowUpNeedsAcrossProjects", { defaultValue: "Summarizer tracks workspace activity, live services, and follow-up needs across projects." })}
       />
 
       {groups.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No workspace activity yet.</p>
+        <p className="text-sm text-muted-foreground">{t("app.workspaces.noWorkspaceActivityYet", { defaultValue: "No workspace activity yet." })}</p>
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (
@@ -158,7 +160,7 @@ export function Workspaces() {
           {overviewQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
               <p className="text-sm text-muted-foreground">
-                Showing {overviewItems.length} of {totalWorkspaceCount} workspaces.
+                {t("app.workspaces.showing", { defaultValue: "Showing " })}{overviewItems.length} {t("app.workspaces.of", { defaultValue: "of " })}{totalWorkspaceCount} workspaces.
               </p>
               <Button
                 type="button"
@@ -167,7 +169,7 @@ export function Workspaces() {
                 onClick={() => void overviewQuery.fetchNextPage()}
                 disabled={overviewQuery.isFetchingNextPage}
               >
-                {overviewQuery.isFetchingNextPage ? "Loading..." : "Load more"}
+                {overviewQuery.isFetchingNextPage ? t("app.workspaces.loading", { defaultValue: "Loading..." }) : t("app.workspaces.loadMore", { defaultValue: "Load more" })}
               </Button>
             </div>
           ) : null}

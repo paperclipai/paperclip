@@ -17,9 +17,11 @@ import { ArchivedStatusCardRow } from "./ArchivedStatusCardRow";
 import { CreateStatusCardDialog } from "./CreateStatusCardDialog";
 import { StatusCardDetailDrawer } from "./StatusCardDetailDrawer";
 import type { StatusCardView } from "./types";
+import { t, useTranslation } from "@/i18n";
 
 export function StatusCards() {
   const { selectedCompanyId } = useCompany();
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -33,7 +35,7 @@ export function StatusCards() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Status" }]);
+    setBreadcrumbs([{ label: t("app.pages.status", { defaultValue: "Status" }) }]);
   }, [setBreadcrumbs]);
 
   const activeQuery = useQuery({
@@ -75,25 +77,25 @@ export function StatusCards() {
     mutationFn: (id: string) => statusCardsApi.refresh(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not refresh the card."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : t("app.index.couldNotRefreshTheCard", { defaultValue: "Could not refresh the card." })),
   });
   const recompileMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.recompile(id),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not run the card."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : t("app.index.couldNotRunTheCard", { defaultValue: "Could not run the card." })),
   });
   const archiveMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: true }),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not archive the card."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : t("app.index.couldNotArchiveTheCard", { defaultValue: "Could not archive the card." })),
   });
   const restoreMutation = useMutation({
     mutationFn: (id: string) => statusCardsApi.patch(id, { archived: false }),
     onMutate: () => setActionError(null),
     onSuccess: () => invalidateLists(),
-    onError: (err) => setActionError(err instanceof Error ? err.message : "Could not restore the card."),
+    onError: (err) => setActionError(err instanceof Error ? err.message : t("app.index.couldNotRestoreTheCard", { defaultValue: "Could not restore the card." })),
   });
 
   const openDetail = (id: string, tab: string = "summary") => {
@@ -116,41 +118,38 @@ export function StatusCards() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">Status</h1>
+          <h1 className="text-xl font-bold">{t("app.index.status", { defaultValue: "Status" })}</h1>
           <Badge variant="secondary" className="gap-1">
             <FlaskConical className="h-3 w-3" />
-            Experimental
-          </Badge>
+            {t("app.index.experimental", { defaultValue: "Experimental" })}</Badge>
         </div>
         <div className="flex items-center gap-4">
           {showCostMeter ? (
             <span className="text-xs text-muted-foreground">
-              Today: {formatTokens(todayTotals.tokens)} · ~{formatCents(todayTotals.cents)}
+              {t("app.index.today", { defaultValue: "Today: " })}{formatTokens(todayTotals.tokens)} {t("app.index.text", { defaultValue: "· ~" })}{formatCents(todayTotals.cents)}
             </span>
           ) : null}
           <Button onClick={() => setCreateOpen(true)} disabled={!selectedCompanyId}>
             <Plus className="h-4 w-4" />
-            New card
-          </Button>
+            {t("app.index.newCard", { defaultValue: "New card" })}</Button>
         </div>
       </div>
 
-      {actionError ? <InlineBanner tone="warning" title="Heads up">{actionError}</InlineBanner> : null}
+      {actionError ? <InlineBanner tone="warning" title={t("app.index.headsUp", { defaultValue: "Heads up" })}>{actionError}</InlineBanner> : null}
 
       {activeQuery.isLoading ? (
         <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading cards…
-        </div>
+          <Loader2 className="h-4 w-4 animate-spin" /> {t("app.index.loadingCards", { defaultValue: "Loading cards…" })}</div>
       ) : activeQuery.isError ? (
-        <InlineBanner tone="danger" title="Could not load status cards">
-          {activeQuery.error instanceof Error ? activeQuery.error.message : "Try again."}
+        <InlineBanner tone="danger" title={t("app.index.couldNotLoadStatusCards", { defaultValue: "Could not load status cards" })}>
+          {activeQuery.error instanceof Error ? activeQuery.error.message : t("app.index.tryAgain", { defaultValue: "Try again." })}
         </InlineBanner>
       ) : activeCards.length === 0 ? (
         <EmptyState
           icon={FlaskConical}
-          title="No status cards yet"
-          message="Create a card to keep a living summary of the issues you care about."
-          action={selectedCompanyId ? "New card" : undefined}
+          title={t("app.index.noStatusCardsYet", { defaultValue: "No status cards yet" })}
+          message={t("app.index.createACardToKeepALivingSummaryOfTheIssuesYouCareAbout", { defaultValue: "Create a card to keep a living summary of the issues you care about." })}
+          action={selectedCompanyId ? t("app.index.newCard", { defaultValue: "New card" }) : undefined}
           onAction={() => setCreateOpen(true)}
         />
       ) : (
@@ -180,7 +179,7 @@ export function StatusCards() {
             onClick={() => setShowArchived((prev) => !prev)}
             className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >
-            {showArchived ? "Hide archived" : `Show archived (${archivedCards.length})`}
+            {showArchived ? t("app.index.hideArchived", { defaultValue: "Hide archived" }) : `Show archived (${archivedCards.length})`}
           </button>
           {showArchived
             ? archivedCards.map((card) => (

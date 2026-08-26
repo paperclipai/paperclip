@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { t } from "@/i18n";
 
 export type RoutineListProjectSummary = {
   name: string;
@@ -56,7 +57,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   runningRoutineId,
   statusMutationRoutineId,
   href,
-  configureLabel = "Edit",
+  configureLabel = t("common.edit", { defaultValue: "Edit" }),
   managedByLabel,
   secondaryDetails,
   runNowButton = false,
@@ -221,7 +222,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
                 onClick={() => onToggleArchived(routine)}
                 disabled={isStatusPending}
               >
-                {routine.status === "archived" ? "Restore" : "Archive"}
+                {routine.status === "archived" ? t("common.restore", { defaultValue: "Restore" }) : t("common.archive", { defaultValue: "Archive" })}
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>

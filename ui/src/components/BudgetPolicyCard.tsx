@@ -5,6 +5,7 @@ import { cn, formatCents } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { t } from "@/i18n";
 
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
@@ -19,7 +20,7 @@ function parseDollarInput(value: string) {
 }
 
 function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
-  return windowKind === "lifetime" ? "Lifetime budget" : "Monthly UTC budget";
+  return windowKind === "lifetime" ? t("app.budgetPolicyCard.lifetimeBudget", { defaultValue: "Lifetime budget" }) : t("app.budgetPolicyCard.monthlyUtcBudget", { defaultValue: "Monthly UTC budget" });
 }
 
 function statusTone(status: BudgetPolicySummary["status"]) {
@@ -56,16 +57,16 @@ export function BudgetPolicyCard({
   const observedBudgetGrid = isPlain ? (
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{ t("app.budgetPolicyCard.observed", { defaultValue: "Observed" }) }</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : t("app.budgetPolicyCard.noCapConfigured", { defaultValue: "No cap configured" })}
         </div>
       </div>
       <div>
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Budget</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{ t("app.budgetPolicyCard.budget", { defaultValue: "Budget" }) }</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
+          {summary.amount > 0 ? formatCents(summary.amount) : t("app.budgetPolicyCard.disabled", { defaultValue: "Disabled" })}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
@@ -75,16 +76,16 @@ export function BudgetPolicyCard({
   ) : (
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Observed</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{ t("app.budgetPolicyCard.observed", { defaultValue: "Observed" }) }</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
+          {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : t("app.budgetPolicyCard.noCapConfigured", { defaultValue: "No cap configured" })}
         </div>
       </div>
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Budget</div>
+        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">{ t("app.budgetPolicyCard.budget", { defaultValue: "Budget" }) }</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
-          {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
+          {summary.amount > 0 ? formatCents(summary.amount) : t("app.budgetPolicyCard.disabled", { defaultValue: "Disabled" })}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
           Soft alert at {summary.warnPercent}%{summary.paused && summary.pauseReason ? ` · ${summary.pauseReason} pause` : ""}
@@ -96,8 +97,8 @@ export function BudgetPolicyCard({
   const progressSection = (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Remaining</span>
-        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
+        <span>{ t("app.budgetPolicyCard.remaining", { defaultValue: "Remaining" }) }</span>
+        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : t("app.budgetPolicyCard.unlimited", { defaultValue: "Unlimited" })}</span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
@@ -125,8 +126,8 @@ export function BudgetPolicyCard({
       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
         {summary.scopeType === "project"
-          ? "Execution is paused for this project until the budget is raised or the incident is dismissed."
-          : "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed."}
+          ? t("app.budgetPolicyCard.executionIsPausedForThisProjectUntilTheBudgetIsRaisedOrTheIncidentIsDismissed", { defaultValue: "Execution is paused for this project until the budget is raised or the incident is dismissed." })
+          : t("app.budgetPolicyCard.heartbeatsArePausedForThisScopeUntilTheBudgetIsRaisedOrTheIncidentIsDismissed", { defaultValue: "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed." })}
       </div>
     </div>
   ) : null;
@@ -151,7 +152,7 @@ export function BudgetPolicyCard({
         }}
         disabled={!canSave || isSaving || parsedDraft === null}
       >
-        {isSaving ? "Saving..." : summary.amount > 0 ? "Update budget" : "Set budget"}
+        {isSaving ? t("app.budgetPolicyCard.saving", { defaultValue: "Saving..." }) : summary.amount > 0 ? t("app.budgetPolicyCard.updateBudget", { defaultValue: "Update budget" }) : t("app.budgetPolicyCard.setBudget", { defaultValue: "Set budget" })}
       </Button>
     </div>
   ) : null;
@@ -178,7 +179,7 @@ export function BudgetPolicyCard({
             )}
           >
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused ? t("app.budgetPolicyCard.paused", { defaultValue: "Paused" }) : summary.status === "warning" ? t("app.budgetPolicyCard.warning", { defaultValue: "Warning" }) : summary.status === "hard_stop" ? t("app.budgetPolicyCard.hardStop", { defaultValue: "Hard stop" }) : t("app.budgetPolicyCard.healthy", { defaultValue: "Healthy" })}
           </div>
         </div>
 
@@ -187,7 +188,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{ t("app.budgetPolicyCard.enterAValidNonNegativeDollarAmount", { defaultValue: "Enter a valid non-negative dollar amount." }) }</p>
         ) : null}
       </div>
     );
@@ -195,7 +196,7 @@ export function BudgetPolicyCard({
 
   return (
     <Card className={cn("overflow-hidden border-border/70 bg-card/80", compact ? "" : "shadow-(--shadow-extract-2)")}>
-      <CardHeader className={cn("gap-3", compact ? "px-4 pt-4 pb-2" : "px-5 pt-5 pb-3")}>
+      <CardHeader className={cn("gap-3", compact ? t("app.budgetPolicyCard.px4Pt4Pb2", { defaultValue: "px-4 pt-4 pb-2" }) : t("app.budgetPolicyCard.px5Pt5Pb3", { defaultValue: "px-5 pt-5 pb-3" }))}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
@@ -206,17 +207,17 @@ export function BudgetPolicyCard({
           </div>
           <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-(length:--text-micro) uppercase tracking-(--tracking-caps)", statusTone(summary.status))}>
             <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+            {summary.paused ? t("app.budgetPolicyCard.paused", { defaultValue: "Paused" }) : summary.status === "warning" ? t("app.budgetPolicyCard.warning", { defaultValue: "Warning" }) : summary.status === "hard_stop" ? t("app.budgetPolicyCard.hardStop", { defaultValue: "Hard stop" }) : t("app.budgetPolicyCard.healthy", { defaultValue: "Healthy" })}
           </div>
         </div>
       </CardHeader>
-      <CardContent className={cn("space-y-4", compact ? "px-4 pb-4 pt-0" : "px-5 pb-5 pt-0")}>
+      <CardContent className={cn("space-y-4", compact ? t("app.budgetPolicyCard.px4Pb4Pt0", { defaultValue: "px-4 pb-4 pt-0" }) : t("app.budgetPolicyCard.px5Pb5Pt0", { defaultValue: "px-5 pb-5 pt-0" }))}>
         {observedBudgetGrid}
         {progressSection}
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{ t("app.budgetPolicyCard.enterAValidNonNegativeDollarAmount", { defaultValue: "Enter a valid non-negative dollar amount." }) }</p>
         ) : null}
       </CardContent>
     </Card>

@@ -10,6 +10,7 @@ import {
   parseCssTimeMs,
   type MotionTokenDef,
 } from "./motion-tokens";
+import { t } from "@/i18n";
 
 const POS_KEY = "tc-tweak-pos";
 const OVERRIDES_KEY = "tc-tweak-overrides";
@@ -138,14 +139,14 @@ export function TweakPanel() {
         onPointerUp={onHeaderPointerUp}
       >
         <GripHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
-        <span>Motion tweak panel</span>
+        <span>{t("app.tweakPanel.motionTweakPanel", { defaultValue: "Motion tweak panel" })}</span>
         <div className="ml-auto flex items-center gap-1">
-          <button type="button" title="Reset all" onClick={resetAll} className="rounded p-0.5 hover:bg-accent">
+          <button type="button" title={t("app.tweakPanel.resetAll", { defaultValue: "Reset all" })} onClick={resetAll} className="rounded p-0.5 hover:bg-accent">
             <RotateCcw className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
-            title={minimized ? "Expand" : "Minimize"}
+            title={minimized ? t("app.tweakPanel.expand", { defaultValue: "Expand" }) : t("app.tweakPanel.minimize", { defaultValue: "Minimize" })}
             onClick={() => setMinimized((m) => !m)}
             className="rounded p-0.5 hover:bg-accent"
           >
@@ -209,7 +210,7 @@ export function TweakPanel() {
               className="flex flex-1 items-center justify-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
             >
               <Copy className="h-3.5 w-3.5" />
-              Copy as @theme
+              {t("app.tweakPanel.copyAsTheme", { defaultValue: "Copy as @theme" })}
             </button>
           </div>
 

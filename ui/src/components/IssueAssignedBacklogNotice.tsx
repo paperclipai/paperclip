@@ -1,6 +1,7 @@
 import { Flag } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { t } from "@/i18n";
 
 interface IssueAssignedBacklogNoticeProps {
   issueStatus: string;
@@ -32,13 +33,10 @@ export function IssueAssignedBacklogNotice({
         <Flag className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
         <div className="min-w-0 flex-1 space-y-1.5">
           <p className="leading-5">
-            <span className="font-medium">Parked</span> —{" "}
-            <span className="font-medium">{assigneeLabel}</span> will not be asked to work on this until status changes to To do or In progress.
-          </p>
+            <span className="font-medium">{ t("app.issueAssignedBacklogNotice.parked", { defaultValue: "Parked" }) }</span> —{" "}
+            <span className="font-medium">{assigneeLabel}</span> { t("app.issueAssignedBacklogNotice.willNotBeAskedToWorkOnThisUntilStatusChangesToToDoOrInProgress", { defaultValue: "will not be asked to work on this until status changes to To do or In progress." }) } </p>
           {assigneeAgent ? (
-            <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
-              Comments still notify the assignee for questions or triage. Leave this parked only if the work is intentionally on hold.
-            </p>
+            <p className="text-xs leading-5 text-amber-800 dark:text-amber-200"> { t("app.issueAssignedBacklogNotice.commentsStillNotifyTheAssigneeForQuestionsOrTriageLeaveThisParkedOnlyIfTheWorkIsIntentionallyOnHold", { defaultValue: "Comments still notify the assignee for questions or triage. Leave this parked only if the work is intentionally on hold." }) } </p>
           ) : null}
           {onResume ? (
             <div className="pt-0.5">
@@ -50,7 +48,7 @@ export function IssueAssignedBacklogNotice({
                 disabled={resuming}
                 data-testid="issue-assigned-backlog-resume"
               >
-                {resuming ? "Resuming…" : "Resume now"}
+                {resuming ? t("app.issueAssignedBacklogNotice.resuming", { defaultValue: "Resuming…" }) : t("app.issueAssignedBacklogNotice.resumeNow", { defaultValue: "Resume now" })}
               </Button>
             </div>
           ) : null}

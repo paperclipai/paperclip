@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
 import { ErrorState } from "./shared";
+import { t } from "@/i18n";
 
 const SAMPLE_CONFIG = `{
   "mcpServers": {
@@ -33,7 +34,7 @@ function humanizeKey(raw: string): string {
 
 function draftSummary(draft: McpJsonImportDraft): string {
   const keyCount = draft.credentialFields.length || draft.credentialRefs.length;
-  const where = draft.transport === "local_stdio" ? "Runs in your workspace" : "Connects over the web";
+  const where = draft.transport === "local_stdio" ? t("app.pasteConfigTab.runsInYourWorkspace", { defaultValue: "Runs in your workspace" }) : t("app.pasteConfigTab.connectsOverTheWeb", { defaultValue: "Connects over the web" });
   if (keyCount === 0) return `${where}  ·  no keys needed`;
   return `${where}  ·  needs ${keyCount} ${keyCount === 1 ? "key" : "keys"}`;
 }
@@ -140,7 +141,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         access: "all_agents",
       });
     },
-    onSuccess: () => setActivatedName(connectResult?.application.name ?? "Imported app"),
+    onSuccess: () => setActivatedName(connectResult?.application.name ?? t("app.pasteConfigTab.importedApp", { defaultValue: "Imported app" })),
   });
 
   const drafts = preview?.drafts ?? [];
@@ -160,13 +161,11 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
   return (
     <div className="space-y-5">
       <p className="max-w-2xl text-sm text-muted-foreground">
-        Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup.
-      </p>
+        {t("app.pasteConfigTab.pasteTheMcpConfigSnippetFromTheToolSReadmeAndWeLlTurnItIntoAFriendlySetup", { defaultValue: "Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup." })}</p>
       <p className="text-xs text-muted-foreground">
-        Just a URL?{" "}
+        {t("app.pasteConfigTab.justAUrl", { defaultValue: "Just a URL?" })}{" "}
         <Link to="/apps" className="text-primary hover:underline">
-          Browse planned app connections
-        </Link>{" "}
+          {t("app.pasteConfigTab.browsePlannedAppConnections", { defaultValue: "Browse planned app connections" })}</Link>{" "}
         instead.
       </p>
 
@@ -188,8 +187,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           <p className="text-xs text-amber-600">{localParseError}</p>
         ) : (
           <p className="text-xs text-muted-foreground">
-            Paste an MCP config — the snippet a README tells you to copy.
-          </p>
+            {t("app.pasteConfigTab.pasteAnMcpConfigTheSnippetAReadmeTellsYouToCopy", { defaultValue: "Paste an MCP config — the snippet a README tells you to copy." })}</p>
         )}
       </div>
 
@@ -198,11 +196,10 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           onClick={() => importMutation.mutate(draftText)}
           disabled={!canSubmit || Boolean(localParseError)}
         >
-          {importMutation.isPending ? "Checking…" : "Check config"}
+          {importMutation.isPending ? "Checking…" : t("app.pasteConfigTab.checkConfig", { defaultValue: "Check config" })}
         </Button>
         <span className="text-xs text-muted-foreground">
-          We'll read it and show what we found before anything is saved.
-        </span>
+          {t("app.pasteConfigTab.weLlReadItAndShowWhatWeFoundBeforeAnythingIsSaved", { defaultValue: "We'll read it and show what we found before anything is saved." })}</span>
       </div>
 
       {importMutation.isError ? <ErrorState error={importMutation.error} /> : null}
@@ -210,14 +207,12 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       {preview ? (
         drafts.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
-            We couldn't find an app in that config. Double-check you pasted the whole snippet.
-          </div>
+            {t("app.pasteConfigTab.weCouldnTFindAnAppInThatConfigDoubleCheckYouPastedTheWholeSnippet", { defaultValue: "We couldn't find an app in that config. Double-check you pasted the whole snippet." })}</div>
         ) : (
           <div className="space-y-3">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-              We found {drafts.length} {drafts.length === 1 ? "app" : "apps"} in that config
-            </h3>
+              {t("app.pasteConfigTab.weFound", { defaultValue: "We found " })}{drafts.length} {drafts.length === 1 ? "app" : "apps"} {t("app.pasteConfigTab.inThatConfig", { defaultValue: "in that config" })}</h3>
             {drafts.map((draft, index) => {
               const url = draftConnectUrl(draft);
               const missingFields = missingCredentialFields(draft, credentialValues);
@@ -237,14 +232,10 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
             })}
             {drafts.some((d) => draftConnectUrl(d)) ? (
               <p className="text-xs text-muted-foreground">
-                Checking a remote app creates a draft connection, stores any header replacements as Paperclip secrets,
-                and runs health/catalog discovery before activation.
-              </p>
+                {t("app.pasteConfigTab.checkingARemoteAppCreatesADraftConnectionStoresAnyHeaderReplacementsAsPaperclipSecretsAndRunsHealthCatalogDiscoveryBeforeActivation", { defaultValue: "Checking a remote app creates a draft connection, stores any header replacements as Paperclip secrets, and runs health/catalog discovery before activation." })}</p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                We humanized the field names from the config. These run-in-your-workspace tools stay as drafts until an
-                admin maps them to an approved template.
-              </p>
+                {t("app.pasteConfigTab.weHumanizedTheFieldNamesFromTheConfigTheseRunInYourWorkspaceToolsStayAsDraftsUntilAnAdminMapsThemToAnApprovedTemplate", { defaultValue: "We humanized the field names from the config. These run-in-your-workspace tools stay as drafts until an admin maps them to an approved template." })}</p>
             )}
           </div>
         )
@@ -298,8 +289,7 @@ function DraftCard({
         {onCheck ? (
           <Button size="sm" className="shrink-0" onClick={onCheck} disabled={checking || !canCheck}>
             {checking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-            Check actions
-          </Button>
+            {t("app.pasteConfigTab.checkActions", { defaultValue: "Check actions" })}</Button>
         ) : null}
       </div>
 
@@ -319,7 +309,7 @@ function DraftCard({
                   type="password"
                   value={credentialValues[credentialValueKey(draft, field.configPath)] ?? ""}
                   onChange={(event) => onCredentialChange(field.configPath, event.target.value)}
-                  placeholder="Paste replacement value"
+                  placeholder={t("app.pasteConfigTab.pasteReplacementValue", { defaultValue: "Paste replacement value" })}
                   className="h-8 max-w-sm text-xs"
                 />
               </div>
@@ -328,10 +318,9 @@ function DraftCard({
         </div>
       ) : draft.credentialRefs.length > 0 ? (
         <p className="mt-3 text-xs text-muted-foreground">
-          Keys from this config stay draft-only until an admin maps them to an approved template.
-        </p>
+          {t("app.pasteConfigTab.keysFromThisConfigStayDraftOnlyUntilAnAdminMapsThemToAnApprovedTemplate", { defaultValue: "Keys from this config stay draft-only until an admin maps them to an approved template." })}</p>
       ) : (
-        <p className="mt-3 text-xs text-muted-foreground">No keys needed for this one.</p>
+        <p className="mt-3 text-xs text-muted-foreground">{t("app.pasteConfigTab.noKeysNeededForThisOne", { defaultValue: "No keys needed for this one." })}</p>
       )}
 
       {draft.warnings.length > 0 ? (
@@ -373,19 +362,18 @@ function CatalogReview({
         <div>
           <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <ShieldCheck className="h-4 w-4 text-emerald-600" />
-            Review actions for {result.application.name}
+            {t("app.pasteConfigTab.reviewActionsFor", { defaultValue: "Review actions for " })}{result.application.name}
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            Health and catalog checks passed. Read-only actions start on; actions that can change data start off.
-          </p>
+            {t("app.pasteConfigTab.healthAndCatalogChecksPassedReadOnlyActionsStartOnActionsThatCanChangeDataStartOff", { defaultValue: "Health and catalog checks passed. Read-only actions start on; actions that can change data start off." })}</p>
         </div>
         <Button size="sm" onClick={onFinish} disabled={finishing || enabledCount === 0 || Boolean(activatedName)}>
           {finishing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-          Activate {enabledCount} of {total}
+          {t("app.pasteConfigTab.activate", { defaultValue: "Activate " })}{enabledCount} {t("app.pasteConfigTab.of", { defaultValue: "of " })}{total}
         </Button>
       </div>
       <ActionGroup
-        title="Read-only"
+        title={t("app.pasteConfigTab.readOnly", { defaultValue: "Read-only" })}
         actions={result.actions.readOnly}
         enabled={enabled}
         onToggle={onToggle}
@@ -393,7 +381,7 @@ function CatalogReview({
         askFirstLevels={askFirstLevels}
       />
       <ActionGroup
-        title="Can make changes"
+        title={t("app.pasteConfigTab.canMakeChanges", { defaultValue: "Can make changes" })}
         actions={result.actions.canMakeChanges}
         enabled={enabled}
         onToggle={onToggle}
@@ -401,7 +389,7 @@ function CatalogReview({
         askFirstLevels={askFirstLevels}
       />
       {activatedName ? (
-        <p className="text-xs font-medium text-emerald-700">{activatedName} is active for all agents.</p>
+        <p className="text-xs font-medium text-emerald-700">{activatedName} {t("app.pasteConfigTab.isActiveForAllAgents", { defaultValue: "is active for all agents." })}</p>
       ) : null}
     </div>
   );
@@ -429,11 +417,9 @@ function ActionGroup({
         <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</div>
         <div className="flex gap-2">
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onBulk(true)}>
-            Turn all on
-          </Button>
+            {t("app.pasteConfigTab.turnAllOn", { defaultValue: "Turn all on" })}</Button>
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onBulk(false)}>
-            Turn all off
-          </Button>
+            {t("app.pasteConfigTab.turnAllOff", { defaultValue: "Turn all off" })}</Button>
         </div>
       </div>
       <div className="divide-y divide-border rounded-lg border border-border">
@@ -444,7 +430,7 @@ function ActionGroup({
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium text-foreground">{action.title || action.toolName}</div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {askFirstLevels.includes(action.riskLevel) ? "Ask first when enabled" : action.riskLevel}
+                  {askFirstLevels.includes(action.riskLevel) ? t("app.pasteConfigTab.askFirstWhenEnabled", { defaultValue: "Ask first when enabled" }) : action.riskLevel}
                 </div>
               </div>
               <ToggleSwitch checked={on} onCheckedChange={(next) => onToggle(action.catalogEntryId, next)} />

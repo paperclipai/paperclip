@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ApiError } from "@/api/client";
+import { t } from "@/i18n";
 
 /** Risk classification badge for a catalog tool. */
 export function RiskBadge({ risk }: { risk: ToolRiskLevel | null | undefined }) {
@@ -91,12 +92,12 @@ function decisionToStatusKey(decision: string): { key: string; label: string } {
       return { key: "block", label: "block" };
     case "require_approval":
     case "requires_approval":
-      return { key: "require-approval", label: "require approval" };
+      return { key: "require-approval", label: t("app.shared.requireApproval", { defaultValue: "require approval" }) };
     case "redact":
     case "redacted":
       return { key: "redacted", label: "redacted" };
     case "rate_limited":
-      return { key: "rate-limit", label: "rate limited" };
+      return { key: "rate-limit", label: t("app.shared.rateLimited", { defaultValue: "rate limited" }) };
     case "defer":
     case "deferred":
       return { key: "deferred", label: "deferred" };
@@ -157,7 +158,7 @@ export function ToolsPageHeader({
   );
 }
 
-export function LoadingState({ label = "Loading…" }: { label?: string }) {
+export function LoadingState({ label = t("app.shared.loading2", { defaultValue: "Loading…" }) }: { label?: string }) {
   return (
     <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
       <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
@@ -189,7 +190,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
         <div className="flex items-start gap-2 text-sm text-destructive">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <p className="font-medium">Could not load this view</p>
+            <p className="font-medium">{t("app.shared.couldNotLoadThisView", { defaultValue: "Could not load this view" })}</p>
             <p className="text-destructive/80">{message}</p>
           </div>
         </div>
@@ -199,7 +200,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
             onClick={onRetry}
             className="self-start rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
           >
-            Retry
+            {t("common.retry", { defaultValue: "Retry" })}
           </button>
         ) : null}
       </CardContent>
@@ -231,7 +232,7 @@ export function PendingBackendNotice({
         <p className="max-w-2xl text-sm text-muted-foreground">{body}</p>
         {issue ? (
           <a href={issue.href} className="text-sm font-medium text-primary hover:underline">
-            Tracked in {issue.identifier} →
+            {t("app.shared.trackedIn", { defaultValue: "Tracked in " })}{issue.identifier} →
           </a>
         ) : null}
       </CardContent>

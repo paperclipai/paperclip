@@ -5,6 +5,7 @@ import { toolsApi, type ToolAuditOutcome, type ToolGatewayActivityEvent } from "
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState, RelativeTime } from "@/pages/tools/shared";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 const OUTCOME_LABEL: Record<ToolAuditOutcome, string> = {
   allowed: "Allowed",
@@ -66,25 +67,23 @@ export function GatewayActivityPanel({
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        Every call through this gateway in the last 7 days, with why it was allowed, blocked, or paused.
-      </p>
+        {t("app.gatewayActivityPanel.everyCallThroughThisGatewayInTheLast7DaysWithWhyItWasAllowedBlockedOrPaused", { defaultValue: "Every call through this gateway in the last 7 days, with why it was allowed, blocked, or paused." })}</p>
       {events.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No calls have gone through this gateway yet.
-        </div>
+          {t("app.gatewayActivityPanel.noCallsHaveGoneThroughThisGatewayYet", { defaultValue: "No calls have gone through this gateway yet." })}</div>
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border">
           {events.map((event) => {
             const outcome = event.normalizedOutcome;
             const tool = event.toolDisplayName ?? "tool";
             const app = event.appDisplayName ?? event.applicationDisplayName ?? "app";
-            const actor = event.agentDisplayName ?? "Client";
+            const actor = event.agentDisplayName ?? t("app.gatewayActivityPanel.client", { defaultValue: "Client" });
             return (
               <li key={event.id} className="flex items-center justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-foreground">{actor}</div>
                   <div className="truncate text-xs text-muted-foreground">
-                    {app} · {tool} · <RelativeTime value={event.createdAt} />
+                    {app} {t("app.gatewayActivityPanel.text", { defaultValue: "· " })}{tool} {t("app.gatewayActivityPanel.text", { defaultValue: "· " })}<RelativeTime value={event.createdAt} />
                   </div>
                 </div>
                 <span

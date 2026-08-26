@@ -1,4 +1,5 @@
 import { cn } from "../../lib/utils";
+import { t } from "@/i18n";
 
 /**
  * The agent arc — create the agent, connect it, review — is the part of the
@@ -17,6 +18,13 @@ export const AGENT_ARC_STEP_LABELS = [
   "Create your first agent",
   "Connect a model",
   "Review",
+] as const;
+
+/** i18next keys matching `AGENT_ARC_STEP_LABELS`, in the same order. */
+const AGENT_ARC_STEP_LABEL_KEYS = [
+  "onboarding.createFirstAgent",
+  "onboarding.connectModel",
+  "onboarding.review",
 ] as const;
 
 /** Wizard step numbers that make up the arc, in order. */
@@ -69,7 +77,13 @@ export function Stepper({
             <button
               key={segment}
               type="button"
-              aria-label={AGENT_ARC_STEP_LABELS[segment - 1] ?? `Step ${segment}`}
+              aria-label={
+                AGENT_ARC_STEP_LABELS[segment - 1]
+                  ? t(AGENT_ARC_STEP_LABEL_KEYS[segment - 1], {
+                      defaultValue: AGENT_ARC_STEP_LABELS[segment - 1],
+                    })
+                  : `Step ${segment}`
+              }
               aria-current={segment === step ? "step" : undefined}
               disabled={!jumpable}
               onClick={() => jumpable && onJumpToStep?.(segment)}
