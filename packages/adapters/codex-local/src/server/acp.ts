@@ -35,6 +35,10 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  classifyWorkspaceRestoreFailure,
+  describeWorkspaceRestoreFailure,
+} from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
@@ -243,17 +247,23 @@ async function prepareCodexRemoteManagedHome(
           "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
         );
         await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
+        return { ok: true };
       } catch (err) {
         // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
         // loudly as refresh_token_reused on the next host Codex use (re-auth
         // recovers) — never silent host-credential corruption, so it must not
         // mask the run result.
+        //
+        // The run log is readable by any same-company actor, so it must never
+        // carry the caught error's own message: that message can hold a host
+        // filesystem path or a process id. Log only the fixed, allowlisted
+        // diagnostic for the classified code.
+        const code = classifyWorkspaceRestoreFailure(err);
         await onLog(
           "stderr",
-          `[paperclip] Codex ACP teardown restore/copy-back failed: ${
-            err instanceof Error ? err.message : String(err)
-          }\n`,
+          `[paperclip] Codex ACP teardown restore/copy-back failed: ${describeWorkspaceRestoreFailure(code)}\n`,
         );
+        return { ok: false, code };
       }
     },
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the

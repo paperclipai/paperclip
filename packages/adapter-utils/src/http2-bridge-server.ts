@@ -421,31 +421,18 @@ export const DEFAULT_HTTP2_BRIDGE_PING_STALL_MS = 20_000;
  * this bound, so a slow peer that keeps making real progress completes; only
  * a peer that stops sending trips it. */
 export const DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS = 30_000;
-/** The default lifetime bound on a request body read, measured from the
- * start of the read or from the most recent chunk that carried real
- * progress, whichever is later. This bound is independent of
- * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS}: the idle bound
- * resets on every chunk to catch a peer that stops sending; this bound
- * renews on every chunk too, but only up to the hard ceiling below, so it
- * catches a peer that never stops sending but also never finishes. See
- * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS} for the
- * bound that keeps this renewal from running forever. */
-export const DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_MAX_LIFETIME_MS = 120_000;
 /** The default hard ceiling on a request body read's total lifetime: an
- * absolute bound armed once, at the start of the read, and never pushed out
- * past this point no matter how much progress a later chunk reports. A peer
- * cannot use a steady trickle of small chunks to keep renewing
- * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_MAX_LIFETIME_MS} and hold a
- * {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} stream slot open forever,
- * because this ceiling still ends the read once the read's total age passes
- * it. Set well above {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_MAX_LIFETIME_MS}
- * so a legitimate upload that makes real but slow progress — a chunk every
- * few seconds, well inside the renewable bound above — still has room to
- * finish, while a peer that never finishes is still bounded to this ceiling
- * instead of running forever. This is an intentional design limit, not a
- * defect and not open for removal without a replacement bound. */
-export const DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS =
-  DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_MAX_LIFETIME_MS * 4;
+ * absolute bound armed once, at the start of the read, and never renewed by
+ * later progress. This bound is independent of
+ * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS}: the idle bound
+ * resets on every chunk to catch a peer that stops sending; this ceiling
+ * catches a peer that never stops sending but also never finishes, so a
+ * peer cannot use a steady trickle of small chunks to hold a
+ * {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} stream slot open forever. Set
+ * well above {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS} so a
+ * legitimate upload that makes real but slow progress — a chunk every few
+ * seconds, well inside the idle bound — still has room to finish. */
+export const DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS = 480_000;
 /** The default bound {@link Http2BridgeServerHandle.close} waits for an
  * active session to close on its own before it force-destroys the session. A
  * session that carries a stalled stream would otherwise hold `close()` open
@@ -558,16 +545,8 @@ export interface CreateHttp2BridgeServerOptions {
    * received chunks. The default is
    * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS}. */
   requestBodyTimeoutMs?: number;
-  /** The lifetime bound a request body read gets, renewed on every chunk
-   * that carries real progress, up to {@link requestBodyLifetimeCeilingMs}.
-   * See {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_MAX_LIFETIME_MS} for why the
-   * server enforces it. The default is
-   * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_MAX_LIFETIME_MS}. */
-  requestBodyMaxLifetimeMs?: number;
   /** The hard ceiling on a request body read's total lifetime, armed once
-   * and never pushed out by progress. This bound caps worst-case
-   * stream-slot occupancy even for a peer that keeps renewing
-   * {@link requestBodyMaxLifetimeMs} with a steady trickle of chunks. See
+   * and never renewed by progress. See
    * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS} for the
    * default and the reasoning behind it. */
   requestBodyLifetimeCeilingMs?: number;
@@ -634,29 +613,22 @@ function toOutboundHeaderRecord(headers: http2.IncomingHttpHeaders): Record<stri
   return out;
 }
 
+/** The size and time bounds a request body read enforces. */
+export interface Http2BridgeBodyBounds {
+  /** The maximum request body size, in bytes. */
+  maxBodyBytes: number;
+  /** The idle bound: see {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS}. */
+  idleTimeoutMs: number;
+  /** The lifetime ceiling: see {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS}. */
+  lifetimeCeilingMs: number;
+}
+
 /**
  * Read one request body, bounded on size and on two independent time
- * bounds.
- *
- * The idle bound resets on each received chunk, so a slow peer that keeps
- * making real progress completes, while a peer that stops sending
- * mid-stream — the same failure a stalled network path or a hung sandbox
- * process produces — still trips it.
- *
- * The lifetime bound also renews on each received chunk, by the same
- * amount, so a slow peer that keeps sending real progress gets more time
- * instead of losing the stream mid-upload. That renewal never pushes the
- * deadline past `startedAt + lifetimeCeilingMs`: the hard ceiling arms once,
- * when the read starts, and holds no matter how much progress a later chunk
- * reports. This is an intentional design limit, not a defect, and it is not
- * open for removal or relaxation without a replacement bound. It exists to
- * cap the worst-case time one read can occupy a
- * {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} stream slot — a cap the idle
- * bound cannot provide alone, because a peer that keeps every chunk gap
- * under the idle bound never trips it, no matter how long the read runs. A
- * peer cannot use a steady trickle of small chunks to hold the slot forever,
- * because the ceiling still ends the read once the read's total age passes
- * it, regardless of how the peer paces its chunks.
+ * bounds: an idle bound and a total-lifetime ceiling. See
+ * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS} and
+ * {@link DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS} for why the
+ * server enforces each one.
  *
  * The `close` listener is the settle-of-last-resort: it fires whenever the
  * stream ends for any reason at all — a normal end, an error, a timeout- or
@@ -665,23 +637,19 @@ function toOutboundHeaderRecord(headers: http2.IncomingHttpHeaders): Record<stri
  */
 function readHttp2StreamBody(
   stream: http2.ServerHttp2Stream,
-  maxBodyBytes: number,
-  idleTimeoutMs: number,
-  maxLifetimeMs: number,
-  lifetimeCeilingMs: number,
+  bounds: Http2BridgeBodyBounds,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
     let settled = false;
     let idleTimer: ReturnType<typeof setTimeout>;
-    let lifetimeTimer: ReturnType<typeof setTimeout>;
-    const hardDeadline = Date.now() + lifetimeCeilingMs;
+    let lifetimeCeilingTimer: ReturnType<typeof setTimeout>;
     const settle = (run: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(idleTimer);
-      clearTimeout(lifetimeTimer);
+      clearTimeout(lifetimeCeilingTimer);
       run();
     };
     const armIdleTimer = () => {
@@ -689,38 +657,29 @@ function readHttp2StreamBody(
       idleTimer = setTimeout(() => {
         settle(() => reject(new Error("Bridge request body stalled before it completed.")));
         stream.destroy();
-      }, idleTimeoutMs);
+      }, bounds.idleTimeoutMs);
       idleTimer.unref?.();
     };
-    // Renews on every chunk that carries real progress, but the delay never
-    // exceeds the time left before the hard ceiling armed below: see the
-    // function's own doc comment for why the ceiling must stay independent
-    // of progress.
-    const armLifetimeTimer = () => {
-      clearTimeout(lifetimeTimer);
-      const delayMs = Math.max(0, Math.min(maxLifetimeMs, hardDeadline - Date.now()));
-      lifetimeTimer = setTimeout(() => {
-        settle(() => reject(new Error("Bridge request body exceeded the maximum lifetime bound.")));
-        stream.destroy();
-      }, delayMs);
-      lifetimeTimer.unref?.();
-    };
-    armLifetimeTimer();
+    // Arms one time, when the read starts, and never rearms on a chunk: see
+    // DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS for why the
+    // ceiling must stay independent of progress.
+    lifetimeCeilingTimer = setTimeout(() => {
+      settle(() => reject(new Error("Bridge request body passed the total lifetime ceiling.")));
+      stream.destroy();
+    }, bounds.lifetimeCeilingMs);
+    lifetimeCeilingTimer.unref?.();
     armIdleTimer();
     stream.on("data", (chunk: Buffer) => {
       totalBytes += chunk.byteLength;
-      if (totalBytes > maxBodyBytes) {
+      if (totalBytes > bounds.maxBodyBytes) {
         settle(() => reject(new Error("Bridge request body exceeded the configured size limit.")));
         stream.destroy();
         return;
       }
       chunks.push(chunk);
       // The chunk is real progress, so the peer is not stalled: reset the
-      // idle bound and renew the lifetime bound, instead of letting either
-      // expire under a slow but active upload. The lifetime renewal above is
-      // still capped by the hard ceiling.
+      // idle bound. The lifetime ceiling timer above does not reset here.
       armIdleTimer();
-      armLifetimeTimer();
     });
     stream.once("end", () => settle(() => resolve(Buffer.concat(chunks))));
     stream.once("error", (error) => settle(() => reject(error instanceof Error ? error : new Error(String(error)))));
@@ -743,26 +702,23 @@ function respondJson(stream: http2.ServerHttp2Stream, status: number, body: unkn
 
 /**
  * Answer a denied stream, then consume and discard its request body under
- * the same idle and total lifetime bounds an authenticated request gets.
- * A denied request's body content never reaches the forward handler, but
- * the inbound half of the stream still needs a bound: without one, a peer
- * that leaves the body unfinished keeps the stream open, holding one of the
- * {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slots for as long as it
- * chooses. Nothing awaits the discard; the caller has already answered the
- * request and moves on to the next stream.
+ * the same bounds ({@link Http2BridgeBodyBounds}) an authenticated request
+ * gets. A denied request's body content never reaches the forward handler,
+ * but the inbound half of the stream still needs a bound: without one, a
+ * peer that leaves the body unfinished keeps the stream open, holding one
+ * of the {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slots for as long as
+ * it chooses. Nothing awaits the discard; the caller has already answered
+ * the request and moves on to the next stream.
  */
 function denyRequest(
   stream: http2.ServerHttp2Stream,
   status: number,
   body: unknown,
-  maxBodyBytes: number,
-  idleTimeoutMs: number,
-  maxLifetimeMs: number,
-  lifetimeCeilingMs: number,
+  bounds: Http2BridgeBodyBounds,
 ): void {
   respondJson(stream, status, body);
   if (stream.destroyed || stream.closed) return;
-  readHttp2StreamBody(stream, maxBodyBytes, idleTimeoutMs, maxLifetimeMs, lifetimeCeilingMs).catch(() => {
+  readHttp2StreamBody(stream, bounds).catch(() => {
     // The idle or lifetime bound above already destroyed the stream, or the
     // peer reset it first. Either way the slot is free; the discarded body
     // content is irrelevant to a denial.
@@ -781,14 +737,20 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
   const pingIntervalMs = options.pingIntervalMs ?? DEFAULT_HTTP2_BRIDGE_PING_INTERVAL_MS;
   const pingStallMs = options.pingStallMs ?? DEFAULT_HTTP2_BRIDGE_PING_STALL_MS;
   const requestBodyTimeoutMs = options.requestBodyTimeoutMs ?? DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_TIMEOUT_MS;
-  const requestBodyMaxLifetimeMs =
-    options.requestBodyMaxLifetimeMs ?? DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_MAX_LIFETIME_MS;
   const requestBodyLifetimeCeilingMs =
     options.requestBodyLifetimeCeilingMs ?? DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS;
   const closeGraceMs = options.closeGraceMs ?? DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS;
   const maxBufferedReadBytes = options.maxBufferedReadBytes ?? DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES;
   const readBackpressureStallMs =
     options.readBackpressureStallMs ?? DEFAULT_HTTP2_BRIDGE_READ_BACKPRESSURE_STALL_MS;
+  // Built one time and passed to every readHttp2StreamBody() and
+  // denyRequest() call below, so every stream on this server enforces the
+  // same bounds.
+  const bodyBounds: Http2BridgeBodyBounds = {
+    maxBodyBytes,
+    idleTimeoutMs: requestBodyTimeoutMs,
+    lifetimeCeilingMs: requestBodyLifetimeCeilingMs,
+  };
 
   const server = http2.createServer(HTTP2_BRIDGE_SERVER_OPTIONS);
   const activeSessions = new Set<http2.ServerHttp2Session>();
@@ -801,15 +763,7 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
     // before route processing and before header processing. This host check
     // is independent of the gateway's own token check on the sandbox side.
     if (!compareBridgeTokensConstantTime(options.bridgeToken, readBridgeTokenHeader(headers))) {
-      denyRequest(
-        stream,
-        401,
-        { error: "Invalid bridge token." },
-        maxBodyBytes,
-        requestBodyTimeoutMs,
-        requestBodyMaxLifetimeMs,
-        requestBodyLifetimeCeilingMs,
-      );
+      denyRequest(stream, 401, { error: "Invalid bridge token." }, bodyBounds);
       return;
     }
 
@@ -817,15 +771,7 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
     // allowlist and the forward request below read this one result.
     const parsedPath = parseCanonicalBridgeRequestPath(headers);
     if (!parsedPath.ok) {
-      denyRequest(
-        stream,
-        400,
-        { error: `Invalid request path: ${parsedPath.reason}` },
-        maxBodyBytes,
-        requestBodyTimeoutMs,
-        requestBodyMaxLifetimeMs,
-        requestBodyLifetimeCeilingMs,
-      );
+      denyRequest(stream, 400, { error: `Invalid request path: ${parsedPath.reason}` }, bodyBounds);
       return;
     }
     const method = normalizeStreamMethod(headers[":method"]);
@@ -835,15 +781,7 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
       routes,
     );
     if (denialReason) {
-      denyRequest(
-        stream,
-        403,
-        { error: denialReason },
-        maxBodyBytes,
-        requestBodyTimeoutMs,
-        requestBodyMaxLifetimeMs,
-        requestBodyLifetimeCeilingMs,
-      );
+      denyRequest(stream, 403, { error: denialReason }, bodyBounds);
       return;
     }
 
@@ -854,13 +792,7 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
 
     let body: Buffer;
     try {
-      body = await readHttp2StreamBody(
-        stream,
-        maxBodyBytes,
-        requestBodyTimeoutMs,
-        requestBodyMaxLifetimeMs,
-        requestBodyLifetimeCeilingMs,
-      );
+      body = await readHttp2StreamBody(stream, bodyBounds);
     } catch (error) {
       respondJson(stream, 413, { error: error instanceof Error ? error.message : String(error) });
       return;

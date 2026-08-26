@@ -1405,4 +1405,466 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "preserves legacy runs while adding native persistence and replay-safe status versioning",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+
+      const nativePersistenceHash = await migrationHash("0227_modern_pandemic.sql");
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      const companyId = "10000000-0000-4000-8000-000000000227";
+      const agentId = "20000000-0000-4000-8000-000000000227";
+      const runId = "30000000-0000-4000-8000-000000000227";
+      const issueId = "40000000-0000-4000-8000-000000000227";
+      const contractId = "50000000-0000-4000-8000-000000000227";
+      const resultId = "60000000-0000-4000-8000-000000000227";
+      const assessmentId = "70000000-0000-4000-8000-000000000227";
+      const decisionId = "80000000-0000-4000-8000-000000000227";
+      const otherCompanyId = "11000000-0000-4000-8000-000000000227";
+      const otherAgentId = "21000000-0000-4000-8000-000000000227";
+      const otherRunId = "31000000-0000-4000-8000-000000000227";
+      const otherIssueId = "41000000-0000-4000-8000-000000000227";
+      const otherContractId = "51000000-0000-4000-8000-000000000227";
+      const otherResultId = "61000000-0000-4000-8000-000000000227";
+      const otherAssessmentId = "71000000-0000-4000-8000-000000000227";
+      const otherDecisionId = "81000000-0000-4000-8000-000000000227";
+
+      try {
+        await sql.unsafe(`
+          DROP TABLE IF EXISTS status_decision_effects, status_decisions, work_assessments,
+            native_run_finalizations, native_run_results, completion_contracts CASCADE;
+          DROP TRIGGER IF EXISTS paperclip_issue_status_version_trigger ON issues;
+          DROP FUNCTION IF EXISTS paperclip_bump_issue_status_version();
+          DROP INDEX IF EXISTS issues_company_id_uq;
+          DROP INDEX IF EXISTS heartbeat_run_events_run_source_event_uq;
+          DROP INDEX IF EXISTS heartbeat_run_events_run_source_seq_uq;
+          ALTER TABLE heartbeat_run_events
+            DROP COLUMN IF EXISTS source_instance_id,
+            DROP COLUMN IF EXISTS source_event_id,
+            DROP COLUMN IF EXISTS source_seq,
+            DROP COLUMN IF EXISTS source_payload_sha256,
+            DROP COLUMN IF EXISTS protocol_schema_version;
+          ALTER TABLE heartbeat_run_events ALTER COLUMN seq TYPE integer;
+          ALTER TABLE heartbeat_runs
+            DROP COLUMN IF EXISTS runtime_mode,
+            DROP COLUMN IF EXISTS runtime_mode_resolver_version,
+            DROP COLUMN IF EXISTS runtime_mode_reason,
+            DROP COLUMN IF EXISTS runtime_mode_resolved_at,
+            DROP COLUMN IF EXISTS runner_profile_json,
+            DROP COLUMN IF EXISTS runner_instance_id,
+            DROP COLUMN IF EXISTS native_session_id,
+            DROP COLUMN IF EXISTS native_issue_id,
+            DROP COLUMN IF EXISTS driver_kind,
+            DROP COLUMN IF EXISTS driver_version,
+            DROP COLUMN IF EXISTS completion_contract_id,
+            DROP COLUMN IF EXISTS completion_contract_sha256,
+            DROP COLUMN IF EXISTS next_event_seq,
+            DROP COLUMN IF EXISTS native_phase,
+            DROP COLUMN IF EXISTS native_phase_updated_at;
+          ALTER TABLE issues
+            DROP COLUMN IF EXISTS status_version,
+            DROP COLUMN IF EXISTS last_status_decision_id;
+        `);
+        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
+        await sql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${companyId}, 'Native persistence fixture', 'NPF')
+        `;
+        await sql`
+          INSERT INTO agents (id, company_id, name)
+          VALUES (${agentId}, ${companyId}, 'Legacy migration agent')
+        `;
+        await sql`
+          INSERT INTO heartbeat_runs (id, company_id, agent_id, status)
+          VALUES (${runId}, ${companyId}, ${agentId}, 'succeeded')
+        `;
+        await sql`
+          INSERT INTO issues (id, company_id, title, status)
+          VALUES (${issueId}, ${companyId}, 'Legacy migration issue', 'in_progress')
+        `;
+        await sql.unsafe(`
+          INSERT INTO heartbeat_run_events
+            (company_id, run_id, agent_id, seq, event_type, stream, level, message, payload, created_at)
+          VALUES
+            ('${companyId}', '${runId}', '${agentId}', 1, 'legacy.start', 'system', 'info', 'one', '{"bytes":"alpha-1"}'::jsonb, '2026-08-01T00:00:01.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 5, 'legacy.log', 'stdout', 'info', 'first-five', '{"bytes":"beta-5a"}'::jsonb, '2026-08-01T00:00:02.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 5, 'legacy.log', 'stderr', 'warn', 'duplicate-five', '{"bytes":"gamma-5b"}'::jsonb, '2026-08-01T00:00:03.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 9, 'legacy.end', 'system', 'info', 'nine', '{"bytes":"delta-9"}'::jsonb, '2026-08-01T00:00:04.000Z')
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const events = await verifySql.unsafe<{
+          seq: string;
+          event_type: string;
+          stream: string;
+          level: string;
+          message: string;
+          payload: { bytes: string };
+          created_at: Date;
+        }[]>(`
+          SELECT seq, event_type, stream, level, message, payload, created_at
+          FROM heartbeat_run_events
+          WHERE run_id = '${runId}'
+          ORDER BY id
+        `);
+        expect(events.map((event) => Number(event.seq))).toEqual([1, 5, 5, 9]);
+        expect(events.map(({ seq: _seq, ...event }) => ({
+          ...event,
+          created_at: event.created_at.toISOString(),
+        }))).toEqual([
+          {
+            event_type: "legacy.start",
+            stream: "system",
+            level: "info",
+            message: "one",
+            payload: { bytes: "alpha-1" },
+            created_at: "2026-08-01T00:00:01.000Z",
+          },
+          {
+            event_type: "legacy.log",
+            stream: "stdout",
+            level: "info",
+            message: "first-five",
+            payload: { bytes: "beta-5a" },
+            created_at: "2026-08-01T00:00:02.000Z",
+          },
+          {
+            event_type: "legacy.log",
+            stream: "stderr",
+            level: "warn",
+            message: "duplicate-five",
+            payload: { bytes: "gamma-5b" },
+            created_at: "2026-08-01T00:00:03.000Z",
+          },
+          {
+            event_type: "legacy.end",
+            stream: "system",
+            level: "info",
+            message: "nine",
+            payload: { bytes: "delta-9" },
+            created_at: "2026-08-01T00:00:04.000Z",
+          },
+        ]);
+
+        const runs = await verifySql.unsafe<{ runtime_mode: string; next_event_seq: string }[]>(`
+          SELECT runtime_mode, next_event_seq
+          FROM heartbeat_runs
+          WHERE id = '${runId}'
+        `);
+        expect(runs.map((run) => ({
+          runtimeMode: run.runtime_mode,
+          nextEventSeq: Number(run.next_event_seq),
+        }))).toEqual([{ runtimeMode: "legacy", nextEventSeq: 10 }]);
+
+        const nativeRowsBefore = await verifySql.unsafe<{ table_name: string; row_count: number }[]>(`
+          SELECT 'completion_contracts' AS table_name, count(*)::int AS row_count FROM completion_contracts
+          UNION ALL SELECT 'native_run_results', count(*)::int FROM native_run_results
+          UNION ALL SELECT 'native_run_finalizations', count(*)::int FROM native_run_finalizations
+          UNION ALL SELECT 'work_assessments', count(*)::int FROM work_assessments
+          UNION ALL SELECT 'status_decisions', count(*)::int FROM status_decisions
+          UNION ALL SELECT 'status_decision_effects', count(*)::int FROM status_decision_effects
+          ORDER BY table_name
+        `);
+        expect(nativeRowsBefore.every((row) => row.row_count === 0)).toBe(true);
+
+        await verifySql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${otherCompanyId}, 'Other native persistence fixture', 'ONP')
+        `;
+        await verifySql`
+          INSERT INTO agents (id, company_id, name)
+          VALUES (${otherAgentId}, ${otherCompanyId}, 'Other native migration agent')
+        `;
+        await verifySql`
+          INSERT INTO heartbeat_runs (
+            id, company_id, agent_id, status, native_issue_id, completion_contract_id
+          ) VALUES (
+            ${otherRunId}, ${otherCompanyId}, ${otherAgentId}, 'succeeded',
+            ${otherIssueId}, ${otherContractId}
+          )
+        `;
+        await verifySql`
+          INSERT INTO issues (id, company_id, title, status)
+          VALUES (${otherIssueId}, ${otherCompanyId}, 'Other native issue', 'in_progress')
+        `;
+        await verifySql`
+          UPDATE heartbeat_runs
+          SET native_issue_id = ${issueId}, completion_contract_id = ${contractId}
+          WHERE id = ${runId}
+        `;
+
+        await expect(verifySql`
+          INSERT INTO completion_contracts (
+            company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${companyId}, ${otherIssueId}, 1, 'paperclip.completion-contract.v1',
+            'policy-v1', 'low', 'server', 'review', ${JSON.stringify({ criteria: [] })}::jsonb,
+            'cross-company-contract-sha', 'system', 'migration-test'
+          )
+        `).rejects.toThrow(/completion_contracts_issue_company_fk/);
+
+        await verifySql`
+          INSERT INTO completion_contracts (
+            id, company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${contractId}, ${companyId}, ${issueId}, 1, 'paperclip.completion-contract.v1',
+            'policy-v1', 'low', 'server', 'review', ${JSON.stringify({ criteria: [] })}::jsonb,
+            'contract-sha', 'system', 'migration-test'
+          )
+        `;
+        await verifySql`
+          INSERT INTO completion_contracts (
+            id, company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${otherContractId}, ${otherCompanyId}, ${otherIssueId}, 1,
+            'paperclip.completion-contract.v1', 'policy-v1', 'low', 'server', 'review',
+            ${JSON.stringify({ criteria: [] })}::jsonb, 'other-contract-sha',
+            'system', 'migration-test'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO native_run_results (
+            company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${companyId}, ${issueId}, ${otherRunId}, ${contractId},
+            'cross-company-run', 'valid', ${JSON.stringify({ summary: "invalid" })}::jsonb,
+            'cross-company-run-sha'
+          )
+        `).rejects.toThrow(/native_run_results_run_contract_owner_fk/);
+
+        await expect(verifySql`
+          INSERT INTO native_run_results (
+            company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${otherContractId},
+            'cross-company-contract', 'valid', ${JSON.stringify({ summary: "invalid" })}::jsonb,
+            'cross-company-contract-sha'
+          )
+        `).rejects.toThrow(/native_run_results_run_contract_owner_fk/);
+
+        await verifySql`
+          INSERT INTO native_run_results (
+            id, company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${resultId}, ${companyId}, ${issueId}, ${runId}, ${contractId},
+            'result-fingerprint', 'valid', ${JSON.stringify({ summary: "done" })}::jsonb, 'result-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO native_run_results (
+            id, company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${otherResultId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherContractId}, 'other-result-fingerprint', 'valid',
+            ${JSON.stringify({ summary: "other" })}::jsonb, 'other-result-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO work_assessments (
+            company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${contractId}, ${otherResultId},
+            'run_terminal', ${companyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "invalid" })}::jsonb,
+            'cross-company-assessment-input-sha'
+          )
+        `).rejects.toThrow(/work_assessments_result_owner_fk/);
+
+        await expect(verifySql`
+          INSERT INTO work_assessments (
+            company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${contractId}, ${resultId},
+            'run_terminal', ${otherCompanyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "invalid" })}::jsonb,
+            'cross-company-trigger-input-sha'
+          )
+        `).rejects.toThrow(/work_assessments_trigger_actor_company_check/);
+
+        await verifySql`
+          INSERT INTO work_assessments (
+            id, company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${assessmentId}, ${companyId}, ${issueId}, ${runId}, ${contractId}, ${resultId},
+            'run_terminal', ${companyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "done" })}::jsonb, 'assessment-input-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO work_assessments (
+            id, company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${otherAssessmentId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherContractId}, ${otherResultId}, 'run_terminal', ${otherCompanyId},
+            'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "done" })}::jsonb, 'other-assessment-input-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO status_decisions (
+            company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${otherAssessmentId}, 1,
+            'policy-v1', 'in_progress', 'done', 'native_result_accepted',
+            ${JSON.stringify({ toStatus: "done" })}::jsonb, 'cross-company-decision-sha'
+          )
+        `).rejects.toThrow(/status_decisions_assessment_owner_fk/);
+
+        await verifySql`
+          INSERT INTO status_decisions (
+            id, company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${decisionId}, ${companyId}, ${issueId}, ${runId}, ${assessmentId}, 1,
+            'policy-v1', 'in_progress', 'done', 'native_result_accepted',
+            ${JSON.stringify({ toStatus: "done" })}::jsonb, 'decision-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO status_decisions (
+            id, company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${otherDecisionId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherAssessmentId}, 1, 'policy-v1', 'in_progress', 'done',
+            'native_result_accepted', ${JSON.stringify({ toStatus: "done" })}::jsonb,
+            'other-decision-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO status_decision_effects (
+            company_id, issue_id, decision_id, ordinal, effect_kind,
+            target_type, idempotency_key, payload
+          ) VALUES (
+            ${companyId}, ${issueId}, ${otherDecisionId}, 0, 'update_issue_status',
+            'issue', 'cross-company-decision-effect', ${JSON.stringify({ status: "done" })}::jsonb
+          )
+        `).rejects.toThrow(/status_decision_effects_decision_owner_fk/);
+
+        await verifySql`
+          INSERT INTO status_decision_effects (
+            company_id, issue_id, decision_id, ordinal, effect_kind,
+            target_type, idempotency_key, payload
+          ) VALUES (
+            ${companyId}, ${issueId}, ${decisionId}, 0, 'update_issue_status',
+            'issue', 'decision-effect-1', ${JSON.stringify({ status: "done" })}::jsonb
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO native_run_finalizations (
+            run_id, company_id, issue_id, phase, result_id, assessment_id, decision_id
+          ) VALUES (
+            ${runId}, ${companyId}, ${issueId}, 'committed', ${resultId},
+            ${assessmentId}, ${otherDecisionId}
+          )
+        `).rejects.toThrow(/native_run_finalizations_decision_owner_fk/);
+
+        await verifySql`
+          INSERT INTO native_run_finalizations (
+            run_id, company_id, issue_id, phase, result_id, assessment_id, decision_id
+          ) VALUES (
+            ${runId}, ${companyId}, ${issueId}, 'committed', ${resultId}, ${assessmentId}, ${decisionId}
+          )
+        `;
+
+        await verifySql`UPDATE issues SET title = 'Renamed legacy issue' WHERE id = ${issueId}`;
+        await verifySql`UPDATE issues SET status = 'done' WHERE id = ${issueId}`;
+        const issues = await verifySql.unsafe<{ status: string; status_version: string }[]>(`
+          SELECT status, status_version
+          FROM issues
+          WHERE id = '${issueId}'
+        `);
+        expect(issues.map((issue) => ({
+          status: issue.status,
+          statusVersion: Number(issue.status_version),
+        }))).toEqual([{ status: "done", statusVersion: 1 }]);
+
+        await verifySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
+      } finally {
+        await verifySql.end();
+      }
+
+      await expect(applyPendingMigrations(connectionString)).resolves.toBeUndefined();
+      await expect(inspectMigrations(connectionString)).resolves.toMatchObject({
+        status: "upToDate",
+      });
+
+      const replaySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const replayed = await replaySql.unsafe<{
+          status_version: string;
+          next_event_seq: string;
+          trigger_count: number;
+          finalization_count: number;
+        }[]>(`
+          SELECT
+            issue.status_version,
+            run.next_event_seq,
+            (
+              SELECT count(*)::int
+              FROM pg_trigger
+              WHERE tgname = 'paperclip_issue_status_version_trigger'
+                AND NOT tgisinternal
+            ) AS trigger_count,
+            (
+              SELECT count(*)::int
+              FROM native_run_finalizations
+              WHERE run_id = '${runId}'
+            ) AS finalization_count
+          FROM issues issue
+          CROSS JOIN heartbeat_runs run
+          WHERE issue.id = '${issueId}' AND run.id = '${runId}'
+        `);
+        expect(replayed.map((row) => ({
+          statusVersion: Number(row.status_version),
+          nextEventSeq: Number(row.next_event_seq),
+          triggerCount: row.trigger_count,
+          finalizationCount: row.finalization_count,
+        }))).toEqual([{
+          statusVersion: 1,
+          nextEventSeq: 10,
+          triggerCount: 1,
+          finalizationCount: 1,
+        }]);
+      } finally {
+        await replaySql.end();
+      }
+    },
+    60_000,
+  );
 });

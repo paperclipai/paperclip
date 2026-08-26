@@ -31,7 +31,8 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
-  const rawEngine = isCreate
+  const runnerManaged = adapterType === "paperclip_runner";
+  const rawEngine = runnerManaged ? "cli" : isCreate
     ? values!.codexEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
   const engine = rawEngine === "acp" || rawEngine === "cli" ? rawEngine : "auto";
@@ -55,7 +56,7 @@ export function CodexLocalConfigFields({
 
   return (
     <>
-      <Field label="Execution engine" hint="Auto uses ACP when prerequisites pass and falls back to Codex CLI with diagnostics.">
+      {!runnerManaged && <Field label="Execution engine" hint="Auto uses ACP when prerequisites pass and falls back to Codex CLI with diagnostics.">
         <select
           className={inputClass}
           value={engine}
@@ -70,7 +71,14 @@ export function CodexLocalConfigFields({
           <option value="cli">Codex CLI</option>
           <option value="acp">ACP</option>
         </select>
-      </Field>
+      </Field>}
+      {runnerManaged && (
+        <Field label="Provider" hint="Paperclip Runner currently supports Codex through app-server.">
+          <select className={inputClass} value="codex" disabled>
+            <option value="codex">Codex</option>
+          </select>
+        </Field>
+      )}
       {acpSelected && (
         <>
           <Field
@@ -183,7 +191,7 @@ export function CodexLocalConfigFields({
           </Field>
         </>
       )}
-      {!hideInstructionsFile && (
+      {!runnerManaged && !hideInstructionsFile && (
         <Field label="Agent instructions file" hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
@@ -209,52 +217,56 @@ export function CodexLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Bypass sandbox"
-        hint={help.dangerouslyBypassSandbox}
-        checked={
-          isCreate
-            ? values!.dangerouslyBypassSandbox
-            : eff(
-                "adapterConfig",
-                "dangerouslyBypassApprovalsAndSandbox",
-                bypassEnabled,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslyBypassSandbox: v })
-            : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
-        }
-      />
-      <ToggleField
-        label="Enable search"
-        hint={help.search}
-        checked={
-          isCreate
-            ? values!.search
-            : eff("adapterConfig", "search", !!config.search)
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ search: v })
-            : mark("adapterConfig", "search", v)
-        }
-      />
-      <ToggleField
-        label="Fast mode"
-        hint={help.fastMode}
-        checked={fastModeEnabled}
-        onChange={(v) =>
-          isCreate
-            ? set!({ fastMode: v })
-            : mark("adapterConfig", "fastMode", v)
-        }
-      />
-      {fastModeEnabled && (
-        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-          {fastModeMessage}
-        </div>
+      {!runnerManaged && (
+        <>
+          <ToggleField
+            label="Bypass sandbox"
+            hint={help.dangerouslyBypassSandbox}
+            checked={
+              isCreate
+                ? values!.dangerouslyBypassSandbox
+                : eff(
+                    "adapterConfig",
+                    "dangerouslyBypassApprovalsAndSandbox",
+                    bypassEnabled,
+                  )
+            }
+            onChange={(v) =>
+              isCreate
+                ? set!({ dangerouslyBypassSandbox: v })
+                : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
+            }
+          />
+          <ToggleField
+            label="Enable search"
+            hint={help.search}
+            checked={
+              isCreate
+                ? values!.search
+                : eff("adapterConfig", "search", !!config.search)
+            }
+            onChange={(v) =>
+              isCreate
+                ? set!({ search: v })
+                : mark("adapterConfig", "search", v)
+            }
+          />
+          <ToggleField
+            label="Fast mode"
+            hint={help.fastMode}
+            checked={fastModeEnabled}
+            onChange={(v) =>
+              isCreate
+                ? set!({ fastMode: v })
+                : mark("adapterConfig", "fastMode", v)
+            }
+          />
+          {fastModeEnabled && (
+            <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+              {fastModeMessage}
+            </div>
+          )}
+        </>
       )}
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}

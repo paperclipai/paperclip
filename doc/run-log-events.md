@@ -5,6 +5,24 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## Native PRP Run-Log Events
+
+The hidden native coordinator writes each validated PRP event to the bound
+run's existing event stream before it acknowledges the runner. The row keeps
+the PRP `eventType`, source instance, source event ID, source sequence, protocol
+schema version, and a SHA-256 digest of the canonical source envelope. Its
+payload is `{ "prpEvent": <canonical PRP event> }`.
+
+The writer locks the native `heartbeat_runs` row and allocates the existing
+per-run `seq` cursor. A byte-equivalent retry reuses the first row; a changed
+retry or source-sequence gap is rejected. Company, issue, agent, run, session,
+and runner-source bindings must match the persisted native run. Bootstrap
+tickets, reconnect leases, authentication proofs, encryption keys, and raw
+credential material are never written to the run log.
+
+These records remain run-log events. They do not create an OpenTelemetry or
+Paperclip Telemetry export, and legacy adapters do not use this writer.
+
 ## Sandbox Startup Run-Log Event
 
 Paperclip writes one `run.startup.step` event to the run log for each bring-up

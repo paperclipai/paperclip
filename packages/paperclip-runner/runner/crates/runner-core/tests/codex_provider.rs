@@ -45,6 +45,7 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
             .to_string_lossy()
             .into_owned(),
         model: Some("test-model".to_owned()),
+        provider_session_id: None,
         instructions: "Stay inside the test workspace.".to_owned(),
         approval_policy: "never".to_owned(),
     }
@@ -380,6 +381,73 @@ fn structured_question_round_trips_through_the_normalized_backend() {
         }
     }
     assert!(completed);
+    executor.shutdown().expect("stop provider process");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn codex_completion_emits_the_bound_result_before_the_terminal_event() {
+    let directory = temporary_directory("completion-contract");
+    let config = provider_config(&directory, &[]);
+    let mut executor = CodexCommandExecutor::new(&directory);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config,
+                "completionContract": {
+                    "revision": "sha256:test-contract",
+                    "criterionIds": ["criterion_test_task"]
+                }
+            }),
+        ))
+        .expect("prepare provider with completion contract");
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open provider session");
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Complete the fake native run."}),
+        ))
+        .expect("start provider turn");
+
+    let mut emitted = Vec::new();
+    for _ in 0..32 {
+        emitted.extend(poll_and_ack(&mut executor).expect("poll terminal events"));
+        if emitted
+            .iter()
+            .any(|event| event.event_type == "run.terminal")
+        {
+            break;
+        }
+    }
+    let result_index = emitted
+        .iter()
+        .position(|event| event.event_type == "run.result.proposed")
+        .expect("result proposal is emitted");
+    let terminal_index = emitted
+        .iter()
+        .position(|event| event.event_type == "run.terminal")
+        .expect("terminal event is emitted");
+    assert!(result_index < terminal_index);
+    assert_eq!(
+        emitted[result_index].payload["summary"],
+        "Codex completed the fake turn."
+    );
+    assert_eq!(
+        emitted[result_index].payload["completionClaim"]["contractRevision"],
+        "sha256:test-contract"
+    );
+    assert_eq!(
+        emitted[terminal_index].payload["runTerminalState"],
+        "succeeded"
+    );
+
     executor.shutdown().expect("stop provider process");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }

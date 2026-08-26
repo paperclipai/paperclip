@@ -1048,6 +1048,8 @@ type IssueDetailChatTabProps = {
   assigneeUserId: string | null;
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
+  onResumeAssignee?: () => Promise<void> | void;
+  resumeAssigneePending?: boolean;
   externalReferences?: MarkdownExternalReferenceMap;
   linkCaseReferences?: boolean;
 };
@@ -1126,6 +1128,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   assigneeUserId,
   onResumeFromBacklog,
   resumeFromBacklogPending,
+  onResumeAssignee,
+  resumeAssigneePending,
   externalReferences,
   linkCaseReferences,
 }: IssueDetailChatTabProps) {
@@ -1401,6 +1405,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         assigneeUserId={assigneeUserId}
         onResumeFromBacklog={onResumeFromBacklog}
         resumeFromBacklogPending={resumeFromBacklogPending}
+        onResumeAssignee={onResumeAssignee}
+        resumeAssigneePending={resumeAssigneePending}
         footer={footer}
         externalReferences={externalReferences}
         linkCaseReferences={linkCaseReferences}
@@ -4063,6 +4069,46 @@ export function IssueDetail() {
   const handleResumeFromBacklog = useCallback(async () => {
     await updateIssue.mutateAsync({ status: "todo" });
   }, [updateIssue.mutateAsync]);
+  // Resume a paused assignee agent straight from the thread notice: a paused
+  // assignee silently drops every assignment wake, so the fix belongs next to
+  // the explanation.
+  const issueAssigneeAgentIdForResume = issue?.assigneeAgentId ?? null;
+  const issueCompanyIdForResume = issue?.companyId ?? null;
+  const issueStatusForResume = issue?.status ?? null;
+  const issueIdForResume = issue?.id ?? null;
+  const resumeAssigneeAgent = useMutation({
+    mutationFn: async () => {
+      if (!issueAssigneeAgentIdForResume) throw new Error("No assignee agent");
+      await agentsApi.resume(issueAssigneeAgentIdForResume, issueCompanyIdForResume ?? undefined);
+      // The pause silently dropped this issue's assignment wake, so resuming
+      // alone would leave the task idle until some other trigger fires.
+      // Re-issue the wake for executable statuses; best-effort — the agent is
+      // resumed either way and the next comment or timer also wakes it.
+      if (issueIdForResume && (issueStatusForResume === "todo" || issueStatusForResume === "in_progress")) {
+        try {
+          await agentsApi.wakeup(
+            issueAssigneeAgentIdForResume,
+            {
+              source: "assignment",
+              reason: "Assignee resumed from the task page",
+              payload: { issueId: issueIdForResume, mutation: "assignee_resumed" },
+            },
+            issueCompanyIdForResume ?? undefined,
+          );
+        } catch {
+          // Non-fatal: the resume succeeded; the wake retries on the next trigger.
+        }
+      }
+    },
+    onSuccess: async () => {
+      if (issueCompanyIdForResume) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(issueCompanyIdForResume) });
+      }
+    },
+  });
+  const handleResumeAssignee = useCallback(async () => {
+    await resumeAssigneeAgent.mutateAsync();
+  }, [resumeAssigneeAgent.mutateAsync]);
   const activeRecoveryActionId = issue?.activeRecoveryAction?.id;
   const handleResolveRecoveryAction = useCallback(
     (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => {
@@ -5365,6 +5411,8 @@ export function IssueDetail() {
               resumeFromBacklogPending={
                 updateIssue.isPending && updateIssue.variables?.status === "todo"
               }
+              onResumeAssignee={issue.assigneeAgentId ? handleResumeAssignee : undefined}
+              resumeAssigneePending={resumeAssigneeAgent.isPending}
               externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
               linkCaseReferences={casesChipsEnabled}
             />

@@ -14,6 +14,7 @@ import {
   GIT_ARCHIVE_EXCLUDES,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
+  readReferencedSourceGitIgnoredPaths,
   resetLocalGitIndexToHead,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
@@ -136,6 +137,27 @@ export interface SandboxManagedRuntimeAsset {
 }
 
 /**
+ * How a referenced project's Git-ignored paths were resolved, computed once
+ * per project by `resolveReferencedSourceIgnore` before staging starts. The
+ * sandbox lane, the SSH lane, and the content-signature walk each consume
+ * this ONE resolution, so the three sites never drift apart.
+ *
+ * - `git`: `localPath` is a Git work tree. `ignoredPaths` are its ignored
+ *   entries, already re-relativized to `localPath` (see
+ *   `resolveReferencedSourceIgnore`).
+ * - `other`: `localPath` is not a Git work tree. The staging path keeps
+ *   today's fixed heavy-directory excludes.
+ * - `failed`: the Git read failed, timed out, or returned output the
+ *   resolver could not parse or safely re-relativize. The project is NOT
+ *   staged (fail closed) — every site records it as a per-project failure
+ *   instead of shipping it unfiltered.
+ */
+export type ReferencedSourceIgnoreResolution =
+  | { kind: "git"; ignoredPaths: string[] }
+  | { kind: "other" }
+  | { kind: "failed"; reason: string };
+
+/**
  * A referenced (additional) project to stage into the run sandbox as a plain,
  * read-only tree. `localPath` is the host checkout directory. Upstream code
  * already authorized and realized this directory (`project:read`); this layer
@@ -145,10 +167,133 @@ export interface SandboxManagedRuntimeAsset {
  * Additional sources are plain trees only. They never carry the anchor
  * workspace's git-history, overlay, or `.paperclip-runtime` preservation
  * semantics — those stay anchor-only.
+ *
+ * `ignoreResolution` is required so every construction site must supply it
+ * explicitly — a caller cannot default to the unfiltered legacy behavior by
+ * omission. Resolve it once per project with `resolveReferencedSourceIgnore`.
  */
 export interface SandboxAdditionalSource {
   localPath: string;
   projectId: string;
+  ignoreResolution: ReferencedSourceIgnoreResolution;
+}
+
+/**
+ * Escape tar `--exclude` glob metacharacters (`*`, `?`, `[`) in a literal
+ * path, so a Git-ignored path that happens to contain one of them is matched
+ * literally instead of as a pattern. Without this, a repository-controlled
+ * path containing e.g. `*` could exclude unrelated sibling files that
+ * happen to match the resulting glob. GNU tar and bsdtar both honor a
+ * backslash as a `fnmatch` escape character, so this is not command
+ * injection — `createTarballFromDirectory` and the SSH tar equivalent both
+ * pass `--exclude` values as argument-vector entries, never through a shell.
+ */
+export function escapeTarExcludeLiteral(entry: string): string {
+  return entry.replace(/\\/g, "\\\\").replace(/([*?[])/g, "\\$1");
+}
+
+/**
+ * The tar `--exclude` entries a referenced project's resolved ignore set
+ * contributes, on top of the fixed heavy-directory excludes every site
+ * already applies. Empty for `other` (today's fixed excludes are enough)
+ * and for `failed` (the project is not staged at all, so no exclude list
+ * matters).
+ */
+export function referencedSourceIgnoreExcludeEntries(resolution: ReferencedSourceIgnoreResolution): string[] {
+  return resolution.kind === "git" ? resolution.ignoredPaths.map(escapeTarExcludeLiteral) : [];
+}
+
+/**
+ * Compute the relative position of `localPath` under a Git `toplevel`
+ * directory, as a POSIX path with no leading or trailing slash. Returns `""`
+ * when `localPath` IS the toplevel. Returns `null` when the relation is not a
+ * plain descendant — `localPath` escapes upward from `toplevel`, resolves to
+ * an absolute/rooted result (a different filesystem root), or the two paths
+ * are otherwise not comparable. The caller treats `null` as a resolution
+ * failure (fail closed), never as "nothing to exclude".
+ */
+/**
+ * Physical (symlink-resolved) form of a path, falling back to the plain
+ * resolved form when realpath fails (e.g. the path vanished mid-run — the
+ * downstream descendant check then fails closed on the string form).
+ * Git prints physical toplevels, so both sides of the descendant comparison
+ * must be physical too; comparing a logical path against a physical one makes
+ * any symlinked project or temp directory (macOS `/var` → `/private/var`)
+ * fail resolution spuriously.
+ */
+async function physicalPath(input: string): Promise<string> {
+  try {
+    return await fs.realpath(input);
+  } catch {
+    return path.resolve(input);
+  }
+}
+
+function relativizeUnderGitToplevel(input: { toplevel: string; localPath: string }): string | null {
+  const toplevel = path.resolve(input.toplevel);
+  const localPath = path.resolve(input.localPath);
+  const relative = path.relative(toplevel, localPath);
+  if (relative === "") return "";
+  if (path.isAbsolute(relative)) return null;
+  if (relative === ".." || relative.startsWith(`..${path.sep}`)) return null;
+  return relative.split(path.sep).join("/");
+}
+
+/**
+ * Re-relativize root-relative ignored paths (as `git status --ignored`
+ * reports them, from the repository toplevel) to `offset`, the position of
+ * the referenced project's `localPath` under that toplevel. Keeps only the
+ * entries that are `offset` itself or a descendant of it — an ignored path
+ * elsewhere in the repository does not apply to this project's staged tree —
+ * and strips the `offset` prefix so the result matches the tar member
+ * namespace, which is `localPath`-relative.
+ */
+function reRelativizeIgnoredPathsToLocalPath(input: { ignoredPaths: string[]; offset: string }): string[] {
+  if (input.offset === "") {
+    return [...input.ignoredPaths];
+  }
+  const prefix = `${input.offset}/`;
+  return input.ignoredPaths
+    .filter((entry) => entry.startsWith(prefix))
+    .map((entry) => entry.slice(prefix.length))
+    .filter(Boolean);
+}
+
+/**
+ * Resolve a referenced project's Git-ignored paths ONCE, before any staging
+ * site runs. Called once per project (see `execute.ts`); the sandbox lane,
+ * the SSH lane, and the content-signature walk all consume this one result,
+ * so they can never apply a different exclusion set to the same project.
+ *
+ * Fails closed: a Git read error, a timeout, malformed output, or a `localPath`
+ * that is not a plain descendant of its own Git toplevel all return `failed`,
+ * never an empty ignore list — an empty list means "resolved, nothing extra to
+ * exclude", which is a different claim than "the resolution did not run".
+ */
+export async function resolveReferencedSourceIgnore(localPath: string): Promise<ReferencedSourceIgnoreResolution> {
+  let scan: Awaited<ReturnType<typeof readReferencedSourceGitIgnoredPaths>>;
+  try {
+    scan = await readReferencedSourceGitIgnoredPaths(localPath);
+  } catch (error) {
+    return { kind: "failed", reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (!scan) {
+    return { kind: "other" };
+  }
+  const offset = relativizeUnderGitToplevel({
+    toplevel: await physicalPath(scan.toplevel),
+    localPath: await physicalPath(localPath),
+  });
+  if (offset === null) {
+    return {
+      kind: "failed",
+      reason: `referenced project path is not a descendant of its own Git top level: ${localPath} under ${scan.toplevel}`,
+    };
+  }
+  return {
+    kind: "git",
+    ignoredPaths: reRelativizeIgnoredPathsToLocalPath({ ignoredPaths: scan.ignoredPaths, offset }),
+  };
 }
 
 /**
@@ -649,6 +794,16 @@ function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
+// Sum `bytesTransferred` over a `SandboxSyncResult`. The result crosses the
+// plugin boundary, so a provider can return anything: guard each value and
+// treat a missing, non-finite, or negative number as 0.
+function sumSyncResultBytes(result: SandboxSyncResult): number {
+  return result.operations.reduce((total, operation) => {
+    const bytes = operation.bytesTransferred;
+    return Number.isFinite(bytes) && bytes > 0 ? total + bytes : total;
+  }, 0);
+}
+
 function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
@@ -681,7 +836,7 @@ async function emitRuntimeStatus(
   await Promise.resolve(sink({ phase, message })).catch(() => undefined);
 }
 
-function mergeExcludes(...groups: Array<string[] | undefined>): string[] {
+export function mergeExcludes(...groups: Array<string[] | undefined>): string[] {
   return [...new Set(groups.flatMap((group) => group ?? []))];
 }
 
@@ -850,8 +1005,11 @@ export async function prepareSandboxManagedRuntime(input: {
   const additionalSourceFailures: AdditionalSourceStagingFailure[] = [];
   // Additional projects stage as plain trees. Drop the heavy build/cache dirs a
   // reference tree does not need, and `.git` — additional sources never carry
-  // git-history semantics (anchor-only).
-  const additionalSourceExclude = mergeExcludes(SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [".git"]);
+  // git-history semantics (anchor-only). Each project also drops its OWN
+  // resolved Git-ignored paths (or keeps this fixed set as-is for a non-Git
+  // source) — see `resolveReferencedSourceIgnore` and the per-project merge
+  // below.
+  const additionalSourceBaseExclude = mergeExcludes(SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [".git"]);
 
   // Every delegated post-upload command (extract/wipe/remove-deleted/asset merge)
   // must run under the run-specific timeout (`spec.timeoutMs`), not the provider
@@ -911,8 +1069,15 @@ export async function prepareSandboxManagedRuntime(input: {
         params.progressLabel,
         { sink: input.onRuntimeProgress, phase: params.statusPhase },
       );
-      await syncIn(operations);
-      await upload.finish(params.progressBytes, params.progressBytes);
+      const syncResult = await syncIn(operations);
+      // Prefer the transport's own byte total. It is the real count for a
+      // provider that has no host tarball to stat (a referenced project rides
+      // a `directory` mapping). Fall back to the caller-supplied count when
+      // the transport reports 0, so a provider that under-reports still
+      // shows the host-known workspace total.
+      const transferredBytes = sumSyncResultBytes(syncResult);
+      const reportedBytes = transferredBytes > 0 ? transferredBytes : params.progressBytes;
+      await upload.finish(reportedBytes, reportedBytes);
     };
 
     // Build the ordered inbound operation task list. Each task stages one inbound
@@ -1122,7 +1287,7 @@ export async function prepareSandboxManagedRuntime(input: {
       inboundTaskIsRequired.push(false);
       inboundTasks.push(() =>
         runStepSpan(`stage.project.${source.projectId}`, async () => {
-          const { localPath, projectId } = source;
+          const { localPath, projectId, ignoreResolution } = source;
           const label = `project-${projectId}`;
           try {
             if (!path.posix.isAbsolute(localPath)) {
@@ -1136,14 +1301,24 @@ export async function prepareSandboxManagedRuntime(input: {
             ) {
               throw new Error(`additional source projectId is not a simple path segment: ${projectId}`);
             }
+            // Fail closed: a project whose ignore resolution failed is not staged
+            // at all. Shipping it with only the fixed heavy-directory excludes
+            // would defeat the resolution's purpose.
+            if (ignoreResolution.kind === "failed") {
+              throw new Error(`referenced project ignore resolution failed: ${ignoreResolution.reason}`);
+            }
             const remoteProjectDir = path.posix.join(runtimeRootDir, label);
+            const exclude = mergeExcludes(
+              additionalSourceBaseExclude,
+              referencedSourceIgnoreExcludeEntries(ignoreResolution),
+            );
             await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing referenced project to environment");
             await stageConfinedSyncIn({
               files: [{
                 sourcePath: localPath,
                 targetPath: remoteProjectDir,
                 kind: "directory",
-                exclude: additionalSourceExclude,
+                exclude,
                 access: "ro",
               }],
               sourceRoots: [localPath],
@@ -1275,9 +1450,10 @@ export async function prepareSandboxManagedRuntime(input: {
                       // one `kind: "file"` mapping. The host does not buffer the full
                       // bundle in RAM and does not move the bytes through the base64
                       // read loop. The git import step below reads the bundle from
-                      // `localBundlePath`. The provider transfer reports no byte counts,
-                      // so the "Exporting git history" progress degrades to
-                      // start-and-finish only (mirrors the workspace restore below).
+                      // `localBundlePath`. The provider transfer reports its own byte
+                      // total, so the "Exporting git history" progress still degrades to
+                      // start-and-finish (mirrors the workspace restore below), but the
+                      // finish line carries the real transferred byte count.
                       const operations: SandboxSyncOperation[] = [{
                         operationId: nextSyncOperationId(),
                         files: [{
@@ -1290,8 +1466,9 @@ export async function prepareSandboxManagedRuntime(input: {
                         sourceRoots: [runtimeRootDir],
                         targetRoots: [tempDir],
                       });
-                      await input.client.syncOut!(operations);
-                      await gitExport.finish(0, 0);
+                      const syncResult = await input.client.syncOut!(operations);
+                      const transferredBytes = sumSyncResultBytes(syncResult);
+                      await gitExport.finish(transferredBytes, transferredBytes);
                     } else {
                       const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
                       const bundleBuffer = toBuffer(bundleBytes);
@@ -1330,7 +1507,8 @@ export async function prepareSandboxManagedRuntime(input: {
                   // a fresh host directory. It is a clean destroy-then-replace into a
                   // temp dir the orchestrator just created, so it maps exactly to a
                   // generic directory file mapping; the host-side baseline merge below is
-                  // unchanged.
+                  // unchanged. The provider transfer reports its own byte total, so the
+                  // finish line carries the real transferred byte count.
                   const operations: SandboxSyncOperation[] = [{
                     operationId: nextSyncOperationId(),
                     files: [{
@@ -1352,8 +1530,9 @@ export async function prepareSandboxManagedRuntime(input: {
                     "workspace",
                     { sink: input.onRuntimeProgress, phase: "restore" },
                   );
-                  await input.client.syncOut!(operations);
-                  await workspaceRestore.finish(0, 0);
+                  const syncResult = await input.client.syncOut!(operations);
+                  const transferredBytes = sumSyncResultBytes(syncResult);
+                  await workspaceRestore.finish(transferredBytes, transferredBytes);
                 } else {
                   const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
                   await input.client.run(

@@ -922,7 +922,14 @@ describe("CompanyImport", () => {
 
       // Success-leaning panel, not the failure panel.
       expect(container.textContent).toContain("Import completed");
-      expect(container.textContent).toContain("open it to view it");
+      // The readable company gives the panel a name and a direct CTA into the
+      // new company's dashboard, plus the paused-agents pointer.
+      expect(container.textContent).toContain("Imported Test");
+      // The default import submits with pauseAutomations checked, so the
+      // paused pointer must show; it is gated off when the user unchecks it.
+      expect(container.textContent).toContain("Imported agents arrived paused");
+      const openCompany = container.querySelector('[data-testid="import-expired-open-company"]');
+      expect(openCompany).not.toBeNull();
       expect(container.textContent).not.toContain("Import failed");
       expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
       // The company list is refreshed so the new company appears in the switcher.
@@ -932,6 +939,20 @@ describe("CompanyImport", () => {
     } finally {
       invalidateSpy.mockRestore();
     }
+  });
+
+  it("falls back to switcher guidance when the expired job's company is unreadable", async () => {
+    mockCompaniesApi.getImportJob.mockResolvedValue({
+      job: { id: "job-1", status: "succeeded", result: { companyId: "company-2" } },
+    });
+    mockCompaniesApi.get.mockRejectedValue(new Error("forbidden"));
+
+    await renderPageAndImport();
+
+    expect(container.textContent).toContain("Import completed");
+    expect(container.textContent).toContain("select it from the company switcher");
+    // No readable company, so no dashboard CTA — the switcher guidance stands in.
+    expect(container.querySelector('[data-testid="import-expired-open-company"]')).toBeNull();
   });
 
   it("surfaces a first-poll 404 as an error because the job never existed", async () => {

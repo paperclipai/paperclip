@@ -23,6 +23,15 @@ export interface ExpensiveWorkspaceGitInput {
   operation: string;
   timeout: number;
   maxBuffer: number;
+  /**
+   * Optional environment override for the invocation. Absent for the anchor
+   * workspace's own full-tree walks (they inherit the process environment, a
+   * directory this process already controls). A referenced-project scan sets
+   * this to its hardened environment (see {@link buildHardenedGitEnv}), so a
+   * host executor that honors it still runs the read hardened even though it
+   * dispatches through the same seam as the anchor's reads.
+   */
+  env?: NodeJS.ProcessEnv;
 }
 
 export type ExpensiveWorkspaceGitExecutor = (
@@ -69,6 +78,7 @@ export async function runLocalGit(
   options: {
     timeout?: number;
     maxBuffer?: number;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<GitCommandResult> {
   return await new Promise<GitCommandResult>((resolve, reject) => {
@@ -78,6 +88,7 @@ export async function runLocalGit(
       {
         timeout: options.timeout ?? 15_000,
         maxBuffer: options.maxBuffer ?? 1024 * 128,
+        env: options.env ?? process.env,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -97,7 +108,7 @@ async function runExpensiveWorkspaceGit(
   localDir: string,
   args: string[],
   operation: string,
-  options: { timeout: number; maxBuffer: number },
+  options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv },
 ): Promise<GitCommandResult> {
   if (expensiveWorkspaceGitExecutor) {
     return await expensiveWorkspaceGitExecutor({
@@ -106,6 +117,7 @@ async function runExpensiveWorkspaceGit(
       operation,
       timeout: options.timeout,
       maxBuffer: options.maxBuffer,
+      env: options.env,
     });
   }
   return await runLocalGit(localDir, args, options);
@@ -166,6 +178,143 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
   } catch {
     return null;
   }
+}
+
+/** The `git status --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
+export interface ReferencedSourceGitIgnoreScan {
+  /** The absolute repository top level `git rev-parse --show-toplevel` reports. */
+  toplevel: string;
+  /** Ignored paths, relative to `toplevel`, trailing slashes stripped, sorted. */
+  ignoredPaths: string[];
+}
+
+/**
+ * Build the environment for a hardened, read-only Git invocation against a
+ * directory this process does not control (a referenced project, not the
+ * anchor workspace). Two protections apply:
+ *
+ * - Drop every inherited `GIT_*` variable, so an already-set override in this
+ *   process's own environment cannot change how the read-only command runs.
+ * - Point the global config file at `/dev/null` (in addition to the
+ *   command-line `GIT_CONFIG_NOSYSTEM=1` the caller sets), so neither this
+ *   host's global nor system Git configuration can add a setting the
+ *   read-only command was not built to expect.
+ *
+ * This does not defend against the directory's OWN repository-local
+ * configuration; the command-line `-c core.fsmonitor=false` override in
+ * {@link runHardenedReadOnlyGit} does that instead, because command-line
+ * config always wins over repository-local config.
+ */
+function buildHardenedGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("GIT_") || value === undefined) continue;
+    env[key] = value;
+  }
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  return env;
+}
+
+/**
+ * Run a read-only Git command against a directory this process does not
+ * control, hardened against a hostile repository-local configuration, and
+ * dispatched through {@link runExpensiveWorkspaceGit} — the SAME process-wide
+ * admission seam the anchor workspace's expensive full-tree reads use. A host
+ * process that registers a bounded scheduler there (see
+ * `setExpensiveWorkspaceGitExecutor`) governs referenced-project scans too, so
+ * a run with many referenced projects cannot spawn one unbounded Git process
+ * per project; each request queues behind the same concurrency limit.
+ *
+ * Every call still carries `--no-optional-locks` (never blocks on, or is
+ * blocked by, a concurrent Git process in the directory) and
+ * `-c core.fsmonitor=false` (neutralizes a repository-local `core.fsmonitor`
+ * setting that would otherwise run an arbitrary configured program on this
+ * read). See {@link buildHardenedGitEnv} for the paired environment hardening,
+ * carried through the executor's optional `env` field so hardening survives
+ * the hop through a host-registered scheduler.
+ */
+async function runHardenedReadOnlyGit(
+  localDir: string,
+  args: string[],
+  operation: string,
+  options: { timeout: number; maxBuffer: number },
+): Promise<GitCommandResult> {
+  return await runExpensiveWorkspaceGit(
+    localDir,
+    ["-c", "core.fsmonitor=false", "--no-optional-locks", ...args],
+    operation,
+    { timeout: options.timeout, maxBuffer: options.maxBuffer, env: buildHardenedGitEnv() },
+  );
+}
+
+/**
+ * True when a failed `git` invocation failed specifically because `localDir`
+ * is not inside a Git work tree — Git's own "not a git repository" fatal
+ * error. Distinguishes the expected non-Git case from a real failure (a
+ * timeout, a permissions error, a corrupt repository), which must still
+ * surface as a failure and never look like "no Git tree here".
+ */
+function isNotAGitRepositoryError(error: unknown): boolean {
+  const stderr = error && typeof error === "object" && "stderr" in error ? String((error as { stderr: unknown }).stderr) : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return /not a git repository/i.test(stderr) || /not a git repository/i.test(message);
+}
+
+/**
+ * Read the Git-ignored paths of a referenced-project host directory, for the
+ * staging path to exclude them (see `resolveReferencedSourceIgnore` in
+ * `sandbox-managed-runtime.ts`). Every command runs through
+ * {@link runHardenedReadOnlyGit}, because the directory is a host checkout the
+ * staging code does not control, unlike the anchor workspace.
+ *
+ * Returns `null` when `localDir` is not a Git work tree — the caller keeps
+ * today's fixed excludes for that case. Throws on any other Git error, a
+ * timeout, or malformed output, so the caller can fail closed and skip
+ * staging that one project instead of shipping it unfiltered.
+ */
+export async function readReferencedSourceGitIgnoredPaths(
+  localDir: string,
+): Promise<ReferencedSourceGitIgnoreScan | null> {
+  let toplevel: string;
+  try {
+    const toplevelResult = await runHardenedReadOnlyGit(
+      localDir,
+      ["rev-parse", "--show-toplevel"],
+      "referenced_source.toplevel",
+      { timeout: 15_000, maxBuffer: 64 * 1024 },
+    );
+    toplevel = toplevelResult.stdout.trim();
+  } catch (error) {
+    if (isNotAGitRepositoryError(error)) {
+      return null;
+    }
+    throw error;
+  }
+  if (!toplevel) {
+    throw new Error(`git rev-parse --show-toplevel returned an empty path for ${localDir}`);
+  }
+
+  const ignoredResult = await runHardenedReadOnlyGit(
+    localDir,
+    ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"],
+    "referenced_source.ignored_files",
+    { timeout: 60_000, maxBuffer: 16 * 1024 * 1024 },
+  );
+  // Do not trim each entry: `git status -z` already delimits entries with a
+  // NUL byte, so a leading or trailing space in an entry is part of the path
+  // itself, not padding to remove. A length check finds the one genuinely
+  // empty entry `-z` appends after the last NUL, without eating a real path's
+  // own leading or trailing whitespace.
+  const ignoredPaths = ignoredResult.stdout
+    .split("\0")
+    .filter((entry) => entry.length > 0)
+    .filter((entry) => entry.startsWith("!! "))
+    .map((entry) => entry.slice(3).replace(/\/+$/, ""))
+    .filter((entry) => entry.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+
+  return { toplevel, ignoredPaths };
 }
 
 // scp-like ssh remote (`user@host:path`). The syntax has no password slot, so

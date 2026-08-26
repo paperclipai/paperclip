@@ -322,7 +322,13 @@ function buildManagedSkillOrigin(): Pick<
   };
 }
 
-function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
+/**
+ * True when a runtime skill entry's files are unavailable (failed
+ * materialization, deleted version snapshot). Adapters must skip these at
+ * mount time: their `source` path does not exist, so symlinking produces a
+ * dangling link and content hashing throws.
+ */
+export function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
   return entry.sourceStatus === "missing";
 }
 
