@@ -7,6 +7,7 @@ import { IssueFieldChangeReceipt } from "@/components/IssueFieldChangeReceipt";
 import { IssueWriteDenialNotice } from "@/components/IssueWriteDenialNotice";
 import { Identity } from "@/components/Identity";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 /**
  * UX lab for the three surfaces that make open
@@ -102,7 +103,7 @@ function ActivityRow({
       <div className="flex items-center gap-1.5">
         <Identity name={actorName} size="sm" />
         <span>{verb}</span>
-        <span className="ml-auto shrink-0">2m ago</span>
+        <span className="ml-auto shrink-0">{t("app.crossIssueCollaborationUxLab.2mAgo", { defaultValue: "2m ago" })}</span>
       </div>
       {children}
     </div>
@@ -116,51 +117,46 @@ const AGENT_NAMES = new Map([
 
 export function CrossIssueCollaborationUxLab() {
   const resolveAgentLabel = (id: string) => AGENT_NAMES.get(id) ?? null;
-  const resolveUserLabel = (id: string) => (id === "user-dotta" ? "Dotta" : null);
+  const resolveUserLabel = (id: string) => (id === "user-dotta" ? t("app.crossIssueCollaborationUxLab.dotta", { defaultValue: "Dotta" }) : null);
 
   return (
     <div className="min-h-screen bg-muted/20 p-6">
       <div className="mx-auto max-w-5xl space-y-6">
         <header>
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Open cross-task collaboration
-          </div>
+            {t("app.crossIssueCollaborationUxLab.openCrossTaskCollaboration", { defaultValue: "Open cross-task collaboration" })}</div>
           <h1 className="mt-1 text-xl font-semibold text-foreground">
-            Open cross-task collaboration — attribution, audit, and denial copy
-          </h1>
+            {t("app.crossIssueCollaborationUxLab.openCrossTaskCollaborationAttributionAuditAndDenialCopy", { defaultValue: "Open cross-task collaboration — attribution, audit, and denial copy" })}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Agents may now write to any task they can read. These are the three surfaces that keep
-            that legible: whose authority a comment rode, what an edit changed, and — when a write
-            is refused — which boundary fired and what to do instead.
-          </p>
+            {t("app.crossIssueCollaborationUxLab.agentsMayNowWriteToAnyTaskTheyCanReadTheseAreTheThreeSurfacesThatKeepThatLegibleWhoseAuthorityACommentRodeWhatAnEditChangedAndWhenAWriteIsRefusedWhichBoundaryFiredAndWhatToDoInstead", { defaultValue: "Agents may now write to any task they can read. These are the three surfaces that keep that legible: whose authority a comment rode, what an edit changed, and — when a write is refused — which boundary fired and what to do instead." })}</p>
         </header>
 
         <LabSection
           index="1 · Attribution chip (plan §3a)"
-          title="“Fable · for Dotta” on a cross-task agent comment"
-          description="An agent commenting on a task it is not assigned to names the responsible user whose authority it rode. The assignee's own comments stay unchipped — that is the ordinary case, and chipping every bubble would be noise."
+          title={t("app.crossIssueCollaborationUxLab.fableForDottaOnACrossTaskAgentComment", { defaultValue: "“Fable · for Dotta” on a cross-task agent comment" })}
+          description={t("app.crossIssueCollaborationUxLab.anAgentCommentingOnATaskItIsNotAssignedToNamesTheResponsibleUserWhoseAuthorityItRodeTheAssigneeSOwnCommentsStayUnchippedThatIsTheOrdinaryCaseAndChippingEveryBubbleWouldBeNoise", { defaultValue: "An agent commenting on a task it is not assigned to names the responsible user whose authority it rode. The assignee's own comments stay unchipped — that is the ordinary case, and chipping every bubble would be noise." })}
         >
-          <Frame label="Assignee's own comment — no chip">
+          <Frame label={t("app.crossIssueCollaborationUxLab.assigneeSOwnCommentNoChip", { defaultValue: "Assignee's own comment — no chip" })}>
             <AgentCommentBubble
               authorName="CodexCoder"
               body="Rebased onto master and re-ran the containment suite; all green."
             />
           </Frame>
-          <Frame label="Cross-task comment — chipped">
+          <Frame label={t("app.crossIssueCollaborationUxLab.crossTaskCommentChipped", { defaultValue: "Cross-task comment — chipped" })}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="Dotta"
               body="Dotta asked me to flag that the retry window here overlaps TASK-482. Worth a look before you close this."
             />
           </Frame>
-          <Frame label="Responsible user not in the loaded directory">
+          <Frame label={t("app.crossIssueCollaborationUxLab.responsibleUserNotInTheLoadedDirectory", { defaultValue: "Responsible user not in the loaded directory" })}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="the responsible user"
               body="Falls back to a generic label rather than printing a raw user id."
             />
           </Frame>
-          <Frame label="Long user name truncates in the chip">
+          <Frame label={t("app.crossIssueCollaborationUxLab.longUserNameTruncatesInTheChip", { defaultValue: "Long user name truncates in the chip" })}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="Alexandra Konstantinopoulos-Whitfield"
@@ -171,10 +167,10 @@ export function CrossIssueCollaborationUxLab() {
 
         <LabSection
           index="2 · Field-edit audit receipt (plan §3b)"
-          title="Every PATCH says who changed what, and under which authorization"
-          description="Required for agent and board edits alike. Before/after per field, the responsible user behind the write, and the authorization reason that let it through."
+          title={t("app.crossIssueCollaborationUxLab.everyPatchSaysWhoChangedWhatAndUnderWhichAuthorization", { defaultValue: "Every PATCH says who changed what, and under which authorization" })}
+          description={t("app.crossIssueCollaborationUxLab.requiredForAgentAndBoardEditsAlikeBeforeAfterPerFieldTheResponsibleUserBehindTheWriteAndTheAuthorizationReasonThatLetItThrough", { defaultValue: "Required for agent and board edits alike. Before/after per field, the responsible user behind the write, and the authorization reason that let it through." })}
         >
-          <Frame label="Cross-task agent edit">
+          <Frame label={t("app.crossIssueCollaborationUxLab.crossTaskAgentEdit", { defaultValue: "Cross-task agent edit" })}>
             <ActivityRow actorName="Fable" verb="changed the status from todo to in progress">
               <IssueFieldChangeReceipt
                 event={{
@@ -193,7 +189,7 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Board (human) edit — audited the same way">
+          <Frame label={t("app.crossIssueCollaborationUxLab.boardHumanEditAuditedTheSameWay", { defaultValue: "Board (human) edit — audited the same way" })}>
             <ActivityRow actorName="Dotta" verb="updated the issue">
               <IssueFieldChangeReceipt
                 event={{
@@ -215,7 +211,7 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Reassignment, blockers, and work mode in one write">
+          <Frame label={t("app.crossIssueCollaborationUxLab.reassignmentBlockersAndWorkModeInOneWrite", { defaultValue: "Reassignment, blockers, and work mode in one write" })}>
             <ActivityRow actorName="CTO" verb="updated the issue">
               <IssueFieldChangeReceipt
                 event={{
@@ -238,26 +234,23 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Older activity row — no receipt, renders unchanged">
+          <Frame label={t("app.crossIssueCollaborationUxLab.olderActivityRowNoReceiptRendersUnchanged", { defaultValue: "Older activity row — no receipt, renders unchanged" })}>
             <ActivityRow actorName="CodexCoder" verb="checked out the issue" />
           </Frame>
         </LabSection>
 
         <LabSection
           index="3 · Actionable denial copy (plan §6)"
-          title="Every wall names the boundary, who can act, and the sanctioned path"
-          description="A real incident burned a full detour discovering a workaround behind an opaque 403. These are all the ways an issue write can now be refused — the same copy the API error body carries."
+          title={t("app.crossIssueCollaborationUxLab.everyWallNamesTheBoundaryWhoCanActAndTheSanctionedPath", { defaultValue: "Every wall names the boundary, who can act, and the sanctioned path" })}
+          description={t("app.crossIssueCollaborationUxLab.aRealIncidentBurnedAFullDetourDiscoveringAWorkaroundBehindAnOpaque403TheseAreAllTheWaysAnIssueWriteCanNowBeRefusedTheSameCopyTheApiErrorBodyCarries", { defaultValue: "A real incident burned a full detour discovering a workaround behind an opaque 403. These are all the ways an issue write can now be refused — the same copy the API error body carries." })}
           columns={1}
         >
-          <Frame label="Before — what the incident actually saw">
+          <Frame label={t("app.crossIssueCollaborationUxLab.beforeWhatTheIncidentActuallySaw", { defaultValue: "Before — what the incident actually saw" })}>
             <div className="text-xs">
               <span className="text-red-600 dark:text-red-400">
-                403 Forbidden: Issue is outside this actor&apos;s authorization boundary
-              </span>
+                {t("app.crossIssueCollaborationUxLab.403ForbiddenIssueIsOutsideThisActorSAuthorizationBoundary", { defaultValue: "403 Forbidden: Issue is outside this actor's authorization boundary" })}</span>
               <p className="mt-1 text-muted-foreground">
-                No boundary named, nobody named, no path forward. The workaround (create a child
-                issue) had to be discovered by trial and error.
-              </p>
+                {t("app.crossIssueCollaborationUxLab.noBoundaryNamedNobodyNamedNoPathForwardTheWorkaroundCreateAChildIssueHadToBeDiscoveredByTrialAndError", { defaultValue: "No boundary named, nobody named, no path forward. The workaround (create a child issue) had to be discovered by trial and error." })}</p>
             </div>
           </Frame>
           {ISSUE_WRITE_DENIAL_CODES.map((code) => (

@@ -9,6 +9,7 @@ import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
 import { AgentIcon } from "./AgentIconPicker";
+import { t } from "@/i18n";
 
 export function ReportsToPicker({
   agents,
@@ -87,19 +88,19 @@ export function ReportsToPicker({
             setOpen(false);
           }}
         >
-          No manager
+          {t("app.reportsToPicker.noManager", { defaultValue: "No manager" })}
         </button>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
             <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
             <span className="min-w-0 truncate">
-              Current: {current.name} (terminated)
+              {t("app.reportsToPicker.current", { defaultValue: "Current:" })} {current.name} (terminated)
             </span>
           </div>
         )}
         {unknownManager && (
           <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this company. Choose a new manager or clear.
+            {t("app.reportsToPicker.savedManagerIsMissingFromThisCompanyChooseANewManagerOrClear", { defaultValue: "Saved manager is missing from this company. Choose a new manager or clear." })}
           </div>
         )}
         {rows.map((a) => (

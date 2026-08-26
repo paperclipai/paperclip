@@ -42,6 +42,7 @@ import {
   resolveRegisteredPluginComponent,
   type RegisteredPluginComponent,
 } from "./slots";
+import { t } from "@/i18n";
 
 export type PluginLauncherContext = {
   companyId?: string | null;
@@ -248,7 +249,7 @@ function launcherShellBoundsStyle(bounds: PluginLauncherBounds | null): CSSPrope
 
 function launcherPopoverStyle(instance: LauncherInstance): CSSProperties {
   const rect = instance.sourceRect;
-  const baseWidth = launcherShellBoundsStyle(instance.bounds).width ?? "min(24rem, calc(100vw - 2rem))";
+  const baseWidth = launcherShellBoundsStyle(instance.bounds).width ?? t("app.launchers.min24remCalc100vw2rem", { defaultValue: "min(24rem, calc(100vw - 2rem))" });
   if (!rect) {
     return {
       width: baseWidth,
@@ -417,8 +418,7 @@ class LauncherErrorBoundary extends Component<LauncherErrorBoundaryProps, Launch
     if (this.state.hasError) {
       return (
         <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-          {this.props.launcher.pluginDisplayName}: failed to render
-        </div>
+          {this.props.launcher.pluginDisplayName}{t("app.launchers.failedToRender", { defaultValue: ": failed to render" })}</div>
       );
     }
     return this.props.children;
@@ -456,7 +456,7 @@ function LauncherRenderContent({
 
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-        {instance.launcher.pluginDisplayName}: could not resolve launcher target "{instance.launcher.action.target}".
+        {instance.launcher.pluginDisplayName}{t("app.launchers.couldNotResolveLauncherTarget", { defaultValue: ": could not resolve launcher target \"" })}{instance.launcher.action.target}".
       </div>
     );
   }
@@ -548,10 +548,10 @@ function LauncherModalShell({
     : launcherShellBoundsStyle(instance.bounds);
 
   const panelClassName = shellType === "openDrawer"
-    ? "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl"
+    ? t("app.launchers.fixedRight0Top0HFullMaxWMin44rem100vwOverflowHiddenBorderLBorderBorderBgBackgroundShadow2xl", { defaultValue: "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl" })
     : shellType === "openPopover"
-      ? "fixed overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
-      : "fixed left-1/2 top-1/2 max-h-[calc(100vh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl";
+      ? t("app.launchers.fixedOverflowHiddenRoundedXlBorderBorderBorderBgBackgroundShadow2xl", { defaultValue: "fixed overflow-hidden rounded-xl border border-border bg-background shadow-2xl" })
+      : t("app.launchers.fixedLeft12Top12MaxHCalc100vh2remTranslateX12TranslateY12OverflowHiddenRounded2xlBorderBorderBorderBgBackgroundShadow2xl", { defaultValue: "fixed left-1/2 top-1/2 max-h-[calc(100vh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl" });
 
   return (
     <>
@@ -575,7 +575,7 @@ function LauncherModalShell({
         style={{
           zIndex: baseZ + 1,
           ...(shellType === "openDrawer"
-            ? { width: containerStyle.width ?? "min(44rem, 100vw)" }
+            ? { width: containerStyle.width ?? t("app.launchers.min44rem100vw", { defaultValue: "min(44rem, 100vw)" }) }
             : containerStyle),
         }}
         onMouseDown={(event) => event.stopPropagation()}
@@ -596,8 +596,7 @@ function LauncherModalShell({
             className="ml-auto"
             onClick={() => void closeLauncher(instance.key, { reason: "programmatic" })}
           >
-            Close
-          </Button>
+            {t("app.launchers.close", { defaultValue: "Close" })}</Button>
         </div>
         <div
           className={cn(
@@ -802,7 +801,7 @@ export function PluginLauncherOutlet({
   if (errorMessage) {
     return (
       <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        Plugin launchers unavailable: {errorMessage}
+        {t("app.launchers.pluginLaunchersUnavailable", { defaultValue: "Plugin launchers unavailable: " })}{errorMessage}
       </div>
     );
   }

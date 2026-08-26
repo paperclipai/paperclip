@@ -41,6 +41,7 @@ import {
   parseSearchQuery,
   type SearchQueryParserContext,
 } from "../lib/search-query-parser";
+import { t } from "@/i18n";
 
 const SEARCH_ALL_VALUE = "__paperclip-search-all__";
 
@@ -222,7 +223,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search tasks, agents, projects..."
+        placeholder={t("app.commandPalette.searchTasksAgentsProjects", { defaultValue: "Search tasks, agents, projects..." })}
         value={query}
         onValueChange={setQuery}
         onKeyDown={(event) => {
@@ -243,8 +244,7 @@ export function CommandPalette() {
             <span>
               No quick task matches. Press{" "}
               <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-(length:--text-nano)">↵</kbd>{" "}
-              to <span className="font-medium">search all</span> or keep typing to refine.
-            </span>
+              to <span className="font-medium">{ t("app.commandPalette.searchAll", { defaultValue: "search all" }) }</span> { t("app.commandPalette.orKeepTypingToRefine", { defaultValue: "or keep typing to refine." }) } </span>
           ) : (
             "No results found."
           )}
@@ -259,11 +259,10 @@ export function CommandPalette() {
               data-testid="command-search-all"
             >
               <Search className="mr-2 h-4 w-4" />
-              <span className="flex-1 truncate">
-                Search all for <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
+              <span className="flex-1 truncate"> { t("app.commandPalette.searchAllFor", { defaultValue: "Search all for" }) } <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
               </span>
               <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
-                <span>open full search</span>
+                <span>{ t("app.commandPalette.openFullSearch", { defaultValue: "open full search" }) }</span>
                 <kbd className="rounded border border-border bg-background px-1 py-0.5 text-(length:--text-nano)">↵</kbd>
               </span>
             </CommandItem>
@@ -332,7 +331,7 @@ export function CommandPalette() {
             >
               <FileCode2 className="mr-2 h-4 w-4" />
               Open file in this issue...
-              <span className="ml-auto text-xs text-muted-foreground">g f</span>
+              <span className="ml-auto text-xs text-muted-foreground">{ t("app.commandPalette.gF", { defaultValue: "g f" }) }</span>
             </CommandItem>
           )}
           <CommandItem

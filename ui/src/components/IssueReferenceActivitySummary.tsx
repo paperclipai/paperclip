@@ -1,6 +1,7 @@
 import type { ActivityEvent } from "@paperclipai/shared";
 import { Plus, Minus } from "lucide-react";
 import { IssueReferencePill } from "./IssueReferencePill";
+import { t } from "@/i18n";
 
 type ActivityIssueReference = {
   id: string;
@@ -58,12 +59,12 @@ export function IssueReferenceActivitySummary({ event }: { event: Pick<ActivityE
   return (
     <div className="mt-2 space-y-1">
       <Section
-        label="Added references"
+        label={t("app.issueReferenceActivitySummary.addedReferences", { defaultValue: "Added references" })}
         icon={<Plus className="h-3 w-3 text-green-600 dark:text-green-400" aria-hidden="true" />}
         items={added}
       />
       <Section
-        label="Removed references"
+        label={t("app.issueReferenceActivitySummary.removedReferences", { defaultValue: "Removed references" })}
         icon={<Minus className="h-3 w-3 text-red-600 dark:text-red-400" aria-hidden="true" />}
         items={removed}
         strikethrough

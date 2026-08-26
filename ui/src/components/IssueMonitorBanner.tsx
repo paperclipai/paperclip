@@ -13,6 +13,7 @@ import {
   type DerivedMonitorState,
   type MonitorDisplayState,
 } from "@/lib/issue-monitor";
+import { t } from "@/i18n";
 
 /** Matches the `Date | string` inputs accepted by the issue-monitor helpers. */
 type MonitorDate = Date | string;
@@ -80,7 +81,7 @@ export function buildMonitorSurfaceCopy(
       stripTitle = `Resumes ${eta}`;
       break;
     case "due-now":
-      bannerTitle = isScheduledRetryOnly ? "Agent retry due now" : "Waiting on monitor — due now";
+      bannerTitle = isScheduledRetryOnly ? t("app.issueMonitorBanner.agentRetryDueNow", { defaultValue: "Agent retry due now" }) : t("app.issueMonitorBanner.waitingOnMonitorDueNow", { defaultValue: "Waiting on monitor — due now" });
       stripTitle = "Due now";
       statusHint = "Checking momentarily…";
       break;
@@ -136,7 +137,7 @@ function CheckNowButton({
       onClick={onCheckNow}
       disabled={checkingNow}
     >
-      {checkingNow ? "Checking…" : "Check now"}
+      {checkingNow ? t("app.issueMonitorBanner.checking", { defaultValue: "Checking…" }) : t("app.issueMonitorBanner.checkNow", { defaultValue: "Check now" })}
     </Button>
   );
 }
@@ -203,9 +204,7 @@ export function IssueMonitorComposerStrip({
         </div>
         {onCheckNow ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} /> : null}
       </div>
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        Sending a reply wakes the agent now — before the scheduled check.
-      </p>
+      <p className="mt-1.5 text-xs text-muted-foreground"> { t("app.issueMonitorBanner.sendingAReplyWakesTheAgentNowBeforeTheScheduledCheck", { defaultValue: "Sending a reply wakes the agent now — before the scheduled check." }) } </p>
     </div>
   );
 }

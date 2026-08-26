@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
+import { t, useTranslation } from "@/i18n";
 
 interface GoalPropertiesToggleButtonProps {
   panelVisible: boolean;
@@ -39,7 +40,7 @@ export function GoalPropertiesToggleButton({
         panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
       )}
       onClick={onShowProperties}
-      title="Show properties"
+      title={t("app.goalDetail.showProperties", { defaultValue: "Show properties" })}
     >
       <SlidersHorizontal className="h-4 w-4" />
     </Button>
@@ -51,6 +52,7 @@ export function GoalDetail() {
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -118,8 +120,8 @@ export function GoalDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Goals", href: "/goals" },
-      { label: goal?.title ?? goalId ?? "Goal" }
+      { label: t("app.pages.goals", { defaultValue: "Goals" }), href: "/goals" },
+      { label: goal?.title ?? goalId ?? t("app.goalDetail.goal", { defaultValue: "Goal" }) }
     ]);
   }, [setBreadcrumbs, goal, goalId]);
 
@@ -167,7 +169,7 @@ export function GoalDetail() {
           onSave={(description) => updateGoal.mutate({ description })}
           as="p"
           className="text-sm text-muted-foreground"
-          placeholder="Add a description..."
+          placeholder={t("app.goalDetail.addADescription", { defaultValue: "Add a description..." })}
           multiline
           imageUploadHandler={async (file) => {
             const asset = await uploadImage.mutateAsync(file);
@@ -179,10 +181,10 @@ export function GoalDetail() {
       <Tabs defaultValue="children">
         <TabsList>
           <TabsTrigger value="children">
-            Sub-Goals ({childGoals.length})
+            {t("app.goalDetail.subGoals", { defaultValue: "Sub-Goals (" })}{childGoals.length})
           </TabsTrigger>
           <TabsTrigger value="projects">
-            Projects ({linkedProjects.length})
+            {t("app.goalDetail.projects", { defaultValue: "Projects (" })}{linkedProjects.length})
           </TabsTrigger>
         </TabsList>
 
@@ -194,11 +196,10 @@ export function GoalDetail() {
               onClick={() => openNewGoal({ parentId: goalId })}
             >
               <Plus className="h-3.5 w-3.5 mr-1.5" />
-              Sub Goal
-            </Button>
+              {t("app.goalDetail.subGoal", { defaultValue: "Sub Goal" })}</Button>
           </div>
           {childGoals.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No sub-goals.</p>
+            <p className="text-sm text-muted-foreground">{t("app.goalDetail.noSubGoals", { defaultValue: "No sub-goals." })}</p>
           ) : (
             <GoalTree goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
           )}
@@ -206,7 +207,7 @@ export function GoalDetail() {
 
         <TabsContent value="projects" className="mt-4">
           {linkedProjects.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No linked projects.</p>
+            <p className="text-sm text-muted-foreground">{t("app.goalDetail.noLinkedProjects", { defaultValue: "No linked projects." })}</p>
           ) : (
             <div className="border border-border">
               {linkedProjects.map((project) => (

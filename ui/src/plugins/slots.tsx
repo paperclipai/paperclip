@@ -45,6 +45,7 @@ import {
   PluginBridgeContext,
   type PluginHostContext,
 } from "./bridge";
+import { t } from "@/i18n";
 
 export type PluginSlotContext = {
   companyId?: string | null;
@@ -730,8 +731,7 @@ class PluginSlotErrorBoundary extends Component<PluginSlotErrorBoundaryProps, Pl
     if (this.state.hasError) {
       return (
         <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", this.props.className)}>
-          {this.props.slot.pluginDisplayName}: failed to render
-        </div>
+          {this.props.slot.pluginDisplayName}{t("app.slots.failedToRender", { defaultValue: ": failed to render" })}</div>
       );
     }
     return this.props.children;
@@ -855,7 +855,7 @@ export function PluginSlotMount({
     if (missingBehavior === "hidden") return null;
     return (
       <div className={cn("rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground", className)}>
-        {slot.pluginDisplayName}: {slot.displayName}
+        {slot.pluginDisplayName}{t("app.slots.text", { defaultValue: ": " })}{slot.displayName}
       </div>
     );
   }
@@ -911,7 +911,7 @@ export function PluginSlotOutlet({
   if (errorMessage) {
     return (
       <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        Plugin extensions unavailable: {errorMessage}
+        {t("app.slots.pluginExtensionsUnavailable", { defaultValue: "Plugin extensions unavailable: " })}{errorMessage}
       </div>
     );
   }

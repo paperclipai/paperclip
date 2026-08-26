@@ -17,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 /**
  * Skill Studio frontmatter editor (PAP-13145 Option B / PAP-13155).
@@ -199,15 +200,15 @@ function collectValidation(form: FormModel, isSkillFile: boolean): ValidationIss
   const issues: ValidationIssue[] = [];
   const name = form.name.trim();
   const description = form.description.trim();
-  if (isSkillFile && !name) issues.push({ field: "name", message: "SKILL.md needs a name." });
+  if (isSkillFile && !name) issues.push({ field: "name", message: t("app.frontmatterPanel.skillMdNeedsAName", { defaultValue: "SKILL.md needs a name." }) });
   if (name && !SLUG_RE.test(name)) {
-    issues.push({ field: "name", message: "Use lowercase letters, numbers and hyphens." });
+    issues.push({ field: "name", message: t("app.frontmatterPanel.useLowercaseLettersNumbersAndHyphens", { defaultValue: "Use lowercase letters, numbers and hyphens." }) });
   }
   if (isSkillFile && !description) {
-    issues.push({ field: "description", message: "SKILL.md needs a description." });
+    issues.push({ field: "description", message: t("app.frontmatterPanel.skillMdNeedsADescription", { defaultValue: "SKILL.md needs a description." }) });
   }
   if (form.allowedToolsPresent && form.allowedTools === null) {
-    issues.push({ field: "allowed-tools", message: "Expected a list — edit in YAML." });
+    issues.push({ field: "allowed-tools", message: t("app.frontmatterPanel.expectedAListEditInYaml", { defaultValue: "Expected a list — edit in YAML." }) });
   }
   return issues;
 }
@@ -339,12 +340,12 @@ export function FrontmatterPanel({
             aria-controls="frontmatter-panel-body"
           >
             {chevron}
-            <span className="text-sm font-medium">Frontmatter</span>
+            <span className="text-sm font-medium">{ t("app.frontmatterPanel.frontmatter", { defaultValue: "Frontmatter" }) }</span>
             {!open && present ? (
               <span className="truncate text-xs text-muted-foreground">{summary}</span>
             ) : null}
             {!open && !present ? (
-              <span className="text-xs text-muted-foreground">None</span>
+              <span className="text-xs text-muted-foreground">{ t("app.frontmatterPanel.none", { defaultValue: "None" }) }</span>
             ) : null}
           </button>
 
@@ -355,9 +356,7 @@ export function FrontmatterPanel({
             >
               <TabsList variant="line" className="h-7">
                 {canUseFields ? (
-                  <TabsTrigger value="fields" className="px-2 py-0.5 text-xs">
-                    Fields
-                  </TabsTrigger>
+                  <TabsTrigger value="fields" className="px-2 py-0.5 text-xs"> { t("app.frontmatterPanel.fields", { defaultValue: "Fields" }) } </TabsTrigger>
                 ) : (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -367,9 +366,7 @@ export function FrontmatterPanel({
                           disabled
                           aria-disabled="true"
                           className="px-2 py-0.5 text-xs opacity-50"
-                        >
-                          Fields
-                        </TabsTrigger>
+                        > { t("app.frontmatterPanel.fields", { defaultValue: "Fields" }) } </TabsTrigger>
                       </span>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-60">
@@ -379,9 +376,7 @@ export function FrontmatterPanel({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <TabsTrigger value="yaml" className="px-2 py-0.5 text-xs">
-                  YAML
-                </TabsTrigger>
+                <TabsTrigger value="yaml" className="px-2 py-0.5 text-xs"> { t("app.frontmatterPanel.yaml", { defaultValue: "YAML" }) } </TabsTrigger>
               </TabsList>
             </Tabs>
           ) : !readOnly ? (
@@ -420,9 +415,7 @@ export function FrontmatterPanel({
               )}
             </div>
           ) : (
-            <div className="px-3 pb-2 text-xs text-muted-foreground">
-              This file has no frontmatter.
-            </div>
+            <div className="px-3 pb-2 text-xs text-muted-foreground"> { t("app.frontmatterPanel.thisFileHasNoFrontmatter", { defaultValue: "This file has no frontmatter." }) } </div>
           )}
         </CollapsibleContent>
       </Collapsible>
@@ -517,7 +510,7 @@ function FieldsForm({
             <ChipInput
               values={form.allowedTools}
               readOnly={readOnly}
-              placeholder="Add a tool…"
+              placeholder={t("app.frontmatterPanel.addATool", { defaultValue: "Add a tool…" })}
               onChange={(next) => onCommit({ ...form, allowedTools: next })}
             />
           )}
@@ -528,7 +521,7 @@ function FieldsForm({
         <div>
           <Label className="text-xs text-muted-foreground">metadata</Label>
           {form.metadataComplex !== null ? (
-            <p className="mt-1 text-xs text-muted-foreground">Complex value — edit in YAML.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{ t("app.frontmatterPanel.complexValueEditInYaml", { defaultValue: "Complex value — edit in YAML." }) }</p>
           ) : (
             <MetadataRows
               rows={form.metaRows}
@@ -560,7 +553,7 @@ function FieldsForm({
         ) : (
           <div key={row.id}>
             <Label className="text-xs text-muted-foreground">{row.key}</Label>
-            <p className="mt-1 text-xs text-muted-foreground">Complex value — edit in YAML.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{ t("app.frontmatterPanel.complexValueEditInYaml", { defaultValue: "Complex value — edit in YAML." }) }</p>
           </div>
         ),
       )}
@@ -686,7 +679,7 @@ function ChipInput({
             }
           }}
           onBlur={commit}
-          aria-label="Add tool"
+          aria-label={t("app.frontmatterPanel.addTool", { defaultValue: "Add tool" })}
           className="min-w-24 flex-1 bg-transparent text-xs outline-none"
         />
       ) : null}
@@ -712,7 +705,7 @@ function YamlEditor({
       {!canReturnToFields && !parseError ? (
         <div className="mb-1.5 flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span>Editing raw YAML to preserve formatting the form can't reconstruct.</span>
+          <span>{ t("app.frontmatterPanel.editingRawYamlToPreserveFormattingTheFormCanTReconstruct", { defaultValue: "Editing raw YAML to preserve formatting the form can't reconstruct." }) }</span>
         </div>
       ) : null}
       <Textarea
@@ -722,11 +715,9 @@ function YamlEditor({
         rows={Math.min(12, Math.max(3, value.split("\n").length))}
         onChange={(event) => onChange(event.target.value)}
         className="font-mono text-xs"
-        aria-label="Frontmatter YAML"
+        aria-label={t("app.frontmatterPanel.frontmatterYaml", { defaultValue: "Frontmatter YAML" })}
       />
-      <p className="mt-1 text-xs text-muted-foreground">
-        Raw YAML is the source of truth in this mode.
-      </p>
+      <p className="mt-1 text-xs text-muted-foreground"> { t("app.frontmatterPanel.rawYamlIsTheSourceOfTruthInThisMode", { defaultValue: "Raw YAML is the source of truth in this mode." }) } </p>
     </div>
   );
 }

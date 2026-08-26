@@ -24,15 +24,16 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { t, useTranslation } from "@/i18n";
 
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
 type ProjectSortDir = "asc" | "desc";
 
 const PROJECT_SORT_OPTIONS: Array<{ field: ProjectSortField; label: string }> = [
-  { field: "name", label: "Name" },
-  { field: "updated", label: "Updated" },
-  { field: "created", label: "Created" },
-  { field: "targetDate", label: "Target date" },
+  { field: "name", label: t("app.projects.name", { defaultValue: "Name" }) },
+  { field: "updated", label: t("app.projects.updated", { defaultValue: "Updated" }) },
+  { field: "created", label: t("app.projects.created", { defaultValue: "Created" }) },
+  { field: "targetDate", label: t("app.projects.targetDate", { defaultValue: "Target date" }) },
 ];
 
 function compareProjectNames(left: Project, right: Project) {
@@ -79,12 +80,13 @@ function sortProjects(projects: Project[], sortField: ProjectSortField, sortDir:
 export function Projects() {
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Projects" }]);
+    setBreadcrumbs([{ label: t("app.pages.projects", { defaultValue: "Projects" }) }]);
   }, [setBreadcrumbs]);
 
   const { data: allProjects, isLoading, error } = useQuery({
@@ -116,10 +118,10 @@ export function Projects() {
 
     return groups;
   }, [membershipsQuery.data, sortedProjects]);
-  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
+  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? t("app.projects.name", { defaultValue: "Name" });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return <EmptyState icon={Hexagon} message={t("app.projects.selectACompanyToViewProjects", { defaultValue: "Select a company to view projects." })} />;
   }
 
   if (isLoading) {
@@ -131,9 +133,9 @@ export function Projects() {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
+            <Button variant="ghost" size="sm" className="w-fit text-xs" title={t("app.projects.sort", { defaultValue: "Sort" })}>
               <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-              <span>Sort: {sortLabel}</span>
+              <span>{t("app.projects.sort2", { defaultValue: "Sort: " })}{sortLabel}</span>
             </Button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-44 p-0">
@@ -160,7 +162,7 @@ export function Projects() {
                   {sortField === option.field ? (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Check className="h-3 w-3" />
-                      {sortDir === "asc" ? "Asc" : "Desc"}
+                      {sortDir === "asc" ? t("app.projects.asc", { defaultValue: "Asc" }) : t("app.projects.desc", { defaultValue: "Desc" })}
                     </span>
                   ) : null}
                 </button>
@@ -170,8 +172,7 @@ export function Projects() {
         </Popover>
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
-          Add Project
-        </Button>
+          {t("app.projects.addProject", { defaultValue: "Add Project" })}</Button>
       </div>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -179,7 +180,7 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
+          message={t("app.projects.noProjectsYet", { defaultValue: "No projects yet." })}
           action="Add Project"
           onAction={openNewProject}
         />
@@ -218,7 +219,7 @@ export function Projects() {
                         subtitle={project.description ?? undefined}
                         reserveSubtitleSpace
                         to={projectUrl(project)}
-                        className={state === "left" ? "group text-foreground/55" : "group"}
+                        className={state === "left" ? t("app.projects.groupTextForeground55", { defaultValue: "group text-foreground/55" }) : "group"}
                         trailing={
                           <div className="flex items-center gap-3">
                             <span

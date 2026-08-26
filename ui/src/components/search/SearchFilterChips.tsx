@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { buildFilterChips, type FilterChipLookups, type SearchFilters } from "@/lib/search-filters";
+import { t } from "@/i18n";
 
 export function SearchFilterChips({
   filters,
@@ -36,7 +37,7 @@ export function SearchFilterChips({
         className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
         onClick={onClearAll}
       >
-        Clear all
+        {t("app.searchFilterChips.clearAll", { defaultValue: "Clear all" })}
       </button>
     </div>
   );

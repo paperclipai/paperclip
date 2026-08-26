@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
+import { t } from "@/i18n";
 
 export type DocumentFrameHeaderRevisionActor = {
   kind: "agent" | "user" | "system";
@@ -128,9 +129,9 @@ export function DocumentFrameHeader({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-72">
-                <DropdownMenuLabel>Revision history</DropdownMenuLabel>
+                <DropdownMenuLabel>{ t("app.documentFrameHeader.revisionHistory", { defaultValue: "Revision history" }) }</DropdownMenuLabel>
                 {revisionMenu.loading && revisionMenu.revisions.length === 0 ? (
-                  <DropdownMenuItem disabled>Loading revisions...</DropdownMenuItem>
+                  <DropdownMenuItem disabled>{ t("app.documentFrameHeader.loadingRevisions", { defaultValue: "Loading revisions..." }) }</DropdownMenuItem>
                 ) : revisionMenu.revisions.length > 0 ? (
                   <DropdownMenuRadioGroup value={revisionMenu.selectedRevisionId ?? revisionMenu.currentRevisionId ?? ""}>
                     {revisionMenu.revisions.map((revision) => {
@@ -146,9 +147,7 @@ export function DocumentFrameHeader({
                             <div className="flex items-center gap-2">
                               <span className="font-medium">rev {revision.revisionNumber}</span>
                               {isCurrentRevision ? (
-                                <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                                  Current
-                                </Badge>
+                                <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground"> { t("app.documentFrameHeader.current", { defaultValue: "Current" }) } </Badge>
                               ) : null}
                             </div>
                             <div className="mt-1 flex min-w-0 items-center gap-1.5 text-(length:--text-micro) text-muted-foreground">
@@ -163,7 +162,7 @@ export function DocumentFrameHeader({
                     })}
                   </DropdownMenuRadioGroup>
                 ) : (
-                  <DropdownMenuItem disabled>No revisions yet</DropdownMenuItem>
+                  <DropdownMenuItem disabled>{ t("app.documentFrameHeader.noRevisionsYet", { defaultValue: "No revisions yet" }) }</DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>

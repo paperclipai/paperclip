@@ -26,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { t } from "@/i18n";
 
 type NavItem = {
   key: RoutineSectionKey;
@@ -45,7 +46,7 @@ const NAV_GROUPS: NavGroup[] = [
       { key: "overview", label: "Overview", icon: Circle },
       { key: "triggers", label: "Triggers", icon: Clock3 },
       { key: "variables", label: "Variables", icon: LayoutGrid },
-      { key: "secrets", label: "Secrets", icon: KeyRound },
+      { key: "secrets", label: t("app.pages.secrets", { defaultValue: "Secrets" }), icon: KeyRound },
       { key: "delivery", label: "Delivery", icon: Send },
     ],
   },
@@ -53,7 +54,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Operate",
     items: [
       { key: "runs", label: "Runs", icon: Play },
-      { key: "activity", label: "Activity", icon: ActivityIcon },
+      { key: "activity", label: t("app.pages.activity", { defaultValue: "Activity" }), icon: ActivityIcon },
       { key: "history", label: "History", icon: HistoryIcon },
     ],
   },
@@ -109,7 +110,7 @@ export function RoutineSubSidebar({
 
   return (
     <nav
-      aria-label="Routine sections"
+      aria-label={t("app.routineSubSidebar.routineSections", { defaultValue: "Routine sections" })}
       className="hidden h-full w-52 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-background px-3 py-4 md:flex"
     >
       {NAV_GROUPS.map((group) => (
@@ -152,7 +153,7 @@ export function RoutineSubSidebar({
                   <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500 motion-safe:animate-pulse" />
                 ) : dirty ? (
                   <span
-                    aria-label="Unsaved changes"
+                    aria-label={t("app.routineSubSidebar.unsavedChanges", { defaultValue: "Unsaved changes" })}
                     className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500 ring-2 ring-background"
                   />
                 ) : null}
@@ -185,7 +186,7 @@ export function RoutineSectionPicker({
           }
         }}
       >
-        <SelectTrigger className="h-11 w-full" aria-label="Routine section">
+        <SelectTrigger className="h-11 w-full" aria-label={t("app.routineSubSidebar.routineSection", { defaultValue: "Routine section" })}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

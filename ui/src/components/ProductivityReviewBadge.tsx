@@ -4,6 +4,7 @@ import { Link } from "../lib/router";
 import { cn } from "../lib/utils";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { t } from "@/i18n";
 
 const TRIGGER_LABELS: Record<string, string> = {
   no_comment_streak: "No-comment streak",
@@ -23,7 +24,7 @@ export function productivityReviewTriggerLabel(
   trigger: IssueProductivityReview["trigger"],
 ): string {
   if (!trigger) return "Productivity review";
-  return TRIGGER_LABELS[trigger] ?? "Productivity review";
+  return TRIGGER_LABELS[trigger] ?? t("app.productivityReviewBadge.productivityReview", { defaultValue: "Productivity review" });
 }
 
 export function ProductivityReviewBadge({
@@ -52,23 +53,23 @@ export function ProductivityReviewBadge({
           aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
         >
           <Eye className="h-3 w-3" aria-hidden />
-          {hideLabel ? null : <span>Under review</span>}
+          {hideLabel ? null : <span>{t("app.productivityReviewBadge.underReview", { defaultValue: "Under review" })}</span>}
         </Link>
       </TooltipTrigger>
       <TooltipContent>
         <div className="space-y-1 text-xs">
-          <div className="font-semibold">Productivity review open</div>
+          <div className="font-semibold">{t("app.productivityReviewBadge.productivityReviewOpen", { defaultValue: "Productivity review open" })}</div>
           <div>
-            <span className="text-muted-foreground">Trigger:</span> {label}
+            <span className="text-muted-foreground">{t("app.productivityReviewBadge.trigger", { defaultValue: "Trigger:" })}</span> {label}
           </div>
           {typeof review.noCommentStreak === "number" && review.noCommentStreak > 0 ? (
             <div>
-              <span className="text-muted-foreground">No-comment streak:</span>{" "}
+              <span className="text-muted-foreground">{t("app.productivityReviewBadge.noCommentStreak", { defaultValue: "No-comment streak:" })}</span>{" "}
               {review.noCommentStreak} runs
             </div>
           ) : null}
           <div>
-            <span className="text-muted-foreground">Review:</span> {reviewIdentifier} ({statusLabel})
+            <span className="text-muted-foreground">{t("app.productivityReviewBadge.review", { defaultValue: "Review:" })}</span> {reviewIdentifier} ({statusLabel})
           </div>
         </div>
       </TooltipContent>

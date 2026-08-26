@@ -31,6 +31,7 @@ import { nextWorkMode, workModeMetaFor, workModeMetaList } from "@/lib/work-mode
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
 interface CommentReassignment {
@@ -199,7 +200,7 @@ export function TaskChatComposer({
   const showAssignee = Boolean(enableReassign && reassignOptions && reassignOptions.length > 0);
   const assigneeValue = pendingAssignee ?? currentAssigneeValue;
   const assigneeLabel =
-    reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
+    reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? t("app.taskChatComposer.unassigned", { defaultValue: "Unassigned" });
   const assigneeName = assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
   const effectivePlaceholder = placeholder ?? modePlaceholder(pendingMode, assigneeName);
 
@@ -242,7 +243,7 @@ export function TaskChatComposer({
       setAttachments((prev) =>
         prev.map((item) =>
           item.id === id
-            ? { ...item, status: "error", error: err instanceof Error ? err.message : "Upload failed" }
+            ? { ...item, status: "error", error: err instanceof Error ? err.message : t("app.taskChatComposer.uploadFailed", { defaultValue: "Upload failed" }) }
             : item,
         ),
       );
@@ -267,7 +268,7 @@ export function TaskChatComposer({
           name: file.name,
           size: file.size,
           status: "error",
-          error: err instanceof Error ? err.message : "Upload failed",
+          error: err instanceof Error ? err.message : t("app.taskChatComposer.uploadFailed", { defaultValue: "Upload failed" }),
         },
       ]);
     }
@@ -402,7 +403,7 @@ export function TaskChatComposer({
           ref={editorRef}
           value={body}
           onChange={setBody}
-          placeholder={disabled ? (disabledReason ?? "Composer disabled") : effectivePlaceholder}
+          placeholder={disabled ? (disabledReason ?? t("app.taskChatComposer.composerDisabled", { defaultValue: "Composer disabled" })) : effectivePlaceholder}
           readOnly={disabled}
           mentions={mentions}
           onSubmit={() => void submit()}
@@ -447,9 +448,9 @@ export function TaskChatComposer({
                   <AttachmentTitle className="max-w-48">{attachment.name}</AttachmentTitle>
                   <AttachmentDescription className="max-w-48">
                     {attachment.status === "uploading"
-                      ? "Uploading…"
+                      ? t("app.taskChatComposer.uploading", { defaultValue: "Uploading…" })
                       : attachment.status === "error"
-                        ? (attachment.error ?? "Upload failed")
+                        ? (attachment.error ?? t("app.taskChatComposer.uploadFailed", { defaultValue: "Upload failed" }))
                         : [kind.label, sizeLabel].filter(Boolean).join(" · ")}
                   </AttachmentDescription>
                 </AttachmentContent>
@@ -482,8 +483,8 @@ export function TaskChatComposer({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={disabled}
-              title="Attach file"
-              aria-label="Attach file"
+              title={t("app.taskChatComposer.attachFile", { defaultValue: "Attach file" })}
+              aria-label={t("app.taskChatComposer.attachFile", { defaultValue: "Attach file" })}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               data-testid="task-chat-composer-attach"
             >
@@ -538,10 +539,10 @@ export function TaskChatComposer({
           <InlineEntitySelector
             value={assigneeValue}
             options={reassignOptions ?? []}
-            placeholder="Assignee"
+            placeholder={t("app.taskChatComposer.assignee", { defaultValue: "Assignee" })}
             noneLabel="No assignee"
             searchPlaceholder="Search assignees…"
-            emptyMessage="No matches."
+            emptyMessage={t("app.taskChatComposer.noMatches", { defaultValue: "No matches." })}
             onChange={setPendingAssignee}
             disabled={disabled}
             triggerTestId="task-chat-composer-assignee"
@@ -567,12 +568,12 @@ export function TaskChatComposer({
           }
           title={
             uploadPending
-              ? "Waiting for upload to finish"
+              ? t("app.taskChatComposer.waitingForUploadToFinish", { defaultValue: "Waiting for upload to finish" })
               : uploadFailed
-                ? "Remove the failed attachment to send"
+                ? t("app.taskChatComposer.removeTheFailedAttachmentToSend", { defaultValue: "Remove the failed attachment to send" })
                 : "Send (⌘+Enter)"
           }
-          aria-label="Send"
+          aria-label={t("app.taskChatComposer.send", { defaultValue: "Send" })}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-transform hover:scale-105 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground"
           data-testid="task-chat-composer-send"
         >

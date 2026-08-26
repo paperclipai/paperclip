@@ -29,6 +29,7 @@ import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useToast } from "../context/ToastContext";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
@@ -122,7 +123,7 @@ export function NewAgentDialog() {
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
       title: "Create a new agent",
-      description: "(type in what kind of agent you want here)",
+      description: t("app.newAgentDialog.typeInWhatKindOfAgentYouWantHere", { defaultValue: "(type in what kind of agent you want here)" }),
     });
   }
 
@@ -198,14 +199,14 @@ export function NewAgentDialog() {
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
         title: "Agent invite created",
-        body: copied ? "Agent onboarding prompt ready below and copied to clipboard." : "Agent onboarding prompt ready below.",
+        body: copied ? t("app.newAgentDialog.agentOnboardingPromptReadyBelowAndCopiedToClipboard", { defaultValue: "Agent onboarding prompt ready below and copied to clipboard." }) : t("app.newAgentDialog.agentOnboardingPromptReadyBelow", { defaultValue: "Agent onboarding prompt ready below." }),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
         title: "Failed to create agent invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: error instanceof Error ? error.message: t("app.newAgentDialog.unknownError", { defaultValue: "Unknown error" }),
         tone: "error",
       });
     },
@@ -230,7 +231,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{ t("app.newAgentDialog.addANewAgent", { defaultValue: "Add a new agent" }) }</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -252,10 +253,7 @@ export function NewAgentDialog() {
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-accent">
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  Ask a leader to propose the hire, configure a runtime yourself,
-                  or send an onboarding prompt to an external agent.
-                </p>
+                <p className="text-sm text-muted-foreground"> { t("app.newAgentDialog.askALeaderToProposeTheHireConfigureARuntimeYourselfOrSendAnOnboardingPromptToAnExternalAgent", { defaultValue: "Ask a leader to propose the hire, configure a runtime yourself, or send an onboarding prompt to an external agent." }) } </p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
@@ -289,9 +287,7 @@ export function NewAgentDialog() {
                   <ArrowLeft className="h-3.5 w-3.5" />
                   Back
                 </button>
-                <p className="text-sm text-muted-foreground">
-                  Choose the runtime Paperclip should start or resume directly.
-                </p>
+                <p className="text-sm text-muted-foreground"> { t("app.newAgentDialog.chooseTheRuntimePaperclipShouldStartOrResumeDirectly", { defaultValue: "Choose the runtime Paperclip should start or resume directly." }) } </p>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -309,9 +305,7 @@ export function NewAgentDialog() {
                     }}
                   >
                     {opt.recommended && (
-                      <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
-                        Recommended
-                      </Badge>
+                      <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none"> { t("app.newAgentDialog.recommended", { defaultValue: "Recommended" }) } </Badge>
                     )}
                     <opt.icon className="h-4 w-4" />
                     <span className="font-medium">{opt.label}</span>
@@ -333,34 +327,30 @@ export function NewAgentDialog() {
                   Back
                 </button>
                 <div className="space-y-1">
-                  <h2 className="text-sm font-semibold">Invite an external agent</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key.
-                  </p>
+                  <h2 className="text-sm font-semibold">{ t("app.newAgentDialog.inviteAnExternalAgent", { defaultValue: "Invite an external agent" }) }</h2>
+                  <p className="text-sm text-muted-foreground"> { t("app.newAgentDialog.generateAOneTimeOnboardingPromptThatAnyCompatibleAgentCanUseToRequestAccessWaitForApprovalAndClaimItsPaperclipApiKey", { defaultValue: "Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key." }) } </p>
                 </div>
               </div>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">Optional message for the agent</span>
+                <span className="text-sm font-medium">{ t("app.newAgentDialog.optionalMessageForTheAgent", { defaultValue: "Optional message for the agent" }) }</span>
                 <Textarea
                   value={agentMessage}
                   onChange={(event) => setAgentMessage(event.target.value)}
                   className="min-h-24 resize-y"
-                  placeholder="Add onboarding context, expected role, or first instructions."
+                  placeholder={t("app.newAgentDialog.addOnboardingContextExpectedRoleOrFirstInstructions", { defaultValue: "Add onboarding context, expected role, or first instructions." })}
                   maxLength={4000}
                 />
               </label>
 
-              <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.
-              </div>
+              <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground"> { t("app.newAgentDialog.agentInvitesCreateAJoinRequestFirstACompanyAdminStillApprovesTheRequestBeforeTheAgentCanClaimItsApiKey", { defaultValue: "Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key." }) } </div>
 
               <div>
                 <Button
                   onClick={() => createAgentInviteMutation.mutate()}
                   disabled={!selectedCompanyId || createAgentInviteMutation.isPending}
                 >
-                  {createAgentInviteMutation.isPending ? "Generating…" : "Generate onboarding prompt"}
+                  {createAgentInviteMutation.isPending ? t("app.newAgentDialog.generating", { defaultValue: "Generating…" }) : t("app.newAgentDialog.generateOnboardingPrompt", { defaultValue: "Generate onboarding prompt" })}
                 </Button>
               </div>
             </div>
@@ -376,7 +366,7 @@ export function NewAgentDialog() {
                 </button>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold">Agent onboarding prompt</h2>
+                    <h2 className="text-sm font-semibold">{ t("app.newAgentDialog.agentOnboardingPrompt", { defaultValue: "Agent onboarding prompt" }) }</h2>
                     {latestAgentPromptCopied ? (
                       <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                         <Check className="h-3.5 w-3.5" />
@@ -384,9 +374,7 @@ export function NewAgentDialog() {
                       </div>
                     ) : null}
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    Send this prompt to the external agent that should join this company.
-                  </p>
+                  <p className="text-sm text-muted-foreground"> { t("app.newAgentDialog.sendThisPromptToTheExternalAgentThatShouldJoinThisCompany", { defaultValue: "Send this prompt to the external agent that should join this company." }) } </p>
                 </div>
               </div>
 
@@ -405,7 +393,7 @@ export function NewAgentDialog() {
                   setLatestAgentPromptCopied(copied);
                 }}
               >
-                {latestAgentPromptCopied ? "Copied prompt" : "Copy prompt"}
+                {latestAgentPromptCopied ? t("app.newAgentDialog.copiedPrompt", { defaultValue: "Copied prompt" }) : t("app.newAgentDialog.copyPrompt", { defaultValue: "Copy prompt" })}
               </Button>
             </div>
           )}

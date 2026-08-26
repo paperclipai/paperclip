@@ -5,6 +5,7 @@ import { useCompany } from "../../context/CompanyContext";
 import { useBreadcrumbs } from "../../context/BreadcrumbContext";
 import { EmptyState } from "../../components/EmptyState";
 import { AuditFeed, type AuditFeedMode } from "./AuditFeed";
+import { t, useTranslation } from "@/i18n";
 
 /**
  * Company activity page — the single merged surface for `/:company/activity`
@@ -16,12 +17,13 @@ import { AuditFeed, type AuditFeedMode } from "./AuditFeed";
  */
 export function CompanyActivity() {
   const { selectedCompanyId } = useCompany();
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
   const mode: AuditFeedMode = searchParams.get("mode") === "agents" ? "agents" : "all";
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Activity" }]);
+    setBreadcrumbs([{ label: t("app.pages.activity", { defaultValue: "Activity" }) }]);
   }, [setBreadcrumbs]);
 
   const handleModeChange = useCallback(
@@ -42,7 +44,7 @@ export function CompanyActivity() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select a company to view activity." />;
+    return <EmptyState icon={History} message={t("app.companyActivity.selectCompany", { defaultValue: "Select a company to view activity." })} />;
   }
 
   return <AuditFeed companyId={selectedCompanyId} mode={mode} onModeChange={handleModeChange} />;

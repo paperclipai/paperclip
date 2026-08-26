@@ -1,5 +1,6 @@
 import type { QuotaWindow } from "@paperclipai/shared";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
+import { t } from "@/i18n";
 
 interface ClaudeSubscriptionPanelProps {
   windows: QuotaWindow[];
@@ -62,12 +63,8 @@ export function ClaudeSubscriptionPanel({
     <div className="border border-border px-4 py-4">
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Anthropic subscription
-          </div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            Live Claude quota windows.
-          </div>
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground"> { t("app.claudeSubscriptionPanel.anthropicSubscription", { defaultValue: "Anthropic subscription" }) } </div>
+          <div className="mt-1 text-sm text-muted-foreground"> { t("app.claudeSubscriptionPanel.liveClaudeQuotaWindows", { defaultValue: "Live Claude quota windows." }) } </div>
         </div>
         {source ? (
           <span className="shrink-0 border border-border px-2.5 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">

@@ -55,6 +55,7 @@ import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
+import { t } from "@/i18n";
 
 /* ---- Mention types ---- */
 
@@ -844,7 +845,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message: t("app.markdownEditor.imageUploadFailed", { defaultValue: "Image upload failed" });
             setUploadError(message);
             throw err;
           }
@@ -1189,16 +1190,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <p>{ t("app.markdownEditor.richEditorUnavailableForThisMarkdownShowingRawSourceInstead", { defaultValue: "Rich editor unavailable for this markdown. Showing raw source instead." }) }</p>
           <button
             type="button"
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
             onClick={() => {
               setRichEditorError(null);
             }}
-          >
-            Retry rich editor
-          </button>
+          > { t("app.markdownEditor.retryRichEditor", { defaultValue: "Retry rich editor" }) } </button>
         </div>
         <textarea
           ref={fallbackTextareaRef}
@@ -1473,29 +1472,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 )}
                 {option.kind === "issue" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Task
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground"> { t("app.markdownEditor.task", { defaultValue: "Task" }) } </span>
                 )}
                 {option.kind === "project" && option.projectId && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Project
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground"> { t("app.markdownEditor.project", { defaultValue: "Project" }) } </span>
                 )}
                 {option.kind === "user" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    User
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground"> { t("app.markdownEditor.user", { defaultValue: "User" }) } </span>
                 )}
                 {option.kind === "skill" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Skill
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground"> { t("app.markdownEditor.skill", { defaultValue: "Skill" }) } </span>
                 )}
                 {option.kind === "routine" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Routine
-                  </span>
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground"> { t("app.markdownEditor.routine", { defaultValue: "Routine" }) } </span>
                 )}
               </button>
             ))}

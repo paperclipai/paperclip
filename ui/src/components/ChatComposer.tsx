@@ -11,6 +11,7 @@ import {
 } from "react";
 import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
 import { cn } from "../lib/utils";
+import { t } from "@/i18n";
 
 /**
  * Shared chat composer (PAP-95a / PAP-96).
@@ -288,12 +289,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading…"
+                ? t("app.chatComposer.uploading", { defaultValue: "Uploading…" })
                 : attachment.status === "error"
                   ? attachment.error ?? "Upload failed"
                   : attachment.inline
-                    ? "Inserted inline"
-                    : "Attached";
+                    ? t("app.chatComposer.insertedInline", { defaultValue: "Inserted inline" })
+                    : t("app.chatComposer.attached", { defaultValue: "Attached" });
             return (
               <div
                 key={attachment.id}
@@ -342,8 +343,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               type="button"
               onClick={triggerFilePicker}
               disabled={disabled || attaching}
-              aria-label="Attach files"
-              title="Attach files"
+              aria-label={t("app.chatComposer.attachFiles", { defaultValue: "Attach files" })}
+              title={t("app.chatComposer.attachFiles", { defaultValue: "Attach files" })}
               className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
               {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}

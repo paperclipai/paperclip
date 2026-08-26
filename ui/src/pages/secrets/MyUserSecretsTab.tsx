@@ -16,6 +16,7 @@ import {
   myValueState,
   myValueTone,
 } from "./my-value-state";
+import { t } from "@/i18n";
 
 /**
  * Secrets → My secrets tab. Lists every company user-secret definition paired
@@ -75,13 +76,13 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
             <AlertCircle className="h-4 w-4" /> Failed to load your secrets:{" "}
             {(mySecretsQuery.error as Error).message}
             <Button variant="ghost" size="sm" onClick={() => mySecretsQuery.refetch()}>
-              Retry
+              {t("common.retry", { defaultValue: "Retry" })}
             </Button>
           </div>
         ) : entries.length === 0 && !mySecretsQuery.isPending ? (
           <EmptyState
             icon={KeyRound}
-            message="No user secrets are defined for this company yet. An admin defines which credentials each member supplies."
+            message={t("app.myUserSecretsTab.noUserSecrets", { defaultValue: "No user secrets are defined for this company yet. An admin defines which credentials each member supplies." })}
           />
         ) : (
           <ul className="space-y-2">
@@ -161,7 +162,7 @@ function MyUserSecretRow({
         </Badge>
         {!disabledDefinition ? (
           <Button size="sm" variant={secret ? "outline" : "default"} onClick={onSet}>
-            {secret ? "Update" : "Set value"}
+            {secret ? t("common.update", { defaultValue: "Update" }) : "Set value"}
           </Button>
         ) : null}
         {secret ? (
@@ -171,7 +172,7 @@ function MyUserSecretRow({
             className="text-muted-foreground hover:text-destructive"
             onClick={onClear}
             disabled={clearing}
-            title="Clear my value"
+            title={t("app.myUserSecretsTab.clearMyValue", { defaultValue: "Clear my value" })}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>

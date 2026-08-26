@@ -7,6 +7,7 @@ import {
 } from "@/api/cases";
 import { ImageGalleryModal, type GalleryMediaItem } from "@/components/ImageGalleryModal";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 function humanBytes(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -36,7 +37,7 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
   );
 
   if (attachments.length === 0) {
-    return <p className="text-xs text-muted-foreground">No attachments.</p>;
+    return <p className="text-xs text-muted-foreground">{ t("app.caseAttachmentsGallery.noAttachments", { defaultValue: "No attachments." }) }</p>;
   }
 
   return (

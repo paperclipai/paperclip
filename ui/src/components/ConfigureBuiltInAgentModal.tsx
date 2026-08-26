@@ -22,6 +22,7 @@ import {
   builtInAgentsApi,
   type BuiltInAgentState,
 } from "@/api/builtInAgents";
+import { t } from "@/i18n";
 
 /** Adapters whose config completeness is keyed on a non-empty `model`. */
 function isModelBasedAdapter(adapterType: string): boolean {
@@ -143,7 +144,7 @@ export function ConfigureBuiltInAgentModal({
       onOpenChange(false);
     },
     onError: (err) => {
-      setError(err instanceof ApiError ? err.message : "Failed to configure the built-in agent.");
+      setError(err instanceof ApiError ? err.message: t("app.configureBuiltInAgentModal.failedToConfigureTheBuiltInAgent", { defaultValue: "Failed to configure the built-in agent." }));
     },
   });
 
@@ -156,13 +157,10 @@ export function ConfigureBuiltInAgentModal({
         </DialogHeader>
 
         <div className="space-y-4">
-          <InlineBanner tone="info" compact>
-            Creates <strong>{definition.displayName}</strong> in your roster, badged{" "}
-            <strong>Built-in</strong>. Companies that require hire approval will queue this for the
-            board.
-          </InlineBanner>
+          <InlineBanner tone="info" compact> { t("app.configureBuiltInAgentModal.creates", { defaultValue: "Creates" }) } <strong>{definition.displayName}</strong> in your roster, badged{" "}
+            <strong>{ t("app.configureBuiltInAgentModal.builtIn", { defaultValue: "Built-in" }) }</strong>{ t("app.configureBuiltInAgentModal.companiesThatRequireHireApprovalWillQueueThisForTheBoard", { defaultValue: ". Companies that require hire approval will queue this for the board." }) } </InlineBanner>
 
-          <Field label="Adapter type">
+          <Field label={t("app.configureBuiltInAgentModal.adapterType", { defaultValue: "Adapter type" })}>
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(next) => {
@@ -195,13 +193,10 @@ export function ConfigureBuiltInAgentModal({
           )}
 
           {!setupSupportedInModal && (
-            <InlineBanner tone="warning" compact>
-              This adapter needs command or endpoint fields before it can run. Provision the
-              built-in row now, then finish those fields from the full agent configuration.
-            </InlineBanner>
+            <InlineBanner tone="warning" compact> { t("app.configureBuiltInAgentModal.thisAdapterNeedsCommandOrEndpointFieldsBeforeItCanRunProvisionTheBuiltInRowNowThenFinishThoseFieldsFromTheFullAgentConfiguration", { defaultValue: "This adapter needs command or endpoint fields before it can run. Provision the built-in row now, then finish those fields from the full agent configuration." }) } </InlineBanner>
           )}
 
-          <Field label="Monthly budget (optional)" hint="Leave blank for no cap.">
+          <Field label={t("app.configureBuiltInAgentModal.monthlyBudgetOptional", { defaultValue: "Monthly budget (optional)" })} hint={t("app.configureBuiltInAgentModal.leaveBlankForNoCap", { defaultValue: "Leave blank for no cap." })}>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">$</span>
               <Input
@@ -214,7 +209,7 @@ export function ConfigureBuiltInAgentModal({
                 onChange={(event) => setBudgetDollars(event.target.value)}
                 className="w-32"
               />
-              <span className="text-sm text-muted-foreground">/ month</span>
+              <span className="text-sm text-muted-foreground">{t("app.configureBuiltInAgentModal.perMonth", { defaultValue: "/ month" })}</span>
             </div>
           </Field>
 
@@ -230,9 +225,7 @@ export function ConfigureBuiltInAgentModal({
             variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={provision.isPending}
-          >
-            Not now
-          </Button>
+          > { t("app.configureBuiltInAgentModal.notNow", { defaultValue: "Not now" }) } </Button>
           <Button
             onClick={() => {
               setError(null);
@@ -240,7 +233,7 @@ export function ConfigureBuiltInAgentModal({
             }}
             disabled={!canSubmit || provision.isPending}
           >
-            {provision.isPending ? "Configuring…" : submitLabel}
+            {provision.isPending ? t("app.configureBuiltInAgentModal.configuring", { defaultValue: "Configuring…" }) : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

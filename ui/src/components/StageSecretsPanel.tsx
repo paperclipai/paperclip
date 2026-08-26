@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "./EmptyState";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 import { AgentIcon } from "./AgentIconPicker";
+import { t } from "@/i18n";
 
 export interface StageSecretsPanelProps {
   /** Whether the stage has a backing automation routine with an assignee. */
@@ -52,7 +53,7 @@ export function StageSecretsPanel({
     return (
       <EmptyState
         icon={KeyRound}
-        message="Secrets are available only to step automation. Pick an agent to run this step, then add the secrets it needs."
+        message={t("app.stageSecretsPanel.secretsAreAvailableOnlyToStepAutomationPickAnAgentToRunThisStepThenAddTheSecretsItNeeds", { defaultValue: "Secrets are available only to step automation. Pick an agent to run this step, then add the secrets it needs." })}
         action="Set up automation"
         onAction={onSetupAutomation}
       />
@@ -70,15 +71,13 @@ export function StageSecretsPanel({
           <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
         )}
         <p>
-          These env vars are injected when{" "}
-          <span className="font-medium text-foreground">{displayName}</span> runs this step. They override
-          matching project and agent env on collisions. <span className="font-mono">PAPERCLIP_*</span> names
-          are reserved.
+          {t("app.stageSecretsPanel.theseEnvVarsAreInjectedWhen", { defaultValue: "These env vars are injected when" })}{" "}
+          <span className="font-medium text-foreground">{displayName}</span> {t("app.stageSecretsPanel.runsThisStepTheyOverrideMatchingProjectAndAgentEnvOnCollisions", { defaultValue: "runs this step. They override\n          matching project and agent env on collisions." })} <span className="font-mono">{t("app.stageSecretsPanel.paperclip_", { defaultValue: "PAPERCLIP_*" })}</span> {t("app.stageSecretsPanel.namesAreReserved", { defaultValue: "names\n          are reserved." })}
         </p>
       </div>
 
       {secretsLoading ? (
-        <p className="text-sm text-muted-foreground">Loading secrets…</p>
+        <p className="text-sm text-muted-foreground">{t("app.stageSecretsPanel.loadingSecrets", { defaultValue: "Loading secrets…" })}</p>
       ) : (
         <EnvironmentVariablesEditor
           value={value}
@@ -91,9 +90,9 @@ export function StageSecretsPanel({
       <div className="flex items-center gap-3">
         <Button type="button" onClick={onSave} disabled={!dirty || saving}>
           <Save className="h-4 w-4 mr-1.5" />
-          {saving ? "Saving…" : "Save secrets"}
+          {saving ? t("app.stageSecretsPanel.saving", { defaultValue: "Saving…" }) : t("app.stageSecretsPanel.saveSecrets", { defaultValue: "Save secrets" })}
         </Button>
-        {dirty && !saving ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
+        {dirty && !saving ? <span className="text-xs text-muted-foreground">{t("app.stageSecretsPanel.unsavedChanges", { defaultValue: "Unsaved changes" })}</span> : null}
       </div>
     </div>
   );

@@ -16,6 +16,7 @@ import {
   type SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
+import { t } from "@/i18n";
 
 interface AttentionInteractionResolverProps {
   companyId: string;
@@ -133,9 +134,7 @@ export function AttentionInteractionResolver({
 
   if (error || !interaction) {
     return (
-      <p className="py-3 text-xs text-muted-foreground">
-        This decision is no longer available — it may have been resolved elsewhere.
-      </p>
+      <p className="py-3 text-xs text-muted-foreground"> { t("app.attentionInteractionResolver.thisDecisionIsNoLongerAvailableItMayHaveBeenResolvedElsewhere", { defaultValue: "This decision is no longer available — it may have been resolved elsewhere." }) } </p>
     );
   }
 

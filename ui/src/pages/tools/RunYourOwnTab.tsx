@@ -9,6 +9,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { useToast } from "@/context/ToastContext";
 import { LoadingState, ErrorState, RelativeTime } from "./shared";
+import { t } from "@/i18n";
 
 const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/i;
 
@@ -76,7 +77,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
         envKeys,
       }),
     onSuccess: () => {
-      pushToast({ title: "Tool added", body: `"${name.trim()}" is ready to connect.`, tone: "success" });
+      pushToast({ title: t("app.runYourOwnTab.toolAdded", { defaultValue: "Tool added" }), body: `"${name.trim()}" is ready to connect.`, tone: "success" });
       setName("");
       setCommand("");
       setKeyRows([]);
@@ -94,40 +95,38 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
   return (
     <div className="space-y-6">
       <p className="max-w-2xl text-sm text-muted-foreground">
-        For a tool that runs from a command. Paperclip runs it in your company's own isolated workspace.
-        Administrators only.
-      </p>
+        {t("app.runYourOwnTab.forAToolThatRunsFromACommandPaperclipRunsItInYourCompanySOwnIsolatedWorkspaceAdministratorsOnly", { defaultValue: "For a tool that runs from a command. Paperclip runs it in your company's own isolated workspace. Administrators only." })}</p>
 
       <div className="space-y-5 rounded-lg border border-border bg-card p-5">
         <div className="space-y-1.5">
-          <Label htmlFor="ryo-name">Name</Label>
+          <Label htmlFor="ryo-name">{t("app.runYourOwnTab.name", { defaultValue: "Name" })}</Label>
           <Input
             id="ryo-name"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Acme tools"
+            placeholder={t("app.runYourOwnTab.acmeTools", { defaultValue: "Acme tools" })}
             maxLength={160}
           />
-          <p className="text-xs text-muted-foreground">What you'll call this tool in your apps list.</p>
+          <p className="text-xs text-muted-foreground">{t("app.runYourOwnTab.whatYouLlCallThisToolInYourAppsList", { defaultValue: "What you'll call this tool in your apps list." })}</p>
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="ryo-command">Command</Label>
+          <Label htmlFor="ryo-command">{t("app.runYourOwnTab.command", { defaultValue: "Command" })}</Label>
           <Input
             id="ryo-command"
             value={command}
             onChange={(event) => setCommand(event.target.value)}
-            placeholder="npx -y @acme/mcp-tool"
+            placeholder={t("app.runYourOwnTab.npxYAcmeMcpTool", { defaultValue: "npx -y @acme/mcp-tool" })}
             spellCheck={false}
             className="bg-slate-900 font-mono text-(length:--text-compact) text-slate-100 placeholder:text-slate-500 focus-visible:ring-slate-400"
           />
-          <p className="text-xs text-muted-foreground">The command that runs the tool. From the tool's README.</p>
+          <p className="text-xs text-muted-foreground">{t("app.runYourOwnTab.theCommandThatRunsTheToolFromTheToolSReadme", { defaultValue: "The command that runs the tool. From the tool's README." })}</p>
         </div>
 
         <div className="space-y-2">
           <div className="flex items-baseline gap-2">
-            <Label>Keys it needs</Label>
-            <span className="text-xs text-muted-foreground">· optional, depends on the tool</span>
+            <Label>{t("app.runYourOwnTab.keysItNeeds", { defaultValue: "Keys it needs" })}</Label>
+            <span className="text-xs text-muted-foreground">{t("app.runYourOwnTab.optionalDependsOnTheTool", { defaultValue: "· optional, depends on the tool" })}</span>
           </div>
           {keyRows.length > 0 ? (
             <div className="space-y-2">
@@ -152,7 +151,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
                         type="button"
                         variant="ghost"
                         size="icon"
-                        aria-label="Remove key"
+                        aria-label={t("app.runYourOwnTab.removeKey", { defaultValue: "Remove key" })}
                         onClick={() => setKeyRows((rows) => rows.filter((r) => r.id !== row.id))}
                       >
                         <X className="h-4 w-4" />
@@ -160,8 +159,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
                     </div>
                     {invalid ? (
                       <p className="text-xs text-destructive">
-                        Use letters, numbers and underscores, starting with a letter or underscore (e.g. API_KEY).
-                      </p>
+                        {t("app.runYourOwnTab.useLettersNumbersAndUnderscoresStartingWithALetterOrUnderscoreEGApiKey", { defaultValue: "Use letters, numbers and underscores, starting with a letter or underscore (e.g. API_KEY)." })}</p>
                     ) : null}
                   </div>
                 );
@@ -170,20 +168,17 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
           ) : null}
           <Button type="button" variant="outline" size="sm" onClick={addKeyRow} className="gap-1.5">
             <Plus className="h-3.5 w-3.5" />
-            Add a key
-          </Button>
+            {t("app.runYourOwnTab.addAKey", { defaultValue: "Add a key" })}</Button>
         </div>
 
         <div className="flex items-start gap-2.5 rounded-md bg-muted/50 px-3 py-2.5">
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
           <div className="text-xs">
             <p className="font-medium text-foreground">
-              This runs in your company's own workspace, isolated from everything else.
-            </p>
+              {t("app.runYourOwnTab.thisRunsInYourCompanySOwnWorkspaceIsolatedFromEverythingElse", { defaultValue: "This runs in your company's own workspace, isolated from everything else." })}</p>
             <p className="mt-0.5 flex items-center gap-1 text-muted-foreground">
               <Lock className="h-3 w-3" />
-              Only administrators see this option.
-            </p>
+              {t("app.runYourOwnTab.onlyAdministratorsSeeThisOption", { defaultValue: "Only administrators see this option." })}</p>
           </div>
         </div>
 
@@ -191,31 +186,30 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
 
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => createMutation.mutate()} disabled={!canSubmit || createMutation.isPending}>
-            {createMutation.isPending ? "Adding…" : "Check & continue"}
+            {createMutation.isPending ? "Adding…" : t("app.runYourOwnTab.checkContinue", { defaultValue: "Check & continue" })}
           </Button>
           <span className="text-xs text-muted-foreground">
-            Paperclip will register the command and the keys it needs.
-          </span>
+            {t("app.runYourOwnTab.paperclipWillRegisterTheCommandAndTheKeysItNeeds", { defaultValue: "Paperclip will register the command and the keys it needs." })}</span>
         </div>
       </div>
 
       <div className="space-y-3">
-        <h3 className="text-sm font-semibold text-foreground">Your own tools</h3>
+        <h3 className="text-sm font-semibold text-foreground">{t("app.runYourOwnTab.yourOwnTools", { defaultValue: "Your own tools" })}</h3>
         {templates.isLoading ? (
           <LoadingState />
         ) : templates.isError ? (
           <ErrorState error={templates.error} onRetry={() => templates.refetch()} />
         ) : adminTemplates.length === 0 ? (
-          <p className="text-sm text-muted-foreground">You haven't added any of your own tools yet.</p>
+          <p className="text-sm text-muted-foreground">{t("app.runYourOwnTab.youHavenTAddedAnyOfYourOwnToolsYet", { defaultValue: "You haven't added any of your own tools yet." })}</p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5">Name</th>
-                  <th className="px-4 py-2.5">Command</th>
-                  <th className="px-4 py-2.5">Keys</th>
-                  <th className="px-4 py-2.5">Added</th>
+                  <th className="px-4 py-2.5">{t("app.runYourOwnTab.name", { defaultValue: "Name" })}</th>
+                  <th className="px-4 py-2.5">{t("app.runYourOwnTab.command", { defaultValue: "Command" })}</th>
+                  <th className="px-4 py-2.5">{t("app.runYourOwnTab.keys", { defaultValue: "Keys" })}</th>
+                  <th className="px-4 py-2.5">{t("app.runYourOwnTab.added", { defaultValue: "Added" })}</th>
                   <th className="px-4 py-2.5" />
                 </tr>
               </thead>
@@ -244,12 +238,12 @@ function RunYourOwnRow({
   const disableMutation = useMutation({
     mutationFn: () => toolsApi.disableStdioTemplate(companyId, template.templateId),
     onSuccess: () => {
-      pushToast({ title: "Tool turned off", tone: "success" });
+      pushToast({ title: t("app.runYourOwnTab.toolTurnedOff", { defaultValue: "Tool turned off" }), tone: "success" });
       qc.invalidateQueries({ queryKey: queryKeys.tools.stdioTemplates(companyId) });
     },
     onError: (error) => {
       pushToast({
-        title: "Couldn't turn it off",
+        title: t("app.runYourOwnTab.couldnTTurnItOff", { defaultValue: "Couldn't turn it off" }),
         body: error instanceof Error ? error.message : undefined,
         tone: "error",
       });
@@ -281,8 +275,7 @@ function RunYourOwnRow({
             onClick={() => disableMutation.mutate()}
             disabled={disableMutation.isPending}
           >
-            Turn off
-          </Button>
+            {t("app.runYourOwnTab.turnOff", { defaultValue: "Turn off" })}</Button>
         )}
       </td>
     </tr>

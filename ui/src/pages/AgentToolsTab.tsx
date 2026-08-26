@@ -22,6 +22,7 @@ import {
 import { cn } from "../lib/utils";
 import { brandChipBadge } from "../lib/status-colors";
 import { installPayload, installStateFrom, isAgentInstalled, INSTALLED_HINT } from "../lib/tool-installs";
+import { t } from "@/i18n";
 
 /** Normalize a selector value (string or string[]) into a flat string list. */
 function selectorStringList(value: unknown): string[] {
@@ -94,9 +95,9 @@ function InstalledAppsSection({
     <section className="rounded-lg border border-border bg-card">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-3 py-2.5">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Installed apps</h3>
+          <h3 className="text-sm font-semibold text-foreground">{t("app.agentToolsTab.installedApps", { defaultValue: "Installed apps" })}</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Installed apps load tools into {agentName}'s context on every run. Permitted-only apps do not add context cost.
+            {t("app.agentToolsTab.installedAppsLoadToolsInto", { defaultValue: "Installed apps load tools into" })} {agentName}'s context on every run. Permitted-only apps do not add context cost.
           </p>
         </div>
         <InstallSaveStatusChip pending={saving} unsaved={unsaved} error={error} />
@@ -104,12 +105,12 @@ function InstalledAppsSection({
 
       <div className="space-y-3 p-3">
         <InlineBanner tone="info" compact>
-          Has access means the app is permitted. Installed means its tools are added to this agent's runtime context.
+          {t("app.agentToolsTab.hasAccessMeansTheAppIsPermittedInstalledMeansItsToolsAreAddedToThisAgentSRuntimeContext", { defaultValue: "Has access means the app is permitted. Installed means its tools are added to this agent's runtime context." })}
         </InlineBanner>
 
         {connections.length === 0 ? (
           <p className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
-            No permitted apps yet. Bind an access profile to make apps available here.
+            {t("app.agentToolsTab.noPermittedAppsYetBindAnAccessProfileToMakeAppsAvailableHere", { defaultValue: "No permitted apps yet. Bind an access profile to make apps available here." })}
           </p>
         ) : (
           <div className="divide-y divide-border rounded-md border border-border">
@@ -132,13 +133,13 @@ function InstalledAppsSection({
                       <span className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
                         <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
-                        {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+                        {rowPending ? <span className="text-xs text-muted-foreground">{t("app.agentToolsTab.saving", { defaultValue: "Saving..." })}</span> : null}
                       </span>
                       <span className="mt-0.5 block text-xs text-muted-foreground">
                         {installedForAll
-                          ? "Installed from the app page for every agent. Remove the all-agents install there."
+                          ? t("app.agentToolsTab.installedFromTheAppPageForEveryAgentRemoveTheAllAgentsInstallThere", { defaultValue: "Installed from the app page for every agent. Remove the all-agents install there." })
                           : checked
-                            ? "Loaded into this agent's runtime context."
+                            ? t("app.agentToolsTab.loadedIntoThisAgentSRuntimeContext", { defaultValue: "Loaded into this agent's runtime context." })
                             : INSTALLED_HINT}
                       </span>
                     </span>
@@ -153,11 +154,11 @@ function InstalledAppsSection({
                           to={`/apps/${connection.id}/permissions`}
                           className="text-xs font-medium text-primary hover:underline"
                         >
-                          Open permissions
+                          {t("app.agentToolsTab.openPermissions", { defaultValue: "Open permissions" })}
                         </Link>
                       )}
                     >
-                      Permitted but not installed — tools will not appear in runs.
+                      {t("app.agentToolsTab.permittedButNotInstalledToolsWillNotAppearInRuns", { defaultValue: "Permitted but not installed — tools will not appear in runs." })}
                     </InlineBanner>
                   ) : null}
                 </div>
@@ -179,7 +180,7 @@ function InstallBadge({
   installedForAll: boolean;
   permitted: boolean;
 }) {
-  const label = installed ? (installedForAll ? "Installed for all" : "Installed") : permitted ? "Permitted only" : "Not permitted";
+  const label = installed ? (installedForAll ? t("app.agentToolsTab.installedForAll", { defaultValue: "Installed for all" }) : t("app.agentToolsTab.installed", { defaultValue: "Installed" })) : permitted ? t("app.agentToolsTab.permittedOnly", { defaultValue: "Permitted only" }) : t("app.agentToolsTab.notPermitted", { defaultValue: "Not permitted" });
   return (
     <span
       className={cn(
@@ -202,10 +203,10 @@ function InstallSaveStatusChip({
   unsaved: boolean;
   error: boolean;
 }) {
-  if (pending) return <span className="text-xs text-muted-foreground">Saving...</span>;
-  if (error) return <span className="text-xs text-destructive">Could not save</span>;
-  if (unsaved) return <span className="text-xs text-muted-foreground">Unsaved changes</span>;
-  return <span className="text-xs text-muted-foreground">Saved</span>;
+  if (pending) return <span className="text-xs text-muted-foreground">{t("app.agentToolsTab.saving", { defaultValue: "Saving..." })}</span>;
+  if (error) return <span className="text-xs text-destructive">{t("app.agentToolsTab.couldNotSave", { defaultValue: "Could not save" })}</span>;
+  if (unsaved) return <span className="text-xs text-muted-foreground">{t("app.agentToolsTab.unsavedChanges", { defaultValue: "Unsaved changes" })}</span>;
+  return <span className="text-xs text-muted-foreground">{t("app.agentToolsTab.saved", { defaultValue: "Saved" })}</span>;
 }
 
 const POLICY_EFFECT_LABEL: Record<string, string> = {
@@ -417,7 +418,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   const profiles = effective.data?.profiles ?? [];
   const catalogLoading = catalogQueries.some((q) => q.isLoading);
 
-  if (effective.isLoading) return <ToolsLoadingState label="Resolving effective access…" />;
+  if (effective.isLoading) return <ToolsLoadingState label={t("app.agentToolsTab.resolvingEffectiveAccess", { defaultValue: "Resolving effective access…" })} />;
   if (effective.error) {
     return <ToolsErrorState error={effective.error} onRetry={() => effective.refetch()} />;
   }
@@ -429,13 +430,13 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
     <div className="space-y-4">
       <EnforcementBanner
         tone="info"
-        title="Effective access"
+        title={t("app.agentToolsTab.effectiveAccess", { defaultValue: "Effective access" })}
         body={
           <>
-            This is exactly the tool set Paperclip will accept for{" "}
+            {t("app.agentToolsTab.thisIsExactlyTheToolSetPaperclipWillAcceptFor", { defaultValue: "This is exactly the tool set Paperclip will accept for" })}{" "}
             <span className="font-medium">{agent.name}</span>. Profile and policy edits are
             reflected within ~5 seconds. The agent's prompt can narrow this list but{" "}
-            <span className="font-medium">cannot expand it</span> — everything else is blocked by
+            <span className="font-medium">{t("app.agentToolsTab.cannotExpandIt", { defaultValue: "cannot expand it" })}</span> — everything else is blocked by
             default.
           </>
         }
@@ -462,23 +463,23 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         <div className="lg:col-span-2">
           <div className="rounded-lg border border-border">
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
-              <h3 className="text-sm font-semibold text-foreground">Allowed tools</h3>
+              <h3 className="text-sm font-semibold text-foreground">{t("app.agentToolsTab.allowedTools", { defaultValue: "Allowed tools" })}</h3>
               <span className="text-xs text-muted-foreground tabular-nums">
                 {allowedTools.length} {allowedTools.length === 1 ? "tool" : "tools"}
               </span>
             </div>
             {allowedTools.length === 0 ? (
               <p className="px-3 py-6 text-sm text-muted-foreground">
-                No tools are allowed for this agent. Bind a tool profile to grant access.
+                {t("app.agentToolsTab.noToolsAreAllowedForThisAgentBindAToolProfileToGrantAccess", { defaultValue: "No tools are allowed for this agent. Bind a tool profile to grant access." })}
               </p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                    <th className="px-3 py-2 font-medium">Tool</th>
-                    <th className="px-3 py-2 font-medium">Capability</th>
-                    <th className="px-3 py-2 font-medium">Risk</th>
-                    <th className="px-3 py-2 font-medium">Source</th>
+                    <th className="px-3 py-2 font-medium">{t("app.agentToolsTab.tool", { defaultValue: "Tool" })}</th>
+                    <th className="px-3 py-2 font-medium">{t("app.agentToolsTab.capability", { defaultValue: "Capability" })}</th>
+                    <th className="px-3 py-2 font-medium">{t("app.agentToolsTab.risk", { defaultValue: "Risk" })}</th>
+                    <th className="px-3 py-2 font-medium">{t("app.agentToolsTab.source", { defaultValue: "Source" })}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -516,25 +517,25 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
           <div className="rounded-lg border border-border bg-background/60 p-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
               <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
-              Why these tools?
+              {t("app.agentToolsTab.whyTheseTools", { defaultValue: "Why these tools?" })}
             </h3>
 
             {/* Access profiles */}
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                  Access profiles
+                  {t("app.agentToolsTab.accessProfiles", { defaultValue: "Access profiles" })}
                 </div>
                 <Link
                   to={`${profilesHref}?check=1`}
                   className="text-(length:--text-micro) font-medium text-primary hover:underline"
                 >
-                  Check access
+                  {t("app.agentToolsTab.checkAccess", { defaultValue: "Check access" })}
                 </Link>
               </div>
               {profiles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No active profile applies to this agent, so it has no allowed tools.
+                  {t("app.agentToolsTab.noActiveProfileAppliesToThisAgentSoItHasNoAllowedTools", { defaultValue: "No active profile applies to this agent, so it has no allowed tools." })}
                 </p>
               ) : (
                 profiles.map((profile) => {
@@ -549,7 +550,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       {profile.summary.isCompanyDefault ? (
                         <div className="mt-1">
                           <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">
-                            Company default
+                            {t("app.agentToolsTab.companyDefault", { defaultValue: "Company default" })}
                           </span>
                         </div>
                       ) : null}
@@ -562,13 +563,13 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
             {/* Policies mutating the allow list */}
             <div className="mt-3 space-y-1.5">
               <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Active policies
+                {t("app.agentToolsTab.activePolicies", { defaultValue: "Active policies" })}
               </div>
               {policiesQuery.isLoading ? (
-                <p className="text-xs text-muted-foreground">Loading policies…</p>
+                <p className="text-xs text-muted-foreground">{t("app.agentToolsTab.loadingPolicies", { defaultValue: "Loading policies…" })}</p>
               ) : governingPolicies.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No enabled policy currently mutates this agent's allow list.
+                  {t("app.agentToolsTab.noEnabledPolicyCurrentlyMutatesThisAgentSAllowList", { defaultValue: "No enabled policy currently mutates this agent's allow list." })}
                 </p>
               ) : (
                 governingPolicies.map(({ policy, order }) => (
@@ -598,18 +599,18 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
             {/* Unavailable tools */}
             <div className="mt-3 space-y-1.5">
               <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Unavailable tools
+                {t("app.agentToolsTab.unavailableTools", { defaultValue: "Unavailable tools" })}
               </div>
               {catalogLoading ? (
-                <p className="text-xs text-muted-foreground">Checking tools…</p>
+                <p className="text-xs text-muted-foreground">{t("app.agentToolsTab.checkingTools", { defaultValue: "Checking tools…" })}</p>
               ) : deniedTools.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  Every known tool this agent could name is allowed.
+                  {t("app.agentToolsTab.everyKnownToolThisAgentCouldNameIsAllowed", { defaultValue: "Every known tool this agent could name is allowed." })}
                 </p>
               ) : (
                 <>
                   <p className="text-(length:--text-micro) text-muted-foreground">
-                    Tools the agent could name but Paperclip would block:
+                    {t("app.agentToolsTab.toolsTheAgentCouldNameButPaperclipWouldBlock", { defaultValue: "Tools the agent could name but Paperclip would block:" })}
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {deniedTools.slice(0, DENIED_TOOLS_DISPLAY_LIMIT).map((tool) => (

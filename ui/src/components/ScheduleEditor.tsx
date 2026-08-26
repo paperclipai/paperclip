@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { nextCronFires, parseCronExpression } from "../lib/cron-fires";
+import { t } from "@/i18n";
 
 export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
@@ -18,7 +19,7 @@ const PRESETS: { value: SchedulePreset; label: string }[] = [
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
   value: String(i),
-  label: i === 0 ? "12 AM" : i < 12 ? `${i} AM` : i === 12 ? "12 PM" : `${i - 12} PM`,
+  label: i === 0 ? t("app.scheduleEditor.12Am", { defaultValue: "12 AM" }) : i < 12 ? `${i} AM` : i === 12 ? t("app.scheduleEditor.12Pm", { defaultValue: "12 PM" }) : `${i - 12} PM`,
 }));
 
 const MINUTES = Array.from({ length: 12 }, (_, i) => ({
@@ -140,7 +141,7 @@ function describeSchedule(cron: string): string {
     case "monthly":
       return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
     case "custom":
-      return cron || "No schedule set";
+      return cron || t("app.scheduleEditor.noScheduleSet", { defaultValue: "No schedule set" });
   }
 }
 
@@ -186,7 +187,7 @@ export function getScheduleCronValidation(cron: string): {
   const nextFires = nextCronFires(trimmed, 3, { timeZone: "UTC" });
   return {
     valid: true,
-    message: nextFires.length > 0 ? "Valid cron." : "Valid cron, but no upcoming fires were found.",
+    message: nextFires.length > 0 ? t("app.scheduleEditor.validCron", { defaultValue: "Valid cron." }) : t("app.scheduleEditor.validCronButNoUpcomingFiresWereFound", { defaultValue: "Valid cron, but no upcoming fires were found." }),
     nextFires,
   };
 }
@@ -247,8 +248,8 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full" aria-label="Schedule frequency">
-          <SelectValue placeholder="Choose frequency..." />
+        <SelectTrigger className="w-full" aria-label={t("app.scheduleEditor.scheduleFrequency", { defaultValue: "Schedule frequency" })}>
+          <SelectValue placeholder={t("app.scheduleEditor.chooseFrequency", { defaultValue: "Choose frequency..." })} />
         </SelectTrigger>
         <SelectContent>
           {PRESETS.map((p) => (
@@ -277,12 +278,12 @@ export function ScheduleEditor({
               }
             }}
             placeholder="0 10 * * *"
-            aria-label="Cron expression"
+            aria-label={t("app.scheduleEditor.cronExpression", { defaultValue: "Cron expression" })}
             aria-invalid={!customValidation.valid}
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
+            {t("app.scheduleEditor.fiveFieldsMinuteHourDayOfMonthMonthDayOfWeek", { defaultValue: "Five fields: minute hour day-of-month month day-of-week" })}
           </p>
           <p
             className={customValidation.valid ? "text-xs text-muted-foreground" : "text-xs text-destructive"}
@@ -341,7 +342,7 @@ export function ScheduleEditor({
 
           {preset === "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at minute</span>
+              <span className="text-sm text-muted-foreground">{t("app.scheduleEditor.atMinute", { defaultValue: "at minute" })}</span>
               <Select
                 value={minute}
                 onValueChange={(m) => {
@@ -389,7 +390,7 @@ export function ScheduleEditor({
 
           {preset === "monthly" && (
             <>
-              <span className="text-sm text-muted-foreground">on day</span>
+              <span className="text-sm text-muted-foreground">{t("app.scheduleEditor.onDay", { defaultValue: "on day" })}</span>
               <Select
                 value={dayOfMonth}
                 onValueChange={(dom) => {

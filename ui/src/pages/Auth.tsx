@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { t } from "@/i18n";
 import { PaperclipLockup } from "../components/PaperclipLockup";
-
 type AuthMode = "sign_in" | "sign_up";
 
 export function AuthPage() {
@@ -63,7 +63,7 @@ export function AuthPage() {
       navigate(nextPath, { replace: true });
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Authentication failed");
+      setError(err instanceof Error ? err.message : t("app.auth.authenticationFailed", { defaultValue: "Authentication failed" }));
     },
   });
 
@@ -89,16 +89,15 @@ export function AuthPage() {
       <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
           <div className="mb-8">
-            <PaperclipLockup className="h-5 w-auto" />
-          </div>
+            <PaperclipLockup className="h-5 w-auto" />          </div>
 
           <h1 className="text-xl font-semibold">
-            {mode === "sign_in" ? "Sign in to Paperclip" : "Create your Paperclip account"}
+            {mode === "sign_in" ? t("app.auth.signInToPaperclip", { defaultValue: "Sign in to Paperclip" }) : t("app.auth.createYourPaperclipAccount", { defaultValue: "Create your Paperclip account" })}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {mode === "sign_in"
-              ? "Use your email and password to access this instance."
-              : "Create an account for this instance. Email confirmation is not required in v1."}
+              ? t("app.auth.useYourEmailAndPasswordToAccessThisInstance", { defaultValue: "Use your email and password to access this instance." })
+              : t("app.auth.createAnAccountForThisInstanceEmailConfirmationIsNotRequiredInV1", { defaultValue: "Create an account for this instance. Email confirmation is not required in v1." })}
           </p>
 
           <form
@@ -117,7 +116,7 @@ export function AuthPage() {
           >
             {mode === "sign_up" && (
               <div>
-                <label htmlFor="name" className="text-xs text-muted-foreground mb-1 block">Name</label>
+                <label htmlFor="name" className="text-xs text-muted-foreground mb-1 block">{t("app.auth.name", { defaultValue: "Name" })}</label>
                 <input
                   id="name"
                   name="name"
@@ -134,7 +133,7 @@ export function AuthPage() {
               </div>
             )}
             <div>
-              <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">Email</label>
+              <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">{t("app.auth.email", { defaultValue: "Email" })}</label>
               <input
                 id="email"
                 name="email"
@@ -151,7 +150,7 @@ export function AuthPage() {
               />
             </div>
             <div>
-              <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">Password</label>
+              <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">{t("app.auth.password", { defaultValue: "Password" })}</label>
               <input
                 id="password"
                 name="password"
@@ -178,15 +177,15 @@ export function AuthPage() {
               className={`w-full ${!canSubmit && !mutation.isPending ? "opacity-50" : ""}`}
             >
               {mutation.isPending
-                ? "Working…"
+                ? t("app.auth.working", { defaultValue: "Working…" })
                 : mode === "sign_in"
-                  ? "Sign In"
-                  : "Create Account"}
+                  ? t("app.auth.signIn", { defaultValue: "Sign In" })
+                  : t("app.auth.createAccount", { defaultValue: "Create Account" })}
             </Button>
           </form>
 
           <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+            {mode === "sign_in" ? t("app.auth.needAnAccount", { defaultValue: "Need an account?" }) : t("app.auth.alreadyHaveAnAccount", { defaultValue: "Already have an account?" })}{" "}
             <button
               type="button"
               className="font-medium text-foreground underline underline-offset-2"
@@ -195,7 +194,7 @@ export function AuthPage() {
                 setMode(mode === "sign_in" ? "sign_up" : "sign_in");
               }}
             >
-              {mode === "sign_in" ? "Create one" : "Sign in"}
+              {mode === "sign_in" ? t("app.auth.createOne", { defaultValue: "Create one" }) : t("app.auth.signIn2", { defaultValue: "Sign in" })}
             </button>
           </div>
         </div>

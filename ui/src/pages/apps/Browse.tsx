@@ -24,6 +24,7 @@ import {
   POPULAR_KEYS,
   ZAPIER_CONNECT_HREF,
 } from "./store-cards";
+import { t } from "@/i18n";
 
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
@@ -48,8 +49,8 @@ export function Browse() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps" },
+      { label: selectedCompany?.name ?? t("app.browse.company", { defaultValue: "Company" }), href: "/dashboard" },
+      { label: t("app.browse.apps", { defaultValue: "Apps" }) },
     ]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs, selectedCompany?.name]);
@@ -115,7 +116,7 @@ export function Browse() {
   }, [applicationsQuery.data, connectionsQuery.data]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to browse apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("app.browse.selectACompanyToBrowseApps", { defaultValue: "Select a company to browse apps." })}</div>;
   }
 
   const loading = galleryQuery.isLoading || applicationsQuery.isLoading || connectionsQuery.isLoading;
@@ -136,10 +137,9 @@ export function Browse() {
   return (
     <div className="max-w-5xl space-y-8 pb-12">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("app.browse.browse", { defaultValue: "Browse" })}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Choose an app or connect your own MCP server.
-        </p>
+          {t("app.browse.chooseAnAppOrConnectYourOwnMcpServer", { defaultValue: "Choose an app or connect your own MCP server." })}</p>
       </header>
 
       <div className="relative max-w-md">
@@ -148,8 +148,8 @@ export function Browse() {
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search apps…"
-          aria-label="Search apps"
+          placeholder={t("app.browse.searchApps", { defaultValue: "Search apps…" })}
+          aria-label={t("app.browse.searchApps2", { defaultValue: "Search apps" })}
           className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/30"
         />
       </div>
@@ -165,8 +165,7 @@ export function Browse() {
           {!trimmed && popular.length > 0 && (
             <section className="space-y-3">
               <div className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                Popular
-              </div>
+                {t("app.browse.popular", { defaultValue: "Popular" })}</div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 {popular.map((entry) => (
                   <AppTile
@@ -182,12 +181,12 @@ export function Browse() {
 
           <section className="space-y-3">
             <div className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              {trimmed ? `Results (${filtered.length})` : "All apps"}
+              {trimmed ? `Results (${filtered.length})` : t("app.browse.allApps", { defaultValue: "All apps" })}
             </div>
             {filtered.length === 0 ? (
               <p className="flex items-center gap-1.5 rounded-xl border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
                 <Link2 className="h-4 w-4" />
-                No planned apps match “{query.trim()}”.
+                {t("app.browse.noPlannedAppsMatch", { defaultValue: "No planned apps match “" })}{query.trim()}”.
               </p>
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -228,8 +227,8 @@ function AppTile({
   const actionLabel = connectedCount > 0
     ? `${connectedCount} connected already`
     : disabled
-      ? "Coming soon"
-      : "Connect →";
+      ? t("app.browse.comingSoon", { defaultValue: "Coming soon" })
+      : t("app.browse.connect", { defaultValue: "Connect →" });
   if (compact) {
     return (
       <button
@@ -237,8 +236,8 @@ function AppTile({
         disabled={disabled}
         onClick={onOpen}
         className={disabled
-          ? "flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
-          : "flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40"}
+          ? t("app.browse.flexCursorNotAllowedFlexColItemsCenterGap2RoundedXlBorderBorderBorderBgBackgroundPx3Py4TextCenterOpacity60", { defaultValue: "flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60" })
+          : t("app.browse.flexFlexColItemsCenterGap2RoundedXlBorderBorderBorderBgBackgroundPx3Py4TextCenterTransitionColorsHoverBorderForeground30HoverBgAccent40", { defaultValue: "flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40" })}
       >
         <AppLogo name={appDefinitionName(entry)} logoUrl={appDefinitionLogoUrl(entry)} size={36} />
         <span className="text-xs font-medium text-foreground">{appDefinitionName(entry)}</span>
@@ -254,8 +253,8 @@ function AppTile({
       disabled={disabled}
       onClick={onOpen}
       className={disabled
-        ? "flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
-        : "flex h-full items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"}
+        ? t("app.browse.flexHFullCursorNotAllowedItemsStartGap3RoundedXlBorderBorderBorderBgCardPx4Py4TextLeftOpacity60", { defaultValue: "flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60" })
+        : t("app.browse.flexHFullItemsStartGap3RoundedXlBorderBorderBorderBgCardPx4Py4TextLeftTransitionColorsHoverBorderForeground30HoverBgAccent40", { defaultValue: "flex h-full items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40" })}
     >
       <AppLogo name={appDefinitionName(entry)} logoUrl={appDefinitionLogoUrl(entry)} size={36} />
       <div className="min-w-0 flex-1">

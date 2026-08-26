@@ -6,6 +6,7 @@ import { Link } from "@/lib/router";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "../lib/utils";
+import { t } from "@/i18n";
 
 interface IssuePlanDecompositionsSectionProps {
   issueId: string;
@@ -46,9 +47,9 @@ export function IssuePlanDecompositionsSection({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-muted-foreground">Plan decomposition</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">{ t("app.issuePlanDecompositionsSection.planDecomposition", { defaultValue: "Plan decomposition" }) }</h3>
         <span className="text-(length:--text-micro) text-muted-foreground/80">
-          {items.length === 1 ? "1 accepted plan revision" : `${items.length} accepted plan revisions`}
+          {items.length === 1 ? t("app.issuePlanDecompositionsSection.1AcceptedPlanRevision", { defaultValue: "1 accepted plan revision" }) : `${items.length} accepted plan revisions`}
         </span>
       </div>
 
@@ -85,7 +86,7 @@ export function IssuePlanDecompositionsSection({
           return (
             <li
               key={record.id}
-              // design-allow(card-pattern): semantic <li> row inside a <ul>; Card renders a div (C5a Run 3)
+              // design-allow(card-pattern): semantic <li> { t("app.issuePlanDecompositionsSection.rowInsideA", { defaultValue: "row inside a" }) } <ul>; Card renders a div (C5a Run 3)
               className="rounded-md border border-border bg-card/50 p-3 text-sm"
             >
               <div className="flex flex-wrap items-center gap-2">
@@ -101,7 +102,7 @@ export function IssuePlanDecompositionsSection({
                 {record.status === "completed" && requested > 0 ? (
                   <span
                     className="inline-flex items-center gap-1 rounded-sm border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-sky-900 dark:text-sky-100"
-                    title="Repeat attempts with this fingerprint reuse this record instead of creating new children"
+                    title={t("app.issuePlanDecompositionsSection.repeatAttemptsWithThisFingerprintReuseThisRecordInsteadOfCreatingNewChildren", { defaultValue: "Repeat attempts with this fingerprint reuse this record instead of creating new children" })}
                   >
                     <Repeat className="h-3 w-3" />
                     Idempotent claim
@@ -123,9 +124,7 @@ export function IssuePlanDecompositionsSection({
                   <Link
                     to={`/issues/${issueIdentifier}#document-plan`}
                     className="underline-offset-2 hover:underline"
-                  >
-                    Plan document
-                  </Link>
+                  > { t("app.issuePlanDecompositionsSection.planDocument", { defaultValue: "Plan document" }) } </Link>
                 ) : null}
               </div>
 

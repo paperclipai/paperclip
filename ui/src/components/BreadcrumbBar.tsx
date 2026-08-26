@@ -15,6 +15,7 @@ import {
 import { Fragment, useMemo } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { t } from "@/i18n";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -76,7 +77,7 @@ export function BreadcrumbBar() {
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={t("app.breadcrumbBar.openSidebar", { defaultValue: "Open sidebar" })}
     >
       <Menu className="h-5 w-5" />
     </Button>

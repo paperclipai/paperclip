@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
+import { t } from "@/i18n";
 
 /**
  * Host binding for the description-as-first-bubble (PAP-375): the LIVE issue
@@ -74,7 +75,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
           onSave={brief.onSave}
           as="p"
           className="text-sm leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder={t("app.taskChatDescriptionBubble.addADescription", { defaultValue: "Add a description..." })}
           multiline
           defaultEditing
           onEditingChange={(next) => {
@@ -99,7 +100,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
         data-testid="task-chat-description-ghost"
       >
         <Pencil className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        Add a description...
+        {t("app.taskChatDescriptionBubble.addADescription", { defaultValue: "Add a description..." })}
       </button>
     );
   }
@@ -164,7 +165,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
           type="button"
           className="mt-1 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/50 hover:text-foreground focus-visible:opacity-100 group-hover/brief:opacity-100"
           onClick={() => setEditing(true)}
-          aria-label="Edit description"
+          aria-label={t("app.taskChatDescriptionBubble.editDescription", { defaultValue: "Edit description" })}
           data-testid="task-chat-description-edit"
         >
           <Pencil className="h-3.5 w-3.5" aria-hidden />

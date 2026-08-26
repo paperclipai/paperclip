@@ -29,6 +29,7 @@ import { connectionAddress, connectionTransportLabel, DangerZone } from "./AppDe
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { appApplicationTabHref, appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
+import { t } from "@/i18n";
 
 export function AppNotConnected() {
   const { applicationId = "", tab } = useParams<{ applicationId: string; tab?: string }>();
@@ -90,12 +91,12 @@ export function AppNotConnected() {
     enabled: !!selectedCompanyId && activeTab === "activity",
   });
 
-  const appName = application?.name ?? "App";
+  const appName = application?.name ?? t("app.appNotConnected.app", { defaultValue: "App" });
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: selectedCompany?.name ?? t("app.appNotConnected.company", { defaultValue: "Company" }), href: "/dashboard" },
+      { label: t("app.appNotConnected.apps", { defaultValue: "Apps" }), href: "/apps" },
       { label: appName, href: appApplicationTabHref(applicationId, "setup") },
       { label: appTabLabel(activeTab) },
     ]);
@@ -107,7 +108,7 @@ export function AppNotConnected() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__") });
       pushToast({
-        title: "App removed",
+        title: t("app.appNotConnected.appRemoved", { defaultValue: "App removed" }),
         body: `${appName} no longer shows in your apps. You can connect it again any time.`,
         tone: "success",
       });
@@ -115,15 +116,15 @@ export function AppNotConnected() {
     },
     onError: (error) => {
       pushToast({
-        title: "Couldn’t remove the app",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("app.appNotConnected.couldnTRemoveTheApp", { defaultValue: "Couldn’t remove the app" }),
+        body: error instanceof Error ? error.message : t("app.appNotConnected.pleaseTryAgain", { defaultValue: "Please try again." }),
         tone: "error",
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to manage apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("app.appNotConnected.selectACompanyToManageApps", { defaultValue: "Select a company to manage apps." })}</div>;
   }
   if (!applicationId || !activeTab) {
     return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "setup") : "/apps/connections"} replace />;
@@ -139,8 +140,8 @@ export function AppNotConnected() {
   if (!application) {
     return (
       <div className="max-w-3xl space-y-3 p-6 text-sm text-muted-foreground">
-        <p>This app doesn’t exist anymore.</p>
-        <Button variant="outline" size="sm" onClick={() => navigate("/apps/connections")}>Back to apps</Button>
+        <p>{t("app.appNotConnected.thisAppDoesnTExistAnymore", { defaultValue: "This app doesn’t exist anymore." })}</p>
+        <Button variant="outline" size="sm" onClick={() => navigate("/apps/connections")}>{t("app.appNotConnected.backToApps", { defaultValue: "Back to apps" })}</Button>
       </div>
     );
   }
@@ -189,7 +190,7 @@ export function AppNotConnected() {
           <ReviewPanel connectionId={previousConnection.id} />
         ) : (
           <EmptyTab
-            title="Nothing is waiting for your OK right now."
+            title={t("app.appNotConnected.nothingIsWaitingForYourOkRightNow", { defaultValue: "Nothing is waiting for your OK right now." })}
             body="Review requests will appear here after this app is connected."
           />
         )
@@ -199,7 +200,7 @@ export function AppNotConnected() {
       )}
       {activeTab === "test" && (
         <EmptyTab
-          title="Reconnect to test this app."
+          title={t("app.appNotConnected.reconnectToTestThisApp", { defaultValue: "Reconnect to test this app." })}
           body="Testing becomes available after this app is connected again."
         />
       )}
@@ -259,7 +260,7 @@ function ApplicationHeader({
         <div className="flex items-center gap-2">
           <h1 className="truncate text-2xl font-bold tracking-tight">{applicationName}</h1>
           <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium text-muted-foreground">
-            {connectedCount > 0 ? `${connectedCount} connected` : "Not connected"}
+            {connectedCount > 0 ? `${connectedCount} connected` : t("app.appNotConnected.notConnected", { defaultValue: "Not connected" })}
           </span>
         </div>
         {description && (
@@ -290,20 +291,19 @@ function SetupTab({
       <div className="space-y-6">
         <section className="space-y-3">
           <div>
-            <h2 className="text-sm font-bold text-foreground">Already connected to {applicationName}</h2>
+            <h2 className="text-sm font-bold text-foreground">{t("app.appNotConnected.alreadyConnectedTo", { defaultValue: "Already connected to " })}{applicationName}</h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Open a connection to edit it, or add another account.
-            </p>
+              {t("app.appNotConnected.openAConnectionToEditItOrAddAnotherAccount", { defaultValue: "Open a connection to edit it, or add another account." })}</p>
           </div>
           <div className="overflow-hidden rounded-lg border border-border">
             {activeConnections.map((connection) => {
               const secondary = connectionDisplaySecondaryHint(connection) ??
-                (connection.lastUsedAt ? `Last used ${timeAgo(connection.lastUsedAt)}` : "Not used yet");
+                (connection.lastUsedAt ? `Last used ${timeAgo(connection.lastUsedAt)}` : t("app.appNotConnected.notUsedYet", { defaultValue: "Not used yet" }));
               const status = connection.enabled === false || connection.status === "disabled"
-                ? "Paused"
+                ? t("app.appNotConnected.paused", { defaultValue: "Paused" })
                 : isToolConnectionAttentionHealth(connection.healthStatus)
-                  ? "Needs attention"
-                  : "Connected";
+                  ? t("app.appNotConnected.needsAttention", { defaultValue: "Needs attention" })
+                  : t("app.appNotConnected.connected", { defaultValue: "Connected" });
               return (
                 <button
                   key={connection.id}
@@ -318,7 +318,7 @@ function SetupTab({
                     <div className="truncate text-xs text-muted-foreground">{secondary}</div>
                   </div>
                   <span className="text-xs text-muted-foreground">{status}</span>
-                  <span className="text-xs font-semibold text-primary">Edit →</span>
+                  <span className="text-xs font-semibold text-primary">{t("app.appNotConnected.edit", { defaultValue: "Edit →" })}</span>
                 </button>
               );
             })}
@@ -328,12 +328,11 @@ function SetupTab({
         <section className="rounded-xl border border-border bg-card px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-bold text-foreground">Connect another</h2>
+              <h2 className="text-sm font-bold text-foreground">{t("app.appNotConnected.connectAnother", { defaultValue: "Connect another" })}</h2>
               <p className="mt-0.5 text-sm text-muted-foreground">
-                Add another {applicationName} account without changing the connections above.
-              </p>
+                {t("app.appNotConnected.addAnother", { defaultValue: "Add another " })}{applicationName} {t("app.appNotConnected.accountWithoutChangingTheConnectionsAbove", { defaultValue: "account without changing the connections above." })}</p>
             </div>
-            <Button onClick={onConnect}>Connect another</Button>
+            <Button onClick={onConnect}>{t("app.appNotConnected.connectAnother", { defaultValue: "Connect another" })}</Button>
           </div>
         </section>
       </div>
@@ -346,16 +345,16 @@ function SetupTab({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-bold text-foreground">
-              {previousConnection ? "Reconnect this app" : "Connect this app"}
+              {previousConnection ? t("app.appNotConnected.reconnectThisApp", { defaultValue: "Reconnect this app" }) : t("app.appNotConnected.connectThisApp", { defaultValue: "Connect this app" })}
             </h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
               {previousConnection
-                ? "We kept the previous setup. Add a working key to bring it back online."
-                : "Agents can't use it until it's connected."}
+                ? t("app.appNotConnected.weKeptThePreviousSetupAddAWorkingKeyToBringItBackOnline", { defaultValue: "We kept the previous setup. Add a working key to bring it back online." })
+                : t("app.appNotConnected.agentsCanTUseItUntilItSConnected", { defaultValue: "Agents can't use it until it's connected." })}
             </p>
           </div>
           <Button onClick={onConnect}>
-            {previousConnection ? "Reconnect" : "Connect"}
+            {previousConnection ? t("app.appNotConnected.reconnect", { defaultValue: "Reconnect" }) : t("app.appNotConnected.connect", { defaultValue: "Connect" })}
           </Button>
         </div>
       </section>
@@ -376,20 +375,20 @@ function PreviousSetup({
 }) {
   return (
     <section className="rounded-xl border border-border bg-card px-5 py-4">
-      <h2 className="text-sm font-bold text-foreground">Previous setup</h2>
+      <h2 className="text-sm font-bold text-foreground">{t("app.appNotConnected.previousSetup", { defaultValue: "Previous setup" })}</h2>
       {connection.healthMessage && (
         <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          Last error: {connection.healthMessage}
+          {t("app.appNotConnected.lastError", { defaultValue: "Last error: " })}{connection.healthMessage}
         </p>
       )}
       <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-(--gtc-59)">
-        <dt className="text-muted-foreground">Address</dt>
+        <dt className="text-muted-foreground">{t("app.appNotConnected.address", { defaultValue: "Address" })}</dt>
         <dd className="break-all font-mono text-foreground">{previousAddress}</dd>
-        <dt className="text-muted-foreground">Connection type</dt>
+        <dt className="text-muted-foreground">{t("app.appNotConnected.connectionType", { defaultValue: "Connection type" })}</dt>
         <dd className="text-foreground">{connectionTransportLabel(connection.transport)}</dd>
-        <dt className="text-muted-foreground">Last used</dt>
+        <dt className="text-muted-foreground">{t("app.appNotConnected.lastUsed", { defaultValue: "Last used" })}</dt>
         <dd className="text-foreground">
-          {connection.lastUsedAt ? timeAgo(connection.lastUsedAt) : "Never"}
+          {connection.lastUsedAt ? timeAgo(connection.lastUsedAt) : t("app.appNotConnected.never", { defaultValue: "Never" })}
         </dd>
       </dl>
     </section>
@@ -399,14 +398,12 @@ function PreviousSetup({
 function PermissionsTab({ previousConnection }: { previousConnection: ToolConnection | null }) {
   return (
     <section className="rounded-xl border border-border bg-card px-5 py-4">
-      <h2 className="text-sm font-bold text-foreground">Permissions paused</h2>
+      <h2 className="text-sm font-bold text-foreground">{t("app.appNotConnected.permissionsPaused", { defaultValue: "Permissions paused" })}</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Reconnect this app to edit who can use it and which actions need a human first.
-      </p>
+        {t("app.appNotConnected.reconnectThisAppToEditWhoCanUseItAndWhichActionsNeedAHumanFirst", { defaultValue: "Reconnect this app to edit who can use it and which actions need a human first." })}</p>
       {previousConnection && (
         <p className="mt-3 text-xs text-muted-foreground">
-          Previous setup is retained for reconnect, but access controls stay read-only until the app is online.
-        </p>
+          {t("app.appNotConnected.previousSetupIsRetainedForReconnectButAccessControlsStayReadOnlyUntilTheAppIsOnline", { defaultValue: "Previous setup is retained for reconnect, but access controls stay read-only until the app is online." })}</p>
       )}
     </section>
   );
@@ -431,7 +428,7 @@ function AdvancedTab({
         <PreviousSetup connection={previousConnection} previousAddress={previousAddress} />
       ) : (
         <EmptyTab
-          title="No previous connection details"
+          title={t("app.appNotConnected.noPreviousConnectionDetails", { defaultValue: "No previous connection details" })}
           body="Technical details will appear here after this app is connected."
         />
       )}

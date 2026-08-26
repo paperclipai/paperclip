@@ -16,6 +16,7 @@ import {
   ListChecks,
   Sparkles,
 } from "lucide-react";
+import { t } from "@/i18n";
 
 function LabSection({
   id,
@@ -146,35 +147,26 @@ export function SystemNoticeUxLab() {
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/25 bg-amber-500/[0.08] px-3 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-amber-700 dark:text-amber-300">
               <FlaskConical className="h-3.5 w-3.5" />
-              System Notice Lab
-            </div>
+              {t("app.systemNoticeUxLab.systemNoticeLab", { defaultValue: "System Notice Lab" })}</div>
             <h1 className="mt-4 text-3xl font-semibold tracking-tight">
-              First-class system notice treatment
-            </h1>
+              {t("app.systemNoticeUxLab.firstClassSystemNoticeTreatment", { defaultValue: "First-class system notice treatment" })}</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-              Replaces the current pattern where a Paperclip-authored warning renders inside a user-style
-              chat bubble. The notice is one container, system-styled, with hidden-by-default operational
-              metadata. Tone is conveyed by icon, label, and color together so it stays accessible.
-            </p>
+              {t("app.systemNoticeUxLab.replacesTheCurrentPatternWhereAPaperclipAuthoredWarningRendersInsideAUserStyleChatBubbleTheNoticeIsOneContainerSystemStyledWithHiddenByDefaultOperationalMetadataToneIsConveyedByIconLabelAndColorTogetherSoItStaysAccessible", { defaultValue: "Replaces the current pattern where a Paperclip-authored warning renders inside a user-style chat bubble. The notice is one container, system-styled, with hidden-by-default operational metadata. Tone is conveyed by icon, label, and color together so it stays accessible." })}</p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
-                PAP-3525 plan
-              </Badge>
+                {t("app.systemNoticeUxLab.pap3525Plan", { defaultValue: "PAP-3525 plan" })}</Badge>
               <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
-                phase 1 — UX
-              </Badge>
+                {t("app.systemNoticeUxLab.phase1Ux", { defaultValue: "phase 1 — UX" })}</Badge>
               <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--text-nano) uppercase tracking-(--tracking-caps)">
-                tones: warning · danger · neutral
-              </Badge>
+                {t("app.systemNoticeUxLab.tonesWarningDangerNeutral", { defaultValue: "tones: warning · danger · neutral" })}</Badge>
             </div>
           </div>
 
           <aside className="border-t border-border/60 bg-background/70 p-6 lg:border-l lg:border-t-0">
             <div className="mb-4 flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
               <ListChecks className="h-4 w-4 text-amber-700 dark:text-amber-300" />
-              What this lab proves
-            </div>
+              {t("app.systemNoticeUxLab.whatThisLabProves", { defaultValue: "What this lab proves" })}</div>
             <div className="space-y-3">
               {checklist.map((line) => (
                 <div
@@ -192,8 +184,8 @@ export function SystemNoticeUxLab() {
       <LabSection
         id="tones"
         eyebrow="Tone matrix"
-        title="Three tones, two states"
-        description="Each tone pairs a unique icon and tone label so the notice is recognizable without color. Collapsed is the default; the Details affordance reveals operational metadata only when reviewers ask for it."
+        title={t("app.systemNoticeUxLab.threeTonesTwoStates", { defaultValue: "Three tones, two states" })}
+        description={t("app.systemNoticeUxLab.eachTonePairsAUniqueIconAndToneLabelSoTheNoticeIsRecognizableWithoutColorCollapsedIsTheDefaultTheDetailsAffordanceRevealsOperationalMetadataOnlyWhenReviewersAskForIt", { defaultValue: "Each tone pairs a unique icon and tone label so the notice is recognizable without color. Collapsed is the default; the Details affordance reveals operational metadata only when reviewers ask for it." })}
         accentClassName="bg-[linear-gradient(180deg,rgba(245,158,11,0.05),transparent_28%),var(--background)]"
       >
         <div className="space-y-5">
@@ -224,8 +216,8 @@ export function SystemNoticeUxLab() {
       <LabSection
         id="hierarchy"
         eyebrow="Hierarchy in thread"
-        title="Distinct from user and agent comments"
-        description="Side-by-side with adjacent comment types so reviewers can confirm the system row reads as a system row — full width, no avatar gutter, no chat bubble — while user and agent comments keep their existing rounded bubbles."
+        title={t("app.systemNoticeUxLab.distinctFromUserAndAgentComments", { defaultValue: "Distinct from user and agent comments" })}
+        description={t("app.systemNoticeUxLab.sideBySideWithAdjacentCommentTypesSoReviewersCanConfirmTheSystemRowReadsAsASystemRowFullWidthNoAvatarGutterNoChatBubbleWhileUserAndAgentCommentsKeepTheirExistingRoundedBubbles", { defaultValue: "Side-by-side with adjacent comment types so reviewers can confirm the system row reads as a system row — full width, no avatar gutter, no chat bubble — while user and agent comments keep their existing rounded bubbles." })}
         accentClassName="bg-[linear-gradient(180deg,rgba(8,145,178,0.05),transparent_28%),var(--background)]"
       >
         <div className="space-y-4 rounded-2xl border border-border/70 bg-background/70 p-4">
@@ -240,35 +232,35 @@ export function SystemNoticeUxLab() {
           />
           <SystemNotice
             tone="danger"
-            label="System alert"
-            source={{ label: "Paperclip", href: "/PAP/agents" }}
+            label={t("app.systemNoticeUxLab.systemAlert", { defaultValue: "System alert" })}
+            source={{ label: t("app.systemNoticeUxLab.paperclip", { defaultValue: "Paperclip" }), href: "/PAP/agents" }}
             timestamp="2026-05-04T16:48:00.000Z"
             body="Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required."
             metadata={[
               {
-                title: "Recovery owner",
+                title: t("app.systemNoticeUxLab.recoveryOwner", { defaultValue: "Recovery owner" }),
                 rows: [
                   {
                     kind: "issue",
-                    label: "Recovery issue",
+                    label: t("app.systemNoticeUxLab.recoveryIssue", { defaultValue: "Recovery issue" }),
                     identifier: "PAP-3440",
                     href: "/PAP/issues/PAP-3440",
-                    title: "Successful run handoff missing disposition",
+                    title: t("app.systemNoticeUxLab.successfulRunHandoffMissingDisposition", { defaultValue: "Successful run handoff missing disposition" }),
                   },
                   {
                     kind: "agent",
-                    label: "Owner",
+                    label: t("app.systemNoticeUxLab.owner", { defaultValue: "Owner" }),
                     name: "CTO",
                     href: "/PAP/agents/cto",
                   },
                 ],
               },
               {
-                title: "Run evidence",
+                title: t("app.systemNoticeUxLab.runEvidence", { defaultValue: "Run evidence" }),
                 rows: [
                   {
                     kind: "run",
-                    label: "Source run",
+                    label: t("app.systemNoticeUxLab.sourceRun", { defaultValue: "Source run" }),
                     runId: "9cdba892-c7ca-4d93-8604-4843873b127c",
                     href: "/PAP/agents/codexcoder/runs/9cdba892-c7ca-4d93-8604-4843873b127c",
                     status: "succeeded",
@@ -288,31 +280,31 @@ export function SystemNoticeUxLab() {
       <div className="grid gap-5 xl:grid-cols-2">
         <LabSection
           eyebrow="Before"
-          title="Today's nested treatment"
-          description="The same content rendered through the existing user-bubble + warning-callout path. Two containers, same gray background as user comments, and the warning icon is forced inside a chat row."
+          title={t("app.systemNoticeUxLab.todaySNestedTreatment", { defaultValue: "Today's nested treatment" })}
+          description={t("app.systemNoticeUxLab.theSameContentRenderedThroughTheExistingUserBubbleWarningCalloutPathTwoContainersSameGrayBackgroundAsUserCommentsAndTheWarningIconIsForcedInsideAChatRow", { defaultValue: "The same content rendered through the existing user-bubble + warning-callout path. Two containers, same gray background as user comments, and the warning icon is forced inside a chat row." })}
           accentClassName="bg-[linear-gradient(180deg,rgba(244,63,94,0.05),transparent_28%),var(--background)]"
         >
           <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-4">
             <div className="flex items-start gap-2.5">
               <Avatar size="sm" className="shrink-0">
-                <AvatarFallback>YO</AvatarFallback>
+                <AvatarFallback>{t("app.systemNoticeUxLab.yo", { defaultValue: "YO" })}</AvatarFallback>
               </Avatar>
               <div className="flex min-w-0 max-w-(--pct-85) flex-col">
-                <div className="mb-1 px-1 text-sm font-medium text-foreground">You</div>
+                <div className="mb-1 px-1 text-sm font-medium text-foreground">{t("app.systemNoticeUxLab.you", { defaultValue: "You" })}</div>
                 <div className="min-w-0 max-w-full rounded-2xl bg-muted px-4 py-2.5 text-sm leading-6 text-foreground">
                   <div className="rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2.5 text-sm text-red-950 dark:text-red-100">
                     <div className="flex items-start gap-2">
                       <Sparkles className="mt-1 h-4 w-4 shrink-0 text-red-600 dark:text-red-300" />
                       <div className="min-w-0">
-                        <p className="m-0 font-semibold">Successful run handoff missing</p>
+                        <p className="m-0 font-semibold">{t("app.systemNoticeUxLab.successfulRunHandoffMissing", { defaultValue: "Successful run handoff missing" })}</p>
                         <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-(length:--text-compact) leading-5">
-                          <li>Source issue: PAP-3440</li>
-                          <li>Source run: 9cdba892-c7ca-4d93-8604-4843873b127c</li>
-                          <li>Recovery run: 61fdb79b-8012-4676-ac71-2971830e126a</li>
-                          <li>Status before: in_progress</li>
-                          <li>Normalized cause: Run completed without disposition</li>
-                          <li>Recovery owner: CTO</li>
-                          <li>Suggested action: Reassign to recovery agent</li>
+                          <li>{t("app.systemNoticeUxLab.sourceIssuePap3440", { defaultValue: "Source issue: PAP-3440" })}</li>
+                          <li>{t("app.systemNoticeUxLab.sourceRun9cdba892C7ca4d9386044843873b127c", { defaultValue: "Source run: 9cdba892-c7ca-4d93-8604-4843873b127c" })}</li>
+                          <li>{t("app.systemNoticeUxLab.recoveryRun61fdb79b80124676Ac712971830e126a", { defaultValue: "Recovery run: 61fdb79b-8012-4676-ac71-2971830e126a" })}</li>
+                          <li>{t("app.systemNoticeUxLab.statusBeforeInProgress", { defaultValue: "Status before: in_progress" })}</li>
+                          <li>{t("app.systemNoticeUxLab.normalizedCauseRunCompletedWithoutDisposition", { defaultValue: "Normalized cause: Run completed without disposition" })}</li>
+                          <li>{t("app.systemNoticeUxLab.recoveryOwnerCto", { defaultValue: "Recovery owner: CTO" })}</li>
+                          <li>{t("app.systemNoticeUxLab.suggestedActionReassignToRecoveryAgent", { defaultValue: "Suggested action: Reassign to recovery agent" })}</li>
                         </ul>
                       </div>
                     </div>
@@ -321,27 +313,21 @@ export function SystemNoticeUxLab() {
               </div>
             </div>
             <p className="px-1 text-xs text-muted-foreground">
-              Author reads as <span className="font-medium text-foreground">You</span> even though the
-              author is the Paperclip system. Two containers stack the warning inside a user-style
-              bubble, and operational evidence is always visible.
-            </p>
+              {t("app.systemNoticeUxLab.authorReadsAs", { defaultValue: "Author reads as " })}<span className="font-medium text-foreground">{t("app.systemNoticeUxLab.you", { defaultValue: "You" })}</span> {t("app.systemNoticeUxLab.evenThoughTheAuthorIsThePaperclipSystemTwoContainersStackTheWarningInsideAUserStyleBubbleAndOperationalEvidenceIsAlwaysVisible", { defaultValue: "even though the author is the Paperclip system. Two containers stack the warning inside a user-style bubble, and operational evidence is always visible." })}</p>
           </div>
         </LabSection>
 
         <LabSection
           eyebrow="After"
-          title="System notice replacement"
-          description="One container, system-authored label, hidden details. The chat surface keeps user and agent bubbles unchanged."
+          title={t("app.systemNoticeUxLab.systemNoticeReplacement", { defaultValue: "System notice replacement" })}
+          description={t("app.systemNoticeUxLab.oneContainerSystemAuthoredLabelHiddenDetailsTheChatSurfaceKeepsUserAndAgentBubblesUnchanged", { defaultValue: "One container, system-authored label, hidden details. The chat surface keeps user and agent bubbles unchanged." })}
           accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.05),transparent_28%),var(--background)]"
         >
           <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-4">
             <SystemNotice {...dangerCollapsed} />
             <p className="px-1 text-xs text-muted-foreground">
-              Same content. The visible body is one short system sentence; reviewers expand{" "}
-              <span className="font-medium text-foreground">Details</span> only when they need run
-              evidence. Tone is reinforced by the octagon icon and the &quot;System alert&quot; label,
-              not just red.
-            </p>
+              {t("app.systemNoticeUxLab.sameContentTheVisibleBodyIsOneShortSystemSentenceReviewersExpand", { defaultValue: "Same content. The visible body is one short system sentence; reviewers expand" })}{" "}
+              <span className="font-medium text-foreground">{t("app.systemNoticeUxLab.details", { defaultValue: "Details" })}</span> {t("app.systemNoticeUxLab.onlyWhenTheyNeedRunEvidenceToneIsReinforcedByTheOctagonIconAndTheSystemAlertLabelNotJustRed", { defaultValue: "only when they need run evidence. Tone is reinforced by the octagon icon and the \"System alert\" label, not just red." })}</p>
           </div>
         </LabSection>
       </div>
@@ -350,54 +336,48 @@ export function SystemNoticeUxLab() {
         <CardHeader className="px-5 pt-5 pb-0">
           <div className="flex items-center gap-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             <Layers className="h-4 w-4 text-amber-700 dark:text-amber-300" />
-            Implementation notes
-          </div>
-          <CardTitle className="text-lg">Handoff to engineering</CardTitle>
+            {t("app.systemNoticeUxLab.implementationNotes", { defaultValue: "Implementation notes" })}</div>
+          <CardTitle className="text-lg">{t("app.systemNoticeUxLab.handoffToEngineering", { defaultValue: "Handoff to engineering" })}</CardTitle>
           <CardDescription>
-            What the Phase 4 UI implementation should preserve from this design.
-          </CardDescription>
+            {t("app.systemNoticeUxLab.whatThePhase4UiImplementationShouldPreserveFromThisDesign", { defaultValue: "What the Phase 4 UI implementation should preserve from this design." })}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 px-5 pb-5 pt-0 text-sm text-muted-foreground">
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Component</div>
-            Use <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`<SystemNotice />`}</code>{" "}
-            from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">@/components/SystemNotice</code>.
-            It accepts <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">tone</code>,{" "}
+            <div className="mb-1 font-medium text-foreground">{t("app.systemNoticeUxLab.component", { defaultValue: "Component" })}</div>
+            {t("app.systemNoticeUxLab.use", { defaultValue: "Use " })}<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{`<SystemNotice />`}</code>{" "}
+            {t("app.systemNoticeUxLab.from", { defaultValue: "from " })}<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">@/components/SystemNotice</code>{t("app.systemNoticeUxLab.itAccepts", { defaultValue: ". It accepts" })}<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">tone</code>,{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">label</code>,{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">body</code>,{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">metadata</code>, and{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">metadata</code>{t("app.systemNoticeUxLab.and", { defaultValue: ", and" })}{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">detailsDefaultOpen</code>.
           </div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Routing in IssueChatThread</div>
-            Comments where{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">authorType === &quot;system&quot;</code>{" "}
+            <div className="mb-1 font-medium text-foreground">{t("app.systemNoticeUxLab.routingInIssuechatthread", { defaultValue: "Routing in IssueChatThread" })}</div>
+            {t("app.systemNoticeUxLab.commentsWhere", { defaultValue: "Comments where" })}{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{t("app.systemNoticeUxLab.authortypeSystem", { defaultValue: "authorType === \"system\"" })}</code>{" "}
             or{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">presentation.kind === &quot;system_notice&quot;</code>{" "}
-            should render as a SystemNotice row at full content width — never inside an{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">IssueChatUserMessage</code>{" "}
-            or assistant bubble.
-          </div>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{t("app.systemNoticeUxLab.presentationKindSystemNotice", { defaultValue: "presentation.kind === \"system_notice\"" })}</code>{" "}
+            {t("app.systemNoticeUxLab.shouldRenderAsASystemnoticeRowAtFullContentWidthNeverInsideAn", { defaultValue: "should render as a SystemNotice row at full content width — never inside an" })}{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{t("app.systemNoticeUxLab.issuechatusermessage", { defaultValue: "IssueChatUserMessage" })}</code>{" "}
+            {t("app.systemNoticeUxLab.orAssistantBubble", { defaultValue: "or assistant bubble." })}</div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Accessibility</div>
-            The Details button has{" "}
+            <div className="mb-1 font-medium text-foreground">{t("app.systemNoticeUxLab.accessibility", { defaultValue: "Accessibility" })}</div>
+            {t("app.systemNoticeUxLab.theDetailsButtonHas", { defaultValue: "The Details button has" })}{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">aria-expanded</code>{" "}
             and{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">aria-controls</code>{" "}
-            wired to the panel id. The container exposes{" "}
+            {t("app.systemNoticeUxLab.wiredToThePanelIdTheContainerExposes", { defaultValue: "wired to the panel id. The container exposes" })}{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">role=&quot;status&quot;</code>{" "}
-            and an{" "}
+            {t("app.systemNoticeUxLab.andAn", { defaultValue: "and an" })}{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">aria-label</code>{" "}
-            equal to the visible tone label so screen readers announce tone with text.
-          </div>
+            {t("app.systemNoticeUxLab.equalToTheVisibleToneLabelSoScreenReadersAnnounceToneWithText", { defaultValue: "equal to the visible tone label so screen readers announce tone with text." })}</div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Legacy fallback</div>
-            Existing comments without{" "}
+            <div className="mb-1 font-medium text-foreground">{t("app.systemNoticeUxLab.legacyFallback", { defaultValue: "Legacy fallback" })}</div>
+            {t("app.systemNoticeUxLab.existingCommentsWithout", { defaultValue: "Existing comments without" })}{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">presentation</code>{" "}
-            keep rendering through the current{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">SuccessfulRunHandoffCommentCallout</code>{" "}
-            string-detector. The new contract is opt-in for the system generators in Phase 5.
-          </div>
+            {t("app.systemNoticeUxLab.keepRenderingThroughTheCurrent", { defaultValue: "keep rendering through the current" })}{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{t("app.systemNoticeUxLab.successfulrunhandoffcommentcallout", { defaultValue: "SuccessfulRunHandoffCommentCallout" })}</code>{" "}
+            {t("app.systemNoticeUxLab.stringDetectorTheNewContractIsOptInForTheSystemGeneratorsInPhase5", { defaultValue: "string-detector. The new contract is opt-in for the system generators in Phase 5." })}</div>
         </CardContent>
       </Card>
     </div>

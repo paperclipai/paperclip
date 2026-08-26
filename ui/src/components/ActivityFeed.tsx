@@ -28,6 +28,7 @@ import {
 import { ListFilter, Layers, ChevronDown, ChevronRight, User, Settings } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
+import { t } from "@/i18n";
 
 /* ------------------------------------------------------------------ */
 /*  Event Tier Classification                                          */
@@ -113,10 +114,10 @@ type FilterValue = "all" | "in-progress" | "for-review" | "completed";
 type GroupMode = "flat" | "by-task";
 
 const FILTER_OPTIONS: Array<{ value: FilterValue; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "in-progress", label: "In Progress" },
-  { value: "for-review", label: "In Review" },
-  { value: "completed", label: "Done" },
+  { value: "all", label: t("app.activityFeed.all", { defaultValue: "All" }) },
+  { value: "in-progress", label: t("app.activityFeed.inProgress", { defaultValue: "In Progress" }) },
+  { value: "for-review", label: t("app.activityFeed.inReview", { defaultValue: "In Review" }) },
+  { value: "completed", label: t("app.activityFeed.done", { defaultValue: "Done" }) },
 ];
 
 const FILTER_ACTIONS: Record<FilterValue, Set<string> | null> = {
@@ -258,9 +259,9 @@ function CollapsedFeedGroup({
     ? agentMap.get(group.latestEvent.actorId)
     : null;
   const actorName = actor?.name
-    ?? (group.latestEvent.actorType === "system" ? "System"
-      : group.latestEvent.actorType === "user" ? "Board"
-      : "Unknown");
+    ?? (group.latestEvent.actorType === "system" ? t("app.activityFeed.system", { defaultValue: "System" })
+      : group.latestEvent.actorType === "user" ? t("app.activityFeed.board", { defaultValue: "Board" })
+      : t("app.activityFeed.unknown", { defaultValue: "Unknown" }));
   const entityName = entityNameMap.get(`${group.entityType}:${group.entityId}`);
 
   return (
@@ -485,9 +486,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
         separator = (
           <div className="flex items-center gap-2 px-4 py-1.5" key={`sep-${index}`}>
             <div className="h-px flex-1 bg-border" />
-            <span className="text-(length:--text-nano) font-medium text-muted-foreground uppercase tracking-wider">
-              Earlier
-            </span>
+            <span className="text-(length:--text-nano) font-medium text-muted-foreground uppercase tracking-wider"> { t("app.activityFeed.earlier", { defaultValue: "Earlier" }) } </span>
             <div className="h-px flex-1 bg-border" />
           </div>
         );
@@ -568,7 +567,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
       const issueName = entityNameMap.get(`issue:${groupKey}`);
       const issueTitle = entityTitleMap.get(`issue:${groupKey}`);
       const label = isOther
-        ? "Other activity"
+        ? t("app.activityFeed.otherActivity", { defaultValue: "Other activity" })
         : `${issueName ?? groupKey}${issueTitle ? ` — ${issueTitle}` : ""}`;
 
       return (
@@ -621,10 +620,8 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
           aria-hidden
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold">Agent Feed</h3>
-          <p className="text-xs text-muted-foreground">
-            Live activity from your agents
-          </p>
+          <h3 className="text-sm font-semibold">{ t("app.activityFeed.agentFeed", { defaultValue: "Agent Feed" }) }</h3>
+          <p className="text-xs text-muted-foreground"> { t("app.activityFeed.liveActivityFromYourAgents", { defaultValue: "Live activity from your agents" }) } </p>
         </div>
         <div className="flex items-center gap-1">
           {/* Group toggle */}
@@ -635,14 +632,14 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                 variant={groupMode === "by-task" ? "secondary" : "ghost"}
                 size="icon-sm"
                 className="shrink-0 text-muted-foreground"
-                aria-label="group by task"
+                aria-label={t("app.activityFeed.groupByTask", { defaultValue: "group by task" })}
                 onClick={() => setGroupMode((m) => (m === "flat" ? "by-task" : "flat"))}
               >
                 <Layers className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom">
-              {groupMode === "flat" ? "Group by task" : "Show flat"}
+              {groupMode === "flat" ? t("app.activityFeed.groupByTask2", { defaultValue: "Group by task" }) : t("app.activityFeed.showFlat", { defaultValue: "Show flat" })}
             </TooltipContent>
           </Tooltip>
 
@@ -656,13 +653,13 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                     variant={filter !== "all" || showAllActivity ? "secondary" : "ghost"}
                     size="icon-sm"
                     className="shrink-0 text-muted-foreground"
-                    aria-label="filter by"
+                    aria-label={t("app.activityFeed.filterBy", { defaultValue: "filter by" })}
                   >
                     <ListFilter className="h-3.5 w-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
               </TooltipTrigger>
-              <TooltipContent side="bottom">Filter by</TooltipContent>
+              <TooltipContent side="bottom">{ t("app.activityFeed.filterBy2", { defaultValue: "Filter by" }) }</TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuRadioGroup
@@ -679,9 +676,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
               <DropdownMenuCheckboxItem
                 checked={showAllActivity}
                 onCheckedChange={(v) => setShowAllActivity(!!v)}
-              >
-                Show all activity
-              </DropdownMenuCheckboxItem>
+              > { t("app.activityFeed.showAllActivity", { defaultValue: "Show all activity" }) } </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

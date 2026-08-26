@@ -4,6 +4,7 @@ import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody"
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
 import { FoldCurtain } from "./FoldCurtain";
+import { t } from "@/i18n";
 
 interface InlineEditorProps {
   value: string;
@@ -374,12 +375,12 @@ export function InlineEditor({
             )}
           >
             {autosaveState === "saving"
-              ? "Autosaving..."
+              ? t("app.inlineEditor.autosaving", { defaultValue: "Autosaving..." })
               : autosaveState === "saved"
-                ? "Saved"
+                ? t("app.inlineEditor.saved", { defaultValue: "Saved" })
                 : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
+                  ? t("app.inlineEditor.couldNotSave", { defaultValue: "Could not save" })
+                  : t("app.inlineEditor.idle", { defaultValue: "Idle" })}
           </span>
         </div>
       </div>
@@ -411,7 +412,7 @@ export function InlineEditor({
   }
 
   // Use div instead of Tag when rendering markdown to avoid invalid nesting
-  // (e.g. <p> cannot contain the <div>/<p> elements that markdown produces)
+  // (e.g. <p> { t("app.inlineEditor.cannotContainThe", { defaultValue: "cannot contain the" }) } <div>/<p> elements that markdown produces)
   const DisplayTag = value && multiline ? "div" : Tag;
 
   return (

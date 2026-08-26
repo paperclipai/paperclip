@@ -28,6 +28,7 @@ import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { cn } from "../lib/utils";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 
 export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
 export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -334,8 +335,8 @@ function KanbanCard({
           {isSuccessfulRunHandoffRequired(issue) ? (
             <Badge variant="outline"
               className="border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-              title="This task needs a next step"
-              aria-label="Needs next step"
+              title={t("app.kanbanBoard.thisTaskNeedsANextStep", { defaultValue: "This task needs a next step" })}
+              aria-label={t("app.kanbanBoard.needsNextStep", { defaultValue: "Needs next step" })}
             >
               <AlertTriangle className="h-3 w-3" />
               Next step
@@ -347,7 +348,7 @@ function KanbanCard({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              {compact ? "Live" : null}
+              {compact ? t("app.kanbanBoard.live", { defaultValue: "Live" }) : null}
             </span>
           )}
           {!isLive && subtreeLiveCount > 0 && (

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { ArrowDown } from "lucide-react";
+import { t } from "@/i18n";
 
 const PIN_THRESHOLD_PX = 48;
 
@@ -151,7 +152,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       {pillPhase !== "hidden" ? (
         <button
           type="button"
-          aria-label="Scroll to latest"
+          aria-label={t("app.taskMessageScroller.scrollToLatest", { defaultValue: "Scroll to latest" })}
           onClick={handleJumpToLatest}
           onAnimationEnd={() => {
             if (pillPhase === "out") setPillPhase("hidden");

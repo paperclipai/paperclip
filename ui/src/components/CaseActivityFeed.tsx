@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn, relativeTime } from "@/lib/utils";
+import { t } from "@/i18n";
 
 const EVENT_LABEL: Record<CaseEventKind, string> = {
   created: "created",
@@ -110,13 +111,13 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
   }
 
   const filterLabel = active.size === 0
-    ? "All activity"
+    ? t("app.caseActivityFeed.allActivity", { defaultValue: "All activity" })
     : active.size === 1
       ? EVENT_LABEL[[...active][0]!] ?? [...active][0]!
       : `${active.size} filters`;
 
   if (events.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{ t("app.caseActivityFeed.noActivityYet", { defaultValue: "No activity yet." }) }</p>;
   }
 
   return (
@@ -134,10 +135,8 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuLabel>Activity filter</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => setActive(new Set())}>
-              All activity
-            </DropdownMenuItem>
+            <DropdownMenuLabel>{ t("app.caseActivityFeed.activityFilter", { defaultValue: "Activity filter" }) }</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => setActive(new Set())}> { t("app.caseActivityFeed.allActivity", { defaultValue: "All activity" }) } </DropdownMenuItem>
             <DropdownMenuSeparator />
             {presentKinds.map((kind) => (
               <DropdownMenuCheckboxItem
@@ -152,7 +151,7 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
         </DropdownMenu>
       </div>
       {filtered.length === 0 ? (
-        <p className="py-6 text-center text-sm text-muted-foreground">No events match this filter.</p>
+        <p className="py-6 text-center text-sm text-muted-foreground">{ t("app.caseActivityFeed.noEventsMatchThisFilter", { defaultValue: "No events match this filter." }) }</p>
       ) : (
         <div className="divide-y divide-border">
           {filtered.map((event) => (

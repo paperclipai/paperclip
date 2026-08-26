@@ -13,6 +13,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { t } from "@/i18n";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -37,8 +38,8 @@ export function ProfileSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Profile" },
+      { label: t("app.profileSettings.settings", { defaultValue: "Settings" }), href: "/company/settings" },
+      { label: t("app.profileSettings.profile", { defaultValue: "Profile" }) },
     ]);
   }, [setBreadcrumbs]);
 
@@ -69,7 +70,7 @@ export function ProfileSettings() {
   }
 
   function resolveProfileName() {
-    return name.trim() || sessionQuery.data?.user.name || "Board";
+    return name.trim() || sessionQuery.data?.user.name || t("app.profileSettings.board", { defaultValue: "Board" });
   }
 
   const updateMutation = useMutation({
@@ -80,7 +81,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
+      setActionError(error instanceof Error ? error.message : t("app.profileSettings.failedToUpdateProfile", { defaultValue: "Failed to update profile." }));
     },
   });
 
@@ -103,7 +104,7 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
+      setActionError(error instanceof Error ? error.message : t("app.profileSettings.failedToUploadAvatar", { defaultValue: "Failed to upload avatar." }));
     },
   });
 
@@ -115,40 +116,39 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+      setActionError(error instanceof Error ? error.message : t("app.profileSettings.failedToRemoveAvatar", { defaultValue: "Failed to remove avatar." }));
     },
   });
 
   if (sessionQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
+    return <div className="text-sm text-muted-foreground">{t("app.profileSettings.loadingProfile", { defaultValue: "Loading profile..." })}</div>;
   }
 
   if (sessionQuery.error || !sessionQuery.data) {
     return (
       <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
+        {sessionQuery.error instanceof Error ? sessionQuery.error.message : t("app.profileSettings.failedToLoadProfile", { defaultValue: "Failed to load profile." })}
       </div>
     );
   }
 
-  const currentName = name.trim() || sessionQuery.data.user.name || "Board";
+  const currentName = name.trim() || sessionQuery.data.user.name || t("app.profileSettings.board", { defaultValue: "Board" });
   const currentImage = image.trim() || null;
   const initials = deriveInitials(currentName);
   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
   const uploadHint = selectedCompany
     ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
-    : "Select a company to upload an avatar into Paperclip storage.";
+    : t("app.profileSettings.selectACompanyToUploadAnAvatarIntoPaperclipStorage", { defaultValue: "Select a company to upload an avatar into Paperclip storage." });
 
   return (
     <div className="max-w-6xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Profile</h1>
+          <h1 className="text-lg font-semibold">{t("app.profileSettings.profile", { defaultValue: "Profile" })}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Control how your account appears in the sidebar and other board surfaces.
-        </p>
+          {t("app.profileSettings.controlHowYourAccountAppearsInTheSidebarAndOtherBoardSurfaces", { defaultValue: "Control how your account appears in the sidebar and other board surfaces." })}</p>
       </div>
 
       {actionError ? (
@@ -199,7 +199,7 @@ export function ProfileSettings() {
                     disabled={!selectedCompanyId || isSavingProfile}
                   >
                     {uploadAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Camera className="size-4" />}
-                    {currentImage ? "Change photo" : "Upload photo"}
+                    {currentImage ? t("app.profileSettings.changePhoto", { defaultValue: "Change photo" }) : t("app.profileSettings.uploadPhoto", { defaultValue: "Upload photo" })}
                   </Button>
                   {currentImage ? (
                     <Button
@@ -209,7 +209,7 @@ export function ProfileSettings() {
                       disabled={isSavingProfile}
                     >
                       {removeAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                      Remove
+                      {t("common.remove", { defaultValue: "Remove" })}
                     </Button>
                   ) : null}
                 </div>
@@ -218,10 +218,10 @@ export function ProfileSettings() {
               <div className="min-w-0 flex-1 space-y-2 pb-1">
                 <div>
                   <h2 className="truncate text-2xl font-semibold text-foreground">{currentName}</h2>
-                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? "No email"}</p>
+                  <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? t("app.profileSettings.noEmail", { defaultValue: "No email" })}</p>
                 </div>
                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Click the avatar to upload a new image. {uploadHint}
+                  {t("app.profileSettings.clickTheAvatarToUploadANewImage", { defaultValue: "Click the avatar to upload a new image. " })}{uploadHint}
                 </p>
               </div>
             </div>
@@ -236,21 +236,20 @@ export function ProfileSettings() {
           }}
         >
           <div className="space-y-2">
-            <Label htmlFor="profile-name">Display name</Label>
+            <Label htmlFor="profile-name">{t("app.profileSettings.displayName", { defaultValue: "Display name" })}</Label>
             <Input
               id="profile-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               maxLength={120}
-              placeholder="Board"
+              placeholder={t("app.profileSettings.board", { defaultValue: "Board" })}
             />
             <p className="text-xs text-muted-foreground">
-              Shown in the sidebar account footer and comment author surfaces.
-            </p>
+              {t("app.profileSettings.shownInTheSidebarAccountFooterAndCommentAuthorSurfaces", { defaultValue: "Shown in the sidebar account footer and comment author surfaces." })}</p>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="profile-email">Email</Label>
+            <Label htmlFor="profile-email">{t("app.profileSettings.email", { defaultValue: "Email" })}</Label>
             <Input
               id="profile-email"
               value={sessionQuery.data.user.email ?? ""}
@@ -258,14 +257,13 @@ export function ProfileSettings() {
               disabled
             />
             <p className="text-xs text-muted-foreground">
-              Email is managed by your auth session and is read-only here.
-            </p>
+              {t("app.profileSettings.emailIsManagedByYourAuthSessionAndIsReadOnlyHere", { defaultValue: "Email is managed by your auth session and is read-only here." })}</p>
           </div>
 
           <div className="md:col-span-2 flex justify-end">
             <Button type="submit" disabled={isSavingProfile || !name.trim()}>
               {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-              {updateMutation.isPending ? "Saving..." : "Save profile"}
+              {updateMutation.isPending ? t("app.profileSettings.saving", { defaultValue: "Saving..." }) : t("app.profileSettings.saveProfile", { defaultValue: "Save profile" })}
             </Button>
           </div>
         </form>

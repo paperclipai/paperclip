@@ -14,6 +14,7 @@ import { useCallback, useState } from "react";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { classifySkillDenial, type SkillDenial } from "@/lib/skill-policy-denial";
+import { t } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // Denial banner state hook
@@ -73,7 +74,7 @@ export function SkillPolicyDenialNotice({
 }) {
   const actions = onDismiss ? (
     <Button variant="ghost" size="sm" onClick={onDismiss}>
-      Dismiss
+      {t("app.skillPolicySurfaces.dismiss", { defaultValue: "Dismiss" })}
     </Button>
   ) : undefined;
 

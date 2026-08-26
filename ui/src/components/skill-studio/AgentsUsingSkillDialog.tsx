@@ -29,6 +29,7 @@ import {
   type SearchableSelectOption,
 } from "@/components/SearchableSelect";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 const LATEST_VALUE = "__latest__";
 
@@ -201,11 +202,11 @@ export function AgentsUsingSkillDialog({
       ]);
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to update agent skills.";
+      const message = error instanceof Error ? error.message : t("app.agentsUsingSkillDialog.failedToUpdateAgentSkills", { defaultValue: "Failed to update agent skills." });
       toast?.pushToast({
         tone: "error",
         title: "Update failed",
-        body: message.includes("403") ? "You don't have permission to change this agent's skills." : message,
+        body: message.includes("403") ? t("app.agentsUsingSkillDialog.youDonTHavePermissionToChangeThisAgentSSkills", { defaultValue: "You don't have permission to change this agent's skills." }) : message,
       });
     },
   });
@@ -232,10 +233,10 @@ export function AgentsUsingSkillDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Agents using {skill.name}</DialogTitle>
+          <DialogTitle>{t("app.agentsUsingSkillDialog.agentsUsing", { defaultValue: "Agents using" })} {skill.name}</DialogTitle>
           <DialogDescription>
             {count === 0
-              ? "No agents have this skill assigned yet."
+              ? t("app.agentsUsingSkillDialog.noAgentsHaveThisSkillAssignedYet", { defaultValue: "No agents have this skill assigned yet." })
               : `${count} ${count === 1 ? "agent has" : "agents have"} this skill in their desired set.`}
           </DialogDescription>
         </DialogHeader>
@@ -244,8 +245,8 @@ export function AgentsUsingSkillDialog({
           {count === 0 ? (
             <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
               {canManage
-                ? "Add an agent below to assign this skill."
-                : "This skill isn't assigned to any agents."}
+                ? t("app.agentsUsingSkillDialog.addAnAgentBelowToAssignThisSkill", { defaultValue: "Add an agent below to assign this skill." })
+                : t("app.agentsUsingSkillDialog.thisSkillIsnTAssignedToAnyAgents", { defaultValue: "This skill isn't assigned to any agents." })}
             </div>
           ) : (
             <ul className="divide-y divide-border">
@@ -354,7 +355,7 @@ function AgentRow({
             className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground disabled:opacity-60"
           >
             <option value={LATEST_VALUE}>
-              Latest{latestRevision !== null ? ` (v${latestRevision})` : ""}
+              {t("app.agentsUsingSkillDialog.latest", { defaultValue: "Latest" })}{latestRevision !== null ? ` (v${latestRevision})` : ""}
             </option>
             {versions.map((version) => (
               <option key={version.id} value={version.id}>
@@ -372,7 +373,7 @@ function AgentRow({
         )}
         {behindLatest > 0 ? (
           <span className="text-(length:--text-nano) text-amber-500">
-            {behindLatest} version{behindLatest === 1 ? "" : "s"} behind latest
+            {behindLatest} version{behindLatest === 1 ? "" : "s"} {t("app.agentsUsingSkillDialog.behindLatest", { defaultValue: "behind latest" })}
           </span>
         ) : null}
       </div>
@@ -387,10 +388,10 @@ function AgentRow({
               disabled={busy}
               aria-label={`Confirm removing this skill from ${agent.name}`}
             >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Remove"}
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("app.agentsUsingSkillDialog.remove", { defaultValue: "Remove" })}
             </Button>
             <Button variant="ghost" size="sm" onClick={onCancelRemove} disabled={busy}>
-              Cancel
+              {t("common.cancel", { defaultValue: "Cancel" })}
             </Button>
           </div>
         ) : (
@@ -440,7 +441,7 @@ function AddAgentPicker({
       groups={groups}
       loading={loading}
       loadingMessage="Loading agents..."
-      placeholder="Add agent…"
+      placeholder={t("app.agentsUsingSkillDialog.addAgent", { defaultValue: "Add agent…" })}
       searchPlaceholder="Search agents..."
       emptyMessage="All eligible agents already have this skill."
       disabled={disabled}
@@ -453,7 +454,7 @@ function AddAgentPicker({
       renderValue={() => (
         <span className="flex items-center gap-1.5 text-muted-foreground">
           <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-          Add agent…
+          {t("app.agentsUsingSkillDialog.addAgent", { defaultValue: "Add agent…" })}
         </span>
       )}
       renderOption={(option) => (

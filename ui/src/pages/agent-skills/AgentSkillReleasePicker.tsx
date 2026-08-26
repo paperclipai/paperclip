@@ -7,6 +7,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { t } from "@/i18n";
 
 /** Sentinel value for the "no pin / live default" option (Radix forbids ""). */
 export const RELEASE_DEFAULT_VALUE = "default";
@@ -32,7 +33,7 @@ export function formatReleaseDate(value: CompanySkillVersion["releasedAt"]): str
 
 /** Release display name, e.g. `V7 — Roster champion` (no date). */
 export function releaseName(release: CompanySkillVersion): string {
-  return release.releaseName ?? release.label ?? release.releaseId ?? "Release";
+  return release.releaseName ?? release.label ?? release.releaseId ?? t("app.agentSkillReleasePicker.release", { defaultValue: "Release" });
 }
 
 /** Full option label, e.g. `V7 — Roster champion · released 2026-07-21`. */
@@ -44,7 +45,7 @@ export function releaseOptionLabel(release: CompanySkillVersion): string {
 
 /** Compact badge label for a pinned release, e.g. `V7`. */
 export function releaseShortLabel(release: CompanySkillVersion): string {
-  const name = release.releaseName ?? release.label ?? release.releaseId ?? "Release";
+  const name = release.releaseName ?? release.label ?? release.releaseId ?? t("app.agentSkillReleasePicker.release", { defaultValue: "Release" });
   return name.split(" — ")[0]!.trim();
 }
 
@@ -82,7 +83,7 @@ export function AgentSkillReleasePicker({
       <SelectTrigger
         size="sm"
         className="w-full max-w-(--sz-16rem) sm:w-(--sz-16rem)"
-        aria-label="Skill release"
+        aria-label={t("app.agentSkillReleasePicker.skillRelease", { defaultValue: "Skill release" })}
       >
         <SelectValue placeholder={DEFAULT_LABEL}>{triggerLabel}</SelectValue>
       </SelectTrigger>
@@ -93,8 +94,7 @@ export function AgentSkillReleasePicker({
             <span className="flex items-center gap-2">
               <span className="truncate">{releaseOptionLabel(release)}</span>
               <Badge variant="secondary" className="shrink-0 text-(length:--text-nano)">
-                Beta
-              </Badge>
+                {t("app.agentSkillReleasePicker.beta", { defaultValue: "Beta" })}</Badge>
             </span>
           </SelectItem>
         ))}

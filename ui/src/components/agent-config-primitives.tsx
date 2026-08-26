@@ -65,6 +65,7 @@ export const help: Record<string, string> = {
 };
 
 import { getAdapterLabels } from "../adapters/adapter-display-registry";
+import { t } from "@/i18n";
 
 export const adapterLabels = getAdapterLabels();
 
@@ -387,54 +388,53 @@ export function ChoosePathButton() {
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("app.agentConfigPrimitives.choose", { defaultValue: "Choose" })}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("app.agentConfigPrimitives.specifyPathManually", { defaultValue: "Specify path manually" })}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              {t("app.agentConfigPrimitives.browserSecurityBlocksAppsFromReadingFullLocalPathsViaAFilePickerCopyTheAbsolutePathAndPasteItIntoTheInput", { defaultValue: "Browser security blocks apps from reading full local paths via a file picker.\n              Copy the absolute path and paste it into the input." })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{t("app.agentConfigPrimitives.macosFinder", { defaultValue: "macOS (Finder)" })}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("app.agentConfigPrimitives.findTheFolderInFinder", { defaultValue: "Find the folder in Finder." })}</li>
+                <li>{t("app.agentConfigPrimitives.hold", { defaultValue: "Hold" })} <kbd>Option</kbd> {t("app.agentConfigPrimitives.andRightClickTheFolder", { defaultValue: "and right-click the folder." })}</li>
+                <li>{t("app.agentConfigPrimitives.copyFolderPathname", { defaultValue: "Click \"Copy <folder name> as Pathname\"." })}</li>
+                <li>{t("app.agentConfigPrimitives.pasteTheResultIntoThePathInput", { defaultValue: "Paste the result into the path input." })}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{t("app.agentConfigPrimitives.windowsFileExplorer", { defaultValue: "Windows (File Explorer)" })}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("app.agentConfigPrimitives.findTheFolderInFileExplorer", { defaultValue: "Find the folder in File Explorer." })}</li>
+                <li>{t("app.agentConfigPrimitives.hold", { defaultValue: "Hold" })} <kbd>Shift</kbd> {t("app.agentConfigPrimitives.andRightClickTheFolder", { defaultValue: "and right-click the folder." })}</li>
+                <li>{t("app.agentConfigPrimitives.clickCopyAsPath", { defaultValue: "Click \"Copy as path\"." })}</li>
+                <li>{t("app.agentConfigPrimitives.pasteTheResultIntoThePathInput", { defaultValue: "Paste the result into the path input." })}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 C:\Users\yourname\Documents\project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{t("app.agentConfigPrimitives.terminalFallback", { defaultValue: "Terminal fallback (macOS/Linux)" })}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li>{t("app.agentConfigPrimitives.run", { defaultValue: "Run" })} <code>cd /path/to/folder</code>.</li>
+                <li>{t("app.agentConfigPrimitives.run", { defaultValue: "Run" })} <code>pwd</code>.</li>
+                <li>{t("app.agentConfigPrimitives.copyTheOutputAndPasteItIntoThePathInput", { defaultValue: "Copy the output and paste it into the path input." })}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
+              {t("app.agentConfigPrimitives.ok", { defaultValue: "OK" })}
             </Button>
           </DialogFooter>
         </DialogContent>

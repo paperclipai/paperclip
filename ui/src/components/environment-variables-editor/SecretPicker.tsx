@@ -9,6 +9,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { normalizeSearchText } from "@/lib/searchable-select";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 interface SecretOption extends SearchableSelectOption {
   kind?: "secret" | "folder" | "back";
@@ -119,7 +120,7 @@ function buildFolderGroup(
 
   return {
     id: "browse-secrets",
-    label: currentPath.length > 0 ? pathLabel(currentPath) : "Browse secrets",
+    label: currentPath.length > 0 ? pathLabel(currentPath) : t("app.secretPicker.browseSecrets", { defaultValue: "Browse secrets" }),
     options,
   };
 }
@@ -207,7 +208,7 @@ export function SecretPicker({
 
     result.push({
       id: "all-secrets",
-      label: recent.length > 0 ? "All secrets" : undefined,
+      label: recent.length > 0 ? t("app.secretPicker.allSecrets", { defaultValue: "All secrets" }) : undefined,
       options: secrets.map((secret) => ({
         key: `all-${secret.id}`,
         value: secret.id,
@@ -253,9 +254,9 @@ export function SecretPicker({
       deriveGroups={deriveGroups}
       disabled={disabled}
       disablePortal={disablePortal}
-      placeholder="Select secret…"
+      placeholder={t("app.secretPicker.selectSecret", { defaultValue: "Select secret…" })}
       searchPlaceholder="Search secrets…"
-      emptyMessage="No matching secrets"
+      emptyMessage={t("app.secretPicker.noMatchingSecrets", { defaultValue: "No matching secrets" })}
       triggerClassName={cn(
         "h-(--sz-34px) min-h-(--sz-34px) font-mono text-sm",
         boundMissing && "border-destructive text-destructive",
@@ -264,7 +265,7 @@ export function SecretPicker({
       )}
       renderValue={(option) => {
         if (!option) {
-          return <span className="text-muted-foreground">Select secret…</span>;
+          return <span className="text-muted-foreground">{t("app.secretPicker.selectSecret", { defaultValue: "Select secret…" })}</span>;
         }
         if (option.missing) {
           return (
@@ -324,10 +325,10 @@ export function SecretPicker({
                 <Plus className="size-3.5 shrink-0" />
                 {query.trim() ? (
                   <span>
-                    Create secret <span className="font-mono">&ldquo;{query.trim()}&rdquo;</span>…
+                    {t("app.secretPicker.createSecret", { defaultValue: "Create secret" })} <span className="font-mono">&ldquo;{query.trim()}&rdquo;</span>…
                   </span>
                 ) : (
-                  <span>Create new secret…</span>
+                  <span>{t("app.secretPicker.createNewSecret", { defaultValue: "Create new secret…" })}</span>
                 )}
               </span>
             ),

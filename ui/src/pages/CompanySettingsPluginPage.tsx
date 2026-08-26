@@ -4,6 +4,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { NotFoundPage } from "./NotFound";
+import { t } from "@/i18n";
 
 export function CompanySettingsPluginPage() {
   const params = useParams<{
@@ -50,17 +51,17 @@ export function CompanySettingsPluginPage() {
     if (hasInvalidCompanyPrefix) {
       return <NotFoundPage scope="invalid_company_prefix" requestedPrefix={routeCompanyPrefix} />;
     }
-    return <div className="text-sm text-muted-foreground">Select a company to view this page.</div>;
+    return <div className="text-sm text-muted-foreground">{t("app.companySettingsPluginPage.selectACompanyToViewThisPage", { defaultValue: "Select a company to view this page." })}</div>;
   }
 
   if (!settingsRoutePath || isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading...</div>;
+    return <div className="text-sm text-muted-foreground">{t("app.companySettingsPluginPage.loading", { defaultValue: "Loading..." })}</div>;
   }
 
   if (errorMessage) {
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-        Plugin extensions unavailable: {errorMessage}
+        {t("app.companySettingsPluginPage.pluginExtensionsUnavailable", { defaultValue: "Plugin extensions unavailable:" })} {errorMessage}
       </div>
     );
   }
@@ -68,7 +69,7 @@ export function CompanySettingsPluginPage() {
   if (pageSlots.length > 1) {
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-        Multiple plugins declare the company settings route <code>{settingsRoutePath}</code>. Disable one plugin or change its route.
+        {t("app.companySettingsPluginPage.multiplePluginsDeclareTheCompanySettingsRoute", { defaultValue: "Multiple plugins declare the company settings route" })} <code>{settingsRoutePath}</code>. Disable one plugin or change its route.
       </div>
     );
   }
