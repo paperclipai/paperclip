@@ -54,9 +54,9 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const createCard = page.getByRole("button", { name: /Build a new company/ });
   if (await createCard.count()) await createCard.first().click();
 
-  await expect(page.getByRole("heading", { name: "Name your organization" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "What is the name of your organization?" })).toBeVisible({ timeout: 15_000 });
 
-  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
+  await page.locator('input[placeholder="e.g. Northwind Labs"]').fill(companyName);
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Naming the company creates it and goes straight to the agent step.

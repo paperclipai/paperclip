@@ -71,6 +71,7 @@ import {
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCompanyMission } from "../hooks/useCompanyMission";
+import { useCloudInstance } from "../hooks/useCloudInstance";
 import {
   isExistingCompanyMissionUnresolved,
   planMissionPersistence,
@@ -339,6 +340,9 @@ function OnboardingWizardInner({
   // kept first so a future move inside the route tree needs no change here.
   const companyPrefix =
     matchedCompanyPrefix ?? companyPrefixFromOnboardingPath(location.pathname);
+  // Managed stacks create organizations on Cloud, so the route below never
+  // resolves into the create wizard there — see resolveRouteOnboardingOptions.
+  const cloudInstance = useCloudInstance();
 
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
@@ -362,6 +366,7 @@ function OnboardingWizardInner({
           pathname: location.pathname,
           companyPrefix,
           companies,
+          cloudManaged: Boolean(cloudInstance),
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
@@ -1530,7 +1535,7 @@ function OnboardingWizardInner({
           <div
             className={cn(
               "w-full flex flex-col overflow-y-auto transition-(--tp-width) duration-500 ease-in-out",
-              step === 1 || step === 2 ? "md:w-1/2" : "md:w-full"
+              step === 2 ? "md:w-1/2" : "md:w-full"
             )}
           >
             <div
@@ -1749,21 +1754,18 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 1: Name your company (both paths) */}
+              {/* Step 1: name the organization (both paths). One question, one
+                  design: this mirrors the funnel's naming screen — same
+                  question, same sub, same left-aligned heading in a centered
+                  column — so a customer creating their second organization
+                  in-app is asked exactly what their first one asked them. */}
               {step === 1 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Building2 className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Name your organization</h3>
-                      <p className="text-xs text-muted-foreground">
-                        What should we call your team or company?
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 group">
+                <div className="mx-auto w-full max-w-md space-y-6">
+                  <OnboardingHeading
+                    title="What is the name of your organization?"
+                    lede="This will be the name of your Paperclip organization — choose something your team will recognize."
+                  />
+                  <div className="group">
                     <label
                       className={cn(
                         "text-xs mb-1 block transition-colors",
@@ -1776,7 +1778,7 @@ function OnboardingWizardInner({
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder="e.g. Northwind Labs"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
@@ -2490,7 +2492,7 @@ function OnboardingWizardInner({
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : null}
-                      Next
+                      Continue
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
                   )}
@@ -2563,7 +2565,7 @@ function OnboardingWizardInner({
           <div
             className={cn(
               "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-(--tp-width-opacity) duration-500 ease-in-out",
-              step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
+              step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >
             <AsciiArtAnimation />

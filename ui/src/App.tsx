@@ -99,6 +99,9 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
 import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { useCloudInstance } from "./hooks/useCloudInstance";
+import { cloudStackCreateUrl } from "./lib/cloudLinks";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 
 const CompanyExport = lazy(() =>
   import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
@@ -440,6 +443,8 @@ function legacyToolsRedirectTarget(tab?: string) {
 export function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const cloudInstance = useCloudInstance();
+  const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const matchedCompany = companyPrefix
@@ -484,7 +489,9 @@ export function OnboardingRoutePage() {
                     initialStep: onboardingStepForCompany(),
                     companyId: matchedCompany.id,
                   })
-                : openOnboarding()
+                : cloudInstance
+                  ? createStackUrl && navigateTopLevel(createStackUrl)
+                  : openOnboarding()
             }
           >
             {matchedCompany ? "Add Agent" : "Start Onboarding"}
@@ -558,6 +565,10 @@ function UnprefixedBoardRedirect() {
 function NoCompaniesStartPage() {
   const { openOnboarding } = useDialogActions();
   const { t } = useTranslation();
+  // A managed stack with no visible companies is a loading or error state, not
+  // an invitation to create one in-app — creation lives on Cloud (403 floor).
+  const cloudInstance = useCloudInstance();
+  const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -569,7 +580,13 @@ function NoCompaniesStartPage() {
           {t("app.noCompanies.description", { defaultValue: "Get started by creating a company." })}
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>
+          <Button
+            onClick={() =>
+              cloudInstance
+                ? createStackUrl && navigateTopLevel(createStackUrl)
+                : openOnboarding()
+            }
+          >
             {t("app.noCompanies.newCompany", { defaultValue: "New Company" })}
           </Button>
         </div>

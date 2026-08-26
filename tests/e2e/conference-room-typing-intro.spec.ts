@@ -73,7 +73,7 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   if (await frontDoor.count()) await frontDoor.first().click();
 
   // Step 1: company name.
-  await page.getByPlaceholder("Acme Corp").fill(companyName);
+  await page.getByPlaceholder("e.g. Northwind Labs").fill(companyName);
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Step 1's "Next" creates the company; the mission step no longer runs.

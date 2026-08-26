@@ -634,7 +634,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       await settle();
       await click(
         [...document.body.querySelectorAll("button")].find(
-          (b) => b.textContent?.trim() === "Next",
+          (b) => b.textContent?.trim() === "Continue",
         )!,
       );
       await settle();
@@ -704,7 +704,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     setControlledValue(nameInput, "Initech");
     await settle();
     const next = [...document.body.querySelectorAll("button")].find(
-      (b) => b.textContent?.trim() === "Next",
+      (b) => b.textContent?.trim() === "Continue",
     )!;
     await act(async () => {
       next.dispatchEvent(new MouseEvent("click", { bubbles: true }));

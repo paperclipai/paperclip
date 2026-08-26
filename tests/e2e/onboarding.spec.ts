@@ -53,9 +53,9 @@ test.describe("Onboarding wizard", () => {
 
     // Step 1 — Name your organization.
     await expect(
-      page.getByRole("heading", { name: "Name your organization" }),
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Next/ }).click();
 
     // Step 1's "Next" now creates the company and goes straight to the agent.
