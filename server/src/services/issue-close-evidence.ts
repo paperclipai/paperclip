@@ -10,6 +10,11 @@ import {
 import { resolvePaperclipCompanyWorkProductsDir } from "@paperclipai/shared/home-paths";
 import { unprocessable } from "../errors.js";
 
+import {
+  evaluateGuardCardClose,
+  guardCloseRefusalMessage,
+} from "./guard-card-close-gate.js";
+
 type IssueCloseEvidenceContract = Extract<IssueCloseContract, { evidenceTarget: number }>;
 type IssueCloseExemptContract = Extract<IssueCloseContract, { mode: "exempt" }>;
 
@@ -615,7 +620,43 @@ export async function assertIssueCloseEvidenceSatisfied(input: {
   } | null;
   /** When set, an active run with this id is treated as the caller's own and does not block done. */
   actorRunId?: string | null;
+  /** Test seam for the guard-card gate; defaults to the real guard-bus state file. */
+  guardStatePath?: string;
+  /** Optional extra text (e.g. the closing comment on this very request) that may carry the waiver. */
+  closingCommentBody?: string | null;
 }) {
+  // TSMC-21870 — a `[GUARD] <name> red for N consecutive run(s)` card may not be
+  // closed while that guard is still red.
+  //
+  // This sits ABOVE the `nextStatus !== "done"` return on purpose: `cancelled`
+  // silences a guard card exactly as well as `done`, and a gate that only covers
+  // one verb just teaches the treadmill to use the other. It also sits inside
+  // THIS function rather than at either call site, so the HTTP route and the
+  // heartbeat disposition path get one answer to "may this close?" — gating only
+  // the route is the hole TSMC-21479/21607 already paid for once.
+  if (input.nextStatus === "done" || input.nextStatus === "cancelled") {
+    const waiverTexts: Array<string | null | undefined> = [input.closingCommentBody];
+    if (typeof input.svc.listComments === "function") {
+      const recent = await input.svc.listComments(input.issue.id, { order: "desc", limit: 20 });
+      for (const comment of recent) waiverTexts.push(comment?.body ?? null);
+    }
+    const guardEvaluation = await evaluateGuardCardClose({
+      issue: { title: input.issue.title ?? null },
+      nextStatus: input.nextStatus,
+      waiverTexts,
+      statePath: input.guardStatePath,
+    });
+    if (guardEvaluation.outcome === "red") {
+      throw unprocessable(guardCloseRefusalMessage(guardEvaluation), {
+        code: "invalid_issue_disposition",
+        reason: "guard_still_red",
+        guard: guardEvaluation.guardName,
+        streak: guardEvaluation.streak,
+        cardOfRecord: guardEvaluation.cardOfRecord,
+      });
+    }
+  }
+
   if (input.nextStatus !== "done") return;
 
   const issueRun = input.issueRun ?? null;

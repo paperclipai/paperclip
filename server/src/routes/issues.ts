@@ -11373,6 +11373,11 @@ export function issueRoutes(
           })
         : null,
       actorRunId: actor.runId ?? null,
+      // The waiver may be written in the SAME request that performs the close
+      // (`PATCH {status:"done", comment:"no-guard-close: ..."}`), and that comment
+      // is not in listComments yet. Pass it explicitly or the escape hatch only
+      // works if you comment first and close second.
+      closingCommentBody: typeof req.body?.comment === "string" ? req.body.comment : null,
     });
     if (enteringBlocked) {
       const nextBlockedByIssueIds = Array.isArray(req.body.blockedByIssueIds)
