@@ -5647,11 +5647,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     expect(recoveryComment).toBeTruthy();
 
-    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
-    expect(activity.some((event) =>
-      (event.details as Record<string, unknown> | null)?.source ===
-        "recovery.reconcile_execution_review_participant",
-    )).toBe(true);
+    const recoveryActivity = await waitForValue(async () => {
+      const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+      return activity.find((event) =>
+        (event.details as Record<string, unknown> | null)?.source ===
+          "recovery.reconcile_execution_review_participant",
+      ) ?? null;
+    }, 8_000);
+    expect(recoveryActivity).toBeTruthy();
   });
 
   it("blocks failed execution-review recovery under the reviewer when the source assignee differs", async () => {

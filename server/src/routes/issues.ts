@@ -3501,6 +3501,7 @@ export function issueRoutes(
       id: string;
       companyId: string;
       status: string;
+      assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
@@ -3521,13 +3522,16 @@ export function issueRoutes(
     const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
     const pendingInteractions = interactions.filter((interaction) => interaction.status === "pending");
     if (input.reviewInteractionId) {
+      const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+        ? input.existing.assigneeAgentId
+        : input.updateFields.assigneeAgentId;
       const designatedReviewConfirmation = pendingInteractions.find((interaction) =>
         interaction.id === input.reviewInteractionId
         && (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation")
         && (
           input.actorType === "agent"
             ? interaction.createdByAgentId === input.actorAgentId
-              && interaction.sourceRunId === input.actorRunId
+              && nextAssigneeAgentId === input.actorAgentId
             : interaction.createdByUserId === input.actorId
         )
         && !(
@@ -3542,7 +3546,7 @@ export function issueRoutes(
       );
       if (!designatedReviewConfirmation) {
         const creatorDescription = input.actorType === "agent"
-          ? "this agent run"
+          ? "this agent's current run or an earlier run while the agent remains the issue assignee"
           : "this user";
         throw unprocessable(`reviewInteractionId must identify a pending non-tool confirmation created by ${creatorDescription}`, {
           code: "invalid_review_interaction",
