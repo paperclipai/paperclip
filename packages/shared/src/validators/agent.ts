@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  PERMISSION_KEYS,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -242,3 +243,19 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+/**
+ * Grants (or revokes) a single scoped `permissionKey` on an agent principal,
+ * e.g. `agents:configure` or `agents:suggest-changes`. This is distinct from
+ * `updateAgentPermissionsSchema`, which only covers the fixed
+ * canCreateAgents/canCreateSkills/canAssignTasks/trustPreset fields. See
+ * AGE-1724: prior to this schema there was no REST route that could grant an
+ * arbitrary `PermissionKey` to an agent principal after creation.
+ */
+export const updateAgentGrantSchema = z.object({
+  permissionKey: z.enum(PERMISSION_KEYS),
+  enabled: z.boolean(),
+  scope: z.record(z.string(), z.unknown()).optional().nullable(),
+});
+
+export type UpdateAgentGrant = z.infer<typeof updateAgentGrantSchema>;
