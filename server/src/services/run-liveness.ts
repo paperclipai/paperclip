@@ -77,6 +77,17 @@ const PLAN_TASK_DESCRIPTION_RE =
   /\b(?:create|write|produce|draft|update|revise|prepare)\s+(?:a\s+|the\s+)?(?:plan|analysis|investigation|research report|report|proposal|design doc|write-?up)\b/i;
 const UNMANAGED_BACKGROUND_TASK_STOP_REASON = "unmanaged_background_task_stopped";
 const UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON = "unmanaged background task stopped; no durable live path";
+// A run that explicitly declares an empty action ledger (e.g. a 1:1 routine run
+// that checked the live roster/session data, found zero direct reports, and
+// preserved a dated no-conversation receipt) has made its own terminal
+// disposition: there is nothing to do and nothing to continue. Classifying it
+// as planning-only re-wakes the agent and posts missing-disposition comments on
+// every replay of the same terminal result.
+const EXPLICIT_EMPTY_ACTION_LEDGER_RE =
+  /\baction\s+ledger\s*[:=]\s*(?:\[\s*\]|empty|none|nil|no\s+entries?)\b(?!\s*(?:yet|remaining))/i;
+// Labeled next-action values like "Next: none" are explicit absence markers,
+// not instructions; they must never be harvested as an actionable next action.
+const NONE_LIKE_NEXT_ACTION_RE = /^(?:none|n\/?(?:a| available)|nothing(?:\s+(?:due|to\s+do))?|nil|-{1,3}|—)\.?$/i;
 
 function compactReason(reason: string) {
   return reason.length <= 500 ? reason : `${reason.slice(0, 497)}...`;
@@ -176,6 +187,20 @@ export function looksLikePlanningOnly(input: RunLivenessClassificationInput) {
   return PLANNING_ONLY_RE.test(text) || NEXT_STEPS_RE.test(text) || /^\s*next(?: steps?| action)?\s*:/im.test(text);
 }
 
+/**
+ * True when the run's own high-signal output declares an explicitly empty
+ * action ledger with no genuine future-work intent — a terminal "nothing due"
+ * receipt (e.g. zero direct reports for a 1:1 check with a dated
+ * no-conversation receipt preserved). Such runs are completed/productive.
+ */
+function hasExplicitEmptyActionLedger(input: RunLivenessClassificationInput) {
+  if (!EXPLICIT_EMPTY_ACTION_LEDGER_RE.test(actionabilityText(input))) return false;
+  // Genuine future-work intent always wins over an empty-ledger phrase: a run
+  // that writes "Action ledger: empty" and then plans real follow-up work is
+  // still planning-only under the standard rules.
+  return !looksLikePlanningOnly(input);
+}
+
 export function isPlanningOrDocumentTask(issue: RunLivenessIssueInput | null | undefined) {
   if (!issue) return false;
   if (PLAN_TASK_TITLE_RE.test(issue.title)) return true;
@@ -262,7 +287,10 @@ function extractNextActionFromText(text: string) {
     const labeled = line.match(/^next(?: steps?| action)?\s*:\s*(.*)$/i);
     if (labeled) {
       const sameLine = stripMarkdownListPrefix(labeled[1] ?? "");
-      return sameLine || nextNonNoiseLine(lines, i);
+      if (!sameLine) return nextNonNoiseLine(lines, i);
+      // An explicit "none" answer means the run declared no next action.
+      if (NONE_LIKE_NEXT_ACTION_RE.test(sameLine)) return null;
+      return sameLine;
     }
     if (PLANNING_ONLY_RE.test(line)) return line;
   }
@@ -339,6 +367,10 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (declaredBlocker(input)) {
     return output("blocked", issueStatus === "blocked" ? "Issue status is blocked" : "Run output declared a concrete blocker", nextAction);
+  }
+
+  if (hasExplicitEmptyActionLedger(input)) {
+    return output("completed", "Run declared an explicitly empty action ledger (terminal no-work receipt)");
   }
 
   if (!usefulOutput && !concreteEvidence) {
