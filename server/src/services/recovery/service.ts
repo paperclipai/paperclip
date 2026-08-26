@@ -32,7 +32,7 @@ import { runningProcesses } from "../../adapters/index.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
-import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
+import { isPidAlive, isProcessGroupAlive, startedBeforeLastBoot, terminateLocalService } from "../local-service-supervisor.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
@@ -2327,6 +2327,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const run of candidates) {
+      // A run whose process predates the last boot is not silent — it is DEAD (the
+      // reboot killed it). Filing "Review silent active run" for it spawns a headless
+      // agent per phantom, and that agent is itself a run that goes quiet, so the loop
+      // feeds itself. Leave terminalization to the stale-lock sweep; just never raise a
+      // review for a ghost.
+      if (startedBeforeLastBoot(run.processStartedAt ?? run.startedAt ?? run.createdAt)) {
+        logger.warn(
+          {
+            runId: run.id,
+            companyId: run.companyId,
+            processPid: run.processPid ?? null,
+          },
+          "skipping silent-run evaluation: process predates last boot (dead by reboot, not silent)",
+        );
+        result.skipped += 1;
+        continue;
+      }
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
         continue;
@@ -5567,7 +5584,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // a run that has not yet stored its pid.
     let processGone = false;
     if (!runningProcesses.get(run.id)) {
-      if (typeof pid === "number" || typeof processGroupId === "number") {
+      // A PID recycled after the boot makes the liveness probe a FALSE POSITIVE, so the
+      // phantom run never terminalizes and keeps feeding the silent-run scanner. No
+      // process survives a boot: if it started before one, it is gone — skip the probe.
+      if (startedBeforeLastBoot(run.processStartedAt ?? run.startedAt ?? run.createdAt)) {
+        processGone = true;
+        logger.warn(
+          { runId: run.id, pid, processGroupId },
+          "run process predates last boot: terminalizing as dead-by-reboot without pid probe",
+        );
+      } else if (typeof pid === "number" || typeof processGroupId === "number") {
         const processAlive =
           (typeof pid === "number" && isPidAlive(pid)) ||
           (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));

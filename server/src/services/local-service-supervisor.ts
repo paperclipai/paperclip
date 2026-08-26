@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import os from "node:os";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -234,6 +235,33 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   } catch {
     return false;
   }
+}
+
+// isPidAlive/isPidAliveWithOsVerify only answer "does a process with this PID exist
+// right now" — they never check identity. After a reboot the OS recycles PIDs, so a
+// dead run's recorded pid can land on an unrelated live process and liveness returns a
+// FALSE POSITIVE: the run stays `running` forever, the silent-run scanner files a
+// "Review silent active run" issue for it, and the dispatcher spawns a headless agent
+// per phantom. That agent is itself a run that goes quiet, so the loop feeds itself.
+// Observed 2026-08-25: a hard power-off orphaned every run at once and the resulting
+// storm exhausted the workstation — each reboot made it worse, not better.
+// WORA-825/807 hardened the false NEGATIVE (a live process declared dead under memory
+// pressure). This is the mirror case: the false POSITIVE.
+// Invariant: no process survives a boot. If it started before the last boot it is dead,
+// whatever the PID says.
+const BOOT_GUARD_SKEW_MS = 60_000;
+
+export function lastBootTimeMs() {
+  return Date.now() - Math.max(0, os.uptime()) * 1000;
+}
+
+export function startedBeforeLastBoot(startedAt: Date | string | null | undefined) {
+  if (!startedAt) return false;
+  const startedMs = startedAt instanceof Date ? startedAt.getTime() : new Date(startedAt).getTime();
+  if (!Number.isFinite(startedMs)) return false;
+  // Slack margin: only accuse when clearly before boot, so clock/uptime skew can never
+  // terminalize a legitimately running run.
+  return startedMs < lastBootTimeMs() - BOOT_GUARD_SKEW_MS;
 }
 
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
