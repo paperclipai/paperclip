@@ -325,19 +325,12 @@ export interface WorkspaceRuntimeService {
   updatedAt: Date;
 }
 
-export type WorkspaceRealizationTransport = "local" | "ssh" | "sandbox" | "plugin";
 export type WorkspaceRealizationMode = "copy" | "in_place";
 
 export interface WorkspaceRealizationPathAlias {
   path: string;
   target: string;
 }
-
-export type WorkspaceRealizationSyncStrategy =
-  | "none"
-  | "ssh_git_import_export"
-  | "sandbox_archive_upload_download"
-  | "provider_defined";
 
 export interface WorkspaceRealizationRequest {
   version: 1;
@@ -387,7 +380,6 @@ export interface WorkspaceRealizationRecord {
   authoritativeRoot: string;
   pathAliases: WorkspaceRealizationPathAlias[];
   outboundRestorePaths: string[];
-  transport: WorkspaceRealizationTransport;
   provider: string | null;
   environmentId: string;
   leaseId: string;
@@ -423,11 +415,6 @@ export interface WorkspaceRealizationRecord {
     port?: number | null;
     username?: string | null;
     sandboxId?: string | null;
-  };
-  sync: {
-    strategy: WorkspaceRealizationSyncStrategy;
-    prepare: string;
-    syncBack: string | null;
   };
   bootstrap: {
     command: string | null;

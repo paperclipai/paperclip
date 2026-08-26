@@ -41,6 +41,8 @@ import {
   LOGIN_PTY_EXIT_NOTIFICATION,
   DUPLEX_CHANNEL_DATA_NOTIFICATION,
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
+  encodeChannelBytes,
+  decodeChannelBytes,
 } from "@paperclipai/plugin-sdk";
 import type {
   JsonRpcId,
@@ -167,6 +169,10 @@ const MAX_EXECUTE_LOG_TOTAL_CHARS = 128 * 1024 * 1024;
 const MAX_LOGIN_PTY_CHUNK_CHARS = 1_000_000;
 /** Maximum cumulative output characters for one login pseudo-terminal route. */
 const MAX_LOGIN_PTY_TOTAL_CHARS = 8 * 1024 * 1024;
+/** Default maximum output and exit records the host queues before the bind. */
+const MAX_LOGIN_PTY_PRE_BIND_FRAMES = 10_000;
+/** Default maximum cumulative output characters the host queues before the bind. */
+const MAX_LOGIN_PTY_PRE_BIND_CHARS = 8 * 1024 * 1024;
 /** The default open timeout for one login pseudo-terminal route, in milliseconds. */
 const LOGIN_PTY_OPEN_TIMEOUT_MS = 30_000;
 /** The default close timeout for one login pseudo-terminal route, in milliseconds. */
@@ -470,6 +476,10 @@ export interface WorkerStartOptions {
     maxChunkChars?: number;
     /** Max cumulative output characters for one login pseudo-terminal route. */
     maxTotalChars?: number;
+    /** Max number of pre-bind output and exit records the host queues before the bind. */
+    maxPreBindFrames?: number;
+    /** Max cumulative output characters the host queues before the bind. */
+    maxPreBindChars?: number;
     /** The open timeout for one login pseudo-terminal route, in milliseconds. */
     openTimeoutMs?: number;
     /** The close timeout for one login pseudo-terminal route, in milliseconds. */
@@ -610,10 +620,10 @@ export interface DuplexChannelOpenInput {
  * stream with the same methods.
  */
 export interface DuplexChannelHostSession {
-  /** Registers the one data listener. The session streams each raw chunk in order. */
-  onData(listener: (chunk: string) => void): void;
+  /** Registers the one data listener. The session streams each raw byte chunk in order. */
+  onData(listener: (chunk: Uint8Array) => void): void;
   /** Writes raw input bytes to the channel. */
-  write(data: string): void;
+  write(data: Uint8Array): void;
   /**
    * Resolves when the command ends or the route ends. A numeric `exitCode` is a
    * real process exit. `transportClosed` is true when the provider transport
@@ -907,13 +917,20 @@ export function createPluginWorkerHandle(
     options.loginPtyLimits?.maxChunkChars ?? MAX_LOGIN_PTY_CHUNK_CHARS;
   const maxLoginPtyTotalChars =
     options.loginPtyLimits?.maxTotalChars ?? MAX_LOGIN_PTY_TOTAL_CHARS;
+  const maxLoginPtyPreBindFrames =
+    options.loginPtyLimits?.maxPreBindFrames ?? MAX_LOGIN_PTY_PRE_BIND_FRAMES;
+  const maxLoginPtyPreBindChars =
+    options.loginPtyLimits?.maxPreBindChars ?? MAX_LOGIN_PTY_PRE_BIND_CHARS;
   const loginPtyOpenTimeoutMs =
     options.loginPtyLimits?.openTimeoutMs ?? LOGIN_PTY_OPEN_TIMEOUT_MS;
   const loginPtyCloseTimeoutMs =
     options.loginPtyLimits?.closeTimeoutMs ?? LOGIN_PTY_CLOSE_TIMEOUT_MS;
 
   // Bounds and timeouts for the generic duplex channel route. A caller (a test)
-  // can lower them to exercise each bound and the terminalize paths.
+  // can lower them to exercise each bound and the terminalize paths. Each
+  // "Chars" name is a historical holdover: the channel now carries `Uint8Array`
+  // chunks, so every one of these bounds counts raw bytes (`.length` on a
+  // `Uint8Array` is its byte count), not UTF-16 code units.
   const maxDuplexChannelChunkChars =
     options.duplexChannelLimits?.maxChunkChars ?? MAX_DUPLEX_CHANNEL_CHUNK_CHARS;
   const maxDuplexChannelPreBindChars =
@@ -1384,6 +1401,23 @@ export function createPluginWorkerHandle(
   }
 
   type LoginPtyRouteState = RouteState;
+
+  // One pre-bind login pseudo-terminal record: an output chunk or an exit,
+  // normalized to a narrow scalar shape (never the raw notification object).
+  interface LoginPtyPreBindOutputRecord {
+    kind: "output";
+    workerSessionId: string;
+    chunk: string;
+  }
+
+  interface LoginPtyPreBindExitRecord {
+    kind: "exit";
+    workerSessionId: string;
+    exitCode: number | null;
+  }
+
+  type LoginPtyPreBindRecord = LoginPtyPreBindOutputRecord | LoginPtyPreBindExitRecord;
+
   interface LoginPtyRoute {
     hostRouteId: string;
     state: LoginPtyRouteState;
@@ -1393,6 +1427,12 @@ export function createPluginWorkerHandle(
     deliveredChars: number;
     terminalized: boolean;
     settleWait: (value: { exitCode: number | null }) => void;
+    // Every output and exit record that arrived before the bind, in arrival order.
+    preBind: LoginPtyPreBindRecord[];
+    // The cumulative characters `preBind` holds. Each record charges its
+    // `workerSessionId` characters, plus the `chunk` characters for an output
+    // record.
+    preBindChars: number;
   }
   // At most one active credential pseudo-terminal per worker. A non-null route
   // blocks a second open until the manager confirms the first route's close.
@@ -1425,6 +1465,9 @@ export function createPluginWorkerHandle(
     route.state = "closed";
     route.listener = null;
     route.buffered = [];
+    // A terminalized route never replays a queued pre-bind record.
+    route.preBind = [];
+    route.preBindChars = 0;
     // A terminalized route reports a null exit code, which the runner treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
@@ -1443,11 +1486,17 @@ export function createPluginWorkerHandle(
 
   // Route one login pseudo-terminal output notification to the per-session
   // listener. Deliver only while the route is `open` and the notification carries
-  // the exact bound worker session identifier and valid bounded bytes. Drop an
-  // unknown, late, malformed, or mismatched notification. Never log the raw bytes.
+  // the exact bound worker session identifier and valid bounded bytes. Queue the
+  // notification while the route is still `opening`. Drop an unknown, late,
+  // malformed, or mismatched notification. Never log the raw bytes.
   function routeLoginPtyOutput(notification: JsonRpcNotification): void {
     const route = loginPtyRoute;
-    if (!route || route.state !== "open") return;
+    if (!route) return;
+    if (route.state === "opening") {
+      queuePreBindLoginPtyOutput(route, notification);
+      return;
+    }
+    if (route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
@@ -1471,15 +1520,114 @@ export function createPluginWorkerHandle(
 
   // Route one login pseudo-terminal exit notification to the login wait. Resolve
   // only while the route is `open` and the notification carries the exact bound
-  // worker session identifier.
+  // worker session identifier. Queue the notification while the route is still
+  // `opening`. A resolved exit moves the state off `open`, so a later record —
+  // live or replayed — finds a closed route and drops there.
   function routeLoginPtyExit(notification: JsonRpcNotification): void {
     const route = loginPtyRoute;
-    if (!route || route.state !== "open") return;
+    if (!route) return;
+    if (route.state === "opening") {
+      queuePreBindLoginPtyExit(route, notification);
+      return;
+    }
+    if (route.state !== "open") return;
     const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
+    route.state = "closed";
     settleRouteWait(route, { exitCode });
+  }
+
+  // Queue one login pseudo-terminal output notification that arrived before the
+  // bind, in arrival order. Terminalize the route fail-closed on a frame-count
+  // or character-bound breach. Never log the raw chunk.
+  function queuePreBindLoginPtyOutput(
+    route: LoginPtyRoute,
+    notification: JsonRpcNotification,
+  ): void {
+    const params = isRecord(notification.params) ? notification.params : {};
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    const chunk = params.chunk;
+    if (
+      !workerSessionId ||
+      typeof chunk !== "string" ||
+      chunk.length === 0 ||
+      chunk.length > maxLoginPtyChunkChars
+    ) {
+      return;
+    }
+    // Charge the record's full retained size: the worker session identifier
+    // plus the chunk. A record that retains only the identifier still counts.
+    const recordChars = workerSessionId.length + chunk.length;
+    if (
+      route.preBind.length + 1 > maxLoginPtyPreBindFrames ||
+      route.preBindChars + recordChars > maxLoginPtyPreBindChars
+    ) {
+      log.warn(
+        { pluginId },
+        "login pseudo-terminal pre-bind queue exceeded a bound; terminalizing route",
+      );
+      void terminalizeLoginPtyRoute(route);
+      return;
+    }
+    route.preBind.push({ kind: "output", workerSessionId, chunk });
+    route.preBindChars += recordChars;
+  }
+
+  // Queue one login pseudo-terminal exit notification that arrived before the
+  // bind, in the same queue the output records use. An exit record carries no
+  // chunk, but it still retains a worker session identifier, so it charges
+  // against the character bound too.
+  function queuePreBindLoginPtyExit(
+    route: LoginPtyRoute,
+    notification: JsonRpcNotification,
+  ): void {
+    const params = isRecord(notification.params) ? notification.params : {};
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    if (!workerSessionId) return;
+    const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
+    const recordChars = workerSessionId.length;
+    if (
+      route.preBind.length + 1 > maxLoginPtyPreBindFrames ||
+      route.preBindChars + recordChars > maxLoginPtyPreBindChars
+    ) {
+      log.warn(
+        { pluginId },
+        "login pseudo-terminal pre-bind queue exceeded a bound; terminalizing route",
+      );
+      void terminalizeLoginPtyRoute(route);
+      return;
+    }
+    route.preBind.push({ kind: "exit", workerSessionId, exitCode });
+    route.preBindChars += recordChars;
+  }
+
+  // Replay the records a route held before it bound, in arrival order,
+  // through the same live router the open route uses (`routeLoginPtyOutput`,
+  // `routeLoginPtyExit`), so a forged worker session identifier still fails
+  // the exact-match gate and a replayed exit still closes the route and
+  // drops every record behind it.
+  function replayPreBindLoginPtyRecords(route: LoginPtyRoute): void {
+    const held = route.preBind;
+    route.preBind = [];
+    route.preBindChars = 0;
+    for (const record of held) {
+      if (route.terminalized) return;
+      if (record.kind === "output") {
+        routeLoginPtyOutput({
+          jsonrpc: "2.0",
+          method: LOGIN_PTY_OUTPUT_NOTIFICATION,
+          params: { workerSessionId: record.workerSessionId, chunk: record.chunk },
+        });
+      } else {
+        routeLoginPtyExit({
+          jsonrpc: "2.0",
+          method: LOGIN_PTY_EXIT_NOTIFICATION,
+          params: { workerSessionId: record.workerSessionId, exitCode: record.exitCode },
+        });
+      }
+    }
   }
 
   // Close the one route on a worker exit. The worker is gone, so the manager
@@ -1493,6 +1641,8 @@ export function createPluginWorkerHandle(
     route.state = "closed";
     route.listener = null;
     route.buffered = [];
+    route.preBind = [];
+    route.preBindChars = 0;
     settleRouteWait(route, { exitCode: null });
   }
 
@@ -1533,6 +1683,8 @@ export function createPluginWorkerHandle(
       deliveredChars: 0,
       terminalized: false,
       settleWait,
+      preBind: [],
+      preBindChars: 0,
     };
     loginPtyRoute = route;
 
@@ -1569,6 +1721,8 @@ export function createPluginWorkerHandle(
     // Bind the worker session identifier one time and move the route to `open`.
     route.workerSessionId = workerSessionId;
     route.state = "open";
+    // Replay every record the route queued before the bind, in arrival order.
+    replayPreBindLoginPtyRecords(route);
 
     return {
       onData(listener: (chunk: string) => void): void {
@@ -1630,10 +1784,10 @@ export function createPluginWorkerHandle(
   //   7. route lifetime — the milliseconds from the open to the terminal end.
 
   // One buffered data chunk retained for a late listener drain. It carries the raw
-  // chunk string and the aggregate byte token that reserved its raw bytes. The
+  // chunk bytes and the aggregate byte token that reserved its raw bytes. The
   // token is `null` when no ledger is injected.
   interface BufferedDuplexChunk {
-    chunk: string;
+    chunk: Uint8Array;
     token: ReservationToken | null;
   }
   // One pre-bind data event, normalized to the narrow duplex-event schema. The host
@@ -1643,7 +1797,7 @@ export function createPluginWorkerHandle(
   // fails closed.
   interface HeldDuplexEvent {
     workerSessionId: string;
-    chunk: string;
+    chunk: Uint8Array;
     token: ReservationToken | null;
   }
   // One pre-bind exit event, normalized to the narrow duplex-event schema.
@@ -1657,7 +1811,7 @@ export function createPluginWorkerHandle(
     hostRouteId: string;
     state: RouteState;
     workerSessionId: string | null;
-    listener: ((chunk: string) => void) | null;
+    listener: ((chunk: Uint8Array) => void) | null;
     buffered: BufferedDuplexChunk[];
     bufferedChars: number;
     pendingRequests: number;
@@ -1959,8 +2113,8 @@ export function createPluginWorkerHandle(
   // dispatch loop nor the pre-bind drain. The manager catches the error and logs
   // it without the raw bytes. This mirrors the `execute.log` delivery isolation.
   function deliverDuplexChannelChunk(
-    listener: (chunk: string) => void,
-    chunk: string,
+    listener: (chunk: Uint8Array) => void,
+    chunk: Uint8Array,
   ): void {
     try {
       listener(chunk);
@@ -2036,25 +2190,32 @@ export function createPluginWorkerHandle(
       return;
     }
     const route = resolved;
-    const chunk = params.chunk;
-    if (typeof chunk !== "string" || chunk.length === 0) {
-      // The exact pair matches, but the chunk is malformed. Count one per-route
-      // protocol error. Release a carried replay token first.
+    // The wire carries the chunk as a base64 string (JSON has no binary type; see
+    // `ChannelBytesWireValue` in protocol.ts). Decode it back to raw bytes before
+    // any bound check, so every bound below counts real bytes, not base64 text.
+    // A bind replay (`replayPreBindDuplexFrames`) reuses this function with a
+    // held event whose chunk the host already decoded once; it carries the
+    // already-decoded `Uint8Array` straight through with no second decode.
+    const rawChunk = params.chunk;
+    const chunk = rawChunk instanceof Uint8Array ? rawChunk : decodeChannelBytes(rawChunk);
+    if (chunk === null || chunk.byteLength === 0) {
+      // The exact pair matches, but the chunk is malformed or empty. Count one
+      // per-route protocol error. Release a carried replay token first.
       releaseRouteToken(route, carried?.token ?? null);
       recordDuplexChannelProtocolError(route);
       return;
     }
-    if (chunk.length > maxDuplexChannelChunkChars) {
+    if (chunk.byteLength > maxDuplexChannelChunkChars) {
       // One inbound chunk is larger than the per-chunk limit. End the route at
       // once. Do not count the chunk as a protocol error.
       releaseRouteToken(route, carried?.token ?? null);
       void terminalizeDuplexChannelRoute(route);
       return;
     }
-    // Count the bytes of the chunk. Enforce the cumulative total-byte cap before
-    // and after a listener attaches. End the route when the cap is exceeded, so a
-    // bound listener cannot receive data past the cap.
-    const chunkBytes = Buffer.byteLength(chunk);
+    // Enforce the cumulative total-byte cap before and after a listener attaches.
+    // End the route when the cap is exceeded, so a bound listener cannot receive
+    // data past the cap.
+    const chunkBytes = chunk.byteLength;
     if (route.totalDataBytes + chunkBytes > maxDuplexChannelTotalDataBytes) {
       releaseRouteToken(route, carried?.token ?? null);
       void terminalizeDuplexChannelRoute(route);
@@ -2178,9 +2339,10 @@ export function createPluginWorkerHandle(
       return;
     }
     // A data event. Validate and normalize it to the narrow duplex-event schema
-    // before any retention.
-    const chunk = params.chunk;
-    if (typeof chunk !== "string" || chunk.length === 0) {
+    // before any retention. The wire carries the chunk as base64; decode it back
+    // to raw bytes before any bound check or retention.
+    const chunk = decodeChannelBytes(params.chunk);
+    if (chunk === null || chunk.byteLength === 0) {
       recordDuplexChannelProtocolError(route);
       return;
     }
@@ -2189,7 +2351,7 @@ export function createPluginWorkerHandle(
       return;
     }
     // Reserve the exact retained raw byte count before the host holds the event.
-    const reserved = reserveRouteBytes(route, "pre_bind_event", Buffer.byteLength(chunk));
+    const reserved = reserveRouteBytes(route, "pre_bind_event", chunk.byteLength);
     if (reserved === null) {
       // The aggregate ceiling rejected the reservation. The caller retains nothing
       // and the route fails closed with the fixed marker.
@@ -2406,25 +2568,27 @@ export function createPluginWorkerHandle(
     >(
       method: M,
       params: HostToWorkerMethods[M][0],
+      // The exact raw byte count of a `duplexChannelWrite` payload, before base64
+      // encoding. The caller supplies it: `params.data` on the wire is the base64
+      // form (`ChannelBytesWireValue`), so its string length no longer equals the
+      // real payload bytes. A stop request carries no payload and omits this.
+      writeByteCount?: number,
     ): void => {
       if (route.state !== "open") return;
       if (route.pendingRequests >= maxDuplexChannelPendingRequests) {
         void terminalizeDuplexChannelRoute(route);
         return;
       }
-      // Reserve the exact UTF-8 byte count of a host→worker write against the
+      // Reserve the exact raw byte count of a host→worker write against the
       // aggregate ledger before `callInternal` retains the payload. A pending write
       // RPC holds `params.data` until it settles, so this reservation bounds the
-      // aggregate host→worker pending-write bytes across every route. Compute the
-      // byte count with `Buffer.byteLength`, not `data.length`, because one
-      // character can encode as several UTF-8 bytes. A stop request carries no
-      // payload, so it reserves nothing. When no ledger is present, admit the write
-      // with no token (a unit test constructs the handle this way).
+      // aggregate host→worker pending-write bytes across every route. A stop
+      // request carries no payload, so it reserves nothing. When no ledger is
+      // present, admit the write with no token (a unit test constructs the handle
+      // this way).
       let pendingWriteToken: ReservationToken | null = null;
       if (method === "duplexChannelWrite" && duplexAggregateByteLedger) {
-        const data = (params as HostToWorkerMethods["duplexChannelWrite"][0]).data;
-        const bytes = Buffer.byteLength(data, "utf8");
-        pendingWriteToken = duplexAggregateByteLedger.reserve("pending_write", bytes);
+        pendingWriteToken = duplexAggregateByteLedger.reserve("pending_write", writeByteCount ?? 0);
         if (!pendingWriteToken) {
           // The reservation would pass the aggregate ceiling. Retain nothing, do
           // not enqueue the RPC, and end the route fail-closed with the aggregate
@@ -2471,7 +2635,7 @@ export function createPluginWorkerHandle(
     };
 
     return {
-      onData(listener: (chunk: string) => void): void {
+      onData(listener: (chunk: Uint8Array) => void): void {
         route.listener = listener;
         if (route.buffered.length > 0) {
           const pending = route.buffered;
@@ -2489,20 +2653,28 @@ export function createPluginWorkerHandle(
           terminalDuplexRoutes.delete(route);
         }
       },
-      write(data: string): void {
+      write(data: Uint8Array): void {
         const sid = route.workerSessionId;
         if (route.state !== "open" || !sid) return;
-        if (data.length > maxDuplexChannelWriteChars) {
+        if (data.byteLength > maxDuplexChannelWriteChars) {
           // The write is larger than the size bound. End the route before the
           // write reaches the worker.
           void terminalizeDuplexChannelRoute(route);
           return;
         }
-        sendBoundedRequest("duplexChannelWrite", {
-          hostRouteId: route.hostRouteId,
-          workerSessionId: sid,
-          data,
-        });
+        // Encode the raw bytes to the wire-safe base64 form (JSON carries no
+        // binary type) and pass the exact raw byte count separately, so the
+        // pending-write ledger reservation charges the real payload bytes, not
+        // the inflated base64 string length.
+        sendBoundedRequest(
+          "duplexChannelWrite",
+          {
+            hostRouteId: route.hostRouteId,
+            workerSessionId: sid,
+            data: encodeChannelBytes(data),
+          },
+          data.byteLength,
+        );
       },
       wait(): Promise<{ exitCode: number | null }> {
         return waitPromise;

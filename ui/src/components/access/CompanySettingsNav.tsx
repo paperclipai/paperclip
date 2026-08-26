@@ -1,5 +1,6 @@
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
@@ -24,6 +25,11 @@ type CompanySettingsTab = (typeof items)[number]["value"];
 
 /** Tab values suppressed when their page is operator-hidden. */
 const hiddenSettingKeyByTab: Partial<Record<CompanySettingsTab, string>> = {
+  export: "company.export",
+  import: "company.import",
+  members: "company.members",
+  invites: "company.invites",
+  secrets: "company.secrets",
   "instance-profile": "instance.profile",
   "instance-environments": "instance.environments",
   "instance-access": "instance.access",
@@ -97,8 +103,12 @@ export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const { hidden: hiddenSettings } = useHiddenSettings();
+  // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
+  // tab is suppressed there rather than dead-ending.
+  const isCloud = Boolean(useCloudInstance());
   const activeTab = getCompanySettingsTab(location.pathname);
   const visibleItems = items.filter((item) => {
+    if (item.value === "import" && isCloud) return false;
     const hiddenKey = hiddenSettingKeyByTab[item.value];
     return !hiddenKey || !hiddenSettings.has(hiddenKey);
   });

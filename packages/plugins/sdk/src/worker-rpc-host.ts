@@ -133,6 +133,7 @@ import {
   isJsonRpcErrorResponse,
   JsonRpcParseError,
   JsonRpcCallError,
+  encodeChannelBytes,
 } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -1403,17 +1404,25 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       duplexChannel: {
-        data(hostRouteId: string, workerSessionId: string, chunk: string): void {
+        data(hostRouteId: string, workerSessionId: string, chunk: Uint8Array): void {
           // Forward one raw data chunk of a persistent duplex channel. The
           // notification echoes the host route identifier and the worker session
           // identifier, so the host routes the chunk to the exact live pair while
           // the route is open. The host drops an unknown or a mismatched pair and
           // never logs the raw bytes. This notification carries no invocation id,
           // because it fires after the open reply returns.
+          //
+          // JSON-RPC travels as JSON text, which carries no binary type, so this
+          // is the one point where the chunk crosses from `Uint8Array` to the
+          // wire-safe base64 form. See `ChannelBytesWireValue` in protocol.ts.
           if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
-          if (typeof chunk !== "string" || chunk.length === 0) return;
-          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, { hostRouteId, workerSessionId, chunk });
+          if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) return;
+          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            chunk: encodeChannelBytes(chunk),
+          });
         },
         exit(
           hostRouteId: string,

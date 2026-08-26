@@ -613,6 +613,90 @@ describe("gemini_local ACP lane", () => {
     await expect(fs.readFile(path.join(localCwd, "from-sandbox.txt"), "utf8")).resolves.toBe("synced");
   });
 
+  it("test_gemini_acp_teardown_restore_failure_sanitizes_the_run_log", async () => {
+    // Security regression for a workspace-restore write failure: the run log
+    // is readable by any same-company actor, so the teardown must never write
+    // the caught error's own message there — that message can carry the host
+    // workspace path. Force a real EACCES by making the workspace read-only,
+    // and name it with a sentinel marker so any leak is easy to spot.
+    const root = await makeTempRoot("paperclip-gemini-acp-restore-failure-");
+    const localCwd = path.join(root, "SENTINEL-HOST-PATH-marker", "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+
+    // The runtime writes a new file into the in-sandbox workspace during the
+    // turn, so the teardown's restore has something to copy back — and a new
+    // file is exactly what a read-only workspace directory rejects. The
+    // workspace turns read-only only after the turn's own writes, so the
+    // teardown restore that runs after the turn is the write this forces to
+    // fail.
+    const runtime = new FakeRuntime({});
+    const startTurn = runtime.startTurn.bind(runtime);
+    runtime.startTurn = (input) => {
+      const turn = startTurn(input);
+      const remoteWorkspaceCwd = input.handle.cwd ?? remoteCwd;
+      return {
+        ...turn,
+        result: (async () => {
+          await fs.writeFile(path.join(remoteWorkspaceCwd, "from-sandbox.txt"), "synced", "utf8");
+          await fs.chmod(localCwd, 0o500);
+          return await turn.result;
+        })(),
+      };
+    };
+
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+
+    const loggedLines: string[] = [];
+    try {
+      const result = await execute(
+        buildContext(localCwd, {
+          config: {
+            engine: "acp",
+            cwd: localCwd,
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+            promptTemplate: "Do the assigned work.",
+          },
+          context: {
+            issueId: "issue-1",
+            paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+          },
+          executionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            providerKey: "fake-plugin",
+            remoteCwd,
+            runner: createLocalSandboxRunner(),
+          } as never,
+          authToken: "real-run-jwt",
+          onLog: async (_stream, chunk) => {
+            loggedLines.push(chunk);
+          },
+        }),
+      );
+
+      // Fail-open: the restore miss never changes the run's exit code or
+      // status, and it surfaces as one allowlisted code — never the raw error.
+      expect(result.exitCode).toBe(0);
+      expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_permission_denied");
+      const allLogs = loggedLines.join("");
+      expect(allLogs).not.toContain("SENTINEL-HOST-PATH-marker");
+      expect(allLogs).not.toContain(localCwd);
+      expect(allLogs).not.toContain("EACCES");
+      expect(allLogs).toContain("permission denied");
+    } finally {
+      await fs.chmod(localCwd, 0o700).catch(() => undefined);
+    }
+  });
+
   it("does not persist an api-key auth selector from a host-only credential", async () => {
     const root = await makeTempRoot("paperclip-gemini-acp-hostkey-");
     const localCwd = path.join(root, "worktree");

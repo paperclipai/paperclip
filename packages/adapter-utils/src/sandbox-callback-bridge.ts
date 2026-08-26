@@ -1,7 +1,9 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
+import http2 from "node:http2";
 import os from "node:os";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 
 import {
   runWithoutActiveStep,
@@ -19,14 +21,6 @@ const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
-// The default cap on the aggregate raw bytes the in-sandbox duplex frame decoder
-// retains between chunks. The generated gateway runs in a separate operating-system
-// process, so it cannot share the host aggregate byte ledger. It enforces this
-// separate cap locally under the `sandbox_process` scope, and the provider memory
-// allocation bounds it. The host passes the value through
-// PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES. The default is well above one maximum
-// frame, so a legitimate single frame never trips it.
-const DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES = 8 * 1024 * 1024;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well
@@ -34,7 +28,8 @@ const DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES = 8 * 1024 * 1024;
 // (PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS), so the host loop fails fast and writes
 // 503 responses before the in-sandbox client gives up. A silently unresponsive
 // sandbox channel makes a client call hang with no reject; this timeout turns
-// that hang into a caught error, so the loop `catch` runs `failPendingRequests`.
+// that hang into a caught error, so the poll loop can back off and retry while
+// the watchdog below decides when to fail the queued requests.
 const DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS = 10_000;
 // Watchdog backstop for a hang that the per-iteration timeout does not catch
 // (for example many slow-but-under-timeout calls, or a stall outside the awaited
@@ -58,32 +53,27 @@ const MAX_BACKSTOP_WRITE_ATTEMPTS = 3;
 // The delay between two 504 backstop write attempts. It is short, so all retries
 // finish well under the in-sandbox 30s response deadline.
 const BACKSTOP_WRITE_RETRY_MS = 50;
+// Backoff cap between poll-loop retries after a transient iteration failure.
+// The cap keeps a recovering loop probing often enough to resume before the
+// in-sandbox 30s response deadline strands queued callers, while the
+// exponential ramp below it keeps a hard-down channel from burning an exec
+// call every poll interval.
+const MAX_TRANSIENT_ITERATION_BACKOFF_MS = 5_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 export const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
-// The two bridge modes the generated gateway supports. The file mode polls a
-// request/response queue on disk. The duplex mode forwards one request frame to
-// stdout and resolves one response frame from stdin. The generated `.mjs`
-// selects the mode from `PAPERCLIP_API_BRIDGE_MODE`.
+// The bridge modes the generated gateway supports. The file mode polls a
+// request/response queue on disk. The http2 mode runs one Node HTTP/2 client
+// session directly on stdin/stdout, after it sends the one READY line the
+// host readiness gate expects. The generated `.mjs` selects the mode from
+// `PAPERCLIP_API_BRIDGE_MODE`. The generated gateway rejects every other
+// value with a fixed startup error, including the retired duplex transport.
+// HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
 const SANDBOX_CALLBACK_BRIDGE_FILE_MODE = "queue_v1";
-export const SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE = "duplex_v1";
-
-// The duplex gateway HTTP wait budget default. The gateway waits this long for a
-// response frame before it answers the local caller with a 502 timeout. The
-// value stays configurable through `PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS`, the
-// same environment key the file mode reads.
-const DEFAULT_DUPLEX_GATEWAY_WAIT_BUDGET_MS = 35_000;
-// How often the duplex gateway writes a heartbeat frame to stdout.
-const DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_INTERVAL_MS = 5_000;
-// The duplex gateway treats the channel as lost when no inbound frame arrives on
-// stdin within this window.
-const DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_TIMEOUT_MS = 20_000;
-// After a loss, the duplex gateway answers each new local request with a 503,
-// then exits when this grace ends. The grace gives the local caller time to read
-// the 409 for an outstanding request and a 503 for a new request.
-const DEFAULT_DUPLEX_GATEWAY_LOSS_EXIT_GRACE_MS = 1_000;
+/** The active non-file transport mode. */
+export const SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE = "http2_v1";
 
 /** Span name that wraps one Paperclip-API callback request — read the request,
  * write the response, and remove the request file. */
@@ -96,18 +86,6 @@ const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest"
 const CALLBACK_BRIDGE_WORKER_FAILED_SPAN = "sandbox.callbackBridge.workerFailed";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
-
-/**
- * The default cap on the aggregate raw bytes the generated in-sandbox duplex frame
- * decoder retains. The host passes it through
- * `PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES`. The in-sandbox decoder enforces the
- * cap locally under the `sandbox_process` scope; it never touches the host
- * aggregate byte ledger.
- */
-export const DEFAULT_SANDBOX_DUPLEX_DECODER_MAX_BYTES = DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES;
-
-/** The scope label the in-sandbox duplex decoder reports for its local byte counter. */
-export const SANDBOX_DUPLEX_DECODER_SCOPE = "sandbox_process";
 
 export interface SandboxCallbackBridgeRouteRule {
   method: string;
@@ -976,7 +954,22 @@ export async function startSandboxCallbackBridgeWorker(input: {
       await writeAbortedHandlerBackstop(fileName, guard, lastWriteError);
     };
     try {
-      const raw = await input.client.readTextFile(requestPath);
+      let raw: string;
+      try {
+        raw = await input.client.readTextFile(requestPath);
+      } catch (error) {
+        // The gateway deletes a request file when its caller stops waiting
+        // (client-side timeout cleanup). A read that fails because the file is
+        // gone is that benign race, not a channel fault: confirm the file
+        // vanished and skip quietly instead of escalating into a recovery
+        // pass. A file that is still listed rethrows, so a real read fault
+        // keeps its existing handling.
+        const remaining = await input.client.listJsonFiles(directories.requestsDir).catch(() => null);
+        if (remaining !== null && !remaining.includes(fileName)) {
+          return;
+        }
+        throw error;
+      }
       let request: SandboxCallbackBridgeRequest;
       try {
         request = JSON.parse(raw) as SandboxCallbackBridgeRequest;
@@ -1380,13 +1373,54 @@ export async function startSandboxCallbackBridgeWorker(input: {
       watchdogTimer.unref();
     }
     try {
+      // Consecutive transient poll failures. A single failed list call — one
+      // reset or slow sandbox exec — must not end the relay for the rest of the
+      // run: the in-sandbox gateway keeps queueing requests, so a dead loop
+      // strands every later API call from the agent (its status writes then look
+      // like connection failures and the issue loses its disposition). Back off
+      // and retry the poll instead. The watchdog stays the escalation path for a
+      // sustained outage — it fires after `watchdogTimeoutMs` without a
+      // successful iteration and fails the queued requests fast, while this loop
+      // keeps probing for recovery.
+      let consecutivePollFailures = 0;
       while (true) {
-        const fileNames = await withTimeout(
-          input.client.listJsonFiles(directories.requestsDir),
-          iterationTimeoutMs,
-          "Sandbox callback bridge list requests",
-        );
-        if (fileNames.length === 0) {
+        let fileNames: string[];
+        try {
+          fileNames = await withTimeout(
+            input.client.listJsonFiles(directories.requestsDir),
+            iterationTimeoutMs,
+            "Sandbox callback bridge list requests",
+          );
+          consecutivePollFailures = 0;
+        } catch (error) {
+          if (stopping) {
+            break;
+          }
+          consecutivePollFailures += 1;
+          const message = `${buildWorkerFailureMessage(error)} (transient poll failure ${consecutivePollFailures}; retrying)`;
+          if (consecutivePollFailures === 1) {
+            // Put the first failure of a streak on the run trace; later repeats
+            // only warn, so a flapping channel does not spam failed spans.
+            await surfaceRunError(new Error(message));
+          } else {
+            console.warn(`[paperclip] ${message}`);
+          }
+          const backoffMs = Math.min(
+            pollIntervalMs * 2 ** consecutivePollFailures,
+            MAX_TRANSIENT_ITERATION_BACKOFF_MS,
+          );
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+        // A file whose attempt is still in flight (or waiting on its 504
+        // backstop) is not actionable: `processRequestFile` would skip it via
+        // the guard map. Treat an all-guarded listing like an empty one and
+        // sleep a poll interval. Re-listing immediately would spin the loop —
+        // an exec storm against a real sandbox channel, and with an in-memory
+        // client a pure-microtask loop that starves every timer in the process
+        // (including the guard's own backstop and abort timers).
+        const actionableFileNames = fileNames.filter((fileName) => !inFlightRequestGuards.has(fileName));
+        if (actionableFileNames.length === 0) {
           lastSuccessfulIterationAt = Date.now();
           if (stopping) {
             break;
@@ -1394,7 +1428,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           continue;
         }
-        for (const fileName of fileNames) {
+        for (const fileName of actionableFileNames) {
           if (stopping && Date.now() >= stopDeadline) break;
           inFlight += 1;
           try {
@@ -1406,7 +1440,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             // `task.run` after it. Without a runner, the request runs under the
             // run parent with no wrapper span, exactly like the earlier behavior.
             // The per-iteration timeout wraps the whole request, so a hung
-            // request rejects and the loop `catch` runs `failPendingRequests`.
+            // request rejects and the catch below runs the recovery pass.
             await withTimeout(
               input.runtimeSpan
                 ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
@@ -1419,6 +1453,23 @@ export async function startSandboxCallbackBridgeWorker(input: {
               `Sandbox callback bridge process request ${fileName}`,
             );
             lastSuccessfulIterationAt = Date.now();
+          } catch (error) {
+            // A single request attempt failed or hung. Run the same recovery
+            // pass the loop previously died on — abort the in-flight handler
+            // (its 504 backstop keeps the caller from stranding) and 503 the
+            // unclaimed queued requests — but keep the loop alive afterward. A
+            // caller that sees the retry-safe 503 re-queues, and the recovered
+            // loop serves the retry; the old terminal catch left every later
+            // request to strand instead.
+            const message = buildWorkerFailureMessage(error);
+            await surfaceRunError(new Error(message));
+            try {
+              await failPendingRequests(message, { abandonInFlight: true });
+            } catch (failPendingError) {
+              console.warn(
+                `[paperclip] sandbox callback bridge failed to abort queued requests after a request failure: ${failPendingError instanceof Error ? failPendingError.message : String(failPendingError)}`,
+              );
+            }
           } finally {
             inFlight -= 1;
           }
@@ -1752,248 +1803,234 @@ export async function startSandboxCallbackBridgeServer(input: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sandbox HTTP/2 client gateway
+//
+// This gateway turns each local loopback request into one HTTP/2 stream to
+// the host server in `http2-bridge-server.ts`. It sits beside the file-mode
+// gateway above; it changes neither of them. The generated in-sandbox
+// entrypoint and the transport-selection path already select it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Constant-time bridge-token compare. Both this sandbox gateway and the host
+ * server in `http2-bridge-server.ts` import this one helper, so the gateway
+ * check and the independent host check (accepted security fix 4) apply the
+ * exact same comparison rule. A length mismatch returns `false` without a
+ * `timingSafeEqual` call, because `timingSafeEqual` throws on unequal buffer
+ * lengths; both operands are bridge tokens of near-fixed length, so this one
+ * length branch leaks no useful timing signal.
+ */
+export function compareBridgeTokensConstantTime(
+  expected: string,
+  received: string | null | undefined,
+): boolean {
+  const expectedBytes = Buffer.from(expected, "utf8");
+  const receivedBytes = Buffer.from(typeof received === "string" ? received : "", "utf8");
+  if (expectedBytes.length !== receivedBytes.length) return false;
+  return timingSafeEqual(expectedBytes, receivedBytes);
+}
+
+const SANDBOX_HTTP2_GATEWAY_DEFAULT_AUTHORITY = "bridge.internal";
+
+/** One local request the gateway forwards as one HTTP/2 stream. */
+export interface SandboxHttp2BridgeGatewayRequest {
+  method: string;
+  path: string;
+  query: string;
+  headers: Record<string, string>;
+  body: Buffer;
+  /**
+   * The token the local caller presented. The gateway check (accepted
+   * security fix 4 keeps this alongside the independent host check) compares
+   * it against the per-run bridge token before it opens a stream.
+   */
+  receivedToken: string | null | undefined;
+}
+
+/** The response one forwarded HTTP/2 stream carried back. */
+export interface SandboxHttp2BridgeGatewayResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+export interface SandboxHttp2BridgeGateway {
+  /** Forward one local request as one HTTP/2 stream over the client session. */
+  forwardRequest(
+    request: SandboxHttp2BridgeGatewayRequest,
+  ): Promise<SandboxHttp2BridgeGatewayResponse>;
+  /** Close the HTTP/2 client session. Safe to call more than one time. */
+  close(): Promise<void>;
+}
+
+export interface CreateSandboxHttp2BridgeGatewayOptions {
+  /**
+   * The per-run bridge token. The gateway checks every request against it,
+   * then attaches it to the outbound HTTP/2 stream as the `authorization`
+   * header, so the host can run its own independent check.
+   */
+  bridgeToken: string;
+  /**
+   * Open the transport the HTTP/2 client session runs on. Returns a `Duplex`
+   * already connected to the host — the sandbox process's own channel in
+   * production, or one side of a paired in-memory `Duplex` in a test.
+   */
+  createConnection: () => Duplex;
+  /** The `:authority` pseudo-header value. The channel carries no real network
+   * address, so this is a fixed label. The default is `bridge.internal`. */
+  authority?: string;
+  /** The header allowlist applied to every outbound request. The default is
+   * {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST}. */
+  headerAllowlist?: readonly string[];
+  /**
+   * The sink for a GOAWAY the host sends. The host names the last client
+   * stream ID it processed; a caller classifies each of its own dispatched
+   * stream IDs against it with `classifyStreamAgainstGoaway` in
+   * `http2-bridge-server.ts` to know which requests need a retry elsewhere.
+   */
+  onGoaway?: (record: { lastStreamId: number; errorCode: number }) => void;
+}
+
+function forwardOneHttp2Request(
+  session: http2.ClientHttp2Session,
+  request: {
+    bridgeToken: string;
+    method: string;
+    path: string;
+    query: string;
+    headers: Record<string, string>;
+    body: Buffer;
+  },
+): Promise<SandboxHttp2BridgeGatewayResponse> {
+  return new Promise((resolve, reject) => {
+    const query = request.query.trim();
+    const pathWithQuery =
+      query.length === 0 ? request.path : `${request.path}${query.startsWith("?") ? query : `?${query}`}`;
+    const requestHeaders: http2.OutgoingHttpHeaders = {
+      ":method": request.method,
+      ":path": pathWithQuery,
+      authorization: `Bearer ${request.bridgeToken}`,
+      ...request.headers,
+    };
+    let stream: http2.ClientHttp2Stream;
+    try {
+      stream = session.request(requestHeaders, { endStream: request.body.length === 0 });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let responseHeaders: Record<string, string> = {};
+    let status = 502;
+    let settled = false;
+    const settle = (run: () => void) => {
+      if (settled) return;
+      settled = true;
+      run();
+    };
+    stream.on("response", (headers) => {
+      const rawStatus = headers[":status"];
+      status = typeof rawStatus === "number" ? rawStatus : Number(rawStatus) || 502;
+      responseHeaders = {};
+      for (const [key, value] of Object.entries(headers)) {
+        if (key.startsWith(":") || value == null) continue;
+        responseHeaders[key] = Array.isArray(value) ? value.join(", ") : String(value);
+      }
+    });
+    stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+    stream.once("end", () => settle(() => resolve({ status, headers: responseHeaders, body: Buffer.concat(chunks) })));
+    stream.once("error", (error) =>
+      settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
+    );
+    stream.once("aborted", () => settle(() => reject(new Error("Bridge HTTP/2 stream aborted."))));
+    if (request.body.length > 0) {
+      stream.end(request.body);
+    } else if (!stream.writableEnded) {
+      stream.end();
+    }
+  });
+}
+
+/**
+ * Create the sandbox HTTP/2 client gateway. It opens one HTTP/2 client
+ * session on the transport `createConnection` returns, and forwards each
+ * local request the caller hands it (already checked against the bridge
+ * token — see {@link SandboxHttp2BridgeGatewayRequest.receivedToken}) as one
+ * HTTP/2 stream. It keeps the header allowlist on the sandbox side, exactly
+ * as the file-mode gateway does.
+ */
+export function createSandboxHttp2BridgeGateway(
+  options: CreateSandboxHttp2BridgeGatewayOptions,
+): SandboxHttp2BridgeGateway {
+  const authority = options.authority?.trim() || SANDBOX_HTTP2_GATEWAY_DEFAULT_AUTHORITY;
+  const headerAllowlist = options.headerAllowlist ?? DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST;
+  const session = http2.connect(`http://${authority}`, {
+    createConnection: options.createConnection,
+  });
+  // A session-level fault fails every in-flight `forwardRequest` call through
+  // that stream's own `error`/`aborted` handler. This listener only stops
+  // Node from raising an unhandled `error` event for the session itself.
+  session.on("error", () => undefined);
+  session.on("goaway", (errorCode: number, lastStreamId: number) => {
+    options.onGoaway?.({ lastStreamId, errorCode });
+  });
+
+  return {
+    forwardRequest(request: SandboxHttp2BridgeGatewayRequest): Promise<SandboxHttp2BridgeGatewayResponse> {
+      // The gateway check (accepted security fix 4 keeps this as well as the
+      // independent host-side check): a request whose token does not match
+      // the per-run bridge token never opens a stream.
+      if (!compareBridgeTokensConstantTime(options.bridgeToken, request.receivedToken)) {
+        return Promise.reject(new Error("Invalid bridge token."));
+      }
+      return forwardOneHttp2Request(session, {
+        bridgeToken: options.bridgeToken,
+        method: request.method,
+        path: request.path,
+        query: request.query,
+        headers: sanitizeSandboxCallbackBridgeHeaders(request.headers, headerAllowlist),
+        body: request.body,
+      });
+    },
+    close(): Promise<void> {
+      return new Promise((resolve) => {
+        if (session.closed || session.destroyed) {
+          resolve();
+          return;
+        }
+        session.close(() => resolve());
+      });
+    },
+  };
+}
+
 /**
  * The zero-dependency codec the generated duplex gateway embeds. It is a plain
- * JavaScript copy of the host codec in `duplex-frame-codec.ts`. It uses only the
- * `Buffer`, `JSON`, `Object`, `Set`, and `Array` globals, so the generated
- * `.mjs` needs no workspace import. It carries no template literal and no `${`
- * sequence, so it embeds inside the gateway template literal with no escape.
+ * JavaScript copy of the encode side of the host codec in `duplex-frame-codec.ts`.
+ * The generated gateway never decodes: it writes exactly one READY line, then
+ * hands stdout to its transport. So this copy carries only the frame version and
+ * the encode function, not a decoder. It uses only the `Buffer` and `JSON`
+ * globals, so the generated `.mjs` needs no workspace import. It carries no
+ * template literal and no `${` sequence, so it embeds inside the gateway
+ * template literal with no escape.
  *
- * A shared fixture file (`duplex-frame-vectors.json`) proves this copy stays wire
- * compatible with the host codec. {@link getSandboxDuplexGatewayCodecSource}
- * returns this exact source so a test can run every fixture vector against it.
+ * A shared fixture file (`duplex-frame-vectors.json`) proves the host encode side
+ * stays wire compatible with this copy. {@link getSandboxDuplexGatewayCodecSource}
+ * returns this exact source so a test can run the READY encode vector against it.
  */
 const DUPLEX_GATEWAY_CODEC_SOURCE = `const DUPLEX_FRAME_VERSION = 2;
-const DUPLEX_BODY_CHUNK_RAW_BYTES = 256 * 1024;
-const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1000000;
-const DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES = 256;
-const DEFAULT_MAX_DUPLEX_DECODER_BYTES = ${DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES};
-const DUPLEX_DECODER_SCOPE = "${SANDBOX_DUPLEX_DECODER_SCOPE}";
-const DUPLEX_NEWLINE_BYTE = 0x0a;
-const DUPLEX_EMPTY = Buffer.alloc(0);
-const DUPLEX_RESPONSE_OUTCOMES = new Set(["completed", "indeterminate", "unavailable"]);
-
-function duplexOk(frame) {
-  return { ok: true, frame: frame };
-}
-
-function duplexFail(code, message) {
-  return { ok: false, error: { code: code, message: message } };
-}
-
-function duplexIsPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function duplexIsStringRecord(value) {
-  if (!duplexIsPlainObject(value)) return false;
-  for (const entry of Object.values(value)) {
-    if (typeof entry !== "string") return false;
-  }
-  return true;
-}
-
-function duplexIsSafeNonNegativeInteger(value) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
 
 function encodeDuplexFrame(frame) {
   return JSON.stringify(frame) + "\\n";
-}
-
-function encodeDuplexFrameChecked(frame, maxFrameBytes) {
-  const limit = maxFrameBytes != null ? maxFrameBytes : DEFAULT_MAX_DUPLEX_FRAME_BYTES;
-  const json = JSON.stringify(frame);
-  if (Buffer.byteLength(json, "utf8") > limit) {
-    return { ok: false, error: { code: "frame_too_large", message: "frame exceeds the maximum size" } };
-  }
-  return { ok: true, line: json + "\\n" };
-}
-
-function decodeDuplexLine(line) {
-  const text = typeof line === "string" ? line : line.toString("utf8");
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    return duplexFail("malformed_frame", "frame is not valid JSON");
-  }
-  if (!duplexIsPlainObject(parsed)) {
-    return duplexFail("malformed_frame", "frame is not a JSON object");
-  }
-  if (parsed.version !== DUPLEX_FRAME_VERSION) {
-    return duplexFail("version_mismatch", "frame version " + String(parsed.version) + " is not " + DUPLEX_FRAME_VERSION);
-  }
-  return duplexValidateFrame(parsed);
-}
-
-function duplexValidateFrame(frame) {
-  switch (frame.type) {
-    case "request":
-      return duplexValidateRequest(frame);
-    case "response":
-      return duplexValidateResponse(frame);
-    case "body_chunk":
-      return duplexValidateBodyChunk(frame);
-    case "ready":
-      return duplexValidateReady(frame);
-    case "heartbeat":
-      return duplexOk(frame);
-    case "close":
-      return duplexOk(frame);
-    case "error":
-      return duplexValidateError(frame);
-    default:
-      return duplexFail("unknown_type", "unknown frame type " + JSON.stringify(frame.type));
-  }
-}
-
-function duplexValidateRequest(frame) {
-  if (
-    typeof frame.id !== "string" ||
-    typeof frame.method !== "string" ||
-    typeof frame.path !== "string" ||
-    typeof frame.query !== "string" ||
-    !duplexIsSafeNonNegativeInteger(frame.bodyByteCount) ||
-    !duplexIsStringRecord(frame.headers)
-  ) {
-    return duplexFail("malformed_frame", "request frame has a missing or wrong-typed field");
-  }
-  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
-    return duplexFail("id_too_large", "request frame id exceeds the maximum size");
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateResponse(frame) {
-  if (
-    typeof frame.id !== "string" ||
-    typeof frame.status !== "number" ||
-    !duplexIsSafeNonNegativeInteger(frame.bodyByteCount) ||
-    !duplexIsStringRecord(frame.headers) ||
-    typeof frame.outcome !== "string" ||
-    !DUPLEX_RESPONSE_OUTCOMES.has(frame.outcome)
-  ) {
-    return duplexFail("malformed_frame", "response frame has a missing or wrong-typed field");
-  }
-  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
-    return duplexFail("id_too_large", "response frame id exceeds the maximum size");
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateBodyChunk(frame) {
-  if (typeof frame.id !== "string" || typeof frame.data !== "string") {
-    return duplexFail("malformed_frame", "body_chunk frame has a missing or wrong-typed field");
-  }
-  if (!duplexIsSafeNonNegativeInteger(frame.seq)) {
-    return duplexFail("malformed_frame", "body_chunk frame has a missing or wrong-typed seq");
-  }
-  if (Buffer.byteLength(frame.id, "utf8") > DEFAULT_MAX_DUPLEX_REQUEST_ID_BYTES) {
-    return duplexFail("id_too_large", "body_chunk frame id exceeds the maximum size");
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateReady(frame) {
-  if (typeof frame.nonce !== "string") {
-    return duplexFail("malformed_frame", "ready frame has a missing or wrong-typed nonce");
-  }
-  for (const key of Object.keys(frame)) {
-    if (key !== "version" && key !== "type" && key !== "nonce") {
-      return duplexFail("malformed_frame", "ready frame has an unexpected field");
-    }
-  }
-  return duplexOk(frame);
-}
-
-function duplexValidateError(frame) {
-  if (typeof frame.code !== "string") {
-    return duplexFail("malformed_frame", "error frame has a missing or wrong-typed code");
-  }
-  if (frame.message !== undefined && typeof frame.message !== "string") {
-    return duplexFail("malformed_frame", "error frame has a wrong-typed message");
-  }
-  return duplexOk(frame);
-}
-
-class DuplexFrameDecoder {
-  constructor(options) {
-    this.buffer = DUPLEX_EMPTY;
-    this.discarding = false;
-    this.maxFrameBytes =
-      options && options.maxFrameBytes != null ? options.maxFrameBytes : DEFAULT_MAX_DUPLEX_FRAME_BYTES;
-    // The in-sandbox decoder runs in a separate operating-system process, so it
-    // cannot share the host aggregate byte ledger. It bounds its own retained
-    // bytes with a local cap under the "sandbox_process" scope. The counters here
-    // never increment or release a host aggregate token.
-    this.scope = DUPLEX_DECODER_SCOPE;
-    this.maxAggregateBytes =
-      options && options.maxAggregateBytes != null
-        ? options.maxAggregateBytes
-        : DEFAULT_MAX_DUPLEX_DECODER_BYTES;
-    this.bytesInUse = 0;
-    this.aggregateRejections = 0;
-  }
-
-  push(chunk) {
-    const incoming = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
-    // Enforce the local sandbox-process cap before the concat allocates the peak
-    // "old + incoming" buffer. A rejection fails closed: the decoder drops the
-    // retained buffer and the incoming chunk, resynchronizes at the next newline,
-    // and reports the aggregate rejection. It retains nothing over the cap.
-    if (this.buffer.length + incoming.length > this.maxAggregateBytes) {
-      this.buffer = DUPLEX_EMPTY;
-      this.discarding = true;
-      this.bytesInUse = 0;
-      this.aggregateRejections += 1;
-      return [duplexFail("aggregate_bytes_exceeded", "aggregate retained bytes exceeded the sandbox-process cap")];
-    }
-    this.buffer = this.buffer.length === 0 ? incoming : Buffer.concat([this.buffer, incoming]);
-    const results = [];
-    for (;;) {
-      if (this.discarding) {
-        const newlineIndex = this.buffer.indexOf(DUPLEX_NEWLINE_BYTE);
-        if (newlineIndex === -1) {
-          this.buffer = DUPLEX_EMPTY;
-          break;
-        }
-        this.buffer = this.buffer.subarray(newlineIndex + 1);
-        this.discarding = false;
-        continue;
-      }
-      const newlineIndex = this.buffer.indexOf(DUPLEX_NEWLINE_BYTE);
-      if (newlineIndex === -1) {
-        if (this.buffer.length > this.maxFrameBytes) {
-          results.push(duplexFail("frame_too_large", "frame exceeds the maximum size"));
-          this.discarding = true;
-          this.buffer = DUPLEX_EMPTY;
-        }
-        break;
-      }
-      const line = this.buffer.subarray(0, newlineIndex);
-      this.buffer = this.buffer.subarray(newlineIndex + 1);
-      if (line.length === 0) continue;
-      if (line.length > this.maxFrameBytes) {
-        results.push(duplexFail("frame_too_large", "frame exceeds the maximum size"));
-        continue;
-      }
-      results.push(decodeDuplexLine(line));
-    }
-    // Reconcile the local sandbox-process counter to the bytes still retained.
-    this.bytesInUse = this.buffer.length;
-    return results;
-  }
 }`;
 
 /**
  * Return the exact zero-dependency codec source the generated duplex gateway
- * embeds. A test runs every fixture vector against this source, so it proves the
- * embedded copy decodes the same bytes as the host codec. The source declares
- * `encodeDuplexFrame`, `encodeDuplexFrameChecked`, `decodeDuplexLine`,
- * `DuplexFrameDecoder`, `DUPLEX_FRAME_VERSION`, and
- * `DEFAULT_MAX_DUPLEX_FRAME_BYTES`, but exports none of them; a caller wraps it to
- * read those names.
+ * embeds. A test wraps this source and calls `encodeDuplexFrame` to prove the
+ * embedded copy encodes the READY frame the same way the host encode side does.
+ * The source declares `encodeDuplexFrame` and `DUPLEX_FRAME_VERSION`, but exports
+ * neither; a caller wraps it to read those names.
  */
 export function getSandboxDuplexGatewayCodecSource(): string {
   return DUPLEX_GATEWAY_CODEC_SOURCE;
@@ -2004,6 +2041,8 @@ export function getSandboxCallbackBridgeServerSource(): string {
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import http2 from "node:http2";
+import { Duplex } from "node:stream";
 
 const bridgeMode = process.env.PAPERCLIP_API_BRIDGE_MODE || "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}";
 const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
@@ -2011,36 +2050,18 @@ const bridgeToken = process.env.PAPERCLIP_BRIDGE_TOKEN;
 const host = process.env.PAPERCLIP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.PAPERCLIP_BRIDGE_PORT || "0");
 // The host assigns the loopback port and passes it through the launch
-// environment. The duplex gateway binds exactly this port; it never selects a
+// environment. The gateway binds exactly this port; it never selects a
 // different one. The host also passes one random per-open nonce here. The
 // gateway echoes it in the READY frame so the host correlates READY with this
 // channel open. The nonce is a liveness signal, not authentication.
 const bridgeNonce = process.env.PAPERCLIP_BRIDGE_NONCE || "";
 const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "100");
 const responseTimeoutMs = Number(
-  process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS ||
-    (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}"
-      ? "${DEFAULT_DUPLEX_GATEWAY_WAIT_BUDGET_MS}"
-      : "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}"),
+  process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}",
 );
 const maxQueueDepth = Number(process.env.PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH || "${DEFAULT_BRIDGE_MAX_QUEUE_DEPTH}");
 const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "${DEFAULT_BRIDGE_MAX_BODY_BYTES}");
-// The host passes the separate sandbox-process raw-decoder cap here. The in-sandbox
-// decoder enforces it locally under the "sandbox_process" scope; it never shares the
-// host aggregate byte ledger.
-const maxDuplexDecoderBytes = Number(
-  process.env.PAPERCLIP_BRIDGE_MAX_DUPLEX_DECODER_BYTES || "${DEFAULT_BRIDGE_MAX_DUPLEX_DECODER_BYTES}",
-);
-const heartbeatIntervalMs = Number(
-  process.env.PAPERCLIP_BRIDGE_HEARTBEAT_INTERVAL_MS || "${DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_INTERVAL_MS}",
-);
-const heartbeatTimeoutMs = Number(
-  process.env.PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS || "${DEFAULT_DUPLEX_GATEWAY_HEARTBEAT_TIMEOUT_MS}",
-);
-const lossExitGraceMs = Number(
-  process.env.PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS || "${DEFAULT_DUPLEX_GATEWAY_LOSS_EXIT_GRACE_MS}",
-);
-// The header allowlist. Both the file gateway and the duplex gateway strip an
+// The header allowlist. Both the file gateway and the http2 gateway strip an
 // inbound request to these headers before they forward it. One copy serves both
 // modes. The route allowlist stays on the host: both modes forward a request to
 // the host, and the host enforces the same route allowlist for each.
@@ -2049,9 +2070,47 @@ const allowedHeaders = new Set(${JSON.stringify([...DEFAULT_SANDBOX_CALLBACK_BRI
 if (!bridgeToken) {
   throw new Error("PAPERCLIP_BRIDGE_TOKEN is required.");
 }
-if (bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}" && !queueDir) {
+// Closed allowlist for the bridge mode. The generated gateway supports exactly
+// two transports: http2 and the file-mode queue. Every other value, including
+// the retired duplex transport, fails startup at once instead of falling
+// through to a mode that never ran. This check runs before the queue-directory
+// check below, so an unsupported mode never reaches a state where a missing
+// queue directory masks the real problem.
+if (
+  bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE}" &&
+  bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}"
+) {
+  throw new Error("Unsupported PAPERCLIP_API_BRIDGE_MODE: " + bridgeMode);
+}
+if (bridgeMode !== "${SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE}" && !queueDir) {
   throw new Error("PAPERCLIP_BRIDGE_QUEUE_DIR and PAPERCLIP_BRIDGE_TOKEN are required.");
 }
+
+// A crashed gateway is a dead loopback port for the rest of the run: nothing
+// inside the sandbox respawns this process, and every later agent API call
+// then fails at the connection level. Once the gateway is ready, log an
+// uncaught fault to stderr (the host redirects it into logs/bridge.log) and
+// keep serving — the relay holds no state a fault can corrupt beyond the one
+// request it interrupted. Before readiness the same fault means the gateway
+// can never become usable (a failed bind, a failed readiness write), so exit
+// instead: surviving there only leaves an un-ready zombie behind while the
+// host waits out its readiness poll.
+let gatewayReady = false;
+process.on("uncaughtException", (error) => {
+  process.stderr.write(
+    "[paperclip-bridge] uncaught exception: " + (error && error.stack ? error.stack : String(error)) + "\\n",
+  );
+  if (!gatewayReady) {
+    process.exit(1);
+  }
+});
+process.on("unhandledRejection", (reason) => {
+  const detail = reason && typeof reason === "object" && "stack" in reason ? reason.stack : String(reason);
+  process.stderr.write("[paperclip-bridge] unhandled rejection: " + detail + "\\n");
+  if (!gatewayReady) {
+    process.exit(1);
+  }
+});
 
 // The embedded zero-dependency frame codec. The duplex gateway uses it; the file
 // gateway ignores it.
@@ -2074,7 +2133,7 @@ function normalizeHeaders(headers) {
   return out;
 }
 
-async function readBody(req) {
+async function readBodyBytes(req) {
   const chunks = [];
   let totalBytes = 0;
   for await (const chunk of req) {
@@ -2085,7 +2144,11 @@ async function readBody(req) {
       throw new Error("Bridge request body exceeded the configured size limit.");
     }
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req) {
+  return (await readBodyBytes(req)).toString("utf8");
 }
 
 function tokensMatch(received) {
@@ -2112,6 +2175,24 @@ async function runFileGateway() {
     return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
   }
 
+  // Delete request files older than the response deadline. Every live caller
+  // cleans its own request file when it times out, so a file this old is an
+  // orphan: its writer was killed mid-wait, or a previous gateway process died
+  // and left its queue behind. Orphans otherwise count toward the queue-depth
+  // cap forever and wedge the gateway at a permanent 503.
+  async function sweepStaleRequests() {
+    const staleBefore = Date.now() - responseTimeoutMs - 2000;
+    const entries = await fs.readdir(requestsDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const filePath = path.posix.join(requestsDir, entry.name);
+      const stats = await fs.stat(filePath).catch(() => null);
+      if (stats && stats.mtimeMs < staleBefore) {
+        await fs.rm(filePath, { force: true }).catch(() => undefined);
+      }
+    }
+  }
+
   async function waitForResponse(requestId) {
     const responsePath = path.posix.join(responsesDir, \`\${requestId}.json\`);
     const deadline = Date.now() + responseTimeoutMs;
@@ -2136,8 +2217,13 @@ async function runFileGateway() {
       }
 
       if (await queueDepth() >= maxQueueDepth) {
-        writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
-        return;
+        // Reclaim orphaned request files before rejecting; only a queue that
+        // is genuinely full of live requests gets the 503.
+        await sweepStaleRequests();
+        if (await queueDepth() >= maxQueueDepth) {
+          writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
+          return;
+        }
       }
 
       const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -2162,7 +2248,19 @@ async function runFileGateway() {
       await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");
       await fs.rename(tempPath, requestPath);
 
-      const response = await waitForResponse(requestId);
+      let response;
+      try {
+        response = await waitForResponse(requestId);
+      } catch (error) {
+        // The host never delivered a response inside the deadline. Remove this
+        // request's file so it cannot pile up toward the queue-depth cap. The
+        // host's normal response write is guarded on the request file, so the
+        // removal also tells the host that no caller waits anymore. Without
+        // this cleanup a stalled host wedges the gateway at the cap and every
+        // later request gets an immediate 503 until run end.
+        await fs.rm(requestPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
       const responseHeaders = response.headers || {};
       // The host marks a possibly-committed mutation with an indeterminate outcome.
       // The host cannot cancel a host operation that is in flight, so the mutation
@@ -2200,7 +2298,24 @@ async function runFileGateway() {
   await fs.mkdir(responsesDir, { recursive: true });
   await fs.mkdir(logsDir, { recursive: true });
 
+  // Newer Node runtimes do not reliably surface a failed bind through
+  // uncaughtException here: with nothing else keeping the event loop alive,
+  // the process can drain and exit 0 before the error event is delivered
+  // (observed on Node 24/25; Node 22 delivered it). Attach an explicit error
+  // listener and pin the loop with a keepalive until the bind settles, so a
+  // startup failure exits 1 with the fault on stderr on every runtime.
+  const bindKeepalive = setInterval(() => {}, 1000);
+  server.once("error", (error) => {
+    clearInterval(bindKeepalive);
+    process.stderr.write(
+      "[paperclip-bridge] server error: " + (error && error.stack ? error.stack : String(error)) + "\\n",
+    );
+    if (!gatewayReady) {
+      process.exit(1);
+    }
+  });
   server.listen(port, host, async () => {
+    clearInterval(bindKeepalive);
     const address = server.address();
     if (!address || typeof address === "string") {
       throw new Error("Bridge server did not expose a TCP address.");
@@ -2215,209 +2330,136 @@ async function runFileGateway() {
     const tempReadyFile = \`\${readyFile}.tmp\`;
     await fs.writeFile(tempReadyFile, JSON.stringify(ready), "utf8");
     await fs.rename(tempReadyFile, readyFile);
+    // The readiness file is on disk, so the host will adopt this process.
+    // From here on an uncaught fault must not kill the listener.
+    gatewayReady = true;
   });
 }
 
-// Split one whole body buffer into body_chunk frames. The gateway buffers the
-// whole source body once, then splits it here. Each frame carries one fixed raw
-// slice as base64 text, except the final frame, which carries the remaining
-// bytes. A zero-length body yields no frame. Send-side true streaming is a
-// separate goal; this whole-body split is acceptable for this gateway.
-function splitDuplexBodyIntoChunks(id, body) {
-  const frames = [];
-  let seq = 0;
-  for (let offset = 0; offset < body.length; offset += DUPLEX_BODY_CHUNK_RAW_BYTES) {
-    const slice = body.subarray(offset, offset + DUPLEX_BODY_CHUNK_RAW_BYTES);
-    frames.push({
-      version: DUPLEX_FRAME_VERSION,
-      type: "body_chunk",
-      id: id,
-      seq: seq,
-      data: slice.toString("base64"),
-    });
-    seq += 1;
-  }
-  return frames;
+// ---------------------------------------------------------------------------
+// http2_v1: run one Node HTTP/2 client session directly on stdin/stdout.
+//
+// This gateway writes exactly one frame-codec line before it hands stdin and
+// stdout to the HTTP/2 client: the READY line, so the host readiness gate
+// accepts the same handshake it already accepts for every mode. After that
+// one write, only the HTTP/2 client touches stdout: this function calls
+// writeFrame no more, and it starts no heartbeat timer, so no non-HTTP/2
+// writer can put a byte on stdout between the READY line and the client
+// connection preface.
+// ---------------------------------------------------------------------------
+
+function createStdioDuplex() {
+  const duplex = new Duplex({
+    read() {
+      // process.stdin pushes bytes through the "data" listener below; there
+      // is nothing to pull on demand here.
+    },
+    write(chunk, _encoding, callback) {
+      const flushed = process.stdout.write(chunk);
+      if (flushed) {
+        callback();
+      } else {
+        process.stdout.once("drain", () => callback());
+      }
+    },
+  });
+  process.stdin.on("data", (chunk) => {
+    duplex.push(chunk);
+  });
+  process.stdin.on("end", () => {
+    duplex.push(null);
+  });
+  process.stdin.on("error", (error) => {
+    duplex.destroy(error instanceof Error ? error : new Error(String(error)));
+  });
+  return duplex;
 }
 
-function runDuplexGateway() {
-  // One outstanding local request per id. Each entry holds the HTTP resolver and
-  // the wait-budget timer.
-  const pending = new Map();
-  // One in-flight response reassembly per id. The host returns a response as an
-  // envelope frame that carries bodyByteCount, then the body_chunk frames that
-  // carry the body. The gateway reassembles the response body in memory here; it
-  // does not spill, because a production response body stays small.
-  const responseAssembly = new Map();
-  let unavailable = false;
-  let lossTriggered = false;
-  let lastInboundAt = Date.now();
-
+function runHttp2Gateway() {
   function diag(message) {
-    // Diagnostics go to stderr only. Stdout carries frames.
+    // Diagnostics go to stderr only, the same as every other mode.
     process.stderr.write("[paperclip-bridge] " + message + "\\n");
   }
-
   function writeFrame(frame) {
     process.stdout.write(encodeDuplexFrame(frame));
   }
 
-  function stopTimers() {
-    clearInterval(heartbeatSendTimer);
-    clearInterval(heartbeatWatchTimer);
+  const authority = "bridge.internal";
+  let session = null;
+  let unavailable = false;
+
+  function openSession() {
+    if (session) return session;
+    const stdio = createStdioDuplex();
+    session = http2.connect("http://" + authority, {
+      createConnection: () => stdio,
+    });
+    session.on("error", () => {
+      unavailable = true;
+    });
+    session.on("close", () => {
+      unavailable = true;
+    });
+    session.on("goaway", (errorCode, lastStreamId) => {
+      diag("host sent GOAWAY (errorCode=" + errorCode + ", lastStreamId=" + lastStreamId + ")");
+    });
+    return session;
   }
 
-  // Loss behavior. On stdin end, a close frame, or a heartbeat timeout, answer
-  // every outstanding request with a non-retryable 409 (the request may have
-  // reached the host), answer every new request with a retryable 503 (the
-  // request never left the gateway), then exit. The gateway never replays a
-  // request.
-  function triggerLoss(reason) {
-    if (lossTriggered) return;
-    lossTriggered = true;
-    unavailable = true;
-    diag("duplex channel lost: " + reason);
-    stopTimers();
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
-      entry.resolve({
-        status: 409,
-        headers: {
-          "content-type": "application/json",
-          "x-paperclip-bridge-outcome": "indeterminate",
+  function forwardOverHttp2(request) {
+    return new Promise((resolve, reject) => {
+      const activeSession = openSession();
+      const query = request.query || "";
+      const pathWithQuery =
+        query.length === 0 ? request.path : request.path + (query.charAt(0) === "?" ? query : "?" + query);
+      const outboundHeaders = Object.assign(
+        {
+          ":method": request.method,
+          ":path": pathWithQuery,
+          authorization: "Bearer " + bridgeToken,
         },
-        body: JSON.stringify({ error: "outcome_indeterminate" }),
+        request.headers,
+      );
+      let stream;
+      try {
+        stream = activeSession.request(outboundHeaders, { endStream: request.body.length === 0 });
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      const chunks = [];
+      let status = 502;
+      let responseHeaders = {};
+      let settled = false;
+      const settle = (run) => {
+        if (settled) return;
+        settled = true;
+        run();
+      };
+      stream.on("response", (headers) => {
+        const raw = headers[":status"];
+        status = typeof raw === "number" ? raw : Number(raw) || 502;
+        responseHeaders = {};
+        for (const [key, value] of Object.entries(headers)) {
+          if (key.charAt(0) === ":" || value == null) continue;
+          responseHeaders[key] = Array.isArray(value) ? value.join(", ") : String(value);
+        }
       });
-    }
-    pending.clear();
-    responseAssembly.clear();
-    const exitTimer = setTimeout(() => process.exit(0), lossExitGraceMs);
-    if (typeof exitTimer.unref === "function") exitTimer.unref();
-  }
-
-  // Fail one outstanding request with a bounded local 502. The gateway calls it
-  // when a response reassembly breaks: a reordered seq, a base64 that is not
-  // canonical, or a total that overruns the declared body size. The host is the
-  // response peer, so this is a defensive local error, not a channel loss.
-  function failRequest(id, message) {
-    responseAssembly.delete(id);
-    const entry = pending.get(id);
-    if (!entry) return;
-    pending.delete(id);
-    clearTimeout(entry.timer);
-    entry.resolve({
-      status: 502,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ error: message }),
+      stream.on("data", (chunk) => chunks.push(chunk));
+      stream.once("end", () =>
+        settle(() => resolve({ status: status, headers: responseHeaders, body: Buffer.concat(chunks) })),
+      );
+      stream.once("error", (error) =>
+        settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
+      );
+      stream.once("aborted", () => settle(() => reject(new Error("Bridge HTTP/2 stream aborted."))));
+      if (request.body.length > 0) {
+        stream.end(request.body);
+      } else if (!stream.writableEnded) {
+        stream.end();
+      }
     });
   }
-
-  function handleInboundFrame(frame) {
-    if (frame.type === "response") {
-      const entry = pending.get(frame.id);
-      if (!entry) return;
-      // Map an indeterminate outcome to a non-retryable 409, the same contract
-      // the file gateway applies through the outcome header.
-      const statusCode =
-        frame.outcome === "indeterminate" ? 409 : typeof frame.status === "number" ? frame.status : 200;
-      const headers = frame.headers || {};
-      if (frame.bodyByteCount === 0) {
-        // A zero-length body accepts no body_chunk, so the response completes now.
-        pending.delete(frame.id);
-        responseAssembly.delete(frame.id);
-        clearTimeout(entry.timer);
-        entry.resolve({ status: statusCode, headers: headers, body: "" });
-        return;
-      }
-      // The body rides body_chunk frames that share this id. Record the envelope
-      // and wait for the chunks.
-      responseAssembly.set(frame.id, {
-        status: statusCode,
-        headers: headers,
-        bodyByteCount: frame.bodyByteCount,
-        received: 0,
-        nextSeq: 0,
-        chunks: [],
-      });
-      return;
-    }
-    if (frame.type === "body_chunk") {
-      const asm = responseAssembly.get(frame.id);
-      if (!asm) return;
-      if (frame.seq !== asm.nextSeq) {
-        failRequest(frame.id, "duplex response body_chunk seq is out of order");
-        return;
-      }
-      const decoded = Buffer.from(frame.data, "base64");
-      if (decoded.toString("base64") !== frame.data) {
-        failRequest(frame.id, "duplex response body_chunk is not canonical base64");
-        return;
-      }
-      if (decoded.length === 0) {
-        failRequest(frame.id, "duplex response body_chunk is empty");
-        return;
-      }
-      if (asm.received + decoded.length > asm.bodyByteCount) {
-        failRequest(frame.id, "duplex response body overruns the declared size");
-        return;
-      }
-      const isFinal = asm.received + decoded.length === asm.bodyByteCount;
-      if (
-        decoded.length > DUPLEX_BODY_CHUNK_RAW_BYTES ||
-        (!isFinal && decoded.length !== DUPLEX_BODY_CHUNK_RAW_BYTES)
-      ) {
-        failRequest(frame.id, "duplex response body_chunk has the wrong size");
-        return;
-      }
-      asm.nextSeq += 1;
-      asm.received += decoded.length;
-      asm.chunks.push(decoded);
-      if (asm.received === asm.bodyByteCount) {
-        const entry = pending.get(frame.id);
-        responseAssembly.delete(frame.id);
-        if (!entry) return;
-        pending.delete(frame.id);
-        clearTimeout(entry.timer);
-        entry.resolve({
-          status: asm.status,
-          headers: asm.headers,
-          body: Buffer.concat(asm.chunks).toString("utf8"),
-        });
-      }
-      return;
-    }
-    if (frame.type === "close") {
-      triggerLoss("host sent a close frame");
-      return;
-    }
-    // A heartbeat, ready, error, or request frame proves liveness but needs no
-    // local action here.
-  }
-
-  const decoder = new DuplexFrameDecoder({ maxAggregateBytes: maxDuplexDecoderBytes });
-  process.stdin.on("data", (chunk) => {
-    lastInboundAt = Date.now();
-    for (const result of decoder.push(chunk)) {
-      if (!result.ok) {
-        diag("dropped an inbound frame: " + result.error.code);
-        continue;
-      }
-      handleInboundFrame(result.frame);
-    }
-  });
-  process.stdin.on("end", () => triggerLoss("stdin reached end of file"));
-  process.stdin.on("error", (error) =>
-    triggerLoss("stdin error: " + (error && error.message ? error.message : String(error))),
-  );
-
-  const heartbeatSendTimer = setInterval(() => {
-    writeFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
-  }, heartbeatIntervalMs);
-  const heartbeatWatchTimer = setInterval(() => {
-    if (Date.now() - lastInboundAt > heartbeatTimeoutMs) {
-      triggerLoss("no inbound frame within the heartbeat timeout");
-    }
-  }, Math.max(200, Math.floor(heartbeatTimeoutMs / 4)));
 
   const server = createServer(async (req, res) => {
     try {
@@ -2431,81 +2473,32 @@ function runDuplexGateway() {
         writeJsonResponse(res, 503, { error: "bridge_unavailable" });
         return;
       }
-      if (pending.size >= maxQueueDepth) {
-        writeJsonResponse(res, 503, { error: "Bridge request queue is full." });
-        return;
-      }
       const url = new URL(req.url || "/", "http://127.0.0.1");
       const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
       if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
         writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
         return;
       }
-      const requestId = randomUUID();
-      const requestBodyBuffer = Buffer.from(await readBody(req), "utf8");
-      if (unavailable) {
-        writeJsonResponse(res, 503, { error: "bridge_unavailable" });
+      const requestBodyBuffer = await readBodyBytes(req);
+      let response;
+      try {
+        response = await forwardOverHttp2({
+          method: req.method || "GET",
+          path: url.pathname,
+          query: url.search,
+          headers: normalizeHeaders(req.headers),
+          body: requestBodyBuffer,
+        });
+      } catch (error) {
+        writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
         return;
       }
-      // The request body rides body_chunk frames. The envelope carries only the
-      // raw byte count, so the envelope stays small and the body splits into
-      // fixed-size slices that each stay under the frame bound.
-      const requestFrame = {
-        version: DUPLEX_FRAME_VERSION,
-        type: "request",
-        id: requestId,
-        method: req.method || "GET",
-        path: url.pathname,
-        query: url.search,
-        headers: normalizeHeaders(req.headers),
-        bodyByteCount: requestBodyBuffer.length,
-      };
-      const encodedRequest = encodeDuplexFrameChecked(requestFrame);
-      if (!encodedRequest.ok) {
-        writeJsonResponse(res, 413, { error: "request_too_large" });
-        return;
-      }
-      // Pre-encode every body_chunk frame and enforce the frame size bound on
-      // each. A fixed raw slice never exceeds the bound, so this guard is
-      // defensive. On a rejection, fail this one local request with a clean 413.
-      // The frames never leave the gateway, so no other in-flight request is
-      // affected and the channel stays open.
-      const chunkFrames = splitDuplexBodyIntoChunks(requestId, requestBodyBuffer);
-      const encodedChunks = [];
-      let chunkTooLarge = false;
-      for (const chunk of chunkFrames) {
-        const encodedChunk = encodeDuplexFrameChecked(chunk);
-        if (!encodedChunk.ok) {
-          chunkTooLarge = true;
-          break;
-        }
-        encodedChunks.push(encodedChunk.line);
-      }
-      if (chunkTooLarge) {
-        writeJsonResponse(res, 413, { error: "request_too_large" });
-        return;
-      }
-      const response = await new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          responseAssembly.delete(requestId);
-          if (pending.delete(requestId)) {
-            resolve({
-              status: 502,
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ error: "Timed out waiting for host bridge response." }),
-            });
-          }
-        }, responseTimeoutMs);
-        pending.set(requestId, { resolve: resolve, timer: timer });
-        process.stdout.write(encodedRequest.line);
-        for (const line of encodedChunks) process.stdout.write(line);
-      });
       res.statusCode = typeof response.status === "number" ? response.status : 200;
       for (const [key, value] of Object.entries(response.headers || {})) {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
       }
-      res.end(typeof response.body === "string" ? response.body : "");
+      res.end(response.body);
     } catch (error) {
       writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -2528,40 +2521,47 @@ function runDuplexGateway() {
     process.exit(0);
   });
 
-  // Bind-or-exit. The host assigns a positive loopback port. The gateway binds
-  // exactly that port. On a non-positive assigned port or a bind failure it
-  // writes a diagnostic and exits with a nonzero code. It never selects a
-  // different port, so no untrusted workload can steer the endpoint.
+  // Bind-or-exit, the same rule every mode applies: the host assigns a
+  // positive loopback port, and the gateway binds exactly that port or exits
+  // nonzero. It never selects a different port.
   if (!Number.isInteger(port) || port <= 0) {
-    diag("duplex gateway requires a positive assigned PAPERCLIP_BRIDGE_PORT; got " + String(port));
+    diag("http2 gateway requires a positive assigned PAPERCLIP_BRIDGE_PORT; got " + String(port));
     process.exit(1);
   }
   server.on("error", (error) => {
-    diag("duplex gateway could not bind port " + String(port) + ": " + (error && error.message ? error.message : String(error)));
+    diag(
+      "http2 gateway could not bind port " +
+        String(port) +
+        ": " +
+        (error && error.message ? error.message : String(error)),
+    );
     process.exit(1);
   });
   server.listen(port, host, () => {
     const address = server.address();
     if (!address || typeof address === "string") {
-      diag("duplex gateway did not expose a TCP address");
+      diag("http2 gateway did not expose a TCP address");
       process.exit(1);
       return;
     }
-    // The gateway sends READY only after the listener binds. READY is a liveness
-    // signal: it carries the frame version and the echoed nonce, and no address
-    // data. The host builds the endpoint from its own stored port. Stdout carries
-    // only frames.
-    writeFrame({
-      version: DUPLEX_FRAME_VERSION,
-      type: "ready",
-      nonce: bridgeNonce,
-    });
+    // Send the one frame-codec line on this path: the READY line the host
+    // readiness gate expects. Open the HTTP/2 client session on the very next
+    // statement, so the client connection preface is the next byte the host
+    // sees after READY, with no other writer in between.
+    writeFrame({ version: DUPLEX_FRAME_VERSION, type: "ready", nonce: bridgeNonce });
+    gatewayReady = true;
+    openSession();
   });
 }
 
-if (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_DUPLEX_MODE}") {
-  runDuplexGateway();
-} else {
+// The startup check above already rejected every value except http2 and
+// queue, so this dispatch names both modes explicitly and never falls
+// through to the queue gateway for an unsupported mode.
+if (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE}") {
+  runHttp2Gateway();
+} else if (bridgeMode === "${SANDBOX_CALLBACK_BRIDGE_FILE_MODE}") {
   await runFileGateway();
+} else {
+  throw new Error("Unsupported PAPERCLIP_API_BRIDGE_MODE: " + bridgeMode);
 }`;
 }

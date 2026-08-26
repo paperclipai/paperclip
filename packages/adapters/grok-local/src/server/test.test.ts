@@ -105,6 +105,84 @@ describe("grok_local testEnvironment", () => {
     );
   });
 
+  it("does not warn when the default-sentinel model is absent from the real model list", async () => {
+    // Real grok never lists the "grok-build" sentinel; execute.ts never sends
+    // it. The probe must treat the default as valid (info), not warn.
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          "You are logged in with grok.com.",
+          "",
+          "Default model: grok-4.20-0309-non-reasoning",
+          "",
+          "Available models:",
+          "  * grok-4.20-0309-non-reasoning (default)",
+          "  * grok-4",
+        ].join("\n"),
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "hello" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "s", requestId: "r" }),
+        ].join("\n"),
+        stderr: "",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project" }, // no model → default sentinel
+    });
+
+    const codes = result.checks.map((check: { code: string }) => check.code);
+    expect(codes).toContain("grok_model_configured");
+    expect(codes).not.toContain("grok_model_not_found");
+    expect(result.status).toBe("pass");
+  });
+
+  it("warns when an explicitly configured real model is not available", async () => {
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          "You are logged in with grok.com.",
+          "",
+          "Default model: grok-4",
+          "",
+          "Available models:",
+          "  * grok-4",
+        ].join("\n"),
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "hello" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "s", requestId: "r" }),
+        ].join("\n"),
+        stderr: "",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project", model: "grok-nonexistent" },
+    });
+
+    expect(result.checks.map((check: { code: string }) => check.code)).toContain("grok_model_not_found");
+  });
+
   it("downgrades auth failures to warnings", async () => {
     runProcessMock
       .mockResolvedValueOnce({

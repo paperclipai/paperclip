@@ -377,12 +377,13 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
     vi.clearAllMocks();
   });
 
-  async function renderSidebar(hiddenSettings?: string[]) {
+  async function renderSidebar(hiddenSettings?: string[], cloud?: { managed: boolean }) {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     queryClient.setQueryData(queryKeys.health, {
       status: "ok",
       ...(hiddenSettings ? { hiddenSettings } : {}),
+      ...(cloud ? { cloud } : {}),
     });
     await act(async () => {
       root.render(
@@ -412,6 +413,31 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
     expect(container.textContent).toContain("Plugins");
     expect(container.textContent).toContain("Heartbeats");
     expect(container.textContent).toContain("Adapters");
+    expect(container.textContent).toContain("Import");
     expect(mockPluginsApi.list).toHaveBeenCalled();
+  });
+
+  it("hides Import but keeps Export on a Cloud-managed instance", async () => {
+    await renderSidebar(undefined, { managed: true });
+
+    expect(container.textContent).not.toContain("Import");
+    expect(container.textContent).toContain("Export");
+  });
+
+  it("hides operator-hidden company pages", async () => {
+    await renderSidebar([
+      "company.members",
+      "company.invites",
+      "company.secrets",
+      "company.export",
+      "company.import",
+    ]);
+
+    expect(container.textContent).toContain("General");
+    expect(container.textContent).not.toContain("Members");
+    expect(container.textContent).not.toContain("Invites");
+    expect(container.textContent).not.toContain("Secrets");
+    expect(container.textContent).not.toContain("Export");
+    expect(container.textContent).not.toContain("Import");
   });
 });

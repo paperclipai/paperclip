@@ -259,7 +259,9 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 // Router
 // ---------------------------------------------------------------------------
 
-export function adapterRoutes() {
+export function adapterRoutes(options: {
+  getNativeRunnerEnabled?: () => Promise<boolean>;
+} = {}) {
   const router = Router();
 
   /**
@@ -280,6 +282,8 @@ export function adapterRoutes() {
       listAdapterPlugins().map((r) => [r.type, r]),
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
+    const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
+    if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
       buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),

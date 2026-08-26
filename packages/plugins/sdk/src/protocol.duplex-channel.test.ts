@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createNotification,
+  decodeChannelBytes,
   DUPLEX_CHANNEL_DATA_NOTIFICATION,
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
+  encodeChannelBytes,
+  parseMessage,
+  serializeMessage,
   type PluginDuplexChannelCloseParams,
   type PluginDuplexChannelCloseResult,
   type PluginDuplexChannelDataParams,
@@ -217,5 +222,54 @@ describe("duplex channel notification schemas", () => {
       exitCode: "0",
     };
     expect(exit).toBeDefined();
+  });
+});
+
+// JSON-RPC travels as one line of JSON text (see `serializeMessage`), and JSON
+// carries no binary type. `chunk` and `data` cross this hop as a base64 string
+// (`ChannelBytesWireValue`); `encodeChannelBytes`/`decodeChannelBytes` are the
+// one shared codec both ends use.
+describe("duplex channel byte-safe wire representation", () => {
+  it("test_json_rpc_hop_preserves_all_byte_values", () => {
+    const allByteValues = Uint8Array.from({ length: 256 }, (_, value) => value);
+
+    // Encode the full byte corpus into a data notification, exactly as
+    // worker-rpc-host.ts does at the worker→host boundary, then send it through
+    // the same newline-delimited JSON serialization the host and the worker use
+    // over stdio.
+    const params: PluginDuplexChannelDataParams = {
+      hostRouteId: "route-1",
+      workerSessionId: "ws-1",
+      chunk: encodeChannelBytes(allByteValues),
+    };
+    const line = serializeMessage(
+      createNotification(DUPLEX_CHANNEL_DATA_NOTIFICATION, params),
+    );
+
+    // Parse the line back, exactly as the reading side does, and decode the
+    // chunk back to raw bytes.
+    const parsed = parseMessage(line);
+    expect("params" in parsed).toBe(true);
+    const receivedParams = (parsed as { params: PluginDuplexChannelDataParams }).params;
+    const decoded = decodeChannelBytes(receivedParams.chunk);
+
+    expect(decoded).not.toBeNull();
+    expect(decoded).toEqual(allByteValues);
+    // The byte value zero is the case a UTF-8 string hop loses or mistreats as a
+    // terminator. Assert it by name, not only as part of the full-corpus check.
+    expect(decoded?.[0]).toBe(0);
+  });
+
+  it("round-trips an empty byte chunk through encode and decode", () => {
+    const empty = new Uint8Array(0);
+    const encoded = encodeChannelBytes(empty);
+    expect(encoded).toBe("");
+    expect(decodeChannelBytes(encoded)).toBeNull();
+  });
+
+  it("decodeChannelBytes rejects a malformed wire value", () => {
+    expect(decodeChannelBytes("not valid base64!!")).toBeNull();
+    expect(decodeChannelBytes(undefined)).toBeNull();
+    expect(decodeChannelBytes(42)).toBeNull();
   });
 });

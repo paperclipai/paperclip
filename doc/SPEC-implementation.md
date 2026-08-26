@@ -558,7 +558,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 |---|---|---|
 | Create company | yes | no |
 | Hire/create agent | yes (direct) | request via approval |
-| Pause/resume agent | yes | no |
+| Pause/resume agent | yes | pause: no; resume: direct `agents:configure` grant only |
 | Create/update task | yes | yes |
 | Force reassign task | yes | limited |
 | Approve strategy/hire requests | yes | no |
@@ -568,6 +568,13 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Manage responsible user's inbox state | yes | yes (default-open policy) |
 | Manage another user's inbox state | yes | saved target-user opt-in or scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
+
+Agent resume is the only grant-gated exception in the lifecycle-route group. An
+agent actor calling `POST /agents/:agentId/resume` must pass the protected
+`agent_config:update` decision with `scope.requiresChangeGrant: true`; self
+access does not bypass that decision, and `agents:suggest-changes` alone cannot
+apply the lifecycle change. Pause, clear-error, terminate, approval, and
+key-management routes remain board-only.
 
 ### 9.3.1 Shared default-open issue writes
 

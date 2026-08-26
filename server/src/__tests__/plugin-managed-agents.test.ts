@@ -22,6 +22,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+import { agentService } from "../services/agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -67,6 +68,15 @@ function manifest(): PaperclipPluginManifestV1 {
       },
     ],
   };
+}
+
+function pausedManifest(): PaperclipPluginManifestV1 {
+  const pluginManifest = manifest();
+  pluginManifest.agents![0] = {
+    ...pluginManifest.agents![0]!,
+    status: "paused",
+  };
+  return pluginManifest;
 }
 
 if (!embeddedPostgresSupport.supported) {
@@ -187,6 +197,64 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     expect(reset.agent).toMatchObject({
       name: "Wiki Maintainer",
       adapterConfig: { command: "pnpm wiki:maintain" },
+    });
+  });
+
+  it("records plugin provenance when a manifest creates a paused managed agent", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin({ manifest: pausedManifest() });
+
+    const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+
+    expect(created.agent).toMatchObject({
+      status: "paused",
+      pauseReason: "Provisioned paused by plugin paperclip.managed-agents-test; requires explicit activation.",
+    });
+    expect(created.agent?.pausedAt).toBeInstanceOf(Date);
+  });
+
+  it("backfills a legacy null pause reason while the managed declaration and agent remain paused", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin({ manifest: pausedManifest() });
+    const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    await db
+      .update(agents)
+      .set({ pauseReason: null, updatedAt: new Date() })
+      .where(eq(agents.id, created.agentId!));
+
+    const reconciled = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+
+    expect(reconciled.agent).toMatchObject({
+      status: "paused",
+      pauseReason: "Provisioned paused by plugin paperclip.managed-agents-test; requires explicit activation.",
+    });
+  });
+
+  it.each(["manual", "budget", "system", "maintenance"])(
+    "preserves the existing %s pause reason during reconcile",
+    async (pauseReason) => {
+      const { companyId, services } = await seedCompanyAndPlugin({ manifest: pausedManifest() });
+      const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+      await db
+        .update(agents)
+        .set({ pauseReason, updatedAt: new Date() })
+        .where(eq(agents.id, created.agentId!));
+
+      const reconciled = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+
+      expect(reconciled.agent).toMatchObject({ status: "paused", pauseReason });
+    },
+  );
+
+  it("keeps an explicit resume durable across managed-agent reconcile", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin({ manifest: pausedManifest() });
+    const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    await agentService(db).resume(created.agentId!);
+
+    const reconciled = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+
+    expect(reconciled.agent).toMatchObject({
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
     });
   });
 

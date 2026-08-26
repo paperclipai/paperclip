@@ -163,6 +163,8 @@ describe("DuplexAggregateByteLedger", () => {
       "decoder_buffer",
       "readiness_buffer",
       "readiness_replay",
+      "http2_preface_scan",
+      "http2_preface_replay",
       "pending_write",
       "stdin_write",
     ]);

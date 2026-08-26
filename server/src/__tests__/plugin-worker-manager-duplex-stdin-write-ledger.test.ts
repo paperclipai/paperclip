@@ -125,7 +125,7 @@ function loggedWarnReasons(): string[] {
 const HELD_WRITE_CHARS = 200_000;
 
 describe("plugin worker manager duplex stdin transport byte ledger", () => {
-  it("reserves the encoded serialized-frame size, larger than the raw payload, including JSON escaping", async () => {
+  it("reserves the encoded serialized-frame size, larger than the raw payload, including the base64 wire inflation", async () => {
     const telemetry = peakTrackingTelemetry();
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 8 << 20, telemetry });
     const handle = makeDuplexHandle({ duplexAggregateByteLedger: ledger });
@@ -138,19 +138,24 @@ describe("plugin worker manager duplex stdin transport byte ledger", () => {
           exitAfterStopMs: 500,
         }),
       );
-      // Every character is a quote. The JSON serialization escapes each quote to two
-      // bytes, so the serialized frame is at least twice the raw payload byte count.
-      const data = '"'.repeat(50_000);
-      const rawBytes = Buffer.byteLength(data, "utf8");
+      // The JSON-RPC hop carries the write payload as a base64 string, because JSON
+      // has no binary type (see `ChannelBytesWireValue` in protocol.ts). Base64
+      // encodes three raw bytes as four characters, so the serialized frame is
+      // larger than the raw payload by about that ratio, plus the small fixed cost
+      // of the surrounding JSON envelope (the method name and the route identifiers).
+      const rawBytes = 50_000;
+      const data = new Uint8Array(rawBytes).fill(0x22); // an arbitrary byte value
+      const encodedLength = Buffer.from(data).toString("base64").length;
       route.write(data);
       // The raw-payload token and the transport token both hold at once. The worker
       // does not read its stdin, so the transport token never flushes.
       expect(ledger.liveTokenCount).toBe(2);
       const transportBytes = ledger.bytesInUse - rawBytes;
-      // The transport reservation covers the serialized frame, so it is larger than
-      // the raw payload and it includes the doubled escaped quotes.
+      // The transport reservation covers the serialized frame: at least the base64
+      // form of the raw payload, plus a bounded JSON envelope around it.
       expect(transportBytes).toBeGreaterThan(rawBytes);
-      expect(transportBytes).toBeGreaterThanOrEqual(2 * rawBytes);
+      expect(transportBytes).toBeGreaterThanOrEqual(encodedLength);
+      expect(transportBytes).toBeLessThan(encodedLength + 5_000);
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -182,7 +187,7 @@ describe("plugin worker manager duplex stdin transport byte ledger", () => {
       );
       const data = "x".repeat(HELD_WRITE_CHARS);
       const rawBytes = Buffer.byteLength(data, "utf8");
-      route.write(data);
+      route.write(new TextEncoder().encode(data));
       // Both tokens hold at first: the raw payload and the serialized frame.
       expect(ledger.liveTokenCount).toBe(2);
       const transportBytes = ledger.bytesInUse - rawBytes;
@@ -219,7 +224,7 @@ describe("plugin worker manager duplex stdin transport byte ledger", () => {
       );
       const data = "x".repeat(HELD_WRITE_CHARS);
       const rawBytes = Buffer.byteLength(data, "utf8");
-      route.write(data);
+      route.write(new TextEncoder().encode(data));
       expect(ledger.liveTokenCount).toBe(2);
       const transportBytes = ledger.bytesInUse - rawBytes;
       // End the route. Route terminalization releases the route-owned tokens, but it
@@ -263,12 +268,10 @@ describe("plugin worker manager duplex stdin transport byte ledger", () => {
           exitAfterStopMs: 900,
         }),
       );
-      // Each write mixes escaped quotes and multi-byte characters near the per-write
-      // size. The serialized frame escapes each quote and keeps each euro sign as
-      // three UTF-8 bytes, so the reservation must count the encoded size.
-      const escaped = '"'.repeat(40_000);
-      const multiByte = "€".repeat(20_000);
-      const nearLimit = escaped + multiByte;
+      // Each write is near the per-write size. The JSON-RPC hop carries it as
+      // base64, so the reservation must count the encoded (larger) wire size, not
+      // the raw payload size.
+      const nearLimit = new Uint8Array(100_000).fill(0x22);
       const routes = [routeA, routeB, routeA, routeB];
       for (const route of routes) {
         route.write(nearLimit);
