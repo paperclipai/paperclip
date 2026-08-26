@@ -1,5 +1,6 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { symlinkSync } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -1813,5 +1814,70 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       await chmod(wrapper.sessionDir, 0o700).catch(() => undefined);
     }
     expect(wrapper.stderrText()).toMatch(/Latching on a lost process session identity/);
+  }, 15_000);
+
+  it("T20 refuses to write through a probe path a sandbox peer pre-created as a symbolic link, and leaves that link and its target untouched", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-probe-symlink-race-"));
+    cleanupDirs.push(rootDir);
+    const pidFile = path.join(rootDir, "t20-child.pid");
+    const childPath = path.join(rootDir, "t20-child.mjs");
+    await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+    const sessionDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-probe-symlink-session-"));
+    cleanupDirs.push(sessionDir);
+    const stdinDir = path.join(sessionDir, "stdin");
+    await mkdir(stdinDir, { recursive: true });
+
+    const wrapperPath = path.join(sessionDir, "wrapper.mjs");
+    await writeFile(wrapperPath, getProcessSessionRemoteSource({ outputToStdout: true }), "utf8");
+    const config = { command: process.execPath, args: [childPath], cwd: sessionDir, env: {} };
+    const commandPayload = Buffer.from(JSON.stringify(config), "utf8").toString("base64");
+
+    // A file this test owns, standing in for a file a sandbox peer already
+    // controls. The wrapper's probe write must never reach it.
+    const probeLinkTarget = path.join(rootDir, "t20-probe-target.txt");
+    const knownContent = "t20-untouched-content";
+    await writeFile(probeLinkTarget, knownContent, "utf8");
+
+    const child = spawn(process.execPath, [wrapperPath], {
+      cwd: sessionDir,
+      env: {
+        ...process.env,
+        PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
+        PAPERCLIP_PROCESS_SESSION_COMMAND_B64: commandPayload,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Wins the race to the probe path against the wrapper's own probe write.
+    // nextProbeFileName() is deterministic: it names
+    // ".paperclip-birthtime-probe-<pid>-1" on the wrapper's first probe call,
+    // which always targets sessionDir. child.pid is available synchronously
+    // right after spawn() returns, well before the freshly spawned process
+    // has loaded Node or parsed its own script, so this synchronous
+    // symlinkSync call lands first. This is the same advantage a real
+    // sandbox peer racing to pre-create the path would have, so it gives the
+    // strongest proof: the real wrapper process, under the real race, must
+    // still refuse to follow the link.
+    const probePath = path.join(sessionDir, `.paperclip-birthtime-probe-${child.pid}-1`);
+    symlinkSync(probeLinkTarget, probePath);
+
+    let stderrText = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrText += chunk.toString("utf8");
+    });
+    const exited = new Promise<void>((resolve) => child.on("close", () => resolve()));
+
+    await Promise.race([
+      exited,
+      delay(8_000).then(() => {
+        throw new Error("The wrapper process did not exit.");
+      }),
+    ]);
+
+    await expectNoLiveProcessByArgvSubstring(childPath);
+    expect(stderrText).toMatch(/could not be created exclusively/);
+    expect((await lstat(probePath)).isSymbolicLink()).toBe(true);
+    expect(await readFile(probeLinkTarget, "utf8")).toBe(knownContent);
   }, 15_000);
 });

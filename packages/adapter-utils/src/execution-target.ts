@@ -2479,31 +2479,43 @@ function nextProbeFileName() {
 // change-time copy. Creating and removing a file inside a directory changes
 // that directory's OWN change time but never its true creation time, so a
 // birthtimeMs that moves across the probe is a change-time copy. Returns
-// false both on a detected copy and on a probe that cannot run at all (for
-// example a permission error): either way the caller must not trust the
-// value.
+// null when the value is proven real. Returns a stderr-ready reason string
+// on any failure (a detected copy, or a probe that cannot run at all, for
+// example a permission error or a pre-created probe path): either way the
+// caller must not trust the value.
+//
+// The write uses the "wx" flag: exclusive create, fail if the path exists.
+// A sandbox peer cannot pre-create the probe path as a symbolic link and
+// have this write follow it, because "wx" fails closed on an existing path
+// instead of following a link to it. The probe path is removed only when
+// this call is the one that created it, so a failed exclusive create never
+// removes a path this wrapper does not own.
 async function birthtimeSurvivesProbe(dirPath) {
   let before;
   try {
     before = (await fs.lstat(dirPath)).birthtimeMs;
   } catch {
-    return false;
+    return "its reported creation time changed after a probe write";
   }
   const probePath = path.posix.join(dirPath, nextProbeFileName());
+  let probeCreatedByThisCall = false;
   try {
-    await fs.writeFile(probePath, "");
+    await fs.writeFile(probePath, "", { flag: "wx" });
+    probeCreatedByThisCall = true;
   } catch {
-    return false;
+    return "its probe file could not be created exclusively (the path may already exist)";
   } finally {
-    await fs.rm(probePath, { force: true }).catch(() => undefined);
+    if (probeCreatedByThisCall) {
+      await fs.rm(probePath, { force: true }).catch(() => undefined);
+    }
   }
   let after;
   try {
     after = (await fs.lstat(dirPath)).birthtimeMs;
   } catch {
-    return false;
+    return "its reported creation time changed after a probe write";
   }
-  return before === after;
+  return before === after ? null : "its reported creation time changed after a probe write";
 }
 
 async function refuseUnusableCreationTime(label, dirPath, reason) {
@@ -2530,12 +2542,14 @@ async function refuseUnusableCreationTime(label, dirPath, reason) {
 // it, run once here, before either directory's identity is captured.
 async function captureSessionIdentity() {
   try {
-    if (!(await birthtimeSurvivesProbe(sessionDir))) {
-      await refuseUnusableCreationTime("sessionDir", sessionDir, "its reported creation time changed after a probe write");
+    const sessionProbeFailure = await birthtimeSurvivesProbe(sessionDir);
+    if (sessionProbeFailure) {
+      await refuseUnusableCreationTime("sessionDir", sessionDir, sessionProbeFailure);
       return;
     }
-    if (!(await birthtimeSurvivesProbe(stdinDir))) {
-      await refuseUnusableCreationTime("stdinDir", stdinDir, "its reported creation time changed after a probe write");
+    const stdinProbeFailure = await birthtimeSurvivesProbe(stdinDir);
+    if (stdinProbeFailure) {
+      await refuseUnusableCreationTime("stdinDir", stdinDir, stdinProbeFailure);
       return;
     }
     const session = await statPathIdentity(sessionDir);
