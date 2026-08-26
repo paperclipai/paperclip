@@ -1856,6 +1856,17 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const shutdownAcknowledged = new Promise<void>((resolve) => {
     signalShutdownAcknowledged = resolve;
   });
+  // `stop()` also races this promise. The wrapper's child `close` handler
+  // always calls `terminate()` before it writes the terminal `exit` event
+  // (an `error` event carries the same guarantee), so an observed terminal
+  // event is proof the wrapper already tears itself down. This lets `stop()`
+  // skip its bounded wait on a normal exit even on the file-poll path, where
+  // the poll loop stops re-arming right after it delivers that same event
+  // and so never reads the `shutdownAck` file that follows it on disk.
+  let signalWrapperTerminated: () => void = () => {};
+  const wrapperTerminated = new Promise<void>((resolve) => {
+    signalWrapperTerminated = resolve;
+  });
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
     if (!socket) return false;
@@ -1874,6 +1885,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     if (event.type === "shutdownAck") {
       signalShutdownAcknowledged();
       return;
+    }
+    if (event.type === "exit" || event.type === "error") {
+      signalWrapperTerminated();
     }
     if (socket) {
       writeRemoteEventToSocket(event);
@@ -2188,15 +2202,19 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       );
       stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
       await shutdownWrite.catch(() => undefined);
-      // Wait a bounded budget for the wrapper's acknowledgement. The
-      // acknowledgement only ends the wait early; it never gates, shortens,
-      // or replaces the removal below, which runs unconditionally. A forged
-      // event under `sessionDir`, from outside the wrapper, cannot skip or
-      // shorten this wait either: `deliverRemoteEvent` only resolves
-      // `shutdownAcknowledged` for a real `shutdownAck` event.
+      // Wait a bounded budget for proof the wrapper stopped: a `shutdownAck`
+      // event, or a terminal `exit`/`error` event. The wrapper's child
+      // `close` handler always calls `terminate()` before it writes the
+      // `exit` event, so an observed terminal event is equal proof to
+      // `shutdownAck`. Either proof only ends the wait early; it never
+      // gates, shortens, or replaces the removal below, which runs
+      // unconditionally.
       let acknowledgedInTime = false;
       await Promise.race([
         shutdownAcknowledged.then(() => {
+          acknowledgedInTime = true;
+        }),
+        wrapperTerminated.then(() => {
           acknowledgedInTime = true;
         }),
         new Promise<void>((resolve) => {

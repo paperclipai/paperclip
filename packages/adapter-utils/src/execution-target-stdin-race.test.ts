@@ -1168,4 +1168,135 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       }
     }
   });
+
+  // Regression coverage for PAP-5323: the host used to burn the full
+  // shutdown budget and log a false warning on every normal run, because
+  // the file-poll loop stopped re-arming right after it delivered the
+  // `exit` event and so never read the `shutdownAck` file that followed it.
+  it("T12 stop() finishes well inside the shutdown budget and logs no warning after a normal child exit", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-normal-exit-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quick-exit-child.mjs");
+    await writeFile(childPath, "process.exit(0);\n", "utf8");
+
+    const runner = createLocalSandboxRunner();
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    let warnedCount = 0;
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-normal-exit",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        if (stream === "stderr" && chunk.includes("did not acknowledge shutdown")) warnedCount += 1;
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    // Let the child exit and the wrapper write its own `exit` event before
+    // stop() runs, so this matches a normal run-completion teardown.
+    await delay(500);
+
+    const start = Date.now();
+    await bridge!.stop();
+    const elapsedMs = Date.now() - start;
+
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(warnedCount).toBe(0);
+  }, 10_000);
+
+  // Regression coverage for PAP-5323: a genuinely stuck wrapper, one that
+  // never writes any event, must still warn after the budget and still
+  // remove `sessionDir`. The fix must not turn the bounded wait into an
+  // unconditional skip.
+  it("T13 warns and still removes sessionDir when the wrapper never acknowledges and never exits", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-never-acks-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quiet-child.mjs");
+    await writeFile(childPath, "process.stdin.resume();\n", "utf8");
+
+    const scripts: string[] = [];
+    let counter = 0;
+    // Run every script for real except the wrapper launch itself, so the
+    // wrapper never starts and the events directory stays empty on every
+    // poll. `stop()` can then never observe a real `shutdownAck` or a real
+    // terminal `exit`/`error` event.
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }): Promise<RunProcessResult> => {
+        const script = input.args?.[1] ?? "";
+        scripts.push(script);
+        if (script.includes("nohup node")) {
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null };
+        }
+        counter += 1;
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        return runChildProcess(`never-acks-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    let warnedCount = 0;
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-never-acks",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        if (stream === "stderr" && chunk.includes("did not acknowledge shutdown")) warnedCount += 1;
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    const start = Date.now();
+    await bridge!.stop();
+    const elapsedMs = Date.now() - start;
+
+    // The full shutdown budget elapsed, because nothing ever proved the
+    // wrapper stopped.
+    expect(elapsedMs).toBeGreaterThanOrEqual(2_900);
+    expect(warnedCount).toBe(1);
+    const removeScript = scripts.find((script) => script.trim().startsWith("rm -rf"));
+    expect(removeScript).toBeDefined();
+  }, 10_000);
 });
