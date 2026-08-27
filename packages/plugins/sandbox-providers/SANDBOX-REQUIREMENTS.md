@@ -13,16 +13,21 @@ sandbox can change any file inside that sandbox. Paperclip protects the host,
 the cluster, and the network. Paperclip does not protect sandbox code from
 other sandbox code that shares the same sandbox.
 
-Two paths cross the boundary between a sandbox and the host:
+This section states the controls for two paths that cross the boundary
+between a sandbox and the host:
 
 - Outbound workspace synchronization copies files from the sandbox to the
   host.
 - The application programming interface bridge carries requests from the
   sandbox to the host.
 
-Both boundary-crossing paths must keep every applicable host, cluster, mount,
-network, and host-import control that they have today. Later changes must not
-weaken or remove those controls.
+Other paths also cross the boundary. These paths include command execution,
+an optional bidirectional session channel, and a persistent process session.
+This section does not state the controls for those other paths.
+
+Both boundary-crossing paths named above must keep every applicable host,
+cluster, mount, network, and host-import control that they have today. Later
+changes must not weaken or remove those controls.
 
 A sandbox provider must keep every host, cluster, mount, network, and
 host-import control that it has today.
