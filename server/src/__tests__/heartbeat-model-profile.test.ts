@@ -46,6 +46,24 @@ describe("heartbeat model profile application", () => {
     expect(merged).toEqual({ model: "primary" });
   });
 
+  it("inherits the Claude Cloud Reviewer default when a GPT-work review issue has no override", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {},
+      issueModelProfile: null,
+      contextSnapshot: {},
+    });
+
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: { model: "claude-opus-4-8" },
+      modelProfile,
+      issueAdapterConfig: null,
+    });
+
+    expect(modelProfile.requested).toBeNull();
+    expect(merged).toEqual({ model: "claude-opus-4-8" });
+  });
+
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [cheapProfile],
