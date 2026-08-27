@@ -271,15 +271,6 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: heartbeatServiceFactoryMock,
   issueThreadInteractionService: issueThreadInteractionServiceFactoryMock,
   issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
-  questionResponseDeliveryService: vi.fn(() => ({
-    sweepPending: vi.fn(async () => ({
-      scanned: 0,
-      steered: 0,
-      coalesced: 0,
-      wakeFallback: 0,
-      failed: 0,
-    })),
-  })),
   instanceSettingsService: vi.fn(() => ({
     getExperimental: vi.fn(async () => ({
       enableExternalObjects: true,
@@ -318,6 +309,18 @@ vi.mock("../services/index.js", () => ({
       checked: 0,
       healthy: 0,
       needsAttention: 0,
+      failed: 0,
+    })),
+  })),
+}));
+
+vi.mock("../services/question-response-delivery.js", () => ({
+  questionResponseDeliveryService: vi.fn(() => ({
+    sweepPending: vi.fn(async () => ({
+      scanned: 0,
+      steered: 0,
+      coalesced: 0,
+      wakeFallback: 0,
       failed: 0,
     })),
   })),

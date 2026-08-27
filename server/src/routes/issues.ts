@@ -129,7 +129,6 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
-  questionResponseDeliveryService,
   type ActivityPublication,
   type IssueFilters,
   clampIssueListLimit,
@@ -141,6 +140,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";

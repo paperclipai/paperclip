@@ -148,6 +148,9 @@ vi.mock("../services/trust-preset-resolver.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/question-response-delivery.js", () => ({
+    questionResponseDeliveryService: () => mockQuestionResponseDeliveries,
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -209,7 +212,6 @@ function registerModuleMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
-    questionResponseDeliveryService: () => mockQuestionResponseDeliveries,
     taskWatchdogService: () => ({
       getActiveForIssue: vi.fn(async () => null),
       upsertForIssue: vi.fn(),

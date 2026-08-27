@@ -42,7 +42,6 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
-export { questionResponseDeliveryService } from "./question-response-delivery.js";
 export {
   assertIssueReviewVerdictActorAllowed,
   type IssueReviewVerdictActor,
