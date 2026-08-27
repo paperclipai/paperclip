@@ -467,6 +467,105 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("atomically claims one dependency-resolution wake across concurrent producers", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentIssueId = randomUUID();
+    const idempotencyKey = `issue_blockers_resolved:${dependentIssueId}:${blockerId}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "DependencyWakeOwner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Resolved prerequisite",
+        status: "done",
+        priority: "high",
+        responsibleUserId: "responsible-user",
+      },
+      {
+        id: dependentIssueId,
+        companyId,
+        title: "Ready dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    const wake = (source: "route" | "recovery") => heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: dependentIssueId, resolvedBlockerIssueId: blockerId, source },
+      idempotencyKey,
+      contextSnapshot: {
+        issueId: dependentIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: blockerId,
+        source,
+      },
+    });
+
+    const [routeTimeWake, recoveryWake] = await Promise.all([wake("route"), wake("recovery")]);
+    expect([routeTimeWake, recoveryWake].filter(Boolean)).toHaveLength(1);
+
+    const completed = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${dependentIssueId}`)
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+    expect(completed).toBe(true);
+
+    const dependencyWakeRequests = await db
+      .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+      ));
+    const dependencyRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${dependentIssueId}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'issue_blockers_resolved'`,
+      ));
+
+    expect(dependencyWakeRequests).toHaveLength(1);
+    expect(dependencyWakeRequests[0]?.runId).toBe(dependencyRuns[0]?.id);
+    expect(dependencyRuns).toHaveLength(1);
+  });
+
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

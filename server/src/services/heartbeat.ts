@@ -136,6 +136,7 @@ import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
+  findExistingIssueBlockersResolvedWake,
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
 } from "./issue-dependency-wakeups.js";
 import {
@@ -15151,6 +15152,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
+        // Every dependency-resolution producer enters this issue-row transaction.
+        // Claim the canonical key here, after the row lock, rather than relying on
+        // each producer's pre-enqueue lookup. This serializes route and recovery
+        // producers and preserves retries when a prior attempt was only skipped.
+        if (reason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON && idempotencyKey) {
+          const existingWake = await findExistingIssueBlockersResolvedWake(tx, {
+            companyId: agent.companyId,
+            idempotencyKey,
+          });
+          if (existingWake) return { kind: "deduplicated" as const };
+        }
+
         if (!activeExecutionRun) {
           const legacyRun = await tx
             .select()
@@ -15658,7 +15671,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred" || outcome.kind === "skipped" || outcome.kind === "deduplicated") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;

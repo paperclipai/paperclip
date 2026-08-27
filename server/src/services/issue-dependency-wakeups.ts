@@ -2,6 +2,8 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
 
+type WakeupRequestReader = Pick<Db, "select">;
+
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
 const IDEMPOTENT_DEPENDENCY_WAKE_STATUSES = [
@@ -23,7 +25,7 @@ export function buildIssueBlockersResolvedWakeIdempotencyKey(input: {
 }
 
 export async function findExistingIssueBlockersResolvedWake(
-  db: Db,
+  db: WakeupRequestReader,
   input: {
     companyId: string;
     idempotencyKey: string;
@@ -44,7 +46,7 @@ export async function findExistingIssueBlockersResolvedWake(
 }
 
 export async function findExistingIssueBlockersResolvedWakeForAnyKey(
-  db: Db,
+  db: WakeupRequestReader,
   input: {
     companyId: string;
     idempotencyKeys: string[];
