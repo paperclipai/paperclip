@@ -225,6 +225,38 @@ describe("cross-issue influence limit rollout", () => {
     ]);
   });
 
+  it("merges the bind into an existing populated contextSnapshot instead of replacing it", async () => {
+    const fake = counterDb(0, {
+      contextSnapshot: {
+        wakeReason: "heartbeat_timer",
+        modelProfile: "reasoning-high",
+        taskKey: "inbox-lite",
+        forceFreshSession: true,
+      },
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+    expect(fake.updated).toEqual([
+      expect.objectContaining({
+        contextSnapshot: {
+          wakeReason: "heartbeat_timer",
+          modelProfile: "reasoning-high",
+          taskKey: "inbox-lite",
+          forceFreshSession: true,
+          issueId: "55555555-5555-4555-8555-555555555555",
+          source: "first_write_bind",
+        },
+      }),
+    ]);
+  });
+
   it("binds a null contextSnapshot the same way as an empty one", async () => {
     const fake = counterDb(0, { contextSnapshot: null });
 

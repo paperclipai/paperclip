@@ -247,4 +247,49 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(eq(heartbeatRuns.id, runId));
     expect(afterSecondCheckout?.contextSnapshot).toMatchObject({ issueId: issueA, source: "issue.checkout" });
   });
+
+  it("bindCheckoutRunSourceIssueIfUnset merges into an existing populated contextSnapshot instead of replacing it", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueA = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Checkout Binder Merge",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { wakeReason: "heartbeat_timer", modelProfile: "reasoning-high" },
+    });
+
+    await bindCheckoutRunSourceIssueIfUnset(db, { companyId, runId, agentId, issueId: issueA });
+
+    const [afterCheckout] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(afterCheckout?.contextSnapshot).toEqual({
+      wakeReason: "heartbeat_timer",
+      modelProfile: "reasoning-high",
+      issueId: issueA,
+      source: "issue.checkout",
+    });
+  });
 });
