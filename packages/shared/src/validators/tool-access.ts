@@ -44,8 +44,13 @@ export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
 export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
-export const connectionGrantKindSchema = z.enum(["workspace", "user"]);
+export const connectionGrantKindSchema = z.enum(["organization", "user"]);
 export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
+export const createConnectionGrantDelegationSchema = z.object({
+  agentId: z.string().uuid(),
+});
+export type CreateConnectionGrantDelegation = z.infer<typeof createConnectionGrantDelegationSchema>;
+export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
 export const toolCredentialPlacementSchema = z.enum(["header", "env"]);
@@ -155,6 +160,7 @@ export const createToolConnectionSchema = z.object({
   name: z.string().trim().min(1).max(160),
   transport: toolConnectionTransportSchema.optional(),
   authKind: toolConnectionAuthKindSchema.default("none"),
+  credentialPolicy: toolConnectionCredentialPolicySchema.optional(),
   ownership: toolConnectionOwnershipSchema.default("customer"),
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
@@ -197,7 +203,7 @@ export const connectionGrantSchema = z.object({
   updatedAt: z.coerce.date(),
 }).superRefine((grant, ctx) => {
   if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; workspace grants must not have one" });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; organization grants must not have one" });
   }
 });
 
@@ -209,6 +215,18 @@ export const putToolConnectionInstallsSchema = z.object({
 }).strict();
 
 export type PutToolConnectionInstalls = z.infer<typeof putToolConnectionInstallsSchema>;
+
+/**
+ * Audience replacement for an organization grant (PAP-17835). An empty array is
+ * the canonical encoding of "all organization members" — the UI never exposes
+ * "empty list" as the mental model, so the wire format carries the emptiness and
+ * the copy layer translates it.
+ */
+export const replaceConnectionGrantMembersSchema = z.object({
+  memberUserIds: z.array(z.string().trim().min(1).max(500)).max(1000),
+}).strict();
+
+export type ReplaceConnectionGrantMembersInput = z.infer<typeof replaceConnectionGrantMembersSchema>;
 
 export const connectionTokenIssuancePathSchema = z.enum(CONNECTION_TOKEN_ISSUANCE_PATHS);
 
@@ -342,6 +360,13 @@ export const connectToolAppSchema = z.object({
   applicationId: z.string().guid().optional(),
   authMode: genericMcpAuthModeSchema.optional(),
   oauthClient: genericMcpOAuthClientSchema.optional(),
+  /**
+   * Which identity this credential becomes (PAP-17835). `user` means "Just me":
+   * the credential is committed to the caller's own personal grant and never to
+   * the connection row's shared secret refs or the default organization grant.
+   * Omitted keeps the historical shared-credential behaviour.
+   */
+  grantKind: connectionGrantKindSchema.optional(),
 }).superRefine((value, ctx) => {
   if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
   if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);

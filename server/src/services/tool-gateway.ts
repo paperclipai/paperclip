@@ -5,6 +5,11 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   approvals,
+  companies,
+  companyMemberships,
+  connectionGrantMembers,
+  connectionGrantDelegations,
+  connectionGrants,
   documents,
   heartbeatRuns,
   issueApprovals,
@@ -80,6 +85,20 @@ import {
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+
+export function resolveCredentialGrantKind(
+  policy: "shared" | "per_user" | "per_user_with_fallback",
+  actingUserId: string | null,
+  hasUserGrant: boolean,
+): "organization" | "user" | "user_authorization_required" {
+  if (policy === "shared") return "organization";
+  if (actingUserId && hasUserGrant) return "user";
+  return policy === "per_user" ? "user_authorization_required" : "organization";
+}
+
+export function isConnectionGrantAudienceAllowed(memberUserIds: string[], actingUserId: string | null): boolean {
+  return memberUserIds.length === 0 || (actingUserId !== null && memberUserIds.includes(actingUserId));
+}
 // When a human approves a parked write, the server carries it out on their
 // behalf with no interactive caller left to raise `timeoutMs`. Remote write
 // providers (e.g. Zapier Google Sheets `add_row`) routinely take longer than
@@ -2389,16 +2408,36 @@ export function createToolGatewayService(
       .where(eq(toolConnections.id, connection.id));
   }
 
-  async function resolveCredentialHeaders(connection: typeof toolConnections.$inferSelect): Promise<Record<string, string>> {
+  function grantRefForHeader(
+    grant: typeof connectionGrants.$inferSelect,
+    ref: McpConnectionCredentialRef,
+  ): ToolCredentialSecretRef | undefined {
+    return grant.credentialSecretRefs.find((candidate) =>
+      candidate.configPath === ref.name || candidate.configPath === `credentials.${ref.name}`,
+    );
+  }
+
+  async function resolveCredentialHeaders(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+  ): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
     for (const ref of connection.credentialRefs ?? []) {
       if (ref.placement !== "header") continue;
+      const grantRef = grantRefForHeader(grant, ref);
+      if (!grantRef) continue;
       try {
-        const value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
-          consumerType: "tool_connection",
-          consumerId: connection.id,
-          configPath: `credentials.${ref.name}`,
-          actorType: "system",
+        const value = await secrets.resolveSecretValue(connection.companyId, grantRef.secretId, grantRef.versionSelector ?? "latest", {
+          accessContext: {
+            consumerType: "tool_connection",
+            consumerId: connection.id,
+            configPath: `credentials.${ref.name}`,
+            actorType: "system",
+            actorId: session.agentId,
+            issueId: session.issueId,
+            heartbeatRunId: session.runId,
+          },
         });
         headers[ref.key] = `${ref.prefix ?? ""}${value}`;
       } catch {
@@ -2409,6 +2448,34 @@ export function createToolGatewayService(
           "mcp_remote_missing_secret",
           { connectionId: connection.id, credential: ref.name },
         );
+      }
+    }
+    const oauthAccessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    if (oauthAccessRef && headers.Authorization === undefined) {
+      try {
+        const value = await secrets.resolveSecretValue(
+          connection.companyId,
+          oauthAccessRef.secretId,
+          oauthAccessRef.versionSelector ?? "latest",
+          {
+            accessContext: {
+              consumerType: "tool_connection",
+              consumerId: connection.id,
+              configPath: oauthAccessRef.configPath,
+              actorType: "system",
+              actorId: session.agentId,
+              issueId: session.issueId,
+              heartbeatRunId: session.runId,
+            },
+          },
+        );
+        headers.Authorization = `Bearer ${value}`;
+      } catch {
+        await markRemoteConnectionHealth(connection, "missing_secret", "A configured credential secret could not be resolved.");
+        throw new ToolGatewayHttpError(422, "A configured credential secret could not be resolved.", "mcp_remote_missing_secret", {
+          connectionId: connection.id,
+          credential: oauthAccessRef.configPath,
+        });
       }
     }
     return headers;
@@ -2430,12 +2497,7 @@ export function createToolGatewayService(
   ): Promise<ConnectedCredentialVersionSnapshot> {
     const versionSelector = input.versionSelector ?? "latest";
     try {
-      const resolvedVersion = await secrets.resolveSecretVersion(connection.companyId, input.secretId, versionSelector, {
-        consumerType: "tool_connection",
-        consumerId: connection.id,
-        configPath: input.configPath,
-        actorType: "system",
-      });
+      const resolvedVersion = await secrets.resolveSecretVersion(connection.companyId, input.secretId, versionSelector);
       return {
         refHash: input.refHash,
         versionSelector: String(versionSelector),
@@ -2461,6 +2523,7 @@ export function createToolGatewayService(
 
   async function connectedCredentialVersionSnapshots(
     connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
     options: { requireResolved: boolean },
   ): Promise<{
     headerCredentialVersions: ConnectedCredentialVersionSnapshot[];
@@ -2472,15 +2535,17 @@ export function createToolGatewayService(
     for (const ref of connection.credentialRefs ?? []) {
       if (ref.placement !== "header") continue;
       const typedRef = ref as McpConnectionCredentialRef;
+      const grantRef = grantRefForHeader(grant, typedRef);
+      if (!grantRef) continue;
       const configPath = `credentials.${typedRef.name}`;
       headerCredentialVersions.push(await resolveConnectedCredentialVersion(connection, {
-        secretId: typedRef.secretId,
-        versionSelector: typedRef.version,
+        secretId: grantRef.secretId,
+        versionSelector: grantRef.versionSelector,
         configPath,
         refHash: credentialVersionRefHash({
           kind: "header",
           name: typedRef.name,
-          secretId: typedRef.secretId,
+          secretId: grantRef.secretId,
           placement: typedRef.placement,
           key: typedRef.key,
           prefix: typedRef.prefix ?? null,
@@ -2490,7 +2555,7 @@ export function createToolGatewayService(
       }));
     }
 
-    for (const ref of connection.credentialSecretRefs ?? []) {
+    for (const ref of grant.credentialSecretRefs ?? []) {
       const typedRef = ref as ToolCredentialSecretRef;
       credentialSecretVersions.push(await resolveConnectedCredentialVersion(connection, {
         secretId: typedRef.secretId,
@@ -2508,6 +2573,242 @@ export function createToolGatewayService(
     }
 
     return { headerCredentialVersions, credentialSecretVersions };
+  }
+
+  async function createUserAuthorizationInteraction(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    userId: string,
+  ) {
+    if (!session.issueId || !session.agentId || !session.runId) return;
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+      .where(eq(companies.id, session.companyId)).limit(1);
+    const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/setup`;
+    const idempotencyKey = `connection-authorization:${connection.id}:${userId}`;
+    const payload = {
+      version: 1 as const,
+      prompt: `Connect your ${connection.name} account to continue`,
+      acceptLabel: "Connect account",
+      rejectLabel: "Not now",
+      detailsMarkdown: "This run needs your personal authorization. Paperclip will not use another user's identity.",
+      target: {
+        type: "custom" as const,
+        key: `connection:${connection.uid}:user:${userId}`,
+        revisionId: connection.updatedAt.toISOString(),
+        label: `Connect ${connection.name}`,
+        href,
+      },
+    };
+    const [existing] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, session.companyId),
+      eq(issueThreadInteractions.issueId, session.issueId),
+      eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+    )).limit(1);
+    if (existing) {
+      await db.update(issueThreadInteractions).set({
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+        resolverPolicyProvenance: "explicit",
+        effectiveResolverPolicySource: "requested",
+        addresseeUserId: userId,
+        payload,
+        result: null,
+        resolvedAt: null,
+        updatedAt: new Date(),
+      }).where(eq(issueThreadInteractions.id, existing.id));
+      return;
+    }
+    await db.insert(issueThreadInteractions).values({
+      companyId: session.companyId,
+      issueId: session.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
+      idempotencyKey,
+      sourceRunId: session.runId,
+      title: `Connect your ${connection.name}`,
+      summary: "Personal authorization is required before this run can continue.",
+      createdByAgentId: session.agentId,
+      addresseeUserId: userId,
+      payload,
+    });
+  }
+
+  async function createStandingDelegationInteraction(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    userId: string,
+  ) {
+    if (!session.issueId || !session.agentId || !session.runId) return;
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+      .where(eq(companies.id, session.companyId)).limit(1);
+    const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/setup`;
+    const idempotencyKey = `connection-delegation:${connection.id}:${userId}:${session.agentId}`;
+    const payload = {
+      version: 1 as const,
+      prompt: `Allow this agent to use your ${connection.name} account for autonomous runs`,
+      acceptLabel: "Review delegation",
+      rejectLabel: "Not now",
+      detailsMarkdown: "This autonomous run is paused. Paperclip will not use your personal identity until you explicitly delegate it to this named agent.",
+      target: {
+        type: "custom" as const,
+        key: `connection:${connection.uid}:delegation:${userId}:${session.agentId}`,
+        revisionId: connection.updatedAt.toISOString(),
+        label: `Delegate ${connection.name}`,
+        href,
+      },
+    };
+    const [existing] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, session.companyId),
+      eq(issueThreadInteractions.issueId, session.issueId),
+      eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+    )).limit(1);
+    if (existing) {
+      await db.update(issueThreadInteractions).set({
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+        resolverPolicyProvenance: "explicit",
+        effectiveResolverPolicySource: "requested",
+        addresseeUserId: userId,
+        payload,
+        result: null,
+        resolvedAt: null,
+        updatedAt: new Date(),
+      }).where(eq(issueThreadInteractions.id, existing.id));
+      return;
+    }
+    await db.insert(issueThreadInteractions).values({
+      companyId: session.companyId,
+      issueId: session.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
+      idempotencyKey,
+      sourceRunId: session.runId,
+      title: `Delegate your ${connection.name}`,
+      summary: "An explicit standing delegation is required for this autonomous run.",
+      createdByAgentId: session.agentId,
+      addresseeUserId: userId,
+      payload,
+    });
+  }
+
+  async function resolveConnectionGrant(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<typeof connectionGrants.$inferSelect> {
+    const [run] = session.runId
+      ? await db.select({
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+          invocationSource: heartbeatRuns.invocationSource,
+        }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, session.runId),
+          eq(heartbeatRuns.companyId, session.companyId),
+        )).limit(1)
+      : [];
+    const actingUserId = run?.responsibleUserId ?? null;
+    const autonomous = run?.invocationSource === "automation" || run?.invocationSource === "timer";
+    const findUserGrant = async () => {
+      if (!actingUserId) return undefined;
+      const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, connection.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, actingUserId),
+        eq(companyMemberships.status, "active"),
+      )).limit(1);
+      if (!membership) {
+        throw new ToolGatewayHttpError(403, "The personal grant owner is not an active company member", "grant_owner_membership_inactive", {
+          connectionId: connection.id,
+          actingUserId,
+          remediation: { action: "restore_membership_or_reconnect" },
+        });
+      }
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, actingUserId),
+        eq(connectionGrants.status, "active"),
+      )).limit(1);
+      return grant;
+    };
+    const findOrganizationGrant = async () => {
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "organization"),
+        eq(connectionGrants.isDefault, true),
+        eq(connectionGrants.status, "active"),
+      )).limit(1);
+      if (!grant) {
+        throw new ToolGatewayHttpError(409, "Organization authorization is required", "organization_authorization_required", {
+          connectionId: connection.id,
+        });
+      }
+      const members = await db.select({ subjectId: connectionGrantMembers.subjectId }).from(connectionGrantMembers).where(and(
+        eq(connectionGrantMembers.companyId, connection.companyId),
+        eq(connectionGrantMembers.grantId, grant.id),
+        eq(connectionGrantMembers.subjectType, "user"),
+      ));
+      if (!isConnectionGrantAudienceAllowed(members.map((member) => member.subjectId), actingUserId)) {
+        throw new ToolGatewayHttpError(403, "The acting user is not in this grant's audience", "grant_audience_denied", {
+          connectionId: connection.id,
+          grantId: grant.id,
+          actingUserId,
+        });
+      }
+      return grant;
+    };
+
+    const userGrant = connection.credentialPolicy === "shared" ? undefined : await findUserGrant();
+    const resolution = resolveCredentialGrantKind(connection.credentialPolicy, actingUserId, Boolean(userGrant));
+    if (resolution === "user" && userGrant) {
+      if (autonomous) {
+        if (!session.agentId) {
+          throw new ToolGatewayHttpError(409, "Standing delegation requires a named agent", "standing_delegation_required", {
+            connectionId: connection.id,
+            grantId: userGrant.id,
+            actingUserId,
+          });
+        }
+        const [delegation] = await db.select({ id: connectionGrantDelegations.id }).from(connectionGrantDelegations).where(and(
+          eq(connectionGrantDelegations.companyId, connection.companyId),
+          eq(connectionGrantDelegations.grantId, userGrant.id),
+          eq(connectionGrantDelegations.agentId, session.agentId),
+        )).limit(1);
+        if (!delegation) {
+          await createStandingDelegationInteraction(session, connection, actingUserId!);
+          throw new ToolGatewayHttpError(409, "Standing delegation is required for this autonomous run", "standing_delegation_required", {
+            connectionId: connection.id,
+            grantId: userGrant.id,
+            actingUserId,
+            agentId: session.agentId,
+            remediation: { action: "delegate_personal_grant", grantId: userGrant.id, agentId: session.agentId },
+          });
+        }
+      }
+      return userGrant;
+    }
+    if (resolution === "user_authorization_required") {
+      if (actingUserId) await createUserAuthorizationInteraction(session, connection, actingUserId);
+      throw new ToolGatewayHttpError(409, "User authorization is required", "user_authorization_required", {
+        connectionId: connection.id,
+        actingUserId,
+      });
+    }
+    return findOrganizationGrant();
   }
 
   async function resolveConnectedRemoteTool(session: ToolGatewaySession, tool: ToolGatewayDescriptor) {
@@ -2615,9 +2916,12 @@ export function createToolGatewayService(
     };
   }
 
-  function localStdioEnvironment(connection: typeof toolConnections.$inferSelect, template: LocalStdioRuntimeTemplate): NodeJS.ProcessEnv {
-    const config = asRecord(connection.config) ?? {};
-    const configEnv = asRecord(config.env) ?? {};
+  async function localStdioEnvironment(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    template: LocalStdioRuntimeTemplate,
+    grant: typeof connectionGrants.$inferSelect,
+  ): Promise<NodeJS.ProcessEnv> {
     const env: NodeJS.ProcessEnv = {};
     for (const key of ["PATH", "Path", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"]) {
       const value = process.env[key];
@@ -2626,9 +2930,33 @@ export function createToolGatewayService(
       }
     }
     for (const key of template.envKeys) {
-      const configured = configEnv[key];
-      if (typeof configured === "string") {
-        env[key] = configured;
+      const grantRef = grant.credentialSecretRefs.find((ref) => ref.configPath === `env.${key}`);
+      if (!grantRef) continue;
+      try {
+        env[key] = await secrets.resolveSecretValue(
+          connection.companyId,
+          grantRef.secretId,
+          grantRef.versionSelector ?? "latest",
+          {
+            accessContext: {
+              consumerType: "tool_connection",
+              consumerId: connection.id,
+              configPath: grantRef.configPath,
+              actorType: "system",
+              actorId: session.agentId,
+              issueId: session.issueId,
+              heartbeatRunId: session.runId,
+            },
+          },
+        );
+      } catch {
+        await markRemoteConnectionHealth(connection, "missing_secret", "A configured local stdio credential could not be resolved.");
+        throw new ToolGatewayHttpError(
+          422,
+          "A configured local stdio credential could not be resolved.",
+          "local_stdio_missing_secret",
+          { connectionId: connection.id, credential: grantRef.configPath },
+        );
       }
     }
     return env;
@@ -2642,6 +2970,7 @@ export function createToolGatewayService(
     connection: typeof toolConnections.$inferSelect;
     entry: typeof toolCatalogEntries.$inferSelect;
     template: LocalStdioRuntimeTemplate;
+    env: NodeJS.ProcessEnv;
     parameters: unknown;
     timeoutMs: number;
   }): Promise<unknown> {
@@ -2654,7 +2983,7 @@ export function createToolGatewayService(
       );
     }
     const child = spawn(input.template.command, input.template.args, {
-      env: localStdioEnvironment(input.connection, input.template),
+      env: input.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -2801,7 +3130,8 @@ export function createToolGatewayService(
       ))
       .limit(1);
     if (!row) return null;
-    const credentialVersions = await connectedCredentialVersionSnapshots(row.connection, {
+    const grant = await resolveConnectionGrant(session, row.connection);
+    const credentialVersions = await connectedCredentialVersionSnapshots(row.connection, grant, {
       requireResolved: options.requireResolvedCredentials === true,
     });
     return {
@@ -2817,6 +3147,8 @@ export function createToolGatewayService(
       connectionTransportConfigHash: stableHash(row.connection.transportConfig ?? {}),
       credentialRefsHash: stableHash(row.connection.credentialRefs ?? []),
       credentialSecretRefsHash: stableHash(row.connection.credentialSecretRefs ?? []),
+      credentialGrantId: grant.id,
+      credentialGrantRefsHash: stableHash(grant.credentialSecretRefs ?? []),
       headerCredentialVersions: credentialVersions.headerCredentialVersions,
       credentialSecretVersions: credentialVersions.credentialSecretVersions,
       catalogEntryId: row.entry.id,
@@ -3058,13 +3390,14 @@ export function createToolGatewayService(
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
+    const grant = await resolveConnectionGrant(session, connection);
     const endpoint = remoteEndpoint(connection.config ?? {});
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
     const credentialHeaders = {
       ...projectedConnectionHeaders(connection),
-      ...await resolveCredentialHeaders(connection),
+      ...await resolveCredentialHeaders(session, connection, grant),
     };
     const { headers, summary: headerSummary } = buildRemoteHeaders({
       session,
@@ -3208,7 +3541,9 @@ export function createToolGatewayService(
     ms: number,
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedLocalStdioTool(session, tool);
+    const grant = await resolveConnectionGrant(session, connection);
     const template = await resolveLocalStdioRuntimeTemplate(connection);
+    const env = await localStdioEnvironment(session, connection, template, grant);
     const result = await runtimeSupervisor.useConnectionSlot(
       {
         companyId: session.companyId,
@@ -3232,6 +3567,7 @@ export function createToolGatewayService(
           connection,
           entry,
           template,
+          env,
           parameters,
           timeoutMs: ms,
         });

@@ -1611,6 +1611,13 @@
       "when": 1787922567272,
       "tag": "0231_remove_app_connection_wide_includes",
       "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "7",
+      "when": 1787922607497,
+      "tag": "0232_fixed_hannibal_king",
+      "breakpoints": true
     }
   ]
 }

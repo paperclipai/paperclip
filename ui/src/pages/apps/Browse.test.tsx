@@ -178,7 +178,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     await act(async () => {
       byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/byo");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1");
   });
 
   it("filters the gallery by the search query", async () => {

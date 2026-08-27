@@ -4,11 +4,16 @@ import { and, asc, desc, eq, gte, inArray, isNull, lt, max, ne, sql } from "driz
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  connectionGrantMembers,
+  connectionGrantDelegations,
   connectionGrants,
   connectionTokenIssuances,
   authUsers,
+  companies,
+  companyMemberships,
   companySecretBindings,
   companySecrets,
+  userSecretDefinitions,
   heartbeatRuns,
   issues,
   issueThreadInteractions,
@@ -70,7 +75,9 @@ import type {
   ToolConnectionHealthCheckResult,
   ToolConnectionHealthStatus,
   ToolConnectionAuthKind,
+  ToolConnectionCredentialPolicy,
   ToolConnectionTransport,
+  ToolCredentialSecretRef,
   ToolOAuthStartResult,
   ToolAppsAttentionResponse,
   ToolActionRequest,
@@ -1074,6 +1081,7 @@ function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection 
     ownership: row.ownership,
     transport: row.transport,
     authKind: row.authKind,
+    credentialPolicy: row.credentialPolicy,
     status: row.status,
     enabled: row.enabled,
     config: row.config ?? {},
@@ -2247,7 +2255,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       projectId: runSnapshotString(snapshot, "projectId") ?? runSnapshotString(paperclipIssue, "projectId"),
       routineId: runSnapshotString(snapshot, "routineId"),
       responsibleUserId: runSnapshotString(snapshot, "responsibleUserId", "responsible_user_id")
-        ?? runSnapshotString(paperclipIssue, "responsibleUserId", "responsible_user_id"),
+        ?? runSnapshotString(paperclipIssue, "responsibleUserId", "responsible_user_id")
+        ?? run.responsibleUserId,
     };
   }
 
@@ -2321,6 +2330,72 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       entityType: "tool_connection",
       entityId: input.connectionId,
       details: { path: input.path, outcome: input.outcome, reasonCode: input.reasonCode ?? null, ...(input.details ?? {}) },
+    });
+  }
+
+  async function createStandingDelegationAsk(input: {
+    connection: typeof toolConnections.$inferSelect;
+    issueId: string | null;
+    runId: string;
+    agentId: string;
+    ownerUserId: string;
+  }) {
+    if (!input.issueId) return;
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
+      .where(eq(companies.id, input.connection.companyId)).limit(1);
+    const idempotencyKey = `connection-delegation:${input.connection.id}:${input.ownerUserId}:${input.agentId}`;
+    const payload = {
+      version: 1 as const,
+      prompt: `Allow this agent to use your ${input.connection.name} account for autonomous runs`,
+      acceptLabel: "Review delegation",
+      rejectLabel: "Not now",
+      detailsMarkdown: "This autonomous run is paused. Paperclip will not use your personal identity until you explicitly delegate it to this named agent.",
+      target: {
+        type: "custom" as const,
+        key: `connection:${input.connection.uid}:delegation:${input.ownerUserId}:${input.agentId}`,
+        revisionId: input.connection.updatedAt.toISOString(),
+        label: `Delegate ${input.connection.name}`,
+        href: `/${company?.issuePrefix ?? ""}/apps/${input.connection.id}/setup#personal-identity`,
+      },
+    };
+    const [existing] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, input.connection.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+      eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+    )).limit(1);
+    if (existing) {
+      await db.update(issueThreadInteractions).set({
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+        resolverPolicyProvenance: "explicit",
+        effectiveResolverPolicySource: "requested",
+        addresseeUserId: input.ownerUserId,
+        payload,
+        result: null,
+        resolvedAt: null,
+        updatedAt: new Date(),
+      }).where(eq(issueThreadInteractions.id, existing.id));
+      return;
+    }
+    await db.insert(issueThreadInteractions).values({
+      companyId: input.connection.companyId,
+      issueId: input.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
+      idempotencyKey,
+      sourceRunId: input.runId,
+      title: `Delegate your ${input.connection.name}`,
+      summary: "An explicit standing delegation is required for this autonomous run.",
+      createdByAgentId: input.agentId,
+      addresseeUserId: input.ownerUserId,
+      payload,
     });
   }
 
@@ -3037,10 +3112,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .where(and(eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.profileKey, profileKey)))
       .limit(1);
     if (!profile) {
+      const [sameName] = await dbClient
+        .select({ id: toolProfiles.id })
+        .from(toolProfiles)
+        .where(and(
+          eq(toolProfiles.companyId, connection.companyId),
+          eq(toolProfiles.name, connection.name),
+        ))
+        .limit(1);
+      const profileName = sameName
+        ? `${connection.name} (${connection.id.replace(/-/g, "").slice(0, 8)})`
+        : connection.name;
       [profile] = await dbClient.insert(toolProfiles).values({
         companyId: connection.companyId,
         profileKey,
-        name: connection.name,
+        name: profileName,
         description: `Access profile for ${connection.name}.`,
         status: "active",
         defaultAction: "deny",
@@ -3087,10 +3173,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .limit(1);
     const createdProfile = !profile;
     if (!profile) {
+      const [sameName] = await db
+        .select({ id: toolProfiles.id })
+        .from(toolProfiles)
+        .where(and(
+          eq(toolProfiles.companyId, input.connection.companyId),
+          eq(toolProfiles.name, input.connection.name),
+        ))
+        .limit(1);
+      const profileName = sameName
+        ? `${input.connection.name} (${input.connection.id.replace(/-/g, "").slice(0, 8)})`
+        : input.connection.name;
       [profile] = await db.insert(toolProfiles).values({
         companyId: input.connection.companyId,
         profileKey,
-        name: input.connection.name,
+        name: profileName,
         description: `Access profile for ${input.connection.name}.`,
         status: "active",
         defaultAction: "deny",
@@ -3207,14 +3304,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return row;
   }
 
-  async function ensureDefaultWorkspaceGrant(connection: typeof toolConnections.$inferSelect) {
+  async function ensureDefaultOrganizationGrant(connection: typeof toolConnections.$inferSelect) {
     const [existing] = await db
       .select()
       .from(connectionGrants)
       .where(and(
         eq(connectionGrants.companyId, connection.companyId),
         eq(connectionGrants.connectionId, connection.id),
-        eq(connectionGrants.kind, "workspace"),
+        eq(connectionGrants.kind, "organization"),
         eq(connectionGrants.isDefault, true),
       ))
       .limit(1);
@@ -3224,7 +3321,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .values({
         companyId: connection.companyId,
         connectionId: connection.id,
-        kind: "workspace",
+        kind: "organization",
         credentialSecretRefs: connection.credentialSecretRefs,
         status: "active",
         isDefault: true,
@@ -3412,7 +3509,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     await createProfileEntries(companyId, profileId, entries);
   }
 
-  async function syncCredentialBindings(connection: typeof toolConnections.$inferSelect) {
+  /**
+   * @param grantSecretRefs Secret refs held by a grant rather than the connection
+   *   row. A personal credential lives only on its user grant (PAP-17835), so it
+   *   would otherwise have no `company_secret_bindings` row and drop out of
+   *   secret projection and removal teardown.
+   */
+  async function syncCredentialBindings(
+    connection: typeof toolConnections.$inferSelect,
+    grantSecretRefs: ToolCredentialSecretRef[] = [],
+  ) {
     await db
       .delete(companySecretBindings)
       .where(
@@ -3429,7 +3535,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         projectionClass: "unclassified",
         projectionAllowlistKey: null,
       })),
-      ...connection.credentialSecretRefs.map((ref) => ({
+      ...[...connection.credentialSecretRefs, ...grantSecretRefs].map((ref) => ({
         secretId: ref.secretId,
         configPath: ref.configPath,
         projectionClass: ref.projectionClass ?? "unclassified",
@@ -4275,15 +4381,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       activeCatalogEntryIds: activeEntries.map((entry) => entry.id),
       actor,
     });
-    if (refreshOptions.enableAllByDefault) {
-      await upsertAskFirstPolicies({
-        companyId: updatedConnection.companyId,
-        connection: updatedConnection,
-        askFirstEntries: [],
-        actor,
-      });
-    }
-
     await audit({
       companyId: connection.companyId,
       connectionId: connection.id,
@@ -4604,6 +4701,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         })
         .where(eq(toolConnections.id, existing.id))
         .returning();
+      await ensureDefaultOrganizationGrant(updated);
       await syncCredentialBindings(updated);
       await ensureRuntimeSlot(updated);
       return { row: updated, created: false };
@@ -4624,6 +4722,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       credentialRefs: [],
       credentialSecretRefs: [],
     }).returning();
+    await ensureDefaultOrganizationGrant(created);
     await syncCredentialBindings(created);
     await ensureRuntimeSlot(created);
     return { row: created, created: true };
@@ -5364,6 +5463,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     value: string;
     actor?: ActorInfo;
     existingRefs?: typeof connectionGrants.$inferSelect.credentialSecretRefs;
+    ownerUserId?: string;
   }) {
     const existing = input.existingRefs === undefined
       ? oauthSecretRef(input.connection, input.configPath)
@@ -5371,6 +5471,45 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (existing) {
       await secrets.rotate(existing.secretId, { value: input.value }, actorForSecret(input.actor));
       return existing;
+    }
+    if (input.ownerUserId) {
+      const definitionKey = `tool_oauth.${input.connection.id}.${input.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`;
+      let [definition] = await db.select().from(userSecretDefinitions).where(and(
+        eq(userSecretDefinitions.companyId, input.companyId),
+        eq(userSecretDefinitions.key, definitionKey),
+        isNull(userSecretDefinitions.deletedAt),
+      )).limit(1);
+      if (!definition) {
+        [definition] = await db.insert(userSecretDefinitions).values({
+          companyId: input.companyId,
+          key: definitionKey,
+          name: `${input.connection.name} ${input.label}`,
+          description: `Personal OAuth ${input.label.toLowerCase()} for ${input.connection.name}.`,
+          provider: "local_encrypted",
+          managedMode: "paperclip_managed",
+          createdByAgentId: input.actor?.actorType === "agent" ? input.actor.actorId : null,
+          createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId : null,
+        }).onConflictDoNothing().returning();
+        if (!definition) {
+          [definition] = await db.select().from(userSecretDefinitions).where(and(
+            eq(userSecretDefinitions.companyId, input.companyId),
+            eq(userSecretDefinitions.key, definitionKey),
+            isNull(userSecretDefinitions.deletedAt),
+          )).limit(1);
+        }
+      }
+      if (!definition) throw new Error("Failed to create personal OAuth secret definition");
+      const secret = await secrets.createCurrentUserSecretValue(input.companyId, input.ownerUserId, {
+        definitionId: definition.id,
+        value: input.value,
+      }, actorForSecret(input.actor));
+      return {
+        secretId: secret.id,
+        versionSelector: "latest" as const,
+        configPath: input.configPath,
+        required: input.configPath === "oauth.access_token",
+        label: input.label,
+      };
     }
     const secret = await secrets.create(input.companyId, {
       name: `${input.connection.name} ${input.label} ${randomUUID().slice(0, 8)}`,
@@ -6458,6 +6597,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const credentialSecretRefs: CreateToolConnection["credentialSecretRefs"] = [];
     const credentialRefs: McpConnectionCredentialRef[] = [];
     const createdSecretIds: string[] = [];
+    // "Just me" needs a named board user to own the consent. An agent actor
+    // cannot hold a personal identity, and silently falling back to a shared
+    // credential is exactly the mis-scoping the design forbids, so refuse.
+    const personalIdentityUserId = input.grantKind === "user"
+      ? (actor?.actorType === "user" && actor.actorId ? actor.actorId : null)
+      : null;
+    if (input.grantKind === "user" && !personalIdentityUserId) {
+      throw badRequest("Connecting an app as yourself requires a signed-in user");
+    }
+    // Only the personal path changes the policy; every existing gallery app keeps
+    // the shared default it has today.
+    const credentialPolicy: ToolConnectionCredentialPolicy | undefined = personalIdentityUserId
+      ? "per_user"
+      : undefined;
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
@@ -6556,6 +6709,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           .limit(1);
         revivedConnectionPrevious = archived ?? null;
       }
+      // A personal credential never becomes the connection's shared secret: the
+      // row carries the header shape only, and the secret refs go to the user
+      // grant below. `ensureDefaultOrganizationGrant` copies this list, so
+      // leaving it empty is what keeps the secret off an organization grant.
+      const connectionCredentialSecretRefs = personalIdentityUserId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
         [connectionRow] = await db.update(toolConnections).set({
           name,
@@ -6566,7 +6724,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           config,
           transportConfig: config,
           credentialRefs,
-          credentialSecretRefs,
+          credentialSecretRefs: connectionCredentialSecretRefs,
+          ...(credentialPolicy ? { credentialPolicy } : {}),
           updatedAt: new Date(),
         }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).returning();
       } else {
@@ -6585,12 +6744,57 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           config,
           transportConfig: config,
           credentialRefs,
-          credentialSecretRefs,
+          credentialSecretRefs: connectionCredentialSecretRefs,
+          ...(credentialPolicy ? { credentialPolicy } : {}),
           createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
           createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
         }).returning();
       }
-      await syncCredentialBindings(connectionRow);
+      if (personalIdentityUserId) {
+        // "Just me" (PAP-17835 seam #4). The credential is committed straight to
+        // the caller's own grant; the connection row keeps only the header
+        // *shape* in `credentialRefs` (which the gateway reads for placement and
+        // then resolves against the acting user's grant) and no shared secret
+        // refs at all. Two consequences the design requires:
+        //  - `ensureDefaultOrganizationGrant` is skipped, so no organization
+        //    grant is created first and later "moved" to a user grant. It stays
+        //    absent until someone explicitly connects an organization identity,
+        //    which is what makes "Organization identity · Not connected"
+        //    truthful rather than a silent fallback.
+        //  - the credential never lands in `connection.credentialSecretRefs`,
+        //    which is what an organization grant would have copied.
+        //
+        // OAuth is the exception: no credential exists yet at connect time, and
+        // the callback upserts this same (connection, user, subject) grant with
+        // the tokens. Pre-creating an empty `active` grant there would render as
+        // "Connected" with nothing behind it, so the grant is left to the
+        // callback and only the organization grant is suppressed.
+        if (credentialSecretRefs.length > 0) {
+          await db.insert(connectionGrants).values({
+            companyId,
+            connectionId: connectionRow.id,
+            kind: "user",
+            subjectUserId: personalIdentityUserId,
+            credentialSecretRefs,
+            status: "active",
+            isDefault: false,
+            createdByUserId: personalIdentityUserId,
+          });
+          await db.insert(toolAccessAuditEvents).values({
+            companyId,
+            connectionId: connectionRow.id,
+            actorType: "user",
+            actorId: personalIdentityUserId,
+            action: "connection_grant.created",
+            outcome: "success",
+            reasonCode: "personal_identity_created",
+            details: { kind: "user", credentialSecretRefCount: credentialSecretRefs.length },
+          });
+        }
+      } else {
+        await ensureDefaultOrganizationGrant(connectionRow);
+      }
+      await syncCredentialBindings(connectionRow, personalIdentityUserId ? credentialSecretRefs : []);
       await ensureRuntimeSlot(connectionRow);
 
       if (galleryEntry && method?.auth === "oauth") {
@@ -6725,6 +6929,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     connection: typeof toolConnections.$inferSelect;
     askFirstEntries: Array<typeof toolCatalogEntries.$inferSelect>;
     actor?: ActorInfo;
+    disableStale?: boolean;
   }, dbClient: ToolAccessMutationDb = db): Promise<ToolPolicy[]> {
     const existingPolicies = await dbClient
       .select()
@@ -6780,15 +6985,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         results.push(toPolicy(created));
       }
     }
-    const stalePolicies = managedPolicies.filter((policy) => {
-      const config = asRecord(policy.config);
-      return typeof config.catalogEntryId === "string" && !askFirstIds.has(config.catalogEntryId);
-    });
-    for (const policy of stalePolicies) {
-      await dbClient
-        .update(toolPolicies)
-        .set({ enabled: false, updatedAt: new Date() })
-        .where(eq(toolPolicies.id, policy.id));
+    if (input.disableStale !== false) {
+      const stalePolicies = managedPolicies.filter((policy) => {
+        const config = asRecord(policy.config);
+        return typeof config.catalogEntryId === "string" && !askFirstIds.has(config.catalogEntryId);
+      });
+      for (const policy of stalePolicies) {
+        await dbClient
+          .update(toolPolicies)
+          .set({ enabled: false, updatedAt: new Date() })
+          .where(eq(toolPolicies.id, policy.id));
+      }
     }
     return results;
   }
@@ -7086,7 +7293,28 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .returning();
     await syncCredentialBindings(updated);
     const health = await checkConnectionHealth(updated.id, actor);
+    const catalogBefore = await db
+      .select({ id: toolCatalogEntries.id, riskLevel: toolCatalogEntries.riskLevel })
+      .from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, updated.id));
     const refresh = await refreshCatalog(updated.id, actor, { enableAllByDefault: true });
+    const previousRiskByCatalogId = new Map(catalogBefore.map((entry) => [entry.id, entry.riskLevel]));
+    const newAskFirstIds = refresh.catalog
+      .filter((entry) => {
+        if (entry.riskLevel !== "write" && entry.riskLevel !== "destructive") return false;
+        const previousRisk = previousRiskByCatalogId.get(entry.id);
+        return previousRisk === undefined || previousRisk === "read";
+      })
+      .map((entry) => entry.id);
+    if (newAskFirstIds.length > 0) {
+      await upsertAskFirstPolicies({
+        companyId,
+        connection: updated,
+        askFirstEntries: await assertCatalogEntriesForConnection(companyId, updated.id, newAskFirstIds),
+        actor,
+        disableStale: false,
+      });
+    }
     return { ...health, connection: refresh.connection };
   }
 
@@ -7162,17 +7390,39 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     if (input.subjectUserId && input.issueId && binding.actorType === "agent") {
       const idempotencyKey = `connection-authorization:${connection.id}:${input.subjectUserId}`;
+      // Provider label for the card's copy. The gallery definition's name when we
+      // have one, else the connection's own name — never a secret name or ref.
+      const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string"
+        ? connection.config.sourceTemplateKey
+        : null;
+      const providerName = (sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey)?.name : null)
+        ?? connection.name;
+      const [requestingAgent] = binding.actorId
+        ? await db.select({ name: agents.name }).from(agents).where(and(
+            eq(agents.id, binding.actorId),
+            eq(agents.companyId, companyId),
+          )).limit(1)
+        : [undefined];
       const payload = {
         version: 1 as const,
-        prompt: `Connect your account to ${connection.name}`,
-        acceptLabel: "Open authorization",
+        prompt: `Connect your ${providerName} to continue`,
+        acceptLabel: `Connect ${providerName}`,
         rejectLabel: "Not now",
         detailsMarkdown: "Authorization is required before this agent can act on your behalf.",
+        // Presentation metadata so the card can compose its own copy instead of
+        // parsing the title string (PAP-17835 seam #6). The interaction kind and
+        // the server-addressed audience are unchanged.
+        connectionAuthorization: {
+          version: 1 as const,
+          providerName,
+          connectionName: connection.name === providerName ? null : connection.name,
+          requestingAgentName: requestingAgent?.name ?? null,
+        },
         target: {
           type: "custom" as const,
           key: `connection:${connection.uid}:user:${input.subjectUserId}`,
           revisionId: state,
-          label: `Connect ${connection.name}`,
+          label: `Connect ${providerName}`,
           href: authorizationUrl.toString(),
         },
       };
@@ -7184,6 +7434,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const [interaction] = existingInteraction
         ? await db.update(issueThreadInteractions).set({
             status: "pending",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            addresseeUserId: input.subjectUserId,
             payload,
             result: null,
             resolvedAt: null,
@@ -7195,10 +7450,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             kind: "request_confirmation",
             status: "pending",
             continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            addresseeUserId: input.subjectUserId,
             idempotencyKey,
             sourceRunId: binding.actorType === "agent" ? input.actor.sessionId ?? null : null,
-            title: "Connect your account",
-            summary: `Connect ${connection.name} to continue`,
+            title: `Connect your ${providerName} to continue`,
+            summary: `${requestingAgent?.name ?? "An agent"} needs your ${providerName} identity for work running as you.`,
             createdByAgentId: binding.actorType === "agent" ? binding.actorId : null,
             payload,
           }).returning();
@@ -7398,17 +7658,111 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       code: input.code,
       resource: endpoints.resource,
     });
-    const [existingUserGrant] = stateRow.subjectUserId
-      ? await db.select().from(connectionGrants).where(and(
+    if (stateRow.subjectUserId) {
+      return db.transaction(async (tx) => {
+        // Serialize callback persistence with suspension/removal. Those paths
+        // lock this same membership row before sweeping personal credentials.
+        const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, connection.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, stateRow.subjectUserId!),
+          eq(companyMemberships.status, "active"),
+        )).limit(1).for("update");
+        if (!membership) {
+          throw forbidden("Your company membership is no longer active. Ask a company owner to restore access before you authorize this connection again.");
+        }
+
+        const [existingUserGrant] = await tx.select().from(connectionGrants).where(and(
           eq(connectionGrants.companyId, connection.companyId),
           eq(connectionGrants.connectionId, connection.id),
           eq(connectionGrants.kind, "user"),
-          eq(connectionGrants.subjectUserId, stateRow.subjectUserId),
-        )).limit(1)
-      : [undefined];
-    const subjectCredentialSecretRefs = stateRow.subjectUserId
-      ? existingUserGrant?.credentialSecretRefs ?? []
-      : connection.credentialSecretRefs;
+          eq(connectionGrants.subjectUserId, stateRow.subjectUserId!),
+        )).limit(1);
+        const subjectCredentialSecretRefs = existingUserGrant?.credentialSecretRefs ?? [];
+        const accessRef = await createOrRotateOAuthSecret({
+          companyId: connection.companyId,
+          connection,
+          configPath: "oauth.access_token",
+          label: "OAuth access token",
+          value: token.accessToken,
+          actor: input.actor,
+          existingRefs: subjectCredentialSecretRefs,
+          ownerUserId: stateRow.subjectUserId!,
+        });
+        const nextCredentialSecretRefs = [
+          ...subjectCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
+          accessRef,
+        ];
+        if (token.refreshToken) {
+          nextCredentialSecretRefs.push(await createOrRotateOAuthSecret({
+            companyId: connection.companyId,
+            connection,
+            configPath: "oauth.refresh_token",
+            label: "OAuth refresh token",
+            value: token.refreshToken,
+            actor: input.actor,
+            existingRefs: subjectCredentialSecretRefs,
+            ownerUserId: stateRow.subjectUserId!,
+          }));
+        } else {
+          const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+          if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
+        }
+
+        const grantValues = {
+          credentialSecretRefs: nextCredentialSecretRefs,
+          status: "active" as const,
+          revokedAt: null,
+          revokedByAgentId: null,
+          revokedByUserId: null,
+          updatedAt: new Date(),
+        };
+        if (existingUserGrant) {
+          await tx.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
+        } else {
+          await tx.insert(connectionGrants).values({
+            companyId: connection.companyId,
+            connectionId: connection.id,
+            kind: "user",
+            subjectUserId: stateRow.subjectUserId!,
+            ...grantValues,
+            isDefault: false,
+            createdByUserId: stateRow.subjectUserId!,
+          });
+        }
+        if (stateRow.interactionId) {
+          await tx.update(issueThreadInteractions).set({
+            status: "accepted",
+            result: { version: 1, outcome: "accepted" },
+            resolvedByUserId: stateRow.subjectUserId!,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          }).where(and(
+            eq(issueThreadInteractions.id, stateRow.interactionId),
+            eq(issueThreadInteractions.companyId, connection.companyId),
+          ));
+        }
+        const [application] = await tx.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
+        if (!application) throw new Error("OAuth connection application was not found");
+        const catalog = (await tx.select().from(toolCatalogEntries).where(and(
+          eq(toolCatalogEntries.companyId, connection.companyId),
+          eq(toolCatalogEntries.connectionId, connection.id),
+        ))).map(toCatalogEntry);
+        return {
+          connectionId: connection.id,
+          application: toApplication(application),
+          connection: toConnection(connection),
+          catalog,
+          actions: groupedActions(catalog),
+          suggestedDefaults: galleryEntry
+            ? recommendedDefaultsForApp(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key)
+            : { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
+          auth: null,
+        };
+      });
+    }
+
+    const subjectCredentialSecretRefs = connection.credentialSecretRefs;
     const accessRef = await createOrRotateOAuthSecret({
       companyId: connection.companyId,
       connection,
@@ -7416,7 +7770,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       label: "OAuth access token",
       value: token.accessToken,
       actor: input.actor,
-      existingRefs: stateRow.subjectUserId ? subjectCredentialSecretRefs : undefined,
     });
     const nextCredentialSecretRefs = [
       ...subjectCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
@@ -7430,65 +7783,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         label: "OAuth refresh token",
         value: token.refreshToken,
         actor: input.actor,
-        existingRefs: stateRow.subjectUserId ? subjectCredentialSecretRefs : undefined,
       }));
     } else {
       const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
       if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
     }
     const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
-    if (stateRow.subjectUserId) {
-      const grantValues = {
-        credentialSecretRefs: nextCredentialSecretRefs,
-        status: "active" as const,
-        revokedAt: null,
-        revokedByAgentId: null,
-        revokedByUserId: null,
-        updatedAt: new Date(),
-      };
-      if (existingUserGrant) {
-        await db.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
-      } else {
-        await db.insert(connectionGrants).values({
-          companyId: connection.companyId,
-          connectionId: connection.id,
-          kind: "user",
-          subjectUserId: stateRow.subjectUserId,
-          ...grantValues,
-          isDefault: false,
-          createdByUserId: stateRow.subjectUserId,
-        });
-      }
-      if (stateRow.interactionId) {
-        await db.update(issueThreadInteractions).set({
-          status: "accepted",
-          result: { version: 1, outcome: "accepted" },
-          resolvedByUserId: stateRow.subjectUserId,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        }).where(and(
-          eq(issueThreadInteractions.id, stateRow.interactionId),
-          eq(issueThreadInteractions.companyId, connection.companyId),
-        ));
-      }
-      const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
-      if (!application) throw new Error("OAuth connection application was not found");
-      const catalog = (await db.select().from(toolCatalogEntries).where(and(
-        eq(toolCatalogEntries.companyId, connection.companyId),
-        eq(toolCatalogEntries.connectionId, connection.id),
-      ))).map(toCatalogEntry);
-      return {
-        connectionId: connection.id,
-        application: toApplication(application),
-        connection: toConnection(connection),
-        catalog,
-        actions: groupedActions(catalog),
-        suggestedDefaults: galleryEntry
-          ? recommendedDefaultsForApp(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key)
-          : { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
-        auth: null,
-      };
-    }
     const nextConfig = {
       ...connection.config,
       oauth: {
@@ -7980,6 +8280,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ownership: input.ownership ?? "customer",
         transport,
         authKind: input.authKind ?? "none",
+        credentialPolicy: input.credentialPolicy ?? (input.authKind === "oauth" ? "per_user" : "shared"),
         status: input.status ?? "draft",
         enabled: input.enabled ?? false,
         config,
@@ -7989,7 +8290,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         createdByAgentId: binding.actorType === "agent" ? binding.actorId : null,
         createdByUserId: binding.actorType === "user" ? binding.actorId : null,
       }).returning();
-      await ensureDefaultWorkspaceGrant(row);
+      await ensureDefaultOrganizationGrant(row);
       await syncCredentialBindings(row);
       await ensureRuntimeSlot(row);
       return toConnection(row);
@@ -8007,7 +8308,213 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         eq(connectionGrants.companyId, connection.companyId),
         eq(connectionGrants.connectionId, connection.id),
       )).orderBy(desc(connectionGrants.isDefault), desc(connectionGrants.updatedAt));
-      return { connection: { id: connection.id, uid: connection.uid }, grants };
+      const grantIds = grants.map((grant) => grant.id);
+      const [members, delegations] = grantIds.length === 0 ? [[], []] : await Promise.all([
+        db.select().from(connectionGrantMembers).where(and(
+          eq(connectionGrantMembers.companyId, connection.companyId),
+          inArray(connectionGrantMembers.grantId, grantIds),
+        )),
+        db.select().from(connectionGrantDelegations).where(and(
+          eq(connectionGrantDelegations.companyId, connection.companyId),
+          inArray(connectionGrantDelegations.grantId, grantIds),
+        )),
+      ]);
+      return {
+        connection: { id: connection.id, uid: connection.uid },
+        grants: grants.map((grant) => ({
+          ...grant,
+          members: members.filter((member) => member.grantId === grant.id),
+          delegations: delegations.filter((delegation) => delegation.grantId === grant.id),
+        })),
+      };
+    },
+
+    /**
+     * Company members eligible to appear in an organization grant's audience.
+     * The audience editor needs display names, and the client must not have to
+     * cross-reference a second endpoint to render "12 selected members".
+     */
+    listConnectionAudienceMembers: async (companyId: string) => {
+      const rows = await db
+        .select({
+          userId: companyMemberships.principalId,
+          name: authUsers.name,
+          email: authUsers.email,
+        })
+        .from(companyMemberships)
+        .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
+        .where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+        ));
+      return rows
+        .map((row) => ({ userId: row.userId, name: row.name ?? null, email: row.email ?? null }))
+        .sort((a, b) => (a.name ?? a.email ?? a.userId).localeCompare(b.name ?? b.email ?? b.userId));
+    },
+
+    /**
+     * Replace an organization grant's audience atomically (PAP-17835).
+     *
+     * An empty `memberUserIds` persists as zero rows, which the resolver already
+     * treats as "every organization member". Replacement is delete-then-insert
+     * inside one transaction so a partially-applied audience can never widen or
+     * narrow access, and every member id is checked against active company
+     * membership first so an audience cannot name an outsider.
+     */
+    replaceConnectionGrantMembers: async (
+      idOrUid: string,
+      grantId: string,
+      memberUserIds: string[],
+      actor?: ActorInfo,
+    ) => {
+      const connection = await getConnectionRow(idOrUid);
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.id, grantId),
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+      )).limit(1);
+      if (!grant) throw notFound("Connection grant not found");
+      if (grant.kind !== "organization") {
+        throw badRequest("Only an organization identity has an audience; a personal identity belongs to its owner");
+      }
+      const requested = [...new Set(memberUserIds.map((id) => id.trim()).filter(Boolean))];
+      if (requested.length > 0) {
+        const memberships = await db
+          .select({ principalId: companyMemberships.principalId })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, connection.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.status, "active"),
+            inArray(companyMemberships.principalId, requested),
+          ));
+        const active = new Set(memberships.map((row) => row.principalId));
+        const unknown = requested.filter((id) => !active.has(id));
+        if (unknown.length > 0) {
+          throw unprocessable("Every audience member must be an active member of this company", {
+            code: "audience_member_not_in_company",
+            unknownUserIds: unknown,
+          });
+        }
+      }
+      const binding = actorBinding(actor);
+      const members = await db.transaction(async (tx) => {
+        await tx.delete(connectionGrantMembers).where(and(
+          eq(connectionGrantMembers.companyId, connection.companyId),
+          eq(connectionGrantMembers.grantId, grant.id),
+        ));
+        const inserted = requested.length === 0
+          ? []
+          : await tx.insert(connectionGrantMembers).values(requested.map((subjectId) => ({
+              companyId: connection.companyId,
+              grantId: grant.id,
+              subjectType: "user" as const,
+              subjectId,
+            }))).returning();
+        await tx.update(connectionGrants)
+          .set({ updatedAt: new Date() })
+          .where(eq(connectionGrants.id, grant.id));
+        return inserted;
+      });
+      await db.insert(toolAccessAuditEvents).values({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        actorType: binding.actorType ?? "system",
+        actorId: binding.actorId,
+        action: "connection_grant.audience_replaced",
+        outcome: "success",
+        reasonCode: "audience_replaced",
+        details: { grantId: grant.id, memberCount: members.length, memberUserIds: requested },
+      });
+      return { ...grant, members };
+    },
+
+    createConnectionGrantDelegation: async (
+      idOrUid: string,
+      grantId: string,
+      agentId: string,
+      ownerUserId: string,
+    ) => {
+      const connection = await getConnectionRow(idOrUid);
+      return db.transaction(async (tx) => {
+        // Membership removal/suspension takes this same row lock before sweeping
+        // personal grants. Whichever operation wins is therefore authoritative:
+        // removal deletes a delegation committed first, while creation that runs
+        // second observes the inactive membership and fails closed.
+        const [membership] = await tx.select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, connection.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, ownerUserId),
+            eq(companyMemberships.status, "active"),
+          ))
+          .for("update")
+          .limit(1);
+        if (!membership) {
+          throw forbidden("Only an active company member can delegate their personal grant");
+        }
+
+        const [grant] = await tx.select().from(connectionGrants).where(and(
+          eq(connectionGrants.id, grantId),
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.kind, "user"),
+          eq(connectionGrants.subjectUserId, ownerUserId),
+          eq(connectionGrants.status, "active"),
+        )).limit(1);
+        if (!grant) throw forbidden("Only the active personal grant owner can create a delegation");
+        const [targetAgent] = await tx.select({ id: agents.id }).from(agents).where(and(
+          eq(agents.id, agentId),
+          eq(agents.companyId, connection.companyId),
+        )).limit(1);
+        if (!targetAgent) throw notFound("Agent not found");
+        const [existing] = await tx.select().from(connectionGrantDelegations).where(and(
+          eq(connectionGrantDelegations.grantId, grant.id),
+          eq(connectionGrantDelegations.agentId, agentId),
+        )).limit(1);
+        if (existing) return existing;
+        const [delegation] = await tx.insert(connectionGrantDelegations).values({
+          companyId: connection.companyId,
+          grantId: grant.id,
+          agentId,
+          createdByUserId: ownerUserId,
+        }).returning();
+        await tx.insert(toolAccessAuditEvents).values({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          actorType: "user",
+          actorId: ownerUserId,
+          action: "connection_grant.delegated",
+          outcome: "success",
+          reasonCode: "delegation_created",
+          details: { grantId: grant.id, delegationId: delegation!.id, agentId },
+        });
+        return delegation!;
+      });
+    },
+
+    revokeConnectionGrantDelegation: async (idOrUid: string, grantId: string, delegationId: string, actor?: ActorInfo) => {
+      const connection = await getConnectionRow(idOrUid);
+      const [delegation] = await db.delete(connectionGrantDelegations).where(and(
+        eq(connectionGrantDelegations.id, delegationId),
+        eq(connectionGrantDelegations.companyId, connection.companyId),
+        eq(connectionGrantDelegations.grantId, grantId),
+      )).returning();
+      if (!delegation) throw notFound("Connection grant delegation not found");
+      const binding = actorBinding(actor);
+      await db.insert(toolAccessAuditEvents).values({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        actorType: binding.actorType ?? "system",
+        actorId: binding.actorId,
+        action: "connection_grant.delegation_revoked",
+        outcome: "success",
+        reasonCode: "delegation_revoked",
+        details: { grantId, delegationId, agentId: delegation.agentId },
+      });
+      return delegation;
     },
 
     addConnectionInstallation: async (idOrUid: string, input: {
@@ -8020,14 +8527,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (input.isDefault) {
         await db.update(connectionGrants).set({ isDefault: false, updatedAt: new Date() }).where(and(
           eq(connectionGrants.connectionId, connection.id),
-          eq(connectionGrants.kind, "workspace"),
+          eq(connectionGrants.kind, "organization"),
         ));
       }
       const binding = actorBinding(actor);
       const [grant] = await db.insert(connectionGrants).values({
         companyId: connection.companyId,
         connectionId: connection.id,
-        kind: "workspace",
+        kind: "organization",
         providerTenant: input.providerTenant,
         credentialSecretRefs: input.credentialSecretRefs ?? [],
         status: "active",
@@ -8052,18 +8559,38 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     revokeConnectionGrant: async (idOrUid: string, grantId: string, actor?: ActorInfo) => {
       const connection = await getConnectionRow(idOrUid);
       const binding = actorBinding(actor);
-      const [grant] = await db.update(connectionGrants).set({
-        status: "revoked",
-        isDefault: false,
-        revokedAt: new Date(),
-        revokedByAgentId: binding.actorType === "agent" ? binding.actorId : null,
-        revokedByUserId: binding.actorType === "user" ? binding.actorId : null,
-        updatedAt: new Date(),
-      }).where(and(
-        eq(connectionGrants.id, grantId),
-        eq(connectionGrants.companyId, connection.companyId),
-        eq(connectionGrants.connectionId, connection.id),
-      )).returning();
+      const grant = await db.transaction(async (tx) => {
+        const removedDelegations = await tx.delete(connectionGrantDelegations).where(and(
+          eq(connectionGrantDelegations.companyId, connection.companyId),
+          eq(connectionGrantDelegations.grantId, grantId),
+        )).returning();
+        const [updated] = await tx.update(connectionGrants).set({
+          status: "revoked",
+          isDefault: false,
+          revokedAt: new Date(),
+          revokedByAgentId: binding.actorType === "agent" ? binding.actorId : null,
+          revokedByUserId: binding.actorType === "user" ? binding.actorId : null,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(connectionGrants.id, grantId),
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+        )).returning();
+        if (!updated) throw notFound("Connection grant not found");
+        if (removedDelegations.length > 0) {
+          await tx.insert(toolAccessAuditEvents).values(removedDelegations.map((delegation) => ({
+            companyId: connection.companyId,
+            connectionId: connection.id,
+            actorType: binding.actorType ?? "system",
+            actorId: binding.actorId,
+            action: "connection_grant.delegation_revoked",
+            outcome: "success",
+            reasonCode: "grant_revoked",
+            details: { grantId, delegationId: delegation.id, agentId: delegation.agentId },
+          })));
+        }
+        return updated;
+      });
       if (!grant) throw notFound("Connection grant not found");
       await db.insert(toolAccessAuditEvents).values({
         companyId: connection.companyId,
@@ -8238,6 +8765,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           transportConfig: isGoogleSheetsConnectionConfig(config) ? config : input.transportConfig ?? config,
           credentialRefs: input.credentialRefs ?? existing.credentialRefs,
           credentialSecretRefs: input.credentialSecretRefs ?? existing.credentialSecretRefs,
+          credentialPolicy: input.credentialPolicy ?? existing.credentialPolicy,
           updatedAt: new Date(),
         })
         .where(eq(toolConnections.id, connectionId))
@@ -9040,47 +9568,91 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         );
       }
 
-      const subject = input.body.subject ?? { type: "app" as const };
-      if (subject.type === "user" && subject.userId !== runContext.responsibleUserId) {
+      const requestedSubject = input.body.subject;
+      if (requestedSubject?.type === "user" && requestedSubject.userId !== runContext.responsibleUserId) {
         await fail(403, "The agent run cannot act as the requested user", "denied", "subject_not_permitted", {
           connection: { uid: connection.uid },
-          subject,
+          subject: requestedSubject,
         });
       }
 
-      let grant: typeof connectionGrants.$inferSelect;
-      if (subject.type === "user") {
-        const conditions = [
+      const actingUserId = runContext.responsibleUserId;
+      const autonomous = runContext.run.invocationSource === "automation" || runContext.run.invocationSource === "timer";
+      const subject = connection.credentialPolicy === "shared" || !actingUserId
+        ? { type: "app" as const }
+        : { type: "user" as const, userId: actingUserId };
+      let grant: typeof connectionGrants.$inferSelect | undefined;
+      if (connection.credentialPolicy !== "shared" && actingUserId) {
+        const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, connection.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, actingUserId),
+          eq(companyMemberships.status, "active"),
+        )).limit(1);
+        if (!membership) {
+          await fail(403, "The personal grant owner is not an active company member", "denied", "grant_owner_membership_inactive", {
+            connection: { id: connection.id, uid: connection.uid, name: connection.name },
+            subject: { type: "user", userId: actingUserId },
+            remediation: { action: "restore_membership_or_reconnect" },
+          });
+        }
+        [grant] = await db.select().from(connectionGrants).where(and(
           eq(connectionGrants.companyId, connection.companyId),
           eq(connectionGrants.connectionId, connection.id),
           eq(connectionGrants.kind, "user"),
-          eq(connectionGrants.subjectUserId, subject.userId),
-        ];
-        if (input.body.grantId) conditions.push(eq(connectionGrants.id, input.body.grantId));
-        [grant] = await db.select().from(connectionGrants).where(and(...conditions)).limit(1);
-        if (!grant) {
-          await fail(409, "User authorization is required", "denied", "user_authorization_required", {
-            connection: { uid: connection.uid },
-            subject,
-            remediation: { action: "start_authorization" },
-          });
-        }
-      } else if (input.body.grantId) {
-        [grant] = await db.select().from(connectionGrants).where(and(
-          eq(connectionGrants.id, input.body.grantId),
-          eq(connectionGrants.companyId, connection.companyId),
-          eq(connectionGrants.connectionId, connection.id),
-          eq(connectionGrants.kind, "workspace"),
+          eq(connectionGrants.subjectUserId, actingUserId),
         )).limit(1);
-        if (!grant) {
-          await fail(409, "The requested installation is not available", "denied", "installation_required", {
-            connection: { uid: connection.uid },
-            subject,
-            remediation: { action: "add_installation" },
+      }
+      if (!grant && connection.credentialPolicy === "per_user") {
+        await fail(409, "User authorization is required", "denied", "user_authorization_required", {
+          connection: { uid: connection.uid },
+          subject: actingUserId ? { type: "user", userId: actingUserId } : { type: "app" },
+          remediation: { action: "start_authorization" },
+        });
+      }
+      if (!grant) {
+        grant = await ensureDefaultOrganizationGrant(connection);
+      }
+
+      if (grant.kind === "user" && autonomous) {
+        const [delegation] = await db.select({ id: connectionGrantDelegations.id }).from(connectionGrantDelegations).where(and(
+          eq(connectionGrantDelegations.companyId, connection.companyId),
+          eq(connectionGrantDelegations.grantId, grant.id),
+          eq(connectionGrantDelegations.agentId, input.agentId),
+        )).limit(1);
+        if (!delegation) {
+          if (actingUserId) {
+            await createStandingDelegationAsk({
+              connection,
+              issueId: runContext.issueId,
+              runId: input.runId,
+              agentId: input.agentId,
+              ownerUserId: actingUserId,
+            });
+          }
+          await fail(409, "Standing delegation is required for this autonomous run", "denied", "standing_delegation_required", {
+            connection: { id: connection.id, uid: connection.uid, name: connection.name },
+            grantId: grant.id,
+            subject: actingUserId ? { type: "user", userId: actingUserId } : { type: "app" },
+            agentId: input.agentId,
+            remediation: { action: "delegate_personal_grant", grantId: grant.id, agentId: input.agentId },
           });
         }
-      } else {
-        grant = await ensureDefaultWorkspaceGrant(connection);
+      }
+
+      if (grant.kind === "organization") {
+        const audience = await db.select({ subjectId: connectionGrantMembers.subjectId }).from(connectionGrantMembers).where(and(
+          eq(connectionGrantMembers.companyId, connection.companyId),
+          eq(connectionGrantMembers.grantId, grant.id),
+          eq(connectionGrantMembers.subjectType, "user"),
+        ));
+        if (audience.length > 0 && (!actingUserId || !audience.some((member) => member.subjectId === actingUserId))) {
+          await fail(403, "The acting user is not in this grant's audience", "denied", "grant_audience_denied", {
+            connection: { uid: connection.uid },
+            subject,
+            grantId: grant.id,
+          });
+        }
       }
 
       if (grant.status !== "active") {

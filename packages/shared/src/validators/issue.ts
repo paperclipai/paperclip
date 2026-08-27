@@ -1334,6 +1334,7 @@ export const requestItemVerdictsResultSchema = z.object({
 const createIssueThreadInteractionCommon = {
   resolverPolicy: issueThreadInteractionResolverPolicySchema.optional(),
   addresseeAgentId: z.string().guid().nullable().optional(),
+  addresseeUserId: z.string().trim().min(1).nullable().optional(),
 };
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [

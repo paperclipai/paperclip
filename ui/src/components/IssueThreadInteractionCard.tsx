@@ -342,6 +342,86 @@ function isSecretProposalConfirmation(interaction: IssueThreadInteraction): bool
   return secretProposalPayload(interaction) != null;
 }
 
+/**
+ * A `request_confirmation` carrying `payload.connectionAuthorization` is asking
+ * one person to connect their own account so an agent can act as them
+ * (PAP-17835). It keeps the interaction kind and the server-addressed audience;
+ * only the presentation differs, and it reads that presentation from the payload
+ * rather than parsing the title string.
+ */
+function connectionAuthorizationPayload(
+  interaction: IssueThreadInteraction,
+): NonNullable<RequestConfirmationInteraction["payload"]["connectionAuthorization"]> | null {
+  if (interaction.kind !== "request_confirmation") return null;
+  return interaction.payload.connectionAuthorization ?? null;
+}
+
+/**
+ * The five states the connection-authorization card can be read in (PAP-17859).
+ *
+ * `actionable` and `waiting` are the *same* pending row seen by two different
+ * readers: consent belongs to the addressed person alone, so who is looking
+ * changes what may be offered — not merely whether a button is greyed out.
+ */
+type ConnectionAuthorizationCardState =
+  | "actionable"
+  | "waiting"
+  | "connected"
+  | "declined"
+  | "expired";
+
+function connectionAuthorizationCardState({
+  interaction,
+  isAddressee,
+}: {
+  interaction: RequestConfirmationInteraction;
+  isAddressee: boolean;
+}): ConnectionAuthorizationCardState {
+  if (interaction.status === "accepted") return "connected";
+  if (interaction.status === "rejected") return "declined";
+  if (interaction.status === "pending") return isAddressee ? "actionable" : "waiting";
+  // expired / cancelled / failed all mean the same thing to a reader here: the
+  // authorization run this card carried is over.
+  return "expired";
+}
+
+/**
+ * True only when the signed-in reader *is* the person the server addressed.
+ *
+ * Deliberately strict: an unknown viewer (`currentUserId` not loaded yet) is
+ * never treated as the addressee, so the Connect action cannot flash into view
+ * for someone who may not consent. The server re-authorizes the callback
+ * regardless; this only decides what the card offers.
+ */
+function isConnectionAuthorizationAddressee({
+  interaction,
+  currentUserId,
+}: {
+  interaction: RequestConfirmationInteraction;
+  currentUserId?: string | null;
+}): boolean {
+  const addressee = interaction.addresseeUserId;
+  if (!addressee || !currentUserId) return false;
+  return addressee === currentUserId;
+}
+
+/**
+ * The authorization URL this card may open, or `null`.
+ *
+ * A target is offered **only while the interaction is pending**. The server
+ * re-upserts this row with a freshly minted `state` every time it starts a new
+ * authorization run, so a pending card always carries a live target and a
+ * resolved/declined/expired one always carries a spent one. Gating on the
+ * status is therefore how "never reuse an expired OAuth URL" is enforced —
+ * there is no client-visible expiry on the payload to check instead.
+ */
+function connectionAuthorizationHref(interaction: RequestConfirmationInteraction): string | null {
+  if (interaction.status !== "pending") return null;
+  const href = interaction.payload.target?.href;
+  if (!href) return null;
+  return normalizeRequestConfirmationTargetHref(href);
+}
+
 type ToolActionCardState =
   | "pending"
   | "running"
@@ -2482,6 +2562,262 @@ function ConfirmationActionRow({
   );
 }
 
+function connectionAuthorizationStatusClasses(
+  state: ConnectionAuthorizationCardState,
+  copy: { providerName: string; addresseeLabel: string },
+): {
+  shell: string;
+  badge: string;
+  label: string;
+  Icon: typeof CheckCircle2;
+} {
+  switch (state) {
+    case "actionable":
+      return {
+        shell: "border-2 border-sky-500/70 bg-transparent",
+        badge: "border-sky-500/60 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
+        label: "Action required",
+        Icon: KeyRound,
+      };
+    case "waiting":
+      // Not a warning and not a failure: someone else's decision is simply
+      // outstanding. The calm inert lane keeps it out of the reader's queue.
+      return {
+        shell: "border-border bg-transparent",
+        badge: "border-border bg-muted/60 text-muted-foreground",
+        label: `Waiting for ${copy.addresseeLabel}`,
+        Icon: Clock,
+      };
+    case "connected":
+      return {
+        shell: "border-2 border-green-500/80 bg-transparent",
+        badge: "border-green-500/60 bg-green-500/10 text-green-900 dark:bg-green-500/15 dark:text-green-100",
+        label: `${copy.providerName} connected`,
+        Icon: CheckCircle2,
+      };
+    case "declined":
+      return {
+        shell: "border-border bg-transparent",
+        badge: "border-border bg-muted/60 text-muted-foreground",
+        label: "Not connected",
+        Icon: MinusCircle,
+      };
+    case "expired":
+    default:
+      return {
+        shell: "border-border bg-transparent",
+        badge: "border-border bg-muted/60 text-muted-foreground",
+        label: "Authorization expired",
+        Icon: CircleDashed,
+      };
+  }
+}
+
+/**
+ * Connection authorization — "Connect your Gmail to continue" (PAP-17796
+ * Surface F, corrected in PAP-17859).
+ *
+ * This is deliberately *not* the generic Approve / Revise… / Reject grammar it
+ * used to fall through to. Authorization is not a review: there is nothing to
+ * revise, "Reject" is the wrong word for declining to link your own account,
+ * and only one person in the company can answer at all. So the card composes
+ * one title, one body, and exactly the affordances the reader legitimately has:
+ *
+ * - the addressed person gets the single primary **Connect <Provider>** target
+ *   plus a plain **Not now**;
+ * - anybody else gets **Waiting for <Person>** and no action at all — a
+ *   policy-forbidden action is omitted, never rendered disabled, and the card
+ *   must not imply a teammate can consent on their behalf;
+ * - once resolved it states the outcome, who resolved it, and when.
+ *
+ * The primary action is a link to the server-minted authorization URL, not an
+ * accept call: the OAuth callback is what resolves this interaction, so the
+ * card never claims success the provider has not granted.
+ */
+function RequestConnectionAuthorizationCard({
+  interaction,
+  state,
+  isAddressee,
+  providerName,
+  addresseeLabel,
+  requestingAgentLabel,
+  resolvedByLabel,
+  resolvedByAgent,
+  onRejectInteraction,
+}: {
+  interaction: RequestConfirmationInteraction;
+  state: ConnectionAuthorizationCardState;
+  /** Is the signed-in reader the person the server addressed? */
+  isAddressee: boolean;
+  providerName: string;
+  addresseeLabel: string;
+  requestingAgentLabel: string | null;
+  resolvedByLabel: string | null;
+  resolvedByAgent: boolean;
+  onRejectInteraction?: (
+    interaction: RequestConfirmationInteraction,
+    reason?: string,
+  ) => Promise<void> | void;
+}) {
+  const [working, setWorking] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const resolutionErrorMessage = useResolutionErrorMessage();
+  const href = connectionAuthorizationHref(interaction);
+  const declineReason = getAdministrativeReason(interaction);
+
+  useEffect(() => {
+    setActionError(null);
+    setWorking(false);
+  }, [interaction.id, interaction.status]);
+
+  async function handleNotNow() {
+    if (!onRejectInteraction) return;
+    setWorking(true);
+    setActionError(null);
+    try {
+      await onRejectInteraction(interaction);
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  // One body, composed here rather than split between the header summary and a
+  // payload prompt that repeats the title.
+  //
+  // The server's summary is written in the second person ("needs *your* Gmail
+  // identity for work running as *you*") because the server addressed one
+  // person. Shown to a teammate it names the wrong account, so a reader who is
+  // not the addressee gets the same fact stated about them. Caught by rendering
+  // the card, not by reading it.
+  const agentLabel = requestingAgentLabel ?? "An agent";
+  const lead = isAddressee
+    ? interaction.summary?.trim()
+      || `${agentLabel} needs your ${providerName} identity for work running as you.`
+    : `${agentLabel} ${state === "connected" ? "needed" : "needs"} ${addresseeLabel}'s ${providerName} identity for work running as them.`;
+  // Only the actionable state needs the consent boundary spelled out; the other
+  // states carry it in their own status line.
+  const consentSentence = state === "actionable" ? "No one else can complete this step." : null;
+
+  return (
+    <div className="space-y-4">
+      <p
+        className="max-w-3xl text-sm leading-6 text-muted-foreground"
+        data-testid="connection-authorization-body"
+      >
+        {consentSentence ? `${lead} ${consentSentence}` : lead}
+      </p>
+
+      {state === "actionable" ? (
+        <div className="space-y-3">
+          {href ? (
+            <div
+              data-testid="connection-authorization-actions"
+              className="grid grid-cols-1 items-stretch gap-2 sm:flex sm:flex-wrap sm:items-center sm:justify-end"
+            >
+              <Button asChild size="sm" variant="cta" className="w-full sm:w-auto">
+                <a href={href} target="_blank" rel="noreferrer">
+                  Connect {providerName}
+                  <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                </a>
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="w-full sm:w-auto"
+                disabled={!onRejectInteraction || working}
+                onClick={() => void handleNotNow()}
+              >
+                {working ? (
+                  <>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    Saving…
+                  </>
+                ) : (
+                  "Not now"
+                )}
+              </Button>
+            </div>
+          ) : (
+            // A pending card with no usable target is a server-side gap, not an
+            // invitation to reuse an old URL.
+            <ConnectionAuthorizationStatusLine
+              Icon={TriangleAlert}
+              testId="connection-authorization-no-target"
+              headline="This authorization link is unavailable"
+              detail={`Ask ${requestingAgentLabel ?? "the agent"} to send a fresh ${providerName} authorization link.`}
+            />
+          )}
+          <InteractionActionError message={actionError} />
+        </div>
+      ) : state === "waiting" ? (
+        <ConnectionAuthorizationStatusLine
+          Icon={Clock}
+          testId="connection-authorization-waiting"
+          headline={`Waiting for ${addresseeLabel}`}
+          detail={`Only ${addresseeLabel} can connect their own ${providerName} account.`}
+        />
+      ) : state === "connected" ? (
+        <ConnectionAuthorizationStatusLine
+          Icon={CheckCircle2}
+          testId="connection-authorization-connected"
+          headline={`${providerName} connected`}
+          detail={
+            <>
+              Connected by{" "}
+              <span className="font-medium text-foreground">
+                {/* "You" is display-cased for a badge; this is mid-sentence. */}
+                {(resolvedByLabel ?? addresseeLabel) === "You" ? "you" : resolvedByLabel ?? addresseeLabel}
+              </span>
+              {resolvedByAgent ? <ResolvedByAgentChip /> : null}
+              {interaction.resolvedAt ? ` on ${formatDateTime(interaction.resolvedAt)}` : ""}
+            </>
+          }
+        />
+      ) : (
+        // Declined or expired. No Connect action: the authorization target this
+        // card carried is spent, and the agent asks again with a fresh one
+        // rather than the board replaying a dead URL.
+        <ConnectionAuthorizationStatusLine
+          Icon={state === "declined" ? MinusCircle : CircleDashed}
+          testId={state === "declined" ? "connection-authorization-declined" : "connection-authorization-expired"}
+          headline={state === "declined" ? `${providerName} was not connected` : "This authorization request expired"}
+          detail={
+            declineReason
+              ?? `${requestingAgentLabel ?? "The agent"} can ask again with a new ${providerName} authorization link.`
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function ConnectionAuthorizationStatusLine({
+  Icon,
+  testId,
+  headline,
+  detail,
+}: {
+  Icon: typeof CheckCircle2;
+  testId: string;
+  headline: string;
+  detail: ReactNode;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="flex items-start gap-2 rounded-sm border border-border/70 bg-muted/30 p-3"
+    >
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 space-y-0.5 text-sm">
+        <div className="font-medium text-foreground">{headline}</div>
+        <div className="leading-6 text-muted-foreground">{detail}</div>
+      </div>
+    </div>
+  );
+}
+
 function RequestConfirmationCard({
   interaction,
   isPlan = false,
@@ -2954,7 +3290,11 @@ function RequestCheckboxConfirmationCard({
   return (
     <div className="space-y-4">
       <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
-        <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
+        {/* Show each piece of state once: a connection-authorization prompt is
+            the same sentence as the card title, so repeating it here is noise. */}
+        {interaction.payload.prompt === interaction.title ? null : (
+          <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
+        )}
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-border/60 pt-3 text-sm">
             <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
@@ -3020,7 +3360,7 @@ function RequestCheckboxConfirmationCard({
         <ConfirmationActionRow
           resetKey={`${interaction.id}:${interaction.status}`}
           approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
-          rejectLabel={CONFIRMATION_REJECT_LABEL}
+          rejectLabel={interaction.payload.rejectLabel ?? CONFIRMATION_REJECT_LABEL}
           primaryActionOnRight={primaryActionOnRight}
           allowRevise={allowRevise}
           rejectRequiresReason={rejectRequiresReason}
@@ -3552,6 +3892,15 @@ export function IssueThreadInteractionCard({
     interaction.kind === "request_confirmation" && isToolActionConfirmation(interaction);
   const isSecretProposal =
     interaction.kind === "request_confirmation" && isSecretProposalConfirmation(interaction);
+  const connectionAuthorization = connectionAuthorizationPayload(interaction);
+  const isConnectionAddressee =
+    connectionAuthorization && interaction.kind === "request_confirmation"
+      ? isConnectionAuthorizationAddressee({ interaction, currentUserId })
+      : false;
+  const connectionAuthorizationState =
+    connectionAuthorization && interaction.kind === "request_confirmation"
+      ? connectionAuthorizationCardState({ interaction, isAddressee: isConnectionAddressee })
+      : null;
   const toolActionState =
     isToolAction && interaction.kind === "request_confirmation"
       ? toolActionCardState(interaction)
@@ -3572,7 +3921,26 @@ export function IssueThreadInteractionCard({
         interaction.result && "outcome" in interaction.result ? interaction.result.outcome : null,
       )
     : null;
-  const activeStyles = secretProposalStyles ?? toolActionStyles ?? planStyles;
+  // Interactions can be directed at a specific agent or board user. Resolved
+  // before the status styling because the connection-authorization badge names
+  // the addressee ("Waiting for Carol").
+  const addresseeLabel = interaction.addresseeAgentId || interaction.addresseeUserId
+    ? resolveActorLabel({
+        agentId: interaction.addresseeAgentId,
+        userId: interaction.addresseeUserId,
+        agentMap,
+        currentUserId,
+        userLabelMap,
+      })
+    : null;
+  const connectionAuthorizationStyles = connectionAuthorization && connectionAuthorizationState
+    ? connectionAuthorizationStatusClasses(connectionAuthorizationState, {
+        providerName: connectionAuthorization.providerName,
+        addresseeLabel: addresseeLabel ?? "the addressed person",
+      })
+    : null;
+  const activeStyles =
+    connectionAuthorizationStyles ?? secretProposalStyles ?? toolActionStyles ?? planStyles;
   const adminOutcome = getAdministrativeOutcome(interaction);
   const adminReason = adminOutcome ? getAdministrativeReason(interaction) : null;
   // P4 (design review R2): a withdrawal is a neutral administrative retraction by
@@ -3612,15 +3980,6 @@ export function IssueThreadInteractionCard({
       : null;
   // P4: audit-visible distinction between agent and human resolution.
   const resolvedByAgent = Boolean(interaction.resolvedByAgentId);
-  // P3: interactions directed at a specific agent addressee.
-  const addresseeLabel = interaction.addresseeAgentId
-    ? resolveActorLabel({
-        agentId: interaction.addresseeAgentId,
-        agentMap,
-        currentUserId,
-        userLabelMap,
-      })
-    : null;
   // PAP-17280: the effective audience, shown *before* anyone responds so a
   // reader never has to guess whether an open card is waiting on them. Derived
   // from the same server snapshot the resolver routes enforce, so the copy
@@ -3661,6 +4020,11 @@ export function IssueThreadInteractionCard({
                     <span className="hidden text-current/60 sm:inline">/</span>
                     <span>{statusText}</span>
                   </span>
+                ) : connectionAuthorization ? (
+                  // One state, in the reader's own terms: "Action required",
+                  // "Waiting for Carol", "Gmail connected". The interaction kind
+                  // is machinery the person being asked does not need.
+                  <span>{statusText}</span>
                 ) : (
                   <>
                     {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
@@ -3703,6 +4067,8 @@ export function IssueThreadInteractionCard({
                     ? "Checkbox confirmation requested"
                     : isSecretProposal
                       ? "Secret binding requested"
+                    : connectionAuthorization
+                      ? `Connect your ${connectionAuthorization.providerName} to continue`
                     : isToolAction
                       ? "Tool approval requested"
                       : interaction.kind === "request_item_verdicts"
@@ -3711,7 +4077,11 @@ export function IssueThreadInteractionCard({
                           ? "Plan review"
                           : "Confirmation requested")}
             </div>
-            {interaction.summary ? (
+            {/* A connection-authorization card composes its own single body
+                below, because the closing sentence depends on whether the
+                reader is the person who may consent. Rendering the summary here
+                as well would be the second body PAP-17859 removed. */}
+            {interaction.summary && !connectionAuthorization ? (
               <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
                 {interaction.summary}
               </p>
@@ -3758,6 +4128,20 @@ export function IssueThreadInteractionCard({
               onAcceptInteraction={onAcceptInteraction}
               onRejectInteraction={onRejectInteraction}
               externalReferences={externalReferences}
+            />
+          ) : connectionAuthorization
+            && interaction.kind === "request_confirmation"
+            && connectionAuthorizationState ? (
+            <RequestConnectionAuthorizationCard
+              interaction={interaction}
+              state={connectionAuthorizationState}
+              isAddressee={isConnectionAddressee}
+              providerName={connectionAuthorization.providerName}
+              addresseeLabel={addresseeLabel ?? "the addressed person"}
+              requestingAgentLabel={connectionAuthorization.requestingAgentName ?? null}
+              resolvedByLabel={resolvedByLabel}
+              resolvedByAgent={resolvedByAgent}
+              onRejectInteraction={onRejectInteraction}
             />
           ) : isSecretProposal && interaction.kind === "request_confirmation" && secretProposalState ? (
             <RequestSecretProposalCard
@@ -3820,7 +4204,10 @@ export function IssueThreadInteractionCard({
           >
             {formatShortDate(interaction.resolvedAt)}
           </div>
-        ) : resolvedByLabel && !isToolAction ? (
+        ) : resolvedByLabel && !isToolAction && !connectionAuthorization ? (
+          // The connection-authorization card states its own resolver and
+          // timestamp inside the "Gmail connected" block, so the shared footer
+          // would repeat it.
           <div
             className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-0.5 border-t border-border/60 pt-3 text-xs text-muted-foreground"
             data-testid="interaction-resolved-footer"

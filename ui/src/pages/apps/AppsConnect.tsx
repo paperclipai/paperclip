@@ -17,11 +17,14 @@ import type { LucideIcon } from "lucide-react";
 import type {
   Agent,
   AppDefinition,
+  ConnectionGrantKind,
   ConnectionMethodDef,
   ConnectToolAppResult,
   FieldDef,
   ToolApplication,
   ToolConnection,
+  ToolConnectionAuthKind,
+  ToolConnectionCreateCapabilities,
 } from "@paperclipai/shared";
 import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod, getAvailableConnectionMethods } from "@paperclipai/shared";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
@@ -29,6 +32,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { RadioCardGroup } from "@/components/ui/radio-card";
 import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
@@ -66,13 +70,12 @@ import {
 } from "./generic-mcp-connect";
 import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayload } from "@/lib/tool-installs";
 
-type Step = "gallery" | "key" | "who" | "install" | "success";
+type Step = "gallery" | "access" | "key" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
 
 const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
+  access: "access",
   key: "setup",
-  who: "access",
-  install: "install",
   success: "complete",
 };
 
@@ -82,21 +85,36 @@ function appConnectHref(appKey: string, step: Step): string {
   return `/apps/connect?${params.toString()}`;
 }
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
-type InstallMode = "none" | "specific" | "all";
 
-const STEP_LABELS = ["Pick app", "Add your key", "Choose access", "Install tools"];
+// Access comes before credentials so the reader knows what identity and reach
+// the secret is about to get before they share it (PAP-17835).
+const STEP_LABELS = ["Pick app", "Access", "Add your key"];
 const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   gallery: 0,
-  key: 1,
-  who: 2,
-  install: 3,
+  access: 1,
+  key: 2,
 };
 const ZAPIER_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
   key: 0,
-  who: 1,
-  install: 2,
+  access: 1,
 };
-const ZAPIER_STEP_LABELS = ["Add MCP URL", "Choose access", "Install tools"];
+const ZAPIER_STEP_LABELS = ["Add MCP URL"];
+
+/**
+ * Which identity a fresh connection should default to (PAP-17835).
+ *
+ * An identity-bearing OAuth app (Gmail, Notion) is almost always personal — the
+ * whole point is that the agent acts as you. A service credential like an API
+ * key is almost always shared. Defaulting per auth kind keeps the common path a
+ * single Continue click without ever guessing silently: the choice is on screen.
+ */
+function defaultGrantKindFor(
+  entry: AppDefinition | null,
+  method: ConnectionMethodDef | null,
+): ConnectionGrantKind {
+  const auth = method?.auth ?? (entry ? getAvailableConnectionMethod(entry)?.auth : null);
+  return auth === "oauth" ? "user" : "organization";
+}
 
 function isGoogleSheetsEntry(entry: AppDefinition | null): boolean {
   return entry?.slug === "google-sheets";
@@ -201,8 +219,14 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [access, setAccess] = useState<"all" | "specific">("all");
   const [agentIds, setAgentIds] = useState<Set<string>>(new Set());
-  const [installMode, setInstallMode] = useState<InstallMode>("none");
   const [installAgentIds, setInstallAgentIds] = useState<Set<string>>(new Set());
+  /**
+   * Access-step selections (PAP-17835). These are chosen before the credential
+   * and committed with it, so they must survive a failed submit and a trip
+   * backwards through the wizard.
+   */
+  const [grantKind, setGrantKind] = useState<ConnectionGrantKind>("organization");
+  const [installChoice, setInstallChoice] = useState<"specific" | "all">("all");
   const [oauthPhase, setOAuthPhase] = useState<OAuthConnectPhase>("entry");
   const [oauthError, setOAuthError] = useState<string | null>(null);
   /** Host of the page the operator is about to be sent to, shown while redirecting. */
@@ -248,10 +272,11 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     setGoogleSheetsLinks("");
     setGoogleSheetsError(null);
     setConnectResult(null);
-    setInstallMode("none");
     setInstallAgentIds(new Set());
-    setStep("key");
-    navigate(appConnectHref(picked.slug, "key"));
+    setInstallChoice("specific");
+    setGrantKind(defaultGrantKindFor(picked, initialMethod));
+    setStep("access");
+    navigate(appConnectHref(picked.slug, "access"));
   };
 
   const openGallery = () => {
@@ -268,8 +293,9 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     setGoogleSheetsLinks("");
     setGoogleSheetsError(null);
     setConnectResult(null);
-    setInstallMode("none");
     setInstallAgentIds(new Set());
+    setInstallChoice("all");
+    setGrantKind("organization");
     setStep("gallery");
     navigate(byoOnly ? "/apps/byo" : "/apps/connect?byo=1");
   };
@@ -361,6 +387,18 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
   });
   const startOAuth = oauthStartMutation.mutate;
 
+  /**
+   * Commit the Access step's agent reach for a connection. Shared by the
+   * key-path finish and the OAuth redirect, so both routes through the wizard
+   * apply the same selection.
+   */
+  const applyAccessInstalls = async (connectionId: string) => {
+    const installState = installChoice === "all"
+      ? { onAll: true, agentIds: new Set<string>() }
+      : { onAll: false, agentIds: installAgentIds };
+    await toolsApi.putConnectionInstalls(connectionId, installPayload(selectedCompanyId!, installState));
+  };
+
   const connectMutation = useMutation({
     mutationFn: (entryOverride?: AppDefinition) => {
       const connectEntry = entryOverride ?? entry;
@@ -378,6 +416,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
               ? configValues
               : undefined,
           applicationId: prefill.applicationId,
+          ...(grantKind === "user" ? { grantKind } : {}),
         });
       }
       return toolsApi.connectApp(selectedCompanyId!, {
@@ -392,11 +431,17 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
           oauthClientSecret: linkOAuthClientSecret,
         }),
         applicationId: prefill.applicationId,
+        ...(grantKind === "user" ? { grantKind } : {}),
       });
     },
     onSuccess: (result) => {
       if (result.auth?.kind === "oauth") {
         setConnectResult(result);
+        // The redirect takes the operator out of the wizard, so the Access
+        // step's agent reach is committed now rather than after the callback.
+        // Best-effort: a failure here must not block the sign-in they asked for,
+        // and Permissions still shows the real state when they land.
+        void applyAccessInstalls(result.connectionId);
         // Discovery worked but this authorization server insists on a client the
         // operator registers themselves. Keep the draft and ask for it in place
         // rather than sending them back to the start.
@@ -433,9 +478,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
       for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
       for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = true;
       setEnabled(defaults);
-      setInstallMode("none");
-      setInstallAgentIds(new Set());
-      setAppStep("who");
+      finishMutation.mutate({ result, enabled: defaults });
     },
     onError: (error) => {
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
@@ -502,10 +545,12 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
       setGoogleSheetsLinks("");
       setGoogleSheetsError(null);
       setConnectResult(null);
+      setGrantKind(defaultGrantKindFor(requestedEntry, initialMethod));
+      if (!directOAuth) setInstallChoice("specific");
     }
-    setInstallMode("none");
-    setInstallAgentIds(new Set());
-    setStep("key");
+    // A direct-OAuth deep link is an express reconnect: it redirects on arrival,
+    // so there is no credential entry for an Access step to precede.
+    setStep(directOAuth ? "key" : "access");
 
     if (directOAuth && (
       !applicationsQuery.isFetchedAfterMount ||
@@ -543,29 +588,50 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     startOAuth,
   ]);
 
+  /**
+   * Commit the connection: action defaults, agent reach, and installs.
+   *
+   * Takes the connect result and the enabled set as arguments rather than
+   * reading them from state. The Access step removed the separate who/install
+   * screens, so this now runs in the same tick as the `setConnectResult` /
+   * `setEnabled` that precede it, where that state has not been applied yet.
+   */
   const finishMutation = useMutation({
-    mutationFn: async () => {
-      const enabledIds = Object.entries(enabled)
+    mutationFn: async (input: { result: ConnectToolAppResult; enabled: Record<string, boolean> }) => {
+      const { result: connected, enabled: enabledMap } = input;
+      const enabledIds = Object.entries(enabledMap)
         .filter(([, on]) => on)
         .map(([id]) => id);
-      const selection: AppAccessSelection =
-        access === "all" ? "all_agents" : { agentIds: Array.from(agentIds) };
-      const result = await toolsApi.finishApp(selectedCompanyId!, connectResult!.connectionId, {
+      const askFirstRiskLevels = new Set(
+        Array.isArray(connected.suggestedDefaults.askFirstRiskLevels)
+          ? connected.suggestedDefaults.askFirstRiskLevels.filter(
+            (riskLevel): riskLevel is string => typeof riskLevel === "string",
+          )
+          : [],
+      );
+      const askFirstIds = connected.actions.canMakeChanges
+        .filter((action) => enabledMap[action.catalogEntryId] && askFirstRiskLevels.has(action.riskLevel))
+        .map((action) => action.catalogEntryId);
+      // The Access step asks one question about agent reach, so profile access
+      // and installs are committed to the same target set instead of drifting
+      // apart behind two separate wizard screens.
+      const selection: AppAccessSelection = installChoice === "all"
+        ? "all_agents"
+        : { agentIds: Array.from(installAgentIds) };
+      const finished = await toolsApi.finishApp(selectedCompanyId!, connected.connectionId, {
         enabledCatalogEntryIds: enabledIds,
-        askFirstCatalogEntryIds: [],
+        askFirstCatalogEntryIds: askFirstIds,
         access: selection,
       });
-      const installState = installMode === "all"
-        ? { onAll: true, agentIds: new Set<string>() }
-        : { onAll: false, agentIds: installMode === "specific" ? installAgentIds : new Set<string>() };
-      await toolsApi.putConnectionInstalls(
-        connectResult!.connectionId,
-        installPayload(selectedCompanyId!, installState),
-      );
-      return result;
+      await applyAccessInstalls(connected.connectionId);
+      return finished;
     },
     onSuccess: () => setAppStep("success"),
     onError: (error) => {
+      // Creation must feel transactional: a failed commit returns the operator
+      // to Access with their identity and agent selections intact rather than
+      // stranding them on a half-made connection.
+      setAppStep("access");
       pushToast({
         title: "Couldn’t finish setup",
         body: error instanceof Error ? error.message : "Please try again.",
@@ -675,10 +741,33 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
     : entry && getAvailableConnectionMethods(entry).length > 1
-      ? ["Pick app", "Choose connection", "Choose access", "Install tools"]
+      ? ["Pick app", "Access", "Choose connection"]
     : isGoogleSheetsEntry(entry)
-      ? ["Pick app", "Share sheet", "Choose access", "Install tools"]
+      ? ["Pick app", "Access", "Share sheet"]
       : STEP_LABELS;
+  // The Access step's identity question only makes sense when there *is* a
+  // credential, so it reads the selected method's auth kind.
+  const accessStepMethod = entry
+    ? (connectionMethodKey
+        ? getAvailableConnectionMethods(entry).find((m) => m.key === connectionMethodKey) ?? null
+        : getAvailableConnectionMethod(entry))
+    : null;
+  const accessStepAuthKind: ToolConnectionAuthKind = entry
+    ? accessStepMethod?.auth ?? "none"
+    : linkAuthMode === "none"
+      ? "none"
+      : linkAuthMode === "oauth"
+        ? "oauth"
+        : "api_key";
+  // The primary label names the next effect, so an OAuth handoff never arrives
+  // unannounced.
+  const accessMethodIsKnown = !entry
+    || Boolean(connectionMethodKey)
+    || getAvailableConnectionMethods(entry).length === 1;
+  const accessSubmitLabel = accessStepAuthKind === "oauth" && accessMethodIsKnown
+    ? `Continue to ${entry?.name ?? "sign-in"}`
+    : "Save and continue";
+
   const stepIndex = zapierSource && step !== "gallery" && step !== "success"
     ? ZAPIER_STEP_INDEX[step]
     : step === "success"
@@ -728,8 +817,9 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
             setCredentials({});
             setGoogleSheetsLinks("");
             setGoogleSheetsError(null);
-            setInstallMode("none");
             setInstallAgentIds(new Set());
+            setInstallChoice("all");
+            setGrantKind("organization");
             setStep("key");
           }}
           onRunYourOwn={() => navigate(advancedTabHref("run-your-own"))}
@@ -759,7 +849,10 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
             setGoogleSheetsError(null);
           }}
           submitting={connectMutation.isPending}
-          onBack={openGallery}
+          // Back returns to Access, not to the gallery: the design requires the
+          // identity and agent selections to survive moving backward, and
+          // `openGallery` resets them.
+          onBack={() => setAppStep("access")}
           onConnect={() => {
             if (isGoogleSheetsEntry(entry)) {
               const parsed = parseGoogleSheetIds(googleSheetsLinks);
@@ -831,32 +924,24 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
         />
       )}
 
-      {step === "who" && connectResult && (
-        <WhoStep
+      {step === "access" && (
+        <AccessStep
           appName={appName}
+          providerName={entry?.name ?? appName}
           companyId={selectedCompanyId}
-          access={access}
-          setAccess={setAccess}
-          agentIds={agentIds}
-          setAgentIds={setAgentIds}
-          onBack={() => setAppStep("key")}
-          onContinue={() => setAppStep("install")}
-        />
-      )}
-
-      {step === "install" && connectResult && (
-        <InstallStep
-          appName={appName}
-          companyId={selectedCompanyId}
-          access={access}
-          accessAgentIds={agentIds}
-          installMode={installMode}
-          setInstallMode={setInstallMode}
+          authKind={accessStepAuthKind}
+          grantKind={grantKind}
+          setGrantKind={setGrantKind}
+          installChoice={installChoice}
+          setInstallChoice={setInstallChoice}
           installAgentIds={installAgentIds}
           setInstallAgentIds={setInstallAgentIds}
-          submitting={finishMutation.isPending}
-          onBack={() => setAppStep("who")}
-          onFinish={() => finishMutation.mutate()}
+          capabilities={galleryQuery.data?.capabilities}
+          submitLabel={accessSubmitLabel}
+          // Leaving Access abandons the app choice entirely, so this resets the
+          // draft and returns to the gallery the operator came from.
+          onBack={() => (entry || linkUrl ? openGallery() : navigate("/apps"))}
+          onContinue={() => (entry ? setAppStep("key") : setStep("key"))}
         />
       )}
 
@@ -864,10 +949,13 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
         <SuccessStep
           appName={appName}
           logoUrl={entry?.branding.logoUrl}
-          enabledCount={Object.values(enabled).filter(Boolean).length}
-          access={access}
-          installMode={installMode}
-          installCount={installAgentIds.size}
+          summary={accessSummaryLines({
+            grantKind,
+            authKind: accessStepAuthKind,
+            installChoice,
+            installCount: installAgentIds.size,
+            enabledCount: Object.values(enabled).filter(Boolean).length,
+          })}
           onDone={() => navigate("/apps/connections")}
         />
       )}
@@ -2083,238 +2171,188 @@ function MethodConfigField({
   );
 }
 
-function WhoStep({
+/**
+ * Access step (PAP-17835 Surface A).
+ *
+ * Two binary questions, asked together and *before* any credential is entered,
+ * so the reader understands the identity and the reach the secret is about to
+ * get. Hick's Law: two choices, not a matrix. Both use full-row radio targets.
+ */
+export function AccessStep({
   appName,
+  providerName,
   companyId,
-  access,
-  setAccess,
-  agentIds,
-  setAgentIds,
+  authKind,
+  grantKind,
+  setGrantKind,
+  installChoice,
+  setInstallChoice,
+  installAgentIds,
+  setInstallAgentIds,
+  capabilities,
+  submitLabel,
   onBack,
   onContinue,
 }: {
   appName: string;
+  providerName: string;
   companyId: string;
-  access: "all" | "specific";
-  setAccess: (a: "all" | "specific") => void;
-  agentIds: Set<string>;
-  setAgentIds: (s: Set<string>) => void;
+  authKind: ToolConnectionAuthKind;
+  grantKind: ConnectionGrantKind;
+  setGrantKind: (kind: ConnectionGrantKind) => void;
+  installChoice: "specific" | "all";
+  setInstallChoice: (choice: "specific" | "all") => void;
+  installAgentIds: Set<string>;
+  setInstallAgentIds: (ids: Set<string>) => void;
+  capabilities?: Pick<ToolConnectionCreateCapabilities, "canSetCompanyInstall"> & {
+    companyInstallReason?: string | null;
+    editableAgentIds?: string[];
+  } | null;
+  submitLabel: string;
   onBack: () => void;
   onContinue: () => void;
 }) {
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
-    enabled: access === "specific",
   });
-  const agents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
-  const canFinish = access === "all" || agentIds.size > 0;
+  const allAgents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
+  // "Agents I pick" means agents this person may actually edit. When the server
+  // has not told us, fall back to every live agent rather than an empty list —
+  // an empty picker would read as "you have no agents".
+  const editableAgentIds = capabilities?.editableAgentIds;
+  const agents = editableAgentIds
+    ? allAgents.filter((agent) => editableAgentIds.includes(agent.id))
+    : allAgents;
+  // Company-wide install is the connection creator's to give. When it is not
+  // available the option stays visible and disabled with the reason, so the
+  // scope stays legible instead of quietly disappearing.
+  const canSetCompanyInstall = capabilities?.canSetCompanyInstall ?? true;
+  const needsIdentityChoice = authKind !== "none";
+  const canContinue = installChoice === "all"
+    ? canSetCompanyInstall
+    : installAgentIds.size > 0;
 
   return (
     <div className="mx-auto max-w-xl">
       <div className="rounded-2xl border border-border bg-card p-8">
-        <h2 className="text-xl font-bold tracking-tight">Who can use {appName}?</h2>
-        <p className="mt-1 text-sm text-muted-foreground">You can change this later from the app’s page.</p>
+        <h2 className="text-xl font-bold tracking-tight">Access</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Choose who this credential represents and where agents can use it.
+        </p>
 
-        <div className="mt-6 space-y-3">
-          <button
-            type="button"
-            onClick={() => setAccess("all")}
-            className={cn(
-              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
-              access === "all" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
+        <div className="mt-6 space-y-6">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Who is this credential for?</h3>
+            {needsIdentityChoice ? (
+              <RadioCardGroup
+                ariaLabel="Who is this credential for?"
+                className="mt-2 sm:grid-cols-2"
+                value={grantKind}
+                onValueChange={(next) => setGrantKind(next as ConnectionGrantKind)}
+                options={[
+                  {
+                    value: "user",
+                    title: "Just me",
+                    description: "Agents use this identity only when work runs for you.",
+                  },
+                  {
+                    value: "organization",
+                    title: "The whole organization",
+                    description: "Agents use one shared identity for eligible organization members.",
+                  },
+                ]}
+              />
+            ) : (
+              // A connection with no credential has no identity to choose, so
+              // asking would be a meaningless decision.
+              <p className="mt-2 text-sm text-muted-foreground">No identity required</p>
             )}
-          >
-            <Radio selected={access === "all"} />
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-foreground">All agents</span>
-                <span className="rounded-full bg-foreground px-2 py-0.5 text-(length:--text-nano) font-bold text-background">
-                  Recommended
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Anyone you’ve added to Paperclip can use {appName} in their tasks. This is what most teams want.
-              </p>
-            </div>
-          </button>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => setAccess("specific")}
-            className={cn(
-              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
-              access === "specific" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
-            )}
-          >
-            <Radio selected={access === "specific"} />
-            <div className="flex-1">
-              <span className="font-semibold text-foreground">Only specific agents</span>
-              <p className="mt-1 text-xs text-muted-foreground">Tick the agents who can use {appName}.</p>
-            </div>
-          </button>
-
-          {access === "specific" && (
-            <AgentMultiSelect
-              agents={agents}
-              selectedAgentIds={agentIds}
-              onChange={setAgentIds}
-              loading={agentsQuery.isLoading}
-              showSelectionPreview={false}
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              Which agents can use this connection?
+            </h3>
+            <RadioCardGroup
+              ariaLabel="Which agents can use this connection?"
+              className="mt-2 sm:grid-cols-2"
+              value={installChoice}
+              onValueChange={(next) => setInstallChoice(next as "specific" | "all")}
+              options={[
+                {
+                  value: "specific",
+                  title: "Agents I pick",
+                  description: "Choose one or more agents you can edit.",
+                },
+                {
+                  value: "all",
+                  title: "Any agent",
+                  description: canSetCompanyInstall
+                    ? "Make this connection available to every agent."
+                    : capabilities?.companyInstallReason ??
+                      "Only someone who can configure this connection can choose this.",
+                  disabled: !canSetCompanyInstall,
+                },
+              ]}
             />
-          )}
+            {installChoice === "specific" ? (
+              <div className="mt-2">
+                <AgentMultiSelect
+                  agents={agents}
+                  selectedAgentIds={installAgentIds}
+                  onChange={setInstallAgentIds}
+                  loading={agentsQuery.isLoading}
+                  emptyMessage="You cannot edit any agents yet."
+                  showSelectionPreview={false}
+                />
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 
-      <div className="mt-6 flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack}>
+      {/* Mobile stacks actions full-width with the primary action first in
+          reading order; desktop keeps Back on the left. */}
+      <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <Button variant="ghost" className="w-full sm:w-auto" onClick={onBack}>
           Back
         </Button>
-        <Button onClick={onContinue} disabled={!canFinish}>
-          Continue to install
+        <Button className="w-full sm:w-auto" onClick={onContinue} disabled={!canContinue}>
+          {submitLabel}
         </Button>
       </div>
     </div>
   );
 }
 
-export function InstallStep({
-  appName,
-  companyId,
-  access,
-  accessAgentIds,
-  installMode,
-  setInstallMode,
-  installAgentIds,
-  setInstallAgentIds,
-  submitting,
-  onBack,
-  onFinish,
-}: {
-  appName: string;
-  companyId: string;
-  access: "all" | "specific";
-  accessAgentIds: Set<string>;
-  installMode: InstallMode;
-  setInstallMode: (mode: InstallMode) => void;
-  installAgentIds: Set<string>;
-  setInstallAgentIds: (ids: Set<string>) => void;
-  submitting: boolean;
-  onBack: () => void;
-  onFinish: () => void;
-}) {
-  const agentsQuery = useQuery({
-    queryKey: queryKeys.agents.list(companyId),
-    queryFn: () => agentsApi.list(companyId),
-  });
-  const agents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
-  const installSpecific = () => {
-    setInstallMode("specific");
-    if (installAgentIds.size === 0 && access === "specific") setInstallAgentIds(new Set(accessAgentIds));
-  };
-  const extendingAgentIds = access === "all"
-    ? []
-    : installMode === "all"
-      ? agents.filter((agent) => !accessAgentIds.has(agent.id)).map((agent) => agent.id)
-      : [...installAgentIds].filter((id) => !accessAgentIds.has(id));
-  const canFinish = installMode !== "specific" || installAgentIds.size > 0;
-  const extendingLabel = extendingAgentIds.length === 1
-    ? agents.find((agent) => agent.id === extendingAgentIds[0])?.name ?? "1 agent"
-    : `${extendingAgentIds.length} agents`;
-
-  return (
-    <div className="mx-auto max-w-xl">
-      <div className="rounded-2xl border border-border bg-card p-8">
-        <h2 className="text-xl font-bold tracking-tight">Install {appName} tools?</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Access is permission. Install decides whose runs actually carry these tools.
-        </p>
-
-        <div className="mt-5">
-          <InlineBanner tone="info" compact>
-            {installInfoNotice(appName)}
-          </InlineBanner>
-        </div>
-
-        <div className="mt-6 space-y-3">
-          <button
-            type="button"
-            onClick={() => setInstallMode("none")}
-            className={cn(
-              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
-              installMode === "none" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
-            )}
-          >
-            <Radio selected={installMode === "none"} />
-            <div>
-              <span className="font-semibold text-foreground">Not yet</span>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Keep {appName} permitted only. You can install it later from the app or agent page.
-              </p>
-            </div>
-          </button>
-
-          <button
-            type="button"
-            onClick={installSpecific}
-            className={cn(
-              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
-              installMode === "specific" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
-            )}
-          >
-            <Radio selected={installMode === "specific"} />
-            <div className="flex-1">
-              <span className="font-semibold text-foreground">Specific agents</span>
-              <p className="mt-1 text-xs text-muted-foreground">Tick the agents that should load {appName} every run.</p>
-            </div>
-          </button>
-
-          {installMode === "specific" ? (
-            <div className="ml-7 border-l border-border pl-4">
-              <AgentMultiSelect
-                agents={agents}
-                selectedAgentIds={installAgentIds}
-                onChange={setInstallAgentIds}
-                loading={agentsQuery.isLoading}
-                showSelectionPreview={false}
-              />
-            </div>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={() => setInstallMode("all")}
-            className={cn(
-              "flex w-full items-start gap-3 rounded-xl border-2 p-4 text-left transition-colors",
-              installMode === "all" ? "border-foreground bg-muted/40" : "border-border hover:border-foreground/30",
-            )}
-          >
-            <Radio selected={installMode === "all"} />
-            <div>
-              <span className="font-semibold text-foreground">All agents</span>
-              <p className="mt-1 text-xs text-muted-foreground">{INSTALL_ALL_WARNING}</p>
-            </div>
-          </button>
-
-          {extendingAgentIds.length > 0 ? (
-            <InlineBanner tone="warning" compact>
-              {autoExtendNotice(extendingLabel)}
-            </InlineBanner>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="mt-6 flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} disabled={submitting}>
-          Back
-        </Button>
-        <Button onClick={onFinish} disabled={submitting || !canFinish}>
-          {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Finishing..." : "Finish setup"}
-        </Button>
-      </div>
-    </div>
-  );
+/**
+ * Summary of what the Access step committed. Three lines, not badges: identity,
+ * reach, and the existing action summary each said once.
+ */
+export function accessSummaryLines(input: {
+  grantKind: ConnectionGrantKind;
+  authKind: ToolConnectionAuthKind;
+  installChoice: "specific" | "all";
+  installCount: number;
+  enabledCount: number;
+}): Array<{ label: string; value: string }> {
+  const identity = input.authKind === "none"
+    ? "No identity required"
+    : input.grantKind === "user"
+      ? "Your identity"
+      : "Organization identity";
+  const availableTo = input.installChoice === "all"
+    ? "Any agent"
+    : `${input.installCount} selected ${input.installCount === 1 ? "agent" : "agents"}`;
+  return [
+    { label: "Identity", value: identity },
+    { label: "Available to", value: availableTo },
+    {
+      label: "Actions",
+      value: `${input.enabledCount} ${input.enabledCount === 1 ? "action" : "actions"} on`,
+    },
+  ];
 }
 
 function Radio({ selected }: { selected: boolean }) {
@@ -2333,25 +2371,15 @@ function Radio({ selected }: { selected: boolean }) {
 function SuccessStep({
   appName,
   logoUrl,
-  enabledCount,
-  access,
-  installMode,
-  installCount,
+  summary,
   onDone,
 }: {
   appName: string;
   logoUrl?: string | null;
-  enabledCount: number;
-  access: "all" | "specific";
-  installMode: InstallMode;
-  installCount: number;
+  /** Identity / Available to / Actions, as three lines rather than badges. */
+  summary: Array<{ label: string; value: string }>;
   onDone: () => void;
 }) {
-  const installSummary = installMode === "all"
-    ? "Installed on all agents"
-    : installMode === "specific"
-      ? `${installCount} ${installCount === 1 ? "agent" : "agents"} installed`
-      : "Permitted only";
   return (
     <div className="mx-auto max-w-md py-10 text-center">
       <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-500/10">
@@ -2361,18 +2389,17 @@ function SuccessStep({
         <AppLogo name={appName} logoUrl={logoUrl} size={28} />
         <h2 className="text-2xl font-bold tracking-tight">{appName} is ready.</h2>
       </div>
-      <p className="mt-2 text-sm text-muted-foreground">
-        {installMode === "none"
-          ? "Agents can use it after you install it on their Tools tab."
-          : "Installed agents will load it on their next run."}
-      </p>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {enabledCount} {enabledCount === 1 ? "action" : "actions"} on ·{" "}
-        {access === "all" ? "All agents can use it" : "Specific agents can use it"} · {installSummary}
-      </p>
+      <dl className="mx-auto mt-6 max-w-xs space-y-1 text-left">
+        {summary.map((line) => (
+          <div key={line.label} className="flex items-baseline justify-between gap-4">
+            <dt className="text-xs font-medium text-muted-foreground">{line.label}</dt>
+            <dd className="text-sm text-foreground">{line.value}</dd>
+          </div>
+        ))}
+      </dl>
       <div className="mt-8">
         <Button size="lg" className="px-10" onClick={onDone}>
-          Done
+          View connection
         </Button>
       </div>
     </div>

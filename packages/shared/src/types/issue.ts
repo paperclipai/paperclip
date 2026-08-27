@@ -1268,6 +1268,23 @@ export interface RequestConfirmationSecretProposalResult {
   updatedAt: string;
 }
 
+/**
+ * Presentation metadata for a connection-authorization confirmation
+ * (PAP-17835). The interaction kind and the server-addressed audience are
+ * unchanged; this block only lets the card render "Connect your Gmail to
+ * continue" and name the agent that is waiting, instead of parsing a magic
+ * title string to work out what the card is about.
+ */
+export interface RequestConfirmationConnectionAuthorizationPayload {
+  version: 1;
+  /** Provider label for the copy, e.g. "Gmail". Never a secret name or ref. */
+  providerName: string;
+  /** The connection's display name, when it differs from the provider. */
+  connectionName?: string | null;
+  /** The agent whose work is blocked, for "<Agent> needs your <Provider> identity". */
+  requestingAgentName?: string | null;
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1282,6 +1299,7 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
+  connectionAuthorization?: RequestConfirmationConnectionAuthorizationPayload;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1395,6 +1413,7 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
   addresseeAgentId?: string | null;
+  addresseeUserId?: string | null;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;

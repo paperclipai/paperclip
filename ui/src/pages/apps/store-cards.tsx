@@ -7,7 +7,7 @@ import { appSourceConnectHref } from "./app-connect-policy";
 export const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "posthog", "linear"];
 
 /** Deep-link into the Connect wizard's bring-your-own-tool URL flow. */
-export const BYO_CONNECT_HREF = "/apps/byo";
+export const BYO_CONNECT_HREF = "/apps/connect?byo=1";
 
 /** Zapier connects with the complete MCP URL issued by Zapier. */
 export const ZAPIER_CONNECT_HREF = "/apps/connect?byo=1&source=zapier";

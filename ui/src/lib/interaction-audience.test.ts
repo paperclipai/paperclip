@@ -107,6 +107,30 @@ describe("describeInteractionAudience", () => {
     expect(audience.narrowedNote).toBeNull();
   });
 
+  /**
+   * PAP-17859, caught by rendering the card rather than reading it:
+   * `formatAssigneeUserLabel` returns the display-cased "You" for the signed-in
+   * reader, which is correct in a badge and wrong inside a sentence.
+   */
+  it("lowercases a self-referring label inside the summary sentence", () => {
+    const addressed = describeInteractionAudience({
+      interaction: confirmation({ addresseeUserId: "user-me" }),
+      addresseeLabel: "You",
+    });
+    expect(addressed.summary).toBe("Only you can respond.");
+    expect(addressed.shortSummary).toBe("Only you can respond");
+
+    const excluded = describeInteractionAudience({
+      interaction: confirmation({
+        requestedResolverPolicy: "not_creator",
+        effectiveResolverPolicy: "not_creator",
+        resolverPolicyProvenance: "explicit",
+      }),
+      creatorLabel: "You",
+    });
+    expect(excluded.summary).toBe("Anyone in the company except you can respond.");
+  });
+
   it("falls back to a generic creator phrase when the creator label is unknown", () => {
     const audience = describeInteractionAudience({
       interaction: confirmation({
@@ -161,6 +185,20 @@ describe("describeInteractionAudience", () => {
       "Only a person on the board can respond — agents cannot resolve this card.",
     );
     expect(audience.label).toBe("Human only");
+  });
+
+  it("names one addressed user instead of the whole board", () => {
+    const audience = describeInteractionAudience({
+      interaction: confirmation({
+        addresseeUserId: "user-alice",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+      }),
+      addresseeLabel: "Alice",
+    });
+    expect(audience.summary).toBe("Only Alice can respond.");
+    expect(audience.shortSummary).toBe("Only Alice can respond");
+    expect(audience.label).toBe("Addressed");
   });
 
   it("explains a governed-action clamp", () => {

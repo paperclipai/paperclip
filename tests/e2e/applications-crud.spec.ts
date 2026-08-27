@@ -75,7 +75,7 @@ test.describe.serial("applications lifecycle", () => {
 
   test("Connections list surfaces connected and not-connected apps", async ({ page, request }) => {
     const connectedName = `${APP_PREFIX}-connected`;
-    const notConnectedName = `${APP_PREFIX}-not-connected`;
+    const notConnectedName = `${APP_PREFIX}-offline`;
     const connected = await createConnection(request, seed.companyId, {
       applicationName: connectedName,
       name: connectedName,

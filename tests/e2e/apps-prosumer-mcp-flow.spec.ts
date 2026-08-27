@@ -4,7 +4,7 @@ import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 
 // prosumer MCP flow — QA harness for the prosumer Connect-an-app flow on top of the
 // tool-access foundation. Covers the M-series happy path (gallery + key paste
-// → choose actions → who-can-use → success), the expired-key reconnect path,
+// → choose access → install → success), the expired-key reconnect path,
 // the Needs-attention surface, and a regression check that /apps/advanced
 // still mounts.
 //
@@ -32,8 +32,7 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
 // ---- Mock MCP HTTP fixture --------------------------------------------------
 // Minimal MCP JSON-RPC server. /catalog refresh hits this with method
 // `tools/list`; the gateway calls it with `tools/call`. We expose one
-// read-only and one write tool so the wizard can show the Ask-first toggle
-// for write actions.
+// read-only and one write tool so setup can apply risk-based ask-first defaults.
 
 type MockMcpServer = { url: string; close: () => Promise<void>; captures: Array<{ method: string; params: unknown }> };
 
@@ -159,7 +158,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await linkInput.fill(mock.url);
     await page.getByRole("button", { name: "Continue" }).click();
 
-    // LinkKey step shows the guided MCP connection heading. Mock doesn't
+    // LinkKey step keeps the BYO connection heading. Mock doesn't
     // require a key — leave the default "No" answer.
     await expect(page.getByRole("heading", { name: "Connect your own MCP server" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-02-key-step.png`, fullPage: true });
@@ -167,7 +166,9 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
 
-    // Who-can-use step — defaults to All agents.
+    // The streamlined wizard enables discovered actions and applies its
+    // risk-based ask-first defaults when setup finishes, then goes directly to
+    // the access step. Classification remains covered by the server suite.
     await expect(page.getByRole("heading", { name: /Who can use/i })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-03-who-step.png`, fullPage: true });
 

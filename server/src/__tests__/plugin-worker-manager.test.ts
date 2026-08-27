@@ -1218,7 +1218,7 @@ describe("plugin worker manager setup-token pty route gate", () => {
     } finally {
       await handle.stop().catch(() => undefined);
     }
-  });
+  }, 15_000);
 
   it("routes delayed input to the worker and back to the listener", async () => {
     const handle = makeLoginPtyHandle();

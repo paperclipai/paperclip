@@ -9,7 +9,9 @@ import {
   type DeploymentExposure,
   type DeploymentMode,
   type PermissionKey,
+  type ToolConnectionCreateCapabilities,
   connectToolAppSchema,
+  createConnectionGrantDelegationSchema,
   createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
   createToolConnectionSchema,
@@ -23,6 +25,7 @@ import {
   duplicateToolProfileSchema,
   finishToolAppSchema,
   reconnectToolAppSchema,
+  replaceConnectionGrantMembersSchema,
   reviewToolProfileNewToolsSchema,
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
@@ -49,6 +52,9 @@ import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
 } from "../services/tool-access.js";
+
+const COMPANY_INSTALL_DENIAL_REASON =
+  "Only someone who can configure this connection can choose this.";
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
@@ -102,6 +108,19 @@ function classifyConnectionUpdate(
     events.push({ lifecycle: "allowlist_changed", details: { added, removed, total: afterIds.length } });
   }
   return events;
+}
+
+export function filterVisibleToolConnections<T extends {
+  status?: string;
+  createdByUserId?: string | null;
+}>(
+  connections: T[],
+  actor: { userId?: string | null; canManageConnections: boolean },
+): T[] {
+  return connections.filter((connection) =>
+    connection.status !== "draft"
+    || actor.canManageConnections
+    || Boolean(actor.userId && connection.createdByUserId === actor.userId));
 }
 
 export function toolAccessRoutes(
@@ -227,15 +246,127 @@ export function toolAccessRoutes(
         eq(connectionGrants.connectionId, connection.id),
         eq(connectionGrants.status, "active"),
         or(
-          eq(connectionGrants.kind, "workspace"),
+          eq(connectionGrants.kind, "organization"),
           req.actor.userId
             ? and(eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, req.actor.userId))
-            : eq(connectionGrants.kind, "workspace"),
+            : eq(connectionGrants.kind, "organization"),
         ),
       ))
       .limit(1);
     if (grant) return;
     throw forbidden("You need access to this connection before you can install it on an agent");
+  }
+
+  /**
+   * Non-throwing membership probe for capability reporting (PAP-17835).
+   *
+   * `activeToolMembership` throws for viewers because it guards mutations. The
+   * personal-connections UI still has to *render* for a viewer, so capability
+   * computation needs the role without the 403. Returns `null` for a principal
+   * with no scoped membership (local implicit / instance admin), matching
+   * `activeToolMembership`'s "unrestricted" sentinel.
+   */
+  function toolMembershipRole(req: Request, companyId: string): {
+    unrestricted: boolean;
+    role: string | null;
+    isViewer: boolean;
+    isActive: boolean;
+  } {
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return { unrestricted: true, role: null, isViewer: false, isActive: true };
+    }
+    const membership = Array.isArray(req.actor.memberships)
+      ? req.actor.memberships.find((item) => item.companyId === companyId)
+      : null;
+    const isActive = Boolean(membership && membership.status === "active");
+    const role = membership?.membershipRole ?? null;
+    return { unrestricted: false, role, isViewer: role === "viewer", isActive };
+  }
+
+  async function isToolConnectionManagerQuiet(req: Request, companyId: string) {
+    const membership = toolMembershipRole(req, companyId);
+    if (membership.unrestricted) return true;
+    if (!membership.isActive || membership.isViewer) return false;
+    if (membership.role === "owner" || membership.role === "admin") return true;
+    return Boolean(req.actor.userId && await access.hasPermission(
+      companyId,
+      "user",
+      req.actor.userId,
+      "tools:manage_connections",
+    ));
+  }
+
+  async function describeConnectionCreateCapabilities(
+    req: Request,
+    companyId: string,
+  ): Promise<ToolConnectionCreateCapabilities> {
+    const canSetCompanyInstall = await isToolConnectionManagerQuiet(req, companyId);
+    return {
+      canSetCompanyInstall,
+      companyInstallReason: canSetCompanyInstall ? null : COMPANY_INSTALL_DENIAL_REASON,
+    };
+  }
+
+  /**
+   * Server-computed capabilities for the connection identity/install surfaces.
+   * The UI renders the §3 matrix from these booleans instead of reconstructing
+   * policy from role strings, because creator identity and per-agent edit rights
+   * are not derivable client-side.
+   */
+  async function describeConnectionCapabilities(
+    req: Request,
+    connection: { id: string; companyId: string; createdByUserId?: string | null },
+  ) {
+    const membership = toolMembershipRole(req, connection.companyId);
+    const isManager = await isToolConnectionManagerQuiet(req, connection.companyId);
+    const mutationCapable = membership.unrestricted || (membership.isActive && !membership.isViewer);
+    const isCreator = Boolean(req.actor.userId && connection.createdByUserId === req.actor.userId);
+    const canConfigure = isManager || (mutationCapable && isCreator);
+    const editableAgentIds: string[] = [];
+    if (mutationCapable) {
+      const companyAgents = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.companyId, connection.companyId));
+      for (const agent of companyAgents) {
+        const decision = await access.decide({
+          actor: req.actor,
+          action: "agent_config:update",
+          resource: { type: "agent", companyId: connection.companyId, agentId: agent.id },
+        });
+        if (decision.allowed) editableAgentIds.push(agent.id);
+      }
+    }
+    return {
+      canConfigure,
+      canCreateOrganizationGrant: canConfigure,
+      canSetCompanyInstall: canConfigure,
+      // Personal consent belongs to the person: it needs a named board user, and
+      // it is never available to a viewer or to an unauthenticated principal.
+      canConnectAsCurrentUser: Boolean(req.actor.userId) && mutationCapable,
+      canManageAgentInstalls: mutationCapable && editableAgentIds.length > 0,
+      canViewOtherPersonalIdentities: isManager,
+      editableAgentIds,
+    };
+  }
+
+  /**
+   * Per-grant authorization. Revoking your own identity is always allowed (the
+   * consent is yours to withdraw); revoking anyone else's is manager-only — that
+   * is the kill switch. Audience editing is creator-or-manager, and only for an
+   * organization grant.
+   */
+  function describeGrantCapabilities(
+    grant: { kind: string; subjectUserId: string | null; createdByUserId: string | null },
+    context: { userId: string | null; isManager: boolean; mutationCapable: boolean },
+  ) {
+    if (!context.mutationCapable) return { canRevoke: false, canEditAudience: false };
+    const isOwnGrant = Boolean(context.userId && grant.subjectUserId === context.userId);
+    const isGrantCreator = Boolean(context.userId && grant.createdByUserId === context.userId);
+    return {
+      canRevoke: isOwnGrant || isGrantCreator || context.isManager,
+      canEditAudience: grant.kind === "organization" && (isGrantCreator || context.isManager),
+    };
   }
 
   async function assertBoardAnyToolPermission(req: Request, companyId: string, permissionKeys: PermissionKey[]) {
@@ -341,6 +472,7 @@ export function toolAccessRoutes(
     assertCompanyAccess(req, companyId);
     const googleSheetsAvailability = googleSheetsRobotEmailFromEnv();
     res.json({
+      capabilities: await describeConnectionCreateCapabilities(req, companyId),
       apps: CONNECTABLE_APP_DEFINITIONS.map((app) =>
         app.slug === "google-sheets"
           ? {
@@ -378,9 +510,16 @@ export function toolAccessRoutes(
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
       if (result.auth?.kind === "oauth") {
         try {
+          // "Just me" must consent as the caller, not as the workspace: passing
+          // `subjectUserId` is what makes the callback land the tokens on the
+          // caller's personal grant instead of an organization grant
+          // (PAP-17835). The service refuses any subject other than the actor,
+          // so this cannot start consent on someone else's behalf.
+          const personalSubjectUserId = req.body.grantKind === "user" ? req.actor.userId ?? null : null;
           const start = await svc.startOAuth(companyId, result.connectionId, {
             redirectUri: oauthRedirectUri(),
             actor: getActorInfo(req),
+            ...(personalSubjectUserId ? { subjectUserId: personalSubjectUserId } : {}),
           });
           result.auth.startUrl = start.authorizationUrl;
           result.auth.issuer = start.issuer ?? result.auth.issuer ?? null;
@@ -692,7 +831,14 @@ export function toolAccessRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json({ connections: await svc.listConnections(companyId) });
+    const connections = await svc.listConnections(companyId);
+    const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
+    res.json({
+      connections: filterVisibleToolConnections(connections, {
+        userId: req.actor.userId,
+        canManageConnections,
+      }),
+    });
   });
 
   router.post("/companies/:companyId/tools/connections", validate(createToolConnectionSchema), async (req, res) => {
@@ -731,8 +877,69 @@ export function toolAccessRoutes(
     assertBoard(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
-    res.json(await svc.listConnectionGrants(connection.id, connection.companyId));
+    const listed = await svc.listConnectionGrants(connection.id, connection.companyId);
+    const capabilities = await describeConnectionCapabilities(req, connection);
+    const membership = toolMembershipRole(req, connection.companyId);
+    const grantContext = {
+      userId: req.actor.userId ?? null,
+      isManager: await isToolConnectionManagerQuiet(req, connection.companyId),
+      mutationCapable: membership.unrestricted || (membership.isActive && !membership.isViewer),
+    };
+    // A regular member has no reason to browse coworkers' personal identities;
+    // the manager kill switch does. Filtering here rather than in the UI keeps
+    // the list itself — not just its controls — under server policy.
+    const visibleGrants = listed.grants.filter((grant) =>
+      grant.kind === "organization"
+      || capabilities.canViewOtherPersonalIdentities
+      || (grantContext.userId !== null && grant.subjectUserId === grantContext.userId));
+    res.json({
+      ...listed,
+      grants: visibleGrants.map((grant) => ({
+        ...grant,
+        capabilities: describeGrantCapabilities(grant, grantContext),
+      })),
+      capabilities,
+      currentUserId: grantContext.userId,
+      members: capabilities.canConfigure
+        ? await svc.listConnectionAudienceMembers(connection.companyId)
+        : [],
+    });
   });
+
+  router.put(
+    "/tool-connections/:connectionId/grants/:grantId/members",
+    validate(replaceConnectionGrantMembersSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+      if (!connection) return;
+      // Viewer/inactive principals are rejected before anything else, so a
+      // read-only member can never reach the audience writer.
+      activeToolMembership(req, connection.companyId);
+      const { grants } = await svc.listConnectionGrants(connection.id, connection.companyId);
+      const target = grants.find((grant) => grant.id === req.params.grantId);
+      if (!target) throw notFound("Connection grant not found");
+      const isGrantCreator = Boolean(req.actor.userId && target.createdByUserId === req.actor.userId);
+      if (!isGrantCreator) await assertToolConnectionConfigureAccess(req, connection);
+      const memberUserIds = req.body.memberUserIds as string[];
+      const grant = await svc.replaceConnectionGrantMembers(
+        connection.id,
+        target.id,
+        memberUserIds,
+        getActorInfo(req),
+      );
+      await logActivity(db, {
+        companyId: connection.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_connection.grant_audience_replaced",
+        entityType: "connection_grant",
+        entityId: grant.id,
+        details: { connectionId: connection.id, memberCount: memberUserIds.length },
+      });
+      res.json(grant);
+    },
+  );
 
   router.post("/tool-connections/:connectionId/grants/installations", async (req, res) => {
     assertBoard(req);
@@ -784,6 +991,60 @@ export function toolAccessRoutes(
       details: { connectionId: connection.id, kind: grant.kind },
     });
     res.json(grant);
+  });
+
+  router.post("/tool-connections/:connectionId/grants/:grantId/delegations", validate(createConnectionGrantDelegationSchema), async (req, res) => {
+    assertBoard(req);
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    const ownerUserId = req.actor.userId;
+    if (!ownerUserId) throw forbidden("A named user is required to delegate a personal grant");
+    const agentId = req.body.agentId;
+    const delegation = await svc.createConnectionGrantDelegation(
+      connection.id,
+      req.params.grantId as string,
+      agentId,
+      ownerUserId,
+    );
+    await logActivity(db, {
+      companyId: connection.companyId,
+      actorType: "user",
+      actorId: ownerUserId,
+      action: "tool_connection.grant_delegated",
+      entityType: "connection_grant",
+      entityId: req.params.grantId as string,
+      details: { connectionId: connection.id, delegationId: delegation.id, agentId },
+    });
+    res.status(201).json(delegation);
+  });
+
+  router.delete("/tool-connections/:connectionId/grants/:grantId/delegations/:delegationId", async (req, res) => {
+    assertBoard(req);
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    const { grants } = await svc.listConnectionGrants(connection.id, connection.companyId);
+    const grant = grants.find((candidate) => candidate.id === req.params.grantId);
+    if (!grant) throw notFound("Connection grant not found");
+    const canRevokeOwnDelegation = Boolean(req.actor.userId && grant.subjectUserId === req.actor.userId);
+    if (!canRevokeOwnDelegation && !await isToolConnectionManager(req, connection.companyId)) {
+      throw forbidden("Only the personal grant owner or a connection manager can revoke a delegation");
+    }
+    const delegation = await svc.revokeConnectionGrantDelegation(
+      connection.id,
+      grant.id,
+      req.params.delegationId as string,
+      getActorInfo(req),
+    );
+    await logActivity(db, {
+      companyId: connection.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_connection.grant_delegation_revoked",
+      entityType: "connection_grant",
+      entityId: grant.id,
+      details: { connectionId: connection.id, delegationId: delegation.id, agentId: delegation.agentId },
+    });
+    res.json(delegation);
   });
 
   router.get("/tool-connections/:connectionId/usage", async (req, res) => {

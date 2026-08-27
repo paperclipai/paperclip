@@ -90,6 +90,7 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       ownership: "customer",
       transport: "mcp_remote",
       authKind: "none",
+      credentialPolicy: "shared",
       status: "draft",
       enabled: false,
       config: { url: "http://127.0.0.1:8848/mcp" },

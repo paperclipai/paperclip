@@ -118,6 +118,29 @@ function buttonContaining(text: string): HTMLButtonElement | undefined {
   ) as HTMLButtonElement | undefined;
 }
 
+/**
+ * Advance past the Access step (PAP-17835), which now sits between picking a
+ * curated app and entering its credential. Picks "Any agent" so Continue is
+ * enabled without depending on the agent list.
+ */
+async function passAccessStep() {
+  const anyAgent = Array.from(document.body.querySelectorAll('[role="radio"]'))
+    .find((option) => option.textContent?.includes("Any agent"));
+  if (!anyAgent) return;
+  await act(async () => {
+    anyAgent.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+  const submit = Array.from(document.body.querySelectorAll("button")).find(
+    (b) => b.textContent?.trim() === "Save and continue"
+      || b.textContent?.trim().startsWith("Continue to"),
+  );
+  await act(async () => {
+    submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+}
+
 async function gotoLinkFrame(container: HTMLDivElement, url: string) {
   const linkInput = Array.from(
     container.querySelectorAll<HTMLInputElement>("input"),
@@ -143,6 +166,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       apps: [
         ZAPIER,
       ],
+      capabilities: {
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
     });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
@@ -225,9 +252,225 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(nameInput?.value).toBe("example.com/actions");
   });
 
+  // -------------------------------------------------------------------------
+  // Access step (PAP-17835). Identity and agent reach are chosen before any
+  // credential is entered.
+  // -------------------------------------------------------------------------
+
+  it("asks both access questions before the credential and defaults per auth kind", async () => {
+    mockParams.appKey = "zapier";
+    await render();
+
+    expect(container.textContent).toContain("Access");
+    expect(container.textContent).toContain("Who is this credential for?");
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    // Nothing about the credential is on screen yet.
+    expect(container.textContent).not.toContain("Connect Zapier");
+
+    const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
+    const justMe = radios.find((r) => r.textContent?.includes("Just me"));
+    const wholeOrg = radios.find((r) => r.textContent?.includes("The whole organization"));
+    const agentsIPick = radios.find((r) => r.textContent?.includes("Agents I pick"));
+    expect(justMe).toBeTruthy();
+    expect(wholeOrg).toBeTruthy();
+    // A key-based app is a shared service credential by default...
+    expect(wholeOrg?.getAttribute("aria-checked")).toBe("true");
+    expect(justMe?.getAttribute("aria-checked")).toBe("false");
+    // ...and the safer agent default is a picked set, not every agent.
+    expect(agentsIPick?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("blocks Continue until Agents I pick has at least one agent", async () => {
+    mockParams.appKey = "zapier";
+    await render();
+
+    // "Agents I pick" with nothing picked is not a usable connection, so the
+    // primary action stays disabled rather than failing at submit.
+    expect(buttonByText("Save and continue")?.disabled).toBe(true);
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('[role="radio"]'))
+        .find((r) => r.textContent?.includes("Any agent"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(buttonByText("Save and continue")?.disabled).toBe(false);
+  });
+
+  it("keeps the access selections when the wizard moves backward", async () => {
+    mockParams.appKey = "zapier";
+    await render();
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('[role="radio"]'))
+        .find((r) => r.textContent?.includes("Just me"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('[role="radio"]'))
+        .find((r) => r.textContent?.includes("Any agent"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    await act(async () => {
+      buttonByText("Save and continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Connect Zapier");
+
+    await act(async () => {
+      buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // Moving backward must not silently reset the identity the operator chose.
+    const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
+    expect(radios.find((r) => r.textContent?.includes("Just me"))?.getAttribute("aria-checked"))
+      .toBe("true");
+    expect(radios.find((r) => r.textContent?.includes("Any agent"))?.getAttribute("aria-checked"))
+      .toBe("true");
+  });
+
+  /**
+   * The identity question is answered per connection method, not per auth kind.
+   *
+   * A homogeneous fixture cannot tell those two apart: if every app on screen
+   * is API-key-only, a blanket rule and a per-method predicate produce exactly
+   * the same DOM. So both live in one gallery here — Zapier, whose only method
+   * is an API key, and PostHog, whose methods are identity-bearing sign-in plus
+   * a key its own label calls *personal*. The two mounts must disagree about
+   * the default, which no blanket rule can do.
+   *
+   * "Just me" also has to stay live for the API-key-only app, not disabled with
+   * a reason: the personal key path completes and lands on the caller's own
+   * grant, so disabling it would describe the product wrongly.
+   */
+  it("decides the identity default per method, and keeps a personal key submittable", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [ZAPIER, POSTHOG] });
+
+    const identityChoices = () => {
+      const radios = Array.from(
+        document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+      );
+      return {
+        justMe: radios.find((r) => r.textContent?.includes("Just me")),
+        wholeOrg: radios.find((r) => r.textContent?.includes("The whole organization")),
+      };
+    };
+
+    // --- API-key-only method: shared by default, personal still offered ------
+    let root = await render();
+    await act(async () => {
+      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const zapier = identityChoices();
+    expect(zapier.wholeOrg?.getAttribute("aria-checked")).toBe("true");
+    expect(zapier.justMe?.getAttribute("aria-checked")).toBe("false");
+    // Present, and genuinely selectable — not the disabled-with-reason state.
+    expect(zapier.justMe).toBeTruthy();
+    expect(zapier.justMe?.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain(
+      "This connection method supports a shared organization credential only.",
+    );
+
+    await act(async () => {
+      zapier.justMe?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('[role="radio"]'))
+        .find((r) => r.textContent?.includes("Any agent"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Save and continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
+    await act(async () => setInputValue(keyField!, "zapier-personal-token"));
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // The load-bearing assertion: an API-key-only method reaches the server as
+    // a personal grant. A disabled "Just me" would make this unreachable.
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
+      galleryKey: "zapier",
+      grantKind: "user",
+    });
+
+    // --- Same gallery, identity-bearing method: personal by default ----------
+    await act(async () => root.unmount());
+    document.body.innerHTML = "";
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockParams.appKey = "posthog";
+    root = await render();
+
+    const posthog = identityChoices();
+    expect(posthog.justMe?.getAttribute("aria-checked")).toBe("true");
+    expect(posthog.wholeOrg?.getAttribute("aria-checked")).toBe("false");
+    expect(posthog.justMe?.disabled).toBe(false);
+    expect(posthog.wholeOrg?.disabled).toBe(false);
+  });
+
+  /**
+   * Design §"Question 2": a member who may create a personal grant but cannot
+   * configure a company-wide install sees **Any agent** disabled with the
+   * reason — not hidden. Disabling it is only half the job; Continue has to
+   * refuse it too, or the forbidden choice is still submittable by keyboard.
+   *
+   * Driven through AppsConnect so this proves the pre-connection capability
+   * returned with the gallery reaches the real create flow.
+   */
+  it("disables Any agent and blocks Continue when the member cannot install company-wide", async () => {
+    mockParams.appKey = "zapier";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [ZAPIER],
+      capabilities: {
+        canSetCompanyInstall: false,
+        companyInstallReason: "Your company policy limits this choice to connection managers.",
+      },
+    });
+    await render();
+
+    const anyAgent = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+    ).find((r) => r.textContent?.includes("Any agent"));
+
+    // Visible, with the reason, and not selectable.
+    expect(anyAgent).toBeTruthy();
+    expect(anyAgent?.disabled).toBe(true);
+    expect(anyAgent?.textContent).toContain(
+      "Your company policy limits this choice to connection managers.",
+    );
+    // "Agents I pick" is the live alternative, so the step is not a dead end.
+    const pick = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+    ).find((r) => r.textContent?.includes("Agents I pick"));
+    expect(pick?.disabled).toBe(false);
+    // Continue refuses the forbidden choice even though it is the current one.
+    expect(buttonByText("Save and continue")?.disabled).toBe(true);
+  });
+
   it("opens the selected app directly on its setup route", async () => {
     mockParams.appKey = "zapier";
     await render();
+
+    // A deep-linked app lands on Access first: identity and reach are chosen
+    // before the credential (PAP-17835).
+    expect(container.textContent).toContain("Who is this credential for?");
+    await passAccessStep();
 
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
@@ -237,6 +480,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockParams.appKey = "posthog";
     listGalleryMock.mockResolvedValueOnce({ apps: [POSTHOG] });
     await render();
+    // Access comes first for a curated app; the method chooser shares a screen
+    // with the credential fields, so it sits behind it (PAP-17835).
+    expect(container.textContent).toContain("Who is this credential for?");
+    await passAccessStep();
 
     expect(container.textContent).toContain("How do you want to connect?");
     expect(buttonByText("Sign in with PostHog")?.getAttribute("aria-pressed")).toBe("false");
@@ -290,6 +537,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         mode: "tools",
       },
       applicationId: undefined,
+      // PostHog's Access step defaults to "Just me" because its primary method
+      // is identity-bearing sign-in, and a personal API key is personal too.
+      // The choice was on screen and accepted, so it reaches the server.
+      grantKind: "user",
     });
   });
 
@@ -719,7 +970,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock.mock.calls[0]?.[1].credentialValues).toBeUndefined();
   });
 
-  it("keeps Zapier visible and uses the compact agent multi-selector throughout its wizard", async () => {
+  it("keeps Zapier visible and finishes without a separate access or install step", async () => {
     mockSearch.value = "byo=1&source=zapier";
     listGalleryMock.mockResolvedValueOnce({
       apps: [
@@ -746,12 +997,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await render();
 
-    expect(container.textContent).toContain("Step 1 of 3");
+    // The pasted-URL path enters its server address in this step, so an identity
+    // question cannot precede it; it keeps today's every-agent default rather
+    // than asking (PAP-17835 leaves the Access step to the curated app path).
+    expect(container.textContent).toContain("Step 1 of 1");
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).toContain("Add MCP URL");
     expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
-    expect(container.textContent).not.toContain("More ways to connect");
 
     const linkInput = container.querySelector<HTMLInputElement>(
       'input[placeholder^="https://mcp.zapier.com"]',
@@ -767,66 +1020,17 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({ link: zapierUrl, name: "Zapier" });
-    expect(container.textContent).toContain("Step 2 of 3");
-    expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
-
-    await act(async () => {
-      buttonContaining("Only specific agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("Select agents");
-    expect(container.textContent).not.toContain("Ada");
-    expect(container.textContent).not.toContain("Grace");
-
-    await act(async () => {
-      buttonByText("Select agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(document.body.textContent).toContain("Ada");
-    expect(document.body.textContent).toContain("Grace");
-
-    const adaCheckbox = document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]');
-    await act(async () => {
-      adaCheckbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    await act(async () => {
-      buttonByText("Done")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("1 agent selected");
-    expect(container.textContent).not.toContain("Grace");
-
-    await act(async () => {
-      buttonByText("Continue to install")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("Step 3 of 3");
-    expect(container.textContent).toContain("Install Zapier tools?");
-    expect(container.textContent).toContain("Not yet");
-
-    await act(async () => {
-      buttonContaining("Specific agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("1 agent selected");
-    await act(async () => {
-      buttonByText("Finish setup")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
+    // No grantKind is sent: the pasted-URL path never offered the choice, and
+    // sending "user" without asking would mis-scope the credential.
+    expect(connectAppMock.mock.calls[0]?.[1]).not.toHaveProperty("grantKind");
 
     expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
-      enabledCatalogEntryIds: ["action-1"],
-      askFirstCatalogEntryIds: [],
-      access: { agentIds: ["agent-1"] },
+      enabledCatalogEntryIds: ["action-1", "action-2"],
+      askFirstCatalogEntryIds: ["action-2"],
+      access: "all_agents",
     });
     expect(putConnectionInstallsMock).toHaveBeenCalledWith("conn-1", [
-      { targetType: "agent", targetId: "agent-1" },
+      { targetType: "company", targetId: "company-1" },
     ]);
   });
 
@@ -911,6 +1115,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await passAccessStep();
 
     expect(container.textContent).toContain("Share each sheet with this email");
     expect(container.textContent).toContain("robot@paperclip.iam.gserviceaccount.com");
@@ -932,6 +1137,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await passAccessStep();
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
     await act(async () => setTextareaValue(textarea!, "https://example.com/not-a-sheet"));
     await flushReact();
@@ -959,16 +1165,27 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await passAccessStep();
 
     expect(container.textContent).toContain("Connect Zapier");
     expect(nameInputFrom(container)?.value).toBe("Zapier");
     expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=zapier&stage=setup");
   });
 
-  it("returns from an app key step to the BYO gallery", async () => {
+  it("steps back from the key step to Access, and from Access to the BYO gallery", async () => {
     mockSearch.value = "byo=1";
     mockParams.appKey = "zapier";
     await render();
+    await passAccessStep();
+    expect(container.textContent).toContain("Connect Zapier");
+
+    // Back from the credential goes to Access, not all the way out: the
+    // selections made there have to survive (PAP-17835).
+    await act(async () => {
+      buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Who is this credential for?");
 
     await act(async () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -984,6 +1201,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await passAccessStep();
 
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
     await act(async () => setInputValue(keyField!, "secret-key"));
@@ -1006,6 +1224,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await passAccessStep();
 
     await act(async () => setInputValue(nameInputFrom(container)!, "Zapier (stdio smoke)"));
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
@@ -1033,6 +1252,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await passAccessStep();
 
     // Default is the app name.
     expect(nameInputFrom(container)?.value).toBe("Google Sheets");
@@ -1068,6 +1288,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await passAccessStep();
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
     await act(async () =>
       setTextareaValue(
@@ -1220,9 +1441,12 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Who can use mcp.example.test?");
-    expect(container.textContent).toContain("Unverified server");
-    expect(container.textContent).toContain("mcp.example.test");
+    // The completion summary states identity and reach once each, as three
+    // lines rather than badges, and still never lists the actions.
+    expect(container.textContent).toContain("mcp.example.test is ready.");
+    expect(container.textContent).toContain("Organization identity");
+    expect(container.textContent).toContain("Any agent");
+    expect(container.textContent).toContain("3 actions on");
     expect(container.textContent).not.toContain("List things");
     expect(container.querySelectorAll('[role="switch"]')).toHaveLength(0);
   });

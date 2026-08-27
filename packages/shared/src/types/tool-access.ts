@@ -72,8 +72,10 @@ export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned" | "customer" | "dcr";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
 export type ToolConnectionInstallTargetType = "company" | "agent";
-export type ConnectionGrantKind = "workspace" | "user";
+export type ConnectionGrantKind = "organization" | "user";
 export type ConnectionGrantStatus = "active" | "revoked" | "expired" | "needs_reauthorization";
+export type ToolConnectionCredentialPolicy = "shared" | "per_user" | "per_user_with_fallback";
+export type ConnectionGrantMemberSubjectType = "user";
 export type ToolCredentialPlacement = "header" | "env";
 
 export interface McpConnectionCredentialRef {
@@ -132,6 +134,7 @@ export interface ToolConnection {
   ownership: ToolConnectionOwnership;
   transport: ToolConnectionTransport;
   authKind: ToolConnectionAuthKind;
+  credentialPolicy: ToolConnectionCredentialPolicy;
   status?: ToolConnectionStatus;
   transportConfig: Record<string, unknown>;
   config?: Record<string, unknown>;
@@ -172,6 +175,78 @@ export interface ConnectionGrant {
   lastUsedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  members?: ConnectionGrantMember[];
+  delegations?: ConnectionGrantDelegation[];
+  /**
+   * Server-computed authorization for this grant (PAP-17835). The UI renders the
+   * §3 permission matrix from these booleans; it must never rebuild policy from
+   * `membershipRole` strings, because grant authorization also depends on
+   * creator/subject identity that the client cannot evaluate.
+   */
+  capabilities?: ConnectionGrantCapabilities;
+}
+
+export interface ConnectionGrantCapabilities {
+  canRevoke: boolean;
+  canEditAudience: boolean;
+}
+
+/**
+ * Connection-level capabilities for the personal-connections UX. Policy-forbidden
+ * actions are omitted from the UI entirely; `false` here means "do not render",
+ * not "render disabled".
+ */
+export interface ToolConnectionCapabilities {
+  canConfigure: boolean;
+  canCreateOrganizationGrant: boolean;
+  canSetCompanyInstall: boolean;
+  canConnectAsCurrentUser: boolean;
+  canManageAgentInstalls: boolean;
+  canViewOtherPersonalIdentities: boolean;
+  editableAgentIds: string[];
+}
+
+/**
+ * Capabilities needed before a tool connection exists. These are returned by
+ * the company-scoped app gallery read so create flows do not have to infer
+ * authorization from membership roles or wait for a connection id.
+ */
+export interface ToolConnectionCreateCapabilities {
+  canSetCompanyInstall: boolean;
+  companyInstallReason: string | null;
+}
+
+export interface ConnectionGrantsResponse {
+  connection: { id: string; uid: string };
+  grants: ConnectionGrant[];
+  capabilities: ToolConnectionCapabilities;
+  currentUserId: string | null;
+  members: ConnectionAudienceMember[];
+}
+
+/** A company member that can appear in an organization grant's audience. */
+export interface ConnectionAudienceMember {
+  userId: string;
+  name: string | null;
+  email: string | null;
+}
+
+export interface ConnectionGrantDelegation {
+  id: string;
+  companyId: string;
+  grantId: string;
+  agentId: string;
+  createdByUserId: string;
+  createdAt: Date;
+}
+
+export interface ConnectionGrantMember {
+  id: string;
+  companyId: string;
+  grantId: string;
+  subjectType: ConnectionGrantMemberSubjectType;
+  subjectId: string;
+  createdAt: Date;
 }
 
 export interface ToolConnectionInstall {
@@ -240,11 +315,14 @@ export type ConnectionTokenSubject = { type: "app" } | { type: "user"; userId: s
 
 export const CONNECTION_RECOVERABLE_ERROR_CODES = [
   "user_authorization_required",
+  "organization_authorization_required",
+  "grant_audience_denied",
   "grant_revoked",
   "needs_reauthorization",
   "installation_required",
   "connection_not_installed",
   "subject_not_permitted",
+  "standing_delegation_required",
 ] as const;
 
 export type ConnectionRecoverableErrorCode = typeof CONNECTION_RECOVERABLE_ERROR_CODES[number];

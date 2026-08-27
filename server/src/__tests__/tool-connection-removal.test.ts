@@ -380,7 +380,8 @@ describeEmbeddedPostgres("tool connection removal", () => {
     expect(removed.removal).toMatchObject({
       secretsRevoked: headerSecretIds.length + 3,
       secretsRetainedShared: 0,
-      grantsRevoked: 1,
+      // The default organization grant and the explicit user grant are both revoked.
+      grantsRevoked: 2,
       oauthStatesDiscarded: 1,
       tokenIssuanceHashesCleared: 1,
     });
@@ -665,8 +666,9 @@ describeEmbeddedPostgres("tool connection removal", () => {
     const reconnectedSecretIds = after!.credentialSecretRefs.map((ref) => ref.secretId);
     // Not one of the revoked secrets came back.
     for (const secretId of originalSecretIds) expect(reconnectedSecretIds).not.toContain(secretId);
-    // And the operator has to choose access again — the app profile is not back.
-    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connectionId}`))).toEqual([]);
+    // A fresh connect recreates the deny-by-default profile, but does not restore installs.
+    await expect(db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connectionId}`)))
+      .resolves.toHaveLength(1);
     expect(await service.listConnectionInstalls(connectionId, company.id)).toEqual([]);
   });
 });

@@ -6806,6 +6806,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         services: [{
           name: "paperclip-dev",
           command,
+          env: { PAPERCLIP_PUBLIC_URL: "http://127.0.0.1:3100" },
           port: { type: "fixed", value: 45_439, envKey: "PORT" },
           readiness: {
             type: "http",
@@ -7717,6 +7718,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
         {
           name: "paperclip-dev",
           command,
+          env: { PAPERCLIP_PUBLIC_URL: "http://127.0.0.1:3100" },
           port: legacyPort,
           // The pre-feature block: backend URL only, no exposure declaration.
           expose: { type: "url", urlTemplate: "http://127.0.0.1:{{port}}" },

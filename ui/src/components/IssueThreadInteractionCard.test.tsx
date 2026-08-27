@@ -23,7 +23,10 @@ import {
   pendingRequestConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
+  issueThreadInteractionFixtureMeta,
   pendingSecretProposalInteraction,
+  pendingConnectionAuthorizationInteraction,
+  resolvedConnectionAuthorizationInteraction,
   executedSecretProposalInteraction,
   failedSecretProposalInteraction,
   rejectedSecretProposalInteraction,
@@ -1217,9 +1220,132 @@ describe("IssueThreadInteractionCard secret-proposal card", () => {
 });
 
 /**
- * The effective audience is shown *before* anyone responds, so a reader never
- * has to guess whether an open card is waiting on them (PAP-17280).
+ * Connection authorization has its own card composition (PAP-17796 Surface F,
+ * corrected in PAP-17859). It must not fall through to the generic
+ * Approve / Revise… / Reject layout: there is nothing to revise, and only the
+ * addressed person can answer at all.
  */
+describe("IssueThreadInteractionCard connection-authorization card", () => {
+  const CAROL_LABELS = new Map([
+    [issueThreadInteractionFixtureMeta.currentUserId, "Carol"],
+  ]);
+
+  function buttonLabels(host: HTMLElement) {
+    return Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
+  }
+
+  it("offers the addressed person Connect plus Not now, and nothing from the generic grammar", () => {
+    const host = renderCard({
+      interaction: pendingConnectionAuthorizationInteraction,
+      currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
+      onAcceptInteraction: async () => {},
+      onRejectInteraction: async () => {},
+    });
+
+    expect(host.textContent).toContain("Connect your Gmail to continue");
+
+    // "Action required" rather than the generic kind label: the mechanism is
+    // not the point, the blocked work is.
+    const statusBadge = host.querySelector('[data-testid="interaction-status-badge"]');
+    expect(statusBadge?.textContent).toContain("Action required");
+    expect(statusBadge?.textContent).not.toContain("Confirmation");
+
+    // One title, one body. The generic layout rendered `payload.prompt` too,
+    // which is the title verbatim.
+    const titles = (host.textContent ?? "").split("Connect your Gmail to continue").length - 1;
+    expect(titles).toBe(1);
+    const body = host.querySelector('[data-testid="connection-authorization-body"]');
+    expect(host.querySelectorAll('[data-testid="connection-authorization-body"]').length).toBe(1);
+    expect(body?.textContent).toContain(
+      "Outreach Agent needs your Gmail identity for work running as you.",
+    );
+    expect(body?.textContent).toContain("No one else can complete this step.");
+
+    // The primary action is a link to the server-minted target, not an accept
+    // call: the OAuth callback is what resolves this card.
+    const connect = Array.from(host.querySelectorAll("a")).find((anchor) =>
+      anchor.textContent?.includes("Connect Gmail"),
+    );
+    expect(connect?.getAttribute("href")).toBe(
+      "https://accounts.google.com/o/oauth2/v2/auth?client_id=paperclip",
+    );
+    expect(connect?.getAttribute("target")).toBe("_blank");
+
+    const labels = buttonLabels(host);
+    expect(labels).toContain("Not now");
+    for (const generic of ["Approve", "Revise…", "Reject", "Send revision"]) {
+      expect(labels).not.toContain(generic);
+    }
+
+    // Consent is the addressed person's alone. The card must never imply a
+    // teammate can give it for them.
+    expect(host.textContent?.toLowerCase()).not.toContain("on behalf of");
+    expect(host.textContent?.toLowerCase()).not.toContain("anyone can");
+  });
+
+  it("gives another reader Waiting for Carol and no action controls at all", () => {
+    const host = renderCard({
+      interaction: pendingConnectionAuthorizationInteraction,
+      currentUserId: "user-someone-else",
+      userLabelMap: CAROL_LABELS,
+      onAcceptInteraction: async () => {},
+      onRejectInteraction: async () => {},
+    });
+
+    expect(host.querySelector('[data-testid="connection-authorization-waiting"]')?.textContent)
+      .toContain("Waiting for Carol");
+    expect(host.querySelector('[data-testid="interaction-status-badge"]')?.textContent)
+      .toContain("Waiting for Carol");
+    // The server's summary is second-person ("your Gmail identity", "as you")
+    // because it addressed one person. A teammate must not be told the agent
+    // wants *their* account.
+    const body = host.querySelector('[data-testid="connection-authorization-body"]')?.textContent;
+    expect(body).toBe(
+      "Outreach Agent needs Carol's Gmail identity for work running as them.",
+    );
+    expect(host.querySelector('[data-testid="connection-authorization-waiting"]')?.textContent)
+      .toContain("Only Carol can connect their own Gmail account.");
+
+    // Omitted, not disabled — and the authorization URL is not even in the DOM
+    // for someone who may not use it.
+    const labels = buttonLabels(host);
+    for (const forbidden of ["Connect Gmail", "Not now", "Approve", "Revise…", "Reject"]) {
+      expect(labels).not.toContain(forbidden);
+    }
+    expect(
+      Array.from(host.querySelectorAll("a")).some((a) => a.textContent?.includes("Connect Gmail")),
+    ).toBe(false);
+    expect(host.innerHTML).not.toContain("accounts.google.com");
+  });
+
+  it("resolves to Gmail connected with the resolver and a timestamp", () => {
+    const host = renderCard({
+      interaction: resolvedConnectionAuthorizationInteraction,
+      currentUserId: "user-someone-else",
+      userLabelMap: CAROL_LABELS,
+      onAcceptInteraction: async () => {},
+      onRejectInteraction: async () => {},
+    });
+
+    const statusBadge = host.querySelector('[data-testid="interaction-status-badge"]');
+    expect(statusBadge?.textContent).toContain("Gmail connected");
+    expect(statusBadge?.textContent).not.toContain("Action required");
+
+    const connected = host.querySelector('[data-testid="connection-authorization-connected"]');
+    expect(connected?.textContent).toContain("Gmail connected");
+    expect(connected?.textContent).toContain("Connected by Carol");
+    expect(connected?.textContent).toMatch(/on .*2026/);
+    expect(host.querySelector('[data-testid="connection-authorization-body"]')?.textContent)
+      .toBe("Outreach Agent needed Carol's Gmail identity for work running as them.");
+
+    // A resolved card never re-offers the spent authorization target.
+    expect(host.innerHTML).not.toContain("accounts.google.com");
+    expect(buttonLabels(host)).not.toContain("Connect Gmail");
+    // The card states its own resolver, so the shared footer must not repeat it.
+    expect(host.querySelector('[data-testid="interaction-resolved-footer"]')).toBeNull();
+  });
+});
+
 describe("IssueThreadInteractionCard resolver audience", () => {
   it("shows an open audience on a pending card created without a restriction", () => {
     const host = renderCard({ interaction: pendingRequestConfirmationInteraction });

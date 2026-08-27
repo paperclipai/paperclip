@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,8 +14,7 @@ export function SetupPanel({
   appToggleDisabled,
   onUpdateConfig,
   configUpdateDisabled,
-  onStartOAuth,
-  oauthStartDisabled,
+  identities,
 }: Pick<
   AppDetailSectionProps,
   "connection" | "galleryEntry"
@@ -24,18 +23,20 @@ export function SetupPanel({
   appToggleDisabled: boolean;
   onUpdateConfig: (config: Record<string, unknown>) => void;
   configUpdateDisabled: boolean;
-  onStartOAuth: () => void;
-  oauthStartDisabled: boolean;
+  /**
+   * The Identities section (PAP-17835). It replaces the old generic OAuth
+   * "workspace authorization" block, because that block could only ever describe
+   * one shared identity and this connection may act as each person instead.
+   */
+  identities?: ReactNode;
 }) {
   const description = galleryEntry?.description ?? null;
-  const oauth = connection.config?.oauth;
-  const hasOAuthSignIn = Boolean(oauth && typeof oauth === "object" && !Array.isArray(oauth));
-  const isSmokeLabFixture = connection.config?.smokeLabFixture === "oauth-http";
   return (
     <div className="space-y-6">
       {description && (
         <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
       )}
+      {identities}
       {appDefinitionSlug(galleryEntry) === "google-sheets" && (
         <GoogleSheetsAllowlistSection
           connection={connection}
@@ -46,21 +47,31 @@ export function SetupPanel({
       {appDefinitionSlug(galleryEntry) === "posthog" && (
         <PostHogConfigurationSection connection={connection} />
       )}
-      {hasOAuthSignIn && (
-        <OAuthConnectionSection
-          connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
-          providerName={appDefinitionSlug(galleryEntry) === "notion"
-            ? "Notion"
-            : appDefinitionSlug(galleryEntry) === "posthog"
-              ? "PostHog"
-              : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
-          disabled={oauthStartDisabled}
-          onStart={onStartOAuth}
-        />
-      )}
       <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
   );
+}
+
+/**
+ * Provider label used in identity and revoke copy. Falls back to the app's own
+ * display name so a pasted server never reads as a generic "OAuth".
+ */
+export function connectionProviderName(
+  galleryEntry: Parameters<typeof appDefinitionSlug>[0],
+  fallback: string,
+): string {
+  switch (appDefinitionSlug(galleryEntry)) {
+    case "notion":
+      return "Notion";
+    case "posthog":
+      return "PostHog";
+    case "gmail":
+      return "Gmail";
+    case "google-sheets":
+      return "Google Sheets";
+    default:
+      return fallback;
+  }
 }
 
 function PostHogConfigurationSection({ connection }: { connection: ToolConnection }) {
@@ -93,38 +104,6 @@ function PostHogConfigurationSection({ connection }: { connection: ToolConnectio
           </div>
         ))}
       </dl>
-    </section>
-  );
-}
-
-function OAuthConnectionSection({
-  connected,
-  providerName,
-  disabled,
-  onStart,
-}: {
-  connected: boolean;
-  providerName: string;
-  disabled: boolean;
-  onStart: () => void;
-}) {
-  return (
-    <section>
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">
-            {connected ? `${providerName} connected` : `Connect with ${providerName}`}
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {connected
-              ? "Your workspace authorization is active. Reconnect any time to replace it."
-              : "Open the provider's consent page to finish connecting this app."}
-          </p>
-        </div>
-        <Button type="button" disabled={disabled} onClick={onStart}>
-          {connected ? "Reconnect" : `Connect with ${providerName}`}
-        </Button>
-      </div>
     </section>
   );
 }

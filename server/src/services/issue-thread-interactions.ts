@@ -421,6 +421,7 @@ function isEquivalentCreateRequest(
     row.kind === input.kind
     && row.requestedResolverPolicy === input.resolverPolicy
     && (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null)
+    && (row.addresseeUserId ?? null) === (input.addresseeUserId ?? null)
     && row.continuationPolicy === input.continuationPolicy
     && (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null)
     && (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null)
@@ -478,6 +479,7 @@ function hydrateInteraction(
     ...row,
     idempotencyKey: row.idempotencyKey ?? null,
     addresseeAgentId: row.addresseeAgentId ?? null,
+    addresseeUserId: row.addresseeUserId ?? null,
     status: row.status as IssueThreadInteraction["status"],
     continuationPolicy: row.continuationPolicy as IssueThreadInteraction["continuationPolicy"],
     resolverPolicy: requestedResolverPolicy,
@@ -2279,6 +2281,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       });
       const normalizedData = { ...data, resolverPolicy: policy.requestedResolverPolicy };
 
+      if (normalizedData.addresseeAgentId && normalizedData.addresseeUserId) {
+        throw unprocessable("An issue-thread interaction cannot address both an agent and a user");
+      }
+
       if (normalizedData.addresseeAgentId) {
         if (normalizedData.addresseeAgentId === actor.agentId) {
           throw unprocessable("Agents cannot address issue-thread interactions to themselves");
@@ -2409,6 +2415,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               summary: data.summary ?? null,
               createdByAgentId: actor.agentId ?? null,
               addresseeAgentId: data.addresseeAgentId ?? null,
+              addresseeUserId: data.addresseeUserId ?? null,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
             })

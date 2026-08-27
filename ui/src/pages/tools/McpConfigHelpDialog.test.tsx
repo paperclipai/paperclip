@@ -56,26 +56,29 @@ function promptTextarea(): HTMLTextAreaElement | undefined {
  */
 describe("Paste a config — MCP config help", () => {
   let container: HTMLDivElement;
-  let root: ReturnType<typeof createRoot>;
+  let root: ReturnType<typeof createRoot> | null;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    root = null;
     copyTextToClipboardMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
     act(() => root?.unmount());
+    root = null;
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
   });
 
   async function render() {
-    root = createRoot(container);
+    const nextRoot = createRoot(container);
+    root = nextRoot;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
-      root.render(
+      nextRoot.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
             <PasteConfigTab companyId="company-1" />
@@ -83,7 +86,7 @@ describe("Paste a config — MCP config help", () => {
         </QueryClientProvider>,
       );
     });
-    return root;
+    return nextRoot;
   }
 
   async function openHelp() {
@@ -143,7 +146,9 @@ describe("Paste a config — MCP config help", () => {
     await flushReact();
     await flushReact();
 
-    expect(document.body.textContent).toContain("select the text above and copy it");
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain("select the text above and copy it");
+    });
   });
 
   it("makes no connection or import request when opened or copied", async () => {

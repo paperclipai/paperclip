@@ -366,6 +366,9 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     // this connection cannot be depending on gallery metadata for anything.
     expect(connection!.config).not.toHaveProperty("sourceTemplateKey");
     expect(connection!.config).not.toHaveProperty("connectionMethodKey");
+    await expect(service.listConnectionGrants(result.connectionId, company.id)).resolves.toMatchObject({
+      grants: [expect.objectContaining({ kind: "organization", isDefault: true, credentialSecretRefs: [] })],
+    });
     const profiles = await db.select().from(toolProfiles).where(eq(
       toolProfiles.profileKey,
       `app:${result.connectionId}`,
@@ -902,6 +905,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
   });
 
   it("redacts a hostile denial from the callback route and consumes the state", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
     installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -966,6 +970,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
   });
 
   it("returns browser denials to setup without reflecting provider-authored details", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
     installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
     const service = toolAccessService(db);
