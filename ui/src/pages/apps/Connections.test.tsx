@@ -368,7 +368,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Connection deleted",
-        body: "GitHub is no longer available to agents. You can connect it again later.",
+        body: "GitHub is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.",
         tone: "success",
       }),
     );
@@ -442,7 +442,10 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(document.body.textContent).toContain("Agents will lose access immediately.");
+    expect(document.body.textContent).toContain(
+      "The saved credentials are deleted and agents lose access immediately.",
+    );
+    expect(document.body.textContent).toContain("needs a new sign-in or key");
     expect(document.body.textContent).not.toContain("Agents can still use GitHub");
 
     const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
@@ -455,7 +458,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
 
     expect(pushToastMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: "GitHub is no longer available to agents. You can connect it again later.",
+        body: "GitHub is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.",
       }),
     );
   });

@@ -266,6 +266,7 @@ export {
   credentialConfigPath,
   getAppDefinitionForUrl,
   getAvailableConnectionMethod,
+  getAvailableConnectionMethods,
   getConnectableAppDefinition,
   recommendedDefaultsForApp,
 } from "./app-definitions.js";
@@ -277,6 +278,31 @@ export {
   connectionDisplaySecondaryHint,
   type HumanizableConnection,
 } from "./humanize-connection.js";
+export {
+  MCP_CONFIG_HELP_INSTRUCTIONS,
+  MCP_CONFIG_HELP_PROMPT,
+} from "./mcp-config-help-prompt.js";
+export {
+  MCP_REMOTE_HEADER_LIMITS,
+  checkMcpRemoteHeaderName,
+  checkMcpRemoteHeaderValue,
+  isSafeMcpRemoteHeaderName,
+  isSafeMcpRemoteHeaderValue,
+  mcpRemoteHeaderNameFromConfigPath,
+  mcpRemoteHeaderRejectionMessage,
+  type McpRemoteHeaderCheck,
+  type McpRemoteHeaderRejection,
+} from "./mcp-remote-headers.js";
+export {
+  checkOAuthEndpointUrl,
+  isSafeOAuthEndpointUrl,
+  oauthEndpointDisplayHost,
+  oauthEndpointUrlRejectionMessage,
+  type OAuthEndpointKind,
+  type OAuthEndpointUrlCheck,
+  type OAuthEndpointUrlOptions,
+  type OAuthEndpointUrlRejection,
+} from "./oauth-endpoint-url.js";
 export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
@@ -1274,7 +1300,9 @@ export type {
   SecretProposalView,
   ApproveSecretProposalInput,
   RejectSecretProposalInput,
+  ConnectToolAppAuthChallenge,
   ConnectToolAppResult,
+  ToolOAuthClientRegistrationSource,
   ToolOAuthStartResult,
   ToolActionRequest,
   ToolAccessDecision,
@@ -1340,6 +1368,8 @@ export type {
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionInstallTargetType,
+  ToolConnectionRemovalResult,
+  ToolConnectionRemovalSummary,
   ConnectionGrant,
   ConnectionGrantKind,
   ConnectionGrantStatus,
@@ -2046,6 +2076,11 @@ export {
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   connectToolAppSchema,
+  GENERIC_MCP_AUTH_MODES,
+  genericMcpAuthModeSchema,
+  genericMcpOAuthClientSchema,
+  type GenericMcpAuthMode,
+  type GenericMcpOAuthClient,
   reconnectToolAppSchema,
   createToolApplicationSchema,
   finishToolAppSchema,

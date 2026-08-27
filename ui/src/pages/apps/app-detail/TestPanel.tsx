@@ -136,18 +136,20 @@ export function TestPanel({
   });
 
   const agents = useMemo(
-    () => [...(testAgentsQuery.data?.agents ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+    () => [...(testAgentsQuery.data?.agents ?? [])].sort(
+      (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
+    ),
     [testAgentsQuery.data],
   );
 
   const [agentId, setAgentId] = useState<string | null>(null);
-  // Default to the first agent (alphabetical) that can run at least one action;
-  // otherwise the first agent we can test as at all.
+  // The API returns only agents this user may write to. Prefer the highest
+  // agent in that accessible slice of the org tree, regardless of whether a
+  // lower-ranked agent happens to have a broader app policy today.
   useEffect(() => {
     if (agentId && agents.some((a) => a.id === agentId)) return;
     if (agents.length === 0) return;
-    const withAccess = agents.find((a) => a.effectiveAccess.allowedCount > 0);
-    setAgentId((withAccess ?? agents[0]).id);
+    setAgentId(agents[0].id);
   }, [agents, agentId]);
 
   // Switches the header from "TEST AS" card to the compact "Testing as …" line.
@@ -212,7 +214,7 @@ export function TestPanel({
 
   if (agents.length === 0) {
     return (
-      <div className="rounded-lg border border-border bg-card p-6 text-center">
+      <div className="py-6 text-center">
         <p className="text-sm font-medium text-foreground">No agents to test as</p>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
           Only agents you can assign tasks to can preview {appName}. Give an agent access in{" "}
@@ -266,7 +268,7 @@ export function TestPanel({
       </div>
 
       {visibleCount === 0 ? (
-        <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+        <div className="py-6 text-center text-sm text-muted-foreground">
           No actions match “{query}”. Clear the search to see them all.
         </div>
       ) : (
@@ -311,7 +313,7 @@ export function TestPanel({
 
 function EmptyState({ connectionId, appName }: { connectionId: string; appName: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-8 text-center">
+    <div className="py-8 text-center">
       <p className="text-base font-bold text-foreground">Nothing to test yet</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
         Once {appName} is connected, the actions it offers will show up here so you can try them out.
@@ -344,7 +346,7 @@ function TestAsHeader({
 }) {
   if (compact) {
     return (
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
         <p className="text-sm text-muted-foreground">
           Testing as{" "}
           <AgentPicker
@@ -361,7 +363,7 @@ function TestAsHeader({
     );
   }
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Test as</p>
@@ -546,7 +548,7 @@ function ActionGroup({
     <section>
       <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
       {subheading && <p className="mb-1.5 -mt-1 text-xs text-muted-foreground">{subheading}</p>}
-      <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+      <div className="divide-y divide-border">
         {entries.map((entry) => (
           <ActionRow
             key={entry.id}
@@ -599,7 +601,7 @@ function ActionRow({
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="border-t border-border bg-muted/20 px-4 py-4">
+        <div className="border-t border-border py-4 pl-11">
           <ActionTester entry={entry} decision={decision} agent={agent} {...shared} />
         </div>
       </CollapsibleContent>
@@ -1358,7 +1360,7 @@ function OffExplanation({
   return (
     <div className="grid gap-3 md:grid-cols-(--gtc-62)">
       <div className="space-y-3">
-        <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3">
+        <div className="flex items-start gap-2">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-sm text-muted-foreground">
             <p className="font-medium text-foreground">{title} is off for {agent.name}.</p>
@@ -1378,7 +1380,7 @@ function OffExplanation({
         <p className="text-xs text-muted-foreground">No call will be made — this action is off for {agent.name}.</p>
       </div>
 
-      <aside className="rounded-md border border-border bg-card p-3">
+      <aside>
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
         {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}

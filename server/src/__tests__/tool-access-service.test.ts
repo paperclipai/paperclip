@@ -37,11 +37,12 @@ import {
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
+import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { classifyRisk, toolAccessService } from "../services/tool-access.js";
+import { classifyRisk, normalizeConnectionMethodConfig, toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
@@ -98,6 +99,24 @@ function mockToolsList(tools: unknown[]) {
   );
 }
 
+const PUBLIC_MCP_FIXTURE_URL = "https://8.8.8.8/api/mcp";
+
+async function withGalleryServerUrl<T>(
+  slug: string,
+  serverUrl: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const method = getConnectableAppDefinition(slug)?.methods[0];
+  if (!method?.defaults) throw new Error(`Missing gallery method defaults for ${slug}`);
+  const originalServerUrl = method.defaults.serverUrl;
+  method.defaults.serverUrl = serverUrl;
+  try {
+    return await operation();
+  } finally {
+    method.defaults.serverUrl = originalServerUrl;
+  }
+}
+
 function createRouteApp(
   db: ReturnType<typeof createDb>,
   actor?: Express.Request["actor"],
@@ -146,13 +165,14 @@ async function grantBoardUser(
   companyId: string,
   userId: string,
   permissionKeys: string[],
+  membershipRole: "owner" | "admin" | "operator" | "member" | "viewer" = "operator",
 ) {
   await db.insert(companyMemberships).values({
     companyId,
     principalType: "user",
     principalId: userId,
     status: "active",
-    membershipRole: "operator",
+    membershipRole,
   });
   if (permissionKeys.length > 0) {
     await db.insert(principalPermissionGrants).values(permissionKeys.map((permissionKey) => ({
@@ -253,6 +273,7 @@ async function createBrokerConnection(
     rateLimitPerHour?: number;
     healthStatus?: "unknown" | "healthy" | "degraded" | "failed" | "unchecked" | "ok" | "error" | "missing_secret";
     tokenUrl?: string;
+    protocol?: "pages" | "generic" | "rfc8693";
   } = {},
 ) {
   const secret = await secretService(db).create(companyId, {
@@ -283,7 +304,8 @@ async function createBrokerConnection(
       tokenBroker: {
         enabled: true,
         path: input.path ?? "exchange",
-        tokenUrl: input.tokenUrl ?? "https://pages.example.test/v1/tokens/exchange",
+        tokenUrl: input.tokenUrl ?? "https://93.184.216.34/v1/tokens/exchange",
+        ...(input.protocol ? { protocol: input.protocol } : {}),
         parentCredentialConfigPath: "credentials.deploy_token",
         parentScopes: input.parentScopes ?? ["pages:publish:ns/dotta"],
         defaultScopes: input.defaultScopes ?? [],
@@ -474,7 +496,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
 
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-      expect(String(url)).toBe("https://pages.example.test/v1/tokens/exchange");
+      expect(String(url)).toBe("https://93.184.216.34/v1/tokens/exchange");
       expect(init?.headers).toEqual(expect.objectContaining({ authorization: "Bearer parent-deploy-token" }));
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({
@@ -540,6 +562,76 @@ describeEmbeddedPostgres("tool access service", () => {
         outcome: "success",
       }),
     ]));
+  });
+
+  it.each([
+    ["generic", undefined],
+    ["RFC 8693", "rfc8693" as const],
+  ])("blocks a link-local %s token broker before credentials reach fetch", async (_label, protocol) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, {
+      tokenUrl: "http://169.254.169.254/latest/meta-data",
+      ...(protocol ? { protocol } : {}),
+    });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("the parent credential must never reach the broker"),
+    );
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "remote_http_private_endpoint" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [issuance] = await db.select().from(connectionTokenIssuances);
+    expect(issuance).toMatchObject({
+      connectionId: connection.id,
+      outcome: "failure",
+      errorCode: "remote_http_private_endpoint",
+      tokenHash: null,
+    });
+  });
+
+  it("allows an explicitly allowlisted internal token broker through the guarded fetch", async () => {
+    vi.stubEnv("PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS", "broker.example, 127.0.0.1");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, {
+      tokenUrl: "http://127.0.0.1:8787/v1/tokens/exchange",
+    });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      expect(String(url)).toBe("http://127.0.0.1:8787/v1/tokens/exchange");
+      expect(init).toMatchObject({
+        method: "POST",
+        redirect: "manual",
+        headers: expect.objectContaining({ authorization: "Bearer parent-deploy-token" }),
+      });
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          token: "allowlisted-child-token",
+          expires_in: 600,
+          scope: "pages:publish:ns/dotta",
+        }),
+      } as Response;
+    });
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ token: "allowlisted-child-token" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("selects scoped credentials for array scopes and fails closed for unknown selectors", async () => {
@@ -1270,6 +1362,86 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it.each([
+    ["tokenBroker.tokenUrl", { tokenBroker: { enabled: true, tokenUrl: "http://169.254.169.254/token" } }],
+    ["tokenBroker.exchangeTokenUrl", { tokenBroker: { enabled: true, exchangeTokenUrl: "http://169.254.169.254/token" } }],
+    ["tokenExchangeUrl", { tokenExchangeUrl: "http://169.254.169.254/token" }],
+    ["pagesTokenExchangeUrl", { pagesTokenExchangeUrl: "http://169.254.169.254/token" }],
+  ])("rejects a link-local %s when a remote connection is created", async (_field, brokerConfig) => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+    });
+
+    await expect(service.createConnection(company.id, {
+      name: `Rejected broker ${randomUUID()}`,
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp", ...brokerConfig },
+      enabled: true,
+      status: "active",
+    })).rejects.toMatchObject({
+      status: 400,
+      details: { code: "remote_http_private_endpoint" },
+    });
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
+  });
+
+  it("rejects a link-local token broker when a remote connection is updated", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Initially safe broker",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+      enabled: true,
+      status: "active",
+    });
+
+    await expect(service.updateConnection(connection.id, {
+      config: {
+        ...connection.config,
+        tokenBroker: { enabled: true, tokenUrl: "http://169.254.169.254/token" },
+      },
+    })).rejects.toMatchObject({
+      status: 400,
+      details: { code: "remote_http_private_endpoint" },
+    });
+    await expect(service.getConnection(connection.id)).resolves.toMatchObject({
+      config: { url: "https://93.184.216.34/mcp" },
+    });
+  });
+
+  it("implicitly allowlists the configured Pages API host for internal token brokers", async () => {
+    vi.stubEnv("PAPERCLIP_PAGES_API_URL", "http://127.0.0.1:8787");
+    const company = await createCompany(db);
+    const service = toolAccessService(db, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+    });
+
+    await expect(service.createConnection(company.id, {
+      name: "Internal Pages broker",
+      transport: "mcp_remote",
+      config: {
+        url: "https://93.184.216.34/mcp",
+        tokenBroker: {
+          enabled: true,
+          tokenUrl: "http://127.0.0.1:9999/v1/tokens/exchange",
+        },
+      },
+      enabled: true,
+      status: "active",
+    })).resolves.toMatchObject({
+      config: {
+        tokenBroker: { tokenUrl: "http://127.0.0.1:9999/v1/tokens/exchange" },
+      },
+    });
+  });
+
   it("lists testable agents with per-connection effective access summaries", async () => {
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;
@@ -1294,6 +1466,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body.agents).toHaveLength(1);
     expect(res.body.agents[0]).toMatchObject({
       id: agent.id,
+      orgDepth: 0,
       effectiveAccess: {
         connectionId: connection.id,
         toolCount: 1,
@@ -1302,6 +1475,55 @@ describeEmbeddedPostgres("tool access service", () => {
         offCount: 0,
       },
     });
+  });
+
+  it("lists only writable agents and ranks the highest accessible agent first", async () => {
+    const company = await createCompany(db);
+    const userId = `scoped-tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"], "viewer");
+    const actor = boardSessionActor(company.id, "viewer", userId);
+    const root = await createAgent(db, company.id);
+    const [accessibleManager] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Accessible manager",
+      role: "manager",
+      reportsTo: root.id,
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [accessibleReport] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Accessible report",
+      role: "engineer",
+      reportsTo: accessibleManager!.id,
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      permissionKey: "tasks:assign_scope",
+      scope: { agentIds: [accessibleManager!.id, accessibleReport!.id] },
+      grantedByUserId: "owner",
+    });
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const app = createRouteApp(db, actor, createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }));
+
+    const res = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-agents`)
+      .expect(200);
+
+    expect(res.body.agents.map((agent: { id: string }) => agent.id)).toEqual([
+      accessibleManager!.id,
+      accessibleReport!.id,
+    ]);
+    expect(res.body.agents.map((agent: { orgDepth: number }) => agent.orgDepth)).toEqual([1, 2]);
+    expect(res.body.agents).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: root.id })]));
   });
 
   it("surfaces a last-changed audit hint attributed to the agent that authored the governing policy", async () => {
@@ -2540,6 +2762,7 @@ describeEmbeddedPostgres("tool access service", () => {
       "github",
       "slack",
       "notion",
+      "posthog",
       "linear",
       "google-sheets",
       "context7",
@@ -2547,6 +2770,13 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body.apps.map((app: { slug: string }) => app.slug)).not.toContain("google-drive");
     expect(res.body.apps).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          slug: "posthog",
+          methods: expect.arrayContaining([
+            expect.objectContaining({ key: "mcp-oauth", auth: "oauth" }),
+            expect.objectContaining({ key: "mcp-api-key", auth: "api_key" }),
+          ]),
+        }),
         expect.objectContaining({
           slug: "slack",
           methods: expect.arrayContaining([
@@ -2659,6 +2889,65 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(result.actions.readOnly).toEqual([
       expect.objectContaining({ toolName: "kv_get", riskLevel: "read" }),
     ]);
+  });
+
+  it("requires an explicit PostHog method and projects validated project filters", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "posthog",
+      configValues: { projectId: "12345", features: "insights" },
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 400 });
+
+    const fetchMock = mockToolsList([
+      { name: "query_insight", annotations: { readOnlyHint: true } },
+      { name: "delete_feature_flag" },
+      { name: "brand_new_tool" },
+    ]);
+    const result = await service.connectGalleryApp(company.id, {
+      galleryKey: "posthog",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "phx_test-secret" },
+      configValues: {
+        projectId: "12345",
+        readOnly: true,
+        features: "insights, error_tracking\ninsights",
+        tools: "query_insight",
+        mode: "tools",
+      },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://mcp.posthog.com/mcp?readonly=true&features=insights%2Cerror_tracking&tools=query_insight&mode=tools",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer phx_test-secret",
+          "x-posthog-project-id": "12345",
+        }),
+      }),
+    );
+    expect(result.connection).toMatchObject({
+      authKind: "api_key",
+      config: {
+        sourceTemplateKey: "posthog",
+        connectionMethodKey: "mcp-api-key",
+        methodConfig: {
+          projectId: "12345",
+          readOnly: true,
+          features: "insights,error_tracking",
+          tools: "query_insight",
+          mode: "tools",
+        },
+        safeDefault: true,
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("phx_test-secret");
+    expect(result.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "query_insight", riskLevel: "read", status: "active" }),
+      expect.objectContaining({ toolName: "delete_feature_flag", riskLevel: "destructive", status: "quarantined" }),
+      expect.objectContaining({ toolName: "brand_new_tool", riskLevel: "write", status: "quarantined" }),
+    ]));
   });
 
   it("stores approved class-3 credential refs on thin tool connections", async () => {
@@ -3401,6 +3690,10 @@ describeEmbeddedPostgres("tool access service", () => {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
+      // PAP-17087: Paperclip's callback is a server-side HTTPS endpoint, so
+      // registration must declare a `web` client rather than let the
+      // authorization server apply native-client redirect rules.
+      application_type: "web",
     }]);
 
     fetchMock.mockClear();
@@ -5071,15 +5364,16 @@ describeEmbeddedPostgres("tool access service", () => {
       runtimeConfig: {},
     }).returning();
 
-    const connect = await service.connectGalleryApp(company.id, {
-      galleryKey: "zapier",
-      name: "Zapier workspace",
-      credentialValues: { "credentials.authorization": "zap-secret" },
-    }, { actorType: "user", actorId: "board" });
+    const connect = await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+      service.connectGalleryApp(company.id, {
+        galleryKey: "zapier",
+        name: "Zapier workspace",
+        credentialValues: { "credentials.authorization": "zap-secret" },
+      }, { actorType: "user", actorId: "board" }));
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://mcp.zapier.com/api/mcp",
+      PUBLIC_MCP_FIXTURE_URL,
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer zap-secret" }),
       }),
@@ -5087,7 +5381,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(connect.connection).toMatchObject({
       status: "draft",
       enabled: false,
-      config: expect.objectContaining({ sourceTemplateKey: "zapier", quarantineNewEntries: true }),
+      config: expect.objectContaining({ sourceTemplateKey: "zapier", quarantineNewEntries: false }),
       credentialSecretRefs: [
         expect.objectContaining({
           configPath: "credentials.authorization",
@@ -5166,6 +5460,10 @@ describeEmbeddedPostgres("tool access service", () => {
         expect.objectContaining({ id: updateEntry.id, status: "active", reviewedAt: expect.any(Date), quarantineReason: null }),
       ]),
     );
+
+    await db.update(toolConnections).set({
+      config: { ...connect.connection.config, quarantineNewEntries: true },
+    }).where(eq(toolConnections.id, connect.connectionId));
 
     fetchMock.mockResolvedValueOnce(mcpHttpResponse({
       jsonrpc: "2.0",
@@ -5265,6 +5563,79 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(attentionAfterReview.apps).toEqual([]);
   });
 
+  it("enables every discovered tool by default while preserving tools explicitly turned off later", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "list_zaps", annotations: { readOnlyHint: true } },
+      { name: "update_zap", annotations: { readOnlyHint: false } },
+    ]);
+
+    const connect = await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+      service.connectGalleryApp(company.id, {
+        galleryKey: "zapier",
+        credentialValues: { "credentials.authorization": "zap-secret" },
+      }, { actorType: "user", actorId: "board" }));
+    const listEntry = connect.catalog.find((entry) => entry.toolName === "list_zaps")!;
+    const updateEntry = connect.catalog.find((entry) => entry.toolName === "update_zap")!;
+    const [defaultProfile] = await db.select().from(toolProfiles).where(eq(
+      toolProfiles.profileKey,
+      `app:${connect.connectionId}`,
+    ));
+    expect(defaultProfile).toBeTruthy();
+    await expect(db.select().from(toolProfileEntries).where(eq(
+      toolProfileEntries.profileId,
+      defaultProfile!.id,
+    ))).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: listEntry.id, effect: "include" }),
+      expect.objectContaining({ catalogEntryId: updateEntry.id, effect: "include" }),
+    ]));
+    await expect(db.select().from(toolProfileBindings).where(eq(
+      toolProfileBindings.profileId,
+      defaultProfile!.id,
+    ))).resolves.toEqual([
+      expect.objectContaining({ targetType: "company", targetId: company.id }),
+    ]);
+
+    await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    }, { actorType: "user", actorId: "board" });
+    fetchMock.mockResolvedValueOnce(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      result: {
+        tools: [
+          { name: "list_zaps", annotations: { readOnlyHint: true } },
+          { name: "update_zap", annotations: { readOnlyHint: false } },
+          { name: "create_zap", annotations: { readOnlyHint: false } },
+        ],
+      },
+    }));
+
+    const refresh = await service.refreshCatalog(connect.connectionId, { actorType: "user", actorId: "board" });
+
+    expect(refresh.quarantinedCount).toBe(0);
+    expect(refresh.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "list_zaps", status: "active" }),
+      expect.objectContaining({ toolName: "update_zap", status: "active" }),
+      expect.objectContaining({ toolName: "create_zap", status: "active" }),
+    ]));
+    const createEntry = refresh.catalog.find((entry) => entry.toolName === "create_zap")!;
+    const profileEntries = await db.select().from(toolProfileEntries).where(eq(
+      toolProfileEntries.profileId,
+      defaultProfile!.id,
+    ));
+    expect(profileEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: listEntry.id }),
+      expect.objectContaining({ catalogEntryId: createEntry.id }),
+    ]));
+    expect(profileEntries).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: updateEntry.id }),
+    ]));
+  });
+
   it("resolves Notion reads as allowed, mutations as ask-first, and denies cross-company use", async () => {
     const company = await createCompany(db);
     const otherCompany = await createCompany(db);
@@ -5311,6 +5682,20 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.objectContaining({ id: moveEntry.id, riskLevel: "write", isWrite: true }),
       expect.objectContaining({ id: duplicateEntry.id, riskLevel: "write", isWrite: true }),
     ]));
+
+    // A narrower profile must not make an app shared with "All agents"
+    // disappear. App action selection is an additive capability assignment;
+    // ordinary profile precedence still governs non-app defaults.
+    const existingAgentProfile = await service.createProfile(company.id, {
+      profileKey: `existing-agent-profile-${randomUUID()}`,
+      name: "Existing agent defaults",
+      defaultAction: "deny",
+    });
+    await service.bindProfile(
+      existingAgentProfile.id,
+      { targetType: "agent", targetId: agent.id },
+      { actorType: "user", actorId: "board" },
+    );
 
     await expect(service.finishGalleryAppConnection(otherCompany.id, connection.id, {
       enabledCatalogEntryIds: [fetchEntry.id],
@@ -6968,11 +7353,14 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(unusedRow!.lastUsedAt).toBeNull();
   });
 
-  it("syncs installs, auto-extends agent access, and exposes install state", async () => {
+  it("syncs installs without widening action access or calling the remote tool", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createRemoteToolFixture(db, company.id);
-    const app = createRouteApp(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const app = createRouteApp(db, undefined, createToolGatewayService(db, {
+      toolActionSigningSecret: "test-secret",
+    }));
 
     const put = await request(app)
       .put(`/api/tool-connections/${connection.id}/installs`)
@@ -6999,7 +7387,17 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const effective = await toolAccessService(db).getEffectiveProfilesForAgent(company.id, agent.id);
     expect(effective.installedConnections.map((item) => item.id)).toEqual([connection.id]);
-    expect(effective.allowedTools.some((tool) => tool.connectionId === connection.id)).toBe(true);
+    expect(effective.allowedTools.some((tool) => tool.connectionId === connection.id)).toBe(false);
+
+    const deniedCall = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(200);
+    expect(deniedCall.body).toMatchObject({
+      decision: "off",
+      error: { reasonCode: "deny_default" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
 
     const get = await request(app).get(`/api/tool-connections/${connection.id}`);
     expect(get.status).toBe(200);
@@ -7091,5 +7489,59 @@ describe("classifyRisk", () => {
     }
     expect(notionRisk("notion-delete-page")).toBe("destructive");
     expect(classifyRisk({ name: "move_pages" })).toBe("read");
+  });
+
+  it("uses conservative PostHog defaults for unknown and nested-execution tools", () => {
+    expect(classifyRisk({ name: "query_insight", annotations: { readOnlyHint: true } }, "posthog")).toBe("read");
+    expect(classifyRisk({ name: "brand_new_tool" }, "posthog")).toBe("write");
+    expect(classifyRisk({ name: "exec" }, "posthog")).toBe("destructive");
+  });
+});
+
+describe("normalizeConnectionMethodConfig", () => {
+  const posthog = getConnectableAppDefinition("posthog")!;
+  const apiKeyMethod = posthog.methods.find((method) => method.key === "mcp-api-key")!;
+
+  it("uses the broad PostHog catalog when optional advanced filters are untouched", () => {
+    expect(normalizeConnectionMethodConfig(apiKeyMethod, {
+      projectId: "12345",
+    })).toEqual({
+      values: {
+        projectId: "12345",
+        readOnly: false,
+        mode: "tools",
+      },
+      url: "https://mcp.posthog.com/mcp?mode=tools",
+      headers: { "x-posthog-project-id": "12345" },
+    });
+  });
+
+  it("normalizes and projects PostHog scope without accepting arbitrary config", () => {
+    expect(normalizeConnectionMethodConfig(apiKeyMethod, {
+      projectId: "12345",
+      readOnly: true,
+      features: "insights, error_tracking\ninsights",
+      tools: "query_insight",
+      mode: "tools",
+    })).toEqual({
+      values: {
+        projectId: "12345",
+        readOnly: true,
+        features: "insights,error_tracking",
+        tools: "query_insight",
+        mode: "tools",
+      },
+      url: "https://mcp.posthog.com/mcp?readonly=true&features=insights%2Cerror_tracking&tools=query_insight&mode=tools",
+      headers: { "x-posthog-project-id": "12345" },
+    });
+    expect(() => normalizeConnectionMethodConfig(apiKeyMethod, {
+      projectId: "not-a-project",
+      features: "insights",
+    })).toThrow("Project ID has an invalid value");
+    expect(() => normalizeConnectionMethodConfig(apiKeyMethod, {
+      projectId: "12345",
+      features: "insights",
+      apiKey: "must-not-be-config",
+    })).toThrow("Unknown connection setting: apiKey");
   });
 });

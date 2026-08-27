@@ -2,10 +2,10 @@ import { Activity, Beaker, Inbox, Settings2, ShieldCheck, Wrench } from "lucide-
 
 export const APP_TABS = [
   { key: "setup", label: "Setup", icon: Settings2 },
+  { key: "test", label: "Test", icon: Beaker },
   { key: "review", label: "Review", icon: Inbox },
   { key: "permissions", label: "Permissions", icon: ShieldCheck },
   { key: "activity", label: "Activity", icon: Activity },
-  { key: "test", label: "Test", icon: Beaker },
   { key: "advanced", label: "Advanced", icon: Wrench },
 ] as const;
 

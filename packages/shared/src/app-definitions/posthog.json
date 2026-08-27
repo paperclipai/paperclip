@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "slug": "posthog",
+  "name": "PostHog",
+  "description": "Analyze product usage, errors, feature flags, and experiments in a pinned PostHog project.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=posthog.com&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.posthog.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Sign in with PostHog in the browser. Recommended for hosted PostHog accounts.",
+      "defaults": {
+        "serverUrl": "https://mcp.posthog.com/mcp"
+      },
+      "guidanceMd": "Pin the connection to one PostHog project and expose the full tool catalog by default. Narrow feature groups or tools only when needed.",
+      "riskTier": "S3",
+      "tenantFields": [
+        {
+          "key": "projectId",
+          "label": "Project ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "12345",
+          "helperMd": "Find the numeric project ID in PostHog project settings.",
+          "validation": {
+            "pattern": "^[0-9]+$",
+            "maxLength": 32
+          },
+          "transport": {
+            "location": "header",
+            "name": "x-posthog-project-id"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Turn on to hide tools that can change PostHog data.",
+          "transport": {
+            "location": "query",
+            "name": "readonly",
+            "format": "boolean",
+            "omitFalse": true
+          }
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated feature groups",
+          "helperMd": "Leave blank to expose every feature group, or enter a comma-separated list to narrow access.",
+          "validation": {
+            "maxLength": 500
+          },
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "tools",
+          "label": "Individual tools",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated tool names",
+          "helperMd": "Leave blank to expose all tools. Exact names here are combined with any feature groups.",
+          "validation": {
+            "maxLength": 2000
+          },
+          "transport": {
+            "location": "query",
+            "name": "tools",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "mode",
+          "label": "Tool response mode",
+          "type": "select",
+          "advanced": true,
+          "required": true,
+          "placeholder": "Individual tools",
+          "defaultValue": "tools",
+          "options": [
+            {
+              "value": "tools",
+              "label": "Individual tools"
+            }
+          ],
+          "helperMd": "Paperclip uses individual tools so every action can be governed. CLI mode remains unavailable until nested execution is governed.",
+          "transport": {
+            "location": "query",
+            "name": "mode"
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "project"
+      ],
+      "label": "Sign in with PostHog",
+      "consoleLinks": {
+        "docs": "https://posthog.com/docs/model-context-protocol"
+      }
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a PostHog personal API key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.posthog.com/mcp"
+      },
+      "guidanceMd": "Pin the connection to one PostHog project and expose the full tool catalog by default. Narrow feature groups or tools only when needed.",
+      "riskTier": "S3",
+      "tenantFields": [
+        {
+          "key": "projectId",
+          "label": "Project ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "12345",
+          "helperMd": "Find the numeric project ID in PostHog project settings.",
+          "validation": {
+            "pattern": "^[0-9]+$",
+            "maxLength": 32
+          },
+          "transport": {
+            "location": "header",
+            "name": "x-posthog-project-id"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Turn on to hide tools that can change PostHog data.",
+          "transport": {
+            "location": "query",
+            "name": "readonly",
+            "format": "boolean",
+            "omitFalse": true
+          }
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated feature groups",
+          "helperMd": "Leave blank to expose every feature group, or enter a comma-separated list to narrow access.",
+          "validation": {
+            "maxLength": 500
+          },
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "tools",
+          "label": "Individual tools",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated tool names",
+          "helperMd": "Leave blank to expose all tools. Exact names here are combined with any feature groups.",
+          "validation": {
+            "maxLength": 2000
+          },
+          "transport": {
+            "location": "query",
+            "name": "tools",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "mode",
+          "label": "Tool response mode",
+          "type": "select",
+          "advanced": true,
+          "required": true,
+          "placeholder": "Individual tools",
+          "defaultValue": "tools",
+          "options": [
+            {
+              "value": "tools",
+              "label": "Individual tools"
+            }
+          ],
+          "helperMd": "Paperclip uses individual tools so every action can be governed. CLI mode remains unavailable until nested execution is governed.",
+          "transport": {
+            "location": "query",
+            "name": "mode"
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "project"
+      ],
+      "label": "Use a personal API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "PostHog personal API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "phx_...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://posthog.com/docs/model-context-protocol/faq",
+        "docs": "https://posthog.com/docs/model-context-protocol/faq"
+      }
+    }
+  ]
+}

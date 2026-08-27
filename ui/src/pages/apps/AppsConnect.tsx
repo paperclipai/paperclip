@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowUpRight,
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   ClipboardPaste,
@@ -16,12 +17,13 @@ import type { LucideIcon } from "lucide-react";
 import type {
   Agent,
   AppDefinition,
+  ConnectionMethodDef,
   ConnectToolAppResult,
+  FieldDef,
   ToolApplication,
   ToolConnection,
-  ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
-import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod } from "@paperclipai/shared";
+import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod, getAvailableConnectionMethods } from "@paperclipai/shared";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -36,24 +38,39 @@ import { AgentIcon } from "@/components/AgentIconPicker";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { AppLogo } from "./AppLogo";
+import { UnverifiedServerBadge } from "./UnverifiedServerBadge";
 import { appSourceConnectHref, isMcpDirectOAuthConnectSlug } from "./app-connect-policy";
 import { parseGoogleSheetIds } from "./google-sheets";
+import {
+  canSubmitGenericConnect,
+  customHeaderError,
+  defaultGenericMcpName,
+  endpointHost,
+  genericConnectGuidance,
+  genericConnectPayload,
+  newCustomHeaderRow,
+  type CustomHeaderRow,
+  type GenericConnectDraft,
+  type GenericConnectGuidance,
+  type GenericMcpAuthMode,
+} from "./generic-mcp-connect";
 import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayload } from "@/lib/tool-installs";
 
-type Step = "gallery" | "key" | "actions" | "who" | "install" | "success";
+type Step = "gallery" | "key" | "who" | "install" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
 
 const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   key: "setup",
-  actions: "actions",
   who: "access",
   install: "install",
   success: "complete",
@@ -66,31 +83,32 @@ function appConnectHref(appKey: string, step: Step): string {
 }
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
 type InstallMode = "none" | "specific" | "all";
-const LINK_CREDENTIAL_CONFIG_PATH = "credentials.authorization";
 
-const STEP_LABELS = ["Pick app", "Add your key", "Choose actions", "Choose access", "Install tools"];
+const STEP_LABELS = ["Pick app", "Add your key", "Choose access", "Install tools"];
 const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   gallery: 0,
   key: 1,
-  actions: 2,
-  who: 3,
-  install: 4,
-};
-const ZAPIER_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
-  key: 0,
-  actions: 1,
   who: 2,
   install: 3,
 };
-const ZAPIER_STEP_LABELS = ["Add MCP URL", "Choose actions", "Choose access", "Install tools"];
-
-function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
-  const raw = (result.suggestedDefaults as { askFirstRiskLevels?: unknown })?.askFirstRiskLevels;
-  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : ["write", "destructive"];
-}
+const ZAPIER_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
+  key: 0,
+  who: 1,
+  install: 2,
+};
+const ZAPIER_STEP_LABELS = ["Add MCP URL", "Choose access", "Install tools"];
 
 function isGoogleSheetsEntry(entry: AppDefinition | null): boolean {
   return entry?.slug === "google-sheets";
+}
+
+function defaultMethodConfig(method: ConnectionMethodDef | null): Record<string, string | boolean> {
+  if (!method) return {};
+  return Object.fromEntries(
+    [...(method.tenantFields ?? []), ...(method.extensionFields ?? [])]
+      .filter((field) => field.defaultValue !== undefined)
+      .map((field) => [field.key, field.defaultValue!]),
+  );
 }
 
 function appSourceSlug(application: ToolApplication): string | null {
@@ -164,7 +182,18 @@ export function AppsConnect() {
   const [linkName, setLinkName] = useState(prefill.name || (zapierSource ? "Zapier" : ""));
   const [linkNeedsKey, setLinkNeedsKey] = useState(false);
   const [linkKey, setLinkKey] = useState("");
+  // Generic ("connect your own MCP server") flow state. `authMode: auto` is the
+  // simple path: Paperclip probes the endpoint and branches on what it finds.
+  const [linkAuthMode, setLinkAuthMode] = useState<GenericMcpAuthMode>("auto");
+  const [linkHeaders, setLinkHeaders] = useState<CustomHeaderRow[]>(() => [newCustomHeaderRow()]);
+  const [linkOAuthClientId, setLinkOAuthClientId] = useState("");
+  const [linkOAuthClientSecret, setLinkOAuthClientSecret] = useState("");
+  const [linkAdvancedOpen, setLinkAdvancedOpen] = useState(false);
+  const [linkGuidance, setLinkGuidance] = useState<GenericConnectGuidance | null>(null);
+  const [genericOAuthPending, setGenericOAuthPending] = useState(false);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [connectionMethodKey, setConnectionMethodKey] = useState("");
+  const [configValues, setConfigValues] = useState<Record<string, string | boolean>>({});
   const [googleSheetsLinks, setGoogleSheetsLinks] = useState("");
   const [googleSheetsError, setGoogleSheetsError] = useState<string | null>(null);
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
@@ -175,8 +204,54 @@ export function AppsConnect() {
   const [installAgentIds, setInstallAgentIds] = useState<Set<string>>(new Set());
   const [oauthPhase, setOAuthPhase] = useState<OAuthConnectPhase>("entry");
   const [oauthError, setOAuthError] = useState<string | null>(null);
+  /** Host of the page the operator is about to be sent to, shown while redirecting. */
+  const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
   const directOAuthStartedRef = useRef(false);
   const directOAuthRetryingRef = useRef(false);
+
+  const resetGenericAuthState = () => {
+    setLinkAuthMode("auto");
+    setLinkHeaders([newCustomHeaderRow()]);
+    setLinkOAuthClientId("");
+    setLinkOAuthClientSecret("");
+    setLinkAdvancedOpen(false);
+    setLinkGuidance(null);
+    setGenericOAuthPending(false);
+  };
+
+  /**
+   * Switch to a curated app's branded setup. Reached from the gallery grid and, as
+   * a convenience, from the guided generic flow when the pasted endpoint matches a
+   * definition — the generic path stays available either way.
+   */
+  const useMatchedGalleryEntry = (picked: AppDefinition) => {
+    if (
+      getAvailableConnectionMethod(picked)?.auth === "oauth" &&
+      isMcpDirectOAuthConnectSlug(picked.slug)
+    ) {
+      navigate(appSourceConnectHref(picked.slug));
+      return;
+    }
+    setEntry(picked);
+    setGalleryName(picked.name);
+    setLinkUrl("");
+    setLinkName("");
+    setLinkNeedsKey(false);
+    setLinkKey("");
+    resetGenericAuthState();
+    setCredentials({});
+    const methods = getAvailableConnectionMethods(picked);
+    const initialMethod = methods.length === 1 ? methods[0]! : null;
+    setConnectionMethodKey(initialMethod?.key ?? "");
+    setConfigValues(defaultMethodConfig(initialMethod));
+    setGoogleSheetsLinks("");
+    setGoogleSheetsError(null);
+    setConnectResult(null);
+    setInstallMode("none");
+    setInstallAgentIds(new Set());
+    setStep("key");
+    navigate(appConnectHref(picked.slug, "key"));
+  };
 
   const openGallery = () => {
     setEntry(null);
@@ -185,7 +260,10 @@ export function AppsConnect() {
     setLinkName("");
     setLinkNeedsKey(false);
     setLinkKey("");
+    resetGenericAuthState();
     setCredentials({});
+    setConnectionMethodKey("");
+    setConfigValues({});
     setGoogleSheetsLinks("");
     setGoogleSheetsError(null);
     setConnectResult(null);
@@ -233,6 +311,13 @@ export function AppsConnect() {
     [applicationsQuery.data, connectionsQuery.data, createNewConnection, directOAuthSource, prefill.applicationId],
   );
 
+  // A curated definition covering the pasted endpoint is offered as a branded
+  // convenience only; the generic flow remains the default and stays complete.
+  const linkMatchedEntry = useMemo(
+    () => (linkUrl && !entry ? getAppDefinitionForUrl(linkUrl, galleryQuery.data?.apps ?? []) : null),
+    [entry, galleryQuery.data, linkUrl],
+  );
+
   const directOAuthEntry = entry &&
     getAvailableConnectionMethod(entry)?.auth === "oauth" &&
     isMcpDirectOAuthConnectSlug(entry.slug)
@@ -247,8 +332,17 @@ export function AppsConnect() {
   const oauthStartMutation = useMutation({
     mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
     onSuccess: ({ authorizationUrl }) => {
+      // The endpoint chose this address, so it is checked here too — this is the
+      // line where an unsafe scheme would actually run (PAP-17099).
+      const target = resolveAuthorizationTarget(authorizationUrl);
+      if (!target.ok) {
+        setOAuthPhase("error");
+        setOAuthError(target.message);
+        return;
+      }
+      setAuthorizationHost(target.host);
       setOAuthPhase("redirecting");
-      navigateTopLevel(authorizationUrl);
+      navigateTopLevel(target.url);
     },
     onError: (error) => {
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
@@ -274,42 +368,73 @@ export function AppsConnect() {
         const trimmedGalleryName = galleryName.trim();
         return toolsApi.connectApp(selectedCompanyId!, {
           galleryKey: connectEntry.slug,
+          ...(connectionMethodKey ? { connectionMethodKey } : {}),
           name: trimmedGalleryName || connectEntry.name,
           credentialValues: credentials,
-          configValues: isGoogleSheetsEntry(connectEntry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
+          configValues: isGoogleSheetsEntry(connectEntry)
+            ? { allowedSpreadsheetIds: sheetIds }
+            : Object.keys(configValues).length > 0
+              ? configValues
+              : undefined,
           applicationId: prefill.applicationId,
         });
       }
-      const trimmedKey = linkNeedsKey ? linkKey.trim() : "";
-      const trimmedName = linkName.trim();
       return toolsApi.connectApp(selectedCompanyId!, {
-        link: linkUrl,
-        name: trimmedName || undefined,
-        credentialValues: trimmedKey ? { [LINK_CREDENTIAL_CONFIG_PATH]: trimmedKey } : undefined,
+        ...genericConnectPayload({
+          link: linkUrl,
+          name: linkName,
+          authMode: linkAuthMode,
+          needsKey: linkNeedsKey,
+          keyValue: linkKey,
+          headers: linkHeaders,
+          oauthClientId: linkOAuthClientId,
+          oauthClientSecret: linkOAuthClientSecret,
+        }),
         applicationId: prefill.applicationId,
       });
     },
     onSuccess: (result) => {
       if (result.auth?.kind === "oauth") {
         setConnectResult(result);
+        // Discovery worked but this authorization server insists on a client the
+        // operator registers themselves. Keep the draft and ask for it in place
+        // rather than sending them back to the start.
+        if (result.auth.manualClientRequired) {
+          setLinkGuidance(genericConnectGuidance("oauth_manual_client_required", null));
+          setLinkAuthMode("oauth");
+          setLinkAdvancedOpen(true);
+          setGenericOAuthPending(false);
+          return;
+        }
         const startUrl = result.auth.startUrl?.trim();
         if (!startUrl) {
           setOAuthPhase("starting");
+          setGenericOAuthPending(true);
           startOAuth(result.connectionId);
           return;
         }
+        const target = resolveAuthorizationTarget(startUrl);
+        if (!target.ok) {
+          setGenericOAuthPending(true);
+          setOAuthPhase("error");
+          setOAuthError(target.message);
+          return;
+        }
+        setAuthorizationHost(target.host);
         setOAuthPhase("redirecting");
-        navigateTopLevel(startUrl);
+        setGenericOAuthPending(true);
+        navigateTopLevel(target.url);
         return;
       }
+      setLinkGuidance(null);
       setConnectResult(result);
       const defaults: Record<string, boolean> = {};
       for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
-      for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = false;
+      for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = true;
       setEnabled(defaults);
       setInstallMode("none");
       setInstallAgentIds(new Set());
-      setAppStep("actions");
+      setAppStep("who");
     },
     onError: (error) => {
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
@@ -326,14 +451,20 @@ export function AppsConnect() {
         );
         return;
       }
-      const oauthRequired = details?.code === "oauth_challenge";
+      // The generic URL path explains the specific corrective action inline,
+      // beside the fields the operator has to change. A toast can't do that, and
+      // for a pasted address "check your key" is usually the wrong advice.
+      if (!entry && linkUrl) {
+        const code = typeof details?.code === "string" ? details.code : null;
+        const guidance = genericConnectGuidance(code, error instanceof Error ? error.message : null);
+        setLinkGuidance(guidance);
+        setGenericOAuthPending(false);
+        if (guidance.focus === "credentials") setLinkAdvancedOpen(true);
+        return;
+      }
       pushToast({
-        title: oauthRequired ? "Sign-in required" : "Couldn’t connect",
-        body: oauthRequired
-          ? "This app needs you to sign in - coming soon."
-          : error instanceof Error
-            ? error.message
-            : "Please check your key and try again.",
+        title: "Couldn’t connect",
+        body: error instanceof Error ? error.message : "Please check your key and try again.",
         tone: "error",
       });
     },
@@ -345,8 +476,9 @@ export function AppsConnect() {
 
     const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.slug === requestedAppKey);
     const method = requestedEntry ? getAvailableConnectionMethod(requestedEntry) : null;
+    const methods = requestedEntry ? getAvailableConnectionMethods(requestedEntry) : [];
     const directOAuth = method?.auth === "oauth" && isMcpDirectOAuthConnectSlug(requestedEntry?.slug);
-    const unsupportedOAuth = method?.auth === "oauth" && !directOAuth;
+    const unsupportedOAuth = methods.length === 1 && method?.auth === "oauth" && !directOAuth;
     if (!requestedEntry || unsupportedOAuth || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");
@@ -362,6 +494,10 @@ export function AppsConnect() {
       setLinkNeedsKey(false);
       setLinkKey("");
       setCredentials({});
+      const methods = getAvailableConnectionMethods(requestedEntry);
+      const initialMethod = methods.length === 1 ? methods[0]! : null;
+      setConnectionMethodKey(initialMethod?.key ?? "");
+      setConfigValues(defaultMethodConfig(initialMethod));
       setGoogleSheetsLinks("");
       setGoogleSheetsError(null);
       setConnectResult(null);
@@ -408,19 +544,14 @@ export function AppsConnect() {
 
   const finishMutation = useMutation({
     mutationFn: async () => {
-      const askFirstLevels = connectResult ? askFirstLevelsFrom(connectResult) : [];
-      const changeActions = connectResult?.actions.canMakeChanges ?? [];
       const enabledIds = Object.entries(enabled)
         .filter(([, on]) => on)
         .map(([id]) => id);
-      const askFirstIds = changeActions
-        .filter((a) => enabled[a.catalogEntryId] && askFirstLevels.includes(a.riskLevel))
-        .map((a) => a.catalogEntryId);
       const selection: AppAccessSelection =
         access === "all" ? "all_agents" : { agentIds: Array.from(agentIds) };
       const result = await toolsApi.finishApp(selectedCompanyId!, connectResult!.connectionId, {
         enabledCatalogEntryIds: enabledIds,
-        askFirstCatalogEntryIds: askFirstIds,
+        askFirstCatalogEntryIds: [],
         access: selection,
       });
       const installState = installMode === "all"
@@ -452,6 +583,7 @@ export function AppsConnect() {
         entry={directOAuthEntry}
         phase={oauthPhase}
         error={oauthError}
+        authorizationHost={authorizationHost}
         onRetry={async () => {
           setOAuthError(null);
           setOAuthPhase("starting");
@@ -498,17 +630,53 @@ export function AppsConnect() {
     );
   }
 
+  // A pasted endpoint that needs browser sign-in gets the same waiting/retry
+  // screen a curated OAuth app does, minus the branding it doesn't have.
+  if (genericOAuthPending && !entry && linkUrl && step === "key") {
+    return (
+      <OAuthConnectStateScreen
+        identity={{
+          name: linkName.trim() || endpointHost(linkUrl) || "this server",
+          unverifiedHost: endpointHost(linkUrl),
+        }}
+        phase={oauthPhase}
+        error={oauthError}
+        authorizationHost={authorizationHost}
+        onRetry={() => {
+          setOAuthError(null);
+          const connectionId = connectResult?.connectionId;
+          if (connectionId) {
+            setOAuthPhase("starting");
+            startOAuth(connectionId);
+            return;
+          }
+          // No draft to resume, so fall back to the setup screen rather than
+          // creating a second connection for the same endpoint.
+          setGenericOAuthPending(false);
+          setOAuthPhase("entry");
+        }}
+        onCancel={() => {
+          setGenericOAuthPending(false);
+          setOAuthPhase("entry");
+          setOAuthError(null);
+        }}
+      />
+    );
+  }
+
   const appName =
     connectResult?.application.name ??
     entry?.name ??
-    (linkName.trim() || defaultLinkName(linkUrl) || "this app");
+    (linkName.trim() || defaultGenericMcpName(linkUrl) || "this app");
   const zapierEntry = zapierSource
     ? galleryQuery.data?.apps.find((app) => app.slug === "zapier") ?? null
     : null;
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
+    : entry && getAvailableConnectionMethods(entry).length > 1
+      ? ["Pick app", "Choose connection", "Choose access", "Install tools"]
     : isGoogleSheetsEntry(entry)
-      ? ["Pick app", "Share sheet", "Choose actions", "Choose access", "Install tools"]
+      ? ["Pick app", "Share sheet", "Choose access", "Install tools"]
       : STEP_LABELS;
   const stepIndex = zapierSource && step !== "gallery" && step !== "success"
     ? ZAPIER_STEP_INDEX[step]
@@ -533,6 +701,7 @@ export function AppsConnect() {
               ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null }
               : undefined
           }
+          unverifiedHost={!entry && !zapierSource && step !== "gallery" ? endpointHost(linkUrl) : null}
           onCancel={() => navigate("/apps")}
         />
       )}
@@ -543,35 +712,13 @@ export function AppsConnect() {
           apps={galleryQuery.data?.apps ?? []}
           byo={searchParams.get("byo") === "1"}
           source={searchParams.get("source")}
-          onPick={(picked) => {
-            if (
-              getAvailableConnectionMethod(picked)?.auth === "oauth" &&
-              isMcpDirectOAuthConnectSlug(picked.slug)
-            ) {
-              navigate(appSourceConnectHref(picked.slug));
-              return;
-            }
-            setEntry(picked);
-            setGalleryName(picked.name);
-            setLinkUrl("");
-            setLinkName("");
-            setLinkNeedsKey(false);
-            setLinkKey("");
-            setCredentials({});
-            setGoogleSheetsLinks("");
-            setGoogleSheetsError(null);
-            setConnectResult(null);
-            setInstallMode("none");
-            setInstallAgentIds(new Set());
-            setStep("key");
-            navigate(appConnectHref(picked.slug, "key"));
-          }}
+          onPick={useMatchedGalleryEntry}
           onUseLink={(url) => {
             const matchedEntry = getAppDefinitionForUrl(url, galleryQuery.data?.apps ?? []);
             setEntry(null);
             setGalleryName("");
             setLinkUrl(url);
-            setLinkName(matchedEntry?.name ?? defaultLinkName(url) ?? "");
+            setLinkName(matchedEntry?.name ?? defaultGenericMcpName(url) ?? "");
             setLinkNeedsKey(false);
             setLinkKey("");
             setCredentials({});
@@ -593,6 +740,14 @@ export function AppsConnect() {
           onNameChange={setGalleryName}
           values={credentials}
           onChange={setCredentials}
+          methodKey={connectionMethodKey}
+          onMethodChange={(nextMethod) => {
+            setConnectionMethodKey(nextMethod.key);
+            setCredentials({});
+            setConfigValues(defaultMethodConfig(nextMethod));
+          }}
+          configValues={configValues}
+          onConfigChange={setConfigValues}
           googleSheetsLinks={googleSheetsLinks}
           googleSheetsError={googleSheetsError}
           onGoogleSheetsLinksChange={(next) => {
@@ -630,9 +785,35 @@ export function AppsConnect() {
           }}
           keyValue={linkKey}
           onKeyChange={setLinkKey}
-          submitting={connectMutation.isPending}
+          authMode={linkAuthMode}
+          onAuthModeChange={(next) => {
+            setLinkAuthMode(next);
+            setLinkGuidance(null);
+            // Leaving the simple path means the explicit choice governs; drop the
+            // "does it need a key?" answer so the two can't disagree.
+            if (next !== "auto") setLinkNeedsKey(false);
+            if (next !== "bearer" && next !== "auto") setLinkKey("");
+          }}
+          headers={linkHeaders}
+          onHeadersChange={(next) => {
+            setLinkHeaders(next);
+            setLinkGuidance(null);
+          }}
+          oauthClientId={linkOAuthClientId}
+          onOAuthClientIdChange={setLinkOAuthClientId}
+          oauthClientSecret={linkOAuthClientSecret}
+          onOAuthClientSecretChange={setLinkOAuthClientSecret}
+          advancedOpen={linkAdvancedOpen}
+          onAdvancedOpenChange={setLinkAdvancedOpen}
+          guidance={linkGuidance}
+          matchedEntry={linkMatchedEntry}
+          onUseMatchedEntry={linkMatchedEntry ? () => useMatchedGalleryEntry(linkMatchedEntry) : undefined}
+          submitting={connectMutation.isPending || genericOAuthPending}
           onBack={() => setStep("gallery")}
-          onConnect={() => connectMutation.mutate(undefined)}
+          onConnect={() => {
+            setLinkGuidance(null);
+            connectMutation.mutate(undefined);
+          }}
         />
       )}
 
@@ -646,24 +827,6 @@ export function AppsConnect() {
         />
       )}
 
-      {step === "actions" && connectResult && (
-        <ActionsStep
-          appName={appName}
-          result={connectResult}
-          enabled={enabled}
-          onToggle={(id, on) => setEnabled((prev) => ({ ...prev, [id]: on }))}
-          onBulk={(ids, on) =>
-            setEnabled((prev) => {
-              const next = { ...prev };
-              for (const id of ids) next[id] = on;
-              return next;
-            })
-          }
-          onBack={() => setAppStep("key")}
-          onContinue={() => setAppStep("who")}
-        />
-      )}
-
       {step === "who" && connectResult && (
         <WhoStep
           appName={appName}
@@ -672,7 +835,7 @@ export function AppsConnect() {
           setAccess={setAccess}
           agentIds={agentIds}
           setAgentIds={setAgentIds}
-          onBack={() => setAppStep("actions")}
+          onBack={() => setAppStep("key")}
           onContinue={() => setAppStep("install")}
         />
       )}
@@ -714,6 +877,7 @@ function StepHeader({
   activeIndex,
   labels,
   appIdentity,
+  unverifiedHost,
   onCancel,
 }: {
   subtitle: string;
@@ -721,6 +885,12 @@ function StepHeader({
   activeIndex: number;
   labels: string[];
   appIdentity?: { name: string; logoUrl: string | null };
+  /**
+   * Host of an unknown remote MCP server. Present for the whole generic flow so
+   * the operator can see whose server they are configuring at every step, not
+   * just on the screen where they pasted the address.
+   */
+  unverifiedHost?: string | null;
   onCancel: () => void;
 }) {
   return (
@@ -735,6 +905,7 @@ function StepHeader({
               {appIdentity ? `Connect ${appIdentity.name}` : "Connect an app"}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+            {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
           </div>
         </div>
         <Button variant="ghost" size="sm" onClick={onCancel}>
@@ -760,34 +931,49 @@ function StepHeader({
 
 export function OAuthConnectStateScreen({
   entry,
+  identity,
   phase,
   error,
+  authorizationHost,
   onRetry,
   onCancel,
 }: {
-  entry: AppDefinition;
+  /** A curated app. Omit for a generic endpoint and pass `identity` instead. */
+  entry?: AppDefinition | null;
+  /** Identity for an unknown remote MCP server: its own name plus its host. */
+  identity?: { name: string; unverifiedHost: string | null };
   phase: OAuthConnectPhase;
   error?: string | null;
+  /**
+   * Host of the authorization page being opened. A valid HTTPS authorization
+   * page can still be a phishing page, so the operator sees exactly which host
+   * they are being handed to (PAP-17099).
+   */
+  authorizationHost?: string | null;
   onRetry: () => void;
   onCancel: () => void;
 }) {
+  const serverName = entry?.name ?? identity?.name ?? "this server";
+  const unverifiedHost = entry ? null : identity?.unverifiedHost ?? null;
   const status = phase === "entry"
     ? {
-        title: `Connect ${entry.name} to Paperclip`,
-        body: `Paperclip will open ${entry.name} so you can choose a workspace and approve access.`,
+        title: `Connect ${serverName} to Paperclip`,
+        body: `Paperclip will open ${serverName} so you can choose a workspace and approve access.`,
       }
     : phase === "starting"
       ? {
           title: "Preparing secure sign-in",
-          body: `Paperclip is creating a secure ${entry.name} connection.`,
+          body: `Paperclip is creating a secure ${serverName} connection.`,
         }
       : phase === "redirecting"
         ? {
-            title: `Opening ${entry.name}`,
-            body: `Continue in ${entry.name} to choose a workspace and approve access.`,
+            title: `Opening ${serverName}`,
+            body: authorizationHost
+              ? `Continue at ${authorizationHost} to choose a workspace and approve access. Only approve access if you recognize that address.`
+              : `Continue in ${serverName} to choose a workspace and approve access.`,
           }
         : {
-            title: `${entry.name} couldn’t connect`,
+            title: `${serverName} couldn’t connect`,
             body: error ?? "Paperclip couldn’t start secure sign-in. Try again.",
           };
 
@@ -797,8 +983,9 @@ export function OAuthConnectStateScreen({
         subtitle="Secure MCP sign-in"
         step="key"
         activeIndex={0}
-        labels={["Connect", "Review actions", "Choose access", "Install tools"]}
-        appIdentity={{ name: entry.name, logoUrl: entry.branding.logoUrl }}
+        labels={["Connect", "Choose access", "Install tools"]}
+        appIdentity={entry ? { name: entry.name, logoUrl: entry.branding.logoUrl } : undefined}
+        unverifiedHost={unverifiedHost}
         onCancel={onCancel}
       />
       <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
@@ -815,6 +1002,7 @@ export function OAuthConnectStateScreen({
           <div className="min-w-0">
             <h2 className="text-xl font-bold tracking-tight">{status.title}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{status.body}</p>
+            {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
           </div>
         </div>
 
@@ -823,7 +1011,7 @@ export function OAuthConnectStateScreen({
             <Button type="button" onClick={onRetry}>Try again</Button>
           ) : (
             <Button type="button" disabled>
-              {phase === "redirecting" ? `Opening ${entry.name}…` : "Preparing…"}
+              {phase === "redirecting" ? `Opening ${serverName}…` : "Preparing…"}
             </Button>
           )}
           <Button type="button" variant="ghost" onClick={onCancel}>Back to apps</Button>
@@ -978,8 +1166,9 @@ function GalleryStep({
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {filtered.map((app) => {
           const copy = appCopyFor(app.slug, app.description);
-          const oauth = getAvailableConnectionMethod(app)?.auth === "oauth";
-          const oauthBlocked = oauth && !isMcpDirectOAuthConnectSlug(app.slug);
+          const methods = getAvailableConnectionMethods(app);
+          const oauth = methods[0]?.auth === "oauth";
+          const oauthBlocked = methods.length === 1 && oauth && !isMcpDirectOAuthConnectSlug(app.slug);
           const unavailable = app.availability?.available === false;
           return (
             <button
@@ -1034,7 +1223,7 @@ function GalleryStep({
             {zapierSource
               ? "Paste the complete MCP URL Zapier gives you, including its token."
               : byo
-              ? "Paste your MCP server’s URL and we’ll walk you through permissions and review."
+              ? "Paste your MCP server’s URL and every discovered tool will be available immediately."
               : "Paste a setup link from an app that is not listed here."}
           </p>
           {!zapierSource && (
@@ -1158,14 +1347,19 @@ function normalizeAppLink(value: string): string | null {
   }
 }
 
-function defaultLinkName(link: string): string | null {
-  try {
-    return new URL(link).hostname.replace(/^www\./, "");
-  } catch {
-    return null;
-  }
-}
-
+/**
+ * The guided universal flow for an unknown remote MCP server (PAP-17087, plan 2).
+ *
+ * The simple path stays exactly as short as it was — URL, name, "does it need a
+ * key?" — because that is all most servers need. Everything protocol-shaped lives
+ * behind "Advanced authentication", and no OAuth/DCR/CIMD jargon appears on the
+ * consumer path: the operator picks how the server authenticates, not which RFC
+ * Paperclip will use to satisfy it.
+ *
+ * The endpoint host and the "Unverified server" label stay visible the whole way
+ * through, so the operator can always see whose server they are about to let
+ * agents call.
+ */
 function LinkConnectStep({
   link,
   name,
@@ -1174,6 +1368,19 @@ function LinkConnectStep({
   onNeedsKeyChange,
   keyValue,
   onKeyChange,
+  authMode,
+  onAuthModeChange,
+  headers,
+  onHeadersChange,
+  oauthClientId,
+  onOAuthClientIdChange,
+  oauthClientSecret,
+  onOAuthClientSecretChange,
+  advancedOpen,
+  onAdvancedOpenChange,
+  guidance,
+  matchedEntry,
+  onUseMatchedEntry,
   submitting,
   onBack,
   onConnect,
@@ -1185,10 +1392,48 @@ function LinkConnectStep({
   onNeedsKeyChange: (next: boolean) => void;
   keyValue: string;
   onKeyChange: (next: string) => void;
+  authMode: GenericMcpAuthMode;
+  onAuthModeChange: (next: GenericMcpAuthMode) => void;
+  headers: CustomHeaderRow[];
+  onHeadersChange: (next: CustomHeaderRow[]) => void;
+  oauthClientId: string;
+  onOAuthClientIdChange: (next: string) => void;
+  oauthClientSecret: string;
+  onOAuthClientSecretChange: (next: string) => void;
+  advancedOpen: boolean;
+  onAdvancedOpenChange: (next: boolean) => void;
+  guidance: GenericConnectGuidance | null;
+  /** A curated app whose endpoint matches, offered as a convenience only. */
+  matchedEntry?: AppDefinition | null;
+  onUseMatchedEntry?: () => void;
   submitting: boolean;
   onBack: () => void;
   onConnect: () => void;
 }) {
+  const host = endpointHost(link);
+  const headerError = authMode === "custom_headers" ? customHeaderError(headers) : null;
+  const draft: GenericConnectDraft = {
+    link,
+    name,
+    authMode,
+    needsKey,
+    keyValue,
+    headers,
+    oauthClientId,
+    oauthClientSecret,
+  };
+  const canSubmit = canSubmitGenericConnect(draft);
+  const showSimpleKeyQuestion = authMode === "auto";
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (guidance?.focus === "name") nameInputRef.current?.focus();
+  }, [guidance]);
+
+  const updateHeader = (id: string, patch: Partial<CustomHeaderRow>) => {
+    onHeadersChange(headers.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  };
+
   return (
     <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
       <div className="flex items-start gap-3">
@@ -1196,51 +1441,77 @@ function LinkConnectStep({
           <Link2 className="h-5 w-5 text-muted-foreground" />
         </span>
         <div className="min-w-0">
-          <h2 className="text-xl font-bold tracking-tight">Connect with a link</h2>
-          <p className="mt-1 truncate text-sm text-muted-foreground">{link}</p>
+          <h2 className="text-xl font-bold tracking-tight">Connect your own MCP server</h2>
+          <p className="mt-1 truncate font-mono text-sm text-muted-foreground" title={link}>{link}</p>
+          <UnverifiedServerBadge host={host} className="mt-2" />
         </div>
       </div>
 
+      {matchedEntry && onUseMatchedEntry ? (
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2 text-sm">
+            <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.branding.logoUrl} size={24} />
+            <span className="truncate">Paperclip has a guided setup for {matchedEntry.name}.</span>
+          </div>
+          <Button type="button" size="sm" variant="outline" onClick={onUseMatchedEntry}>
+            Use {matchedEntry.name}
+          </Button>
+        </div>
+      ) : null}
+
+      {guidance ? (
+        <div className="mt-6">
+          <InlineBanner tone="warning" title={guidance.title}>
+            {guidance.body}
+          </InlineBanner>
+        </div>
+      ) : null}
+
       <div className="mt-8 space-y-6">
         <div>
-          <label className="text-sm font-medium text-foreground">Name</label>
+          <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-name">Name</label>
           <Input
+            ref={nameInputRef}
+            id="generic-mcp-name"
             value={name}
             onChange={(e) => onNameChange(e.target.value)}
             placeholder="My app"
             className="mt-2 h-11"
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            We filled this in from the link. Change it if you’d like.
+            We filled this in from the address. Change it if you'd like.
           </p>
         </div>
 
-        <div>
-          <label className="text-sm font-medium text-foreground">Does it need a key?</label>
-          <div className="mt-2 inline-flex rounded-lg border border-border bg-muted/50 p-1">
-            <SegmentedOption
-              label="No"
-              selected={!needsKey}
-              onClick={() => onNeedsKeyChange(false)}
-            />
-            <SegmentedOption
-              label="Yes"
-              selected={needsKey}
-              onClick={() => onNeedsKeyChange(true)}
-            />
+        {showSimpleKeyQuestion && (
+          <div>
+            <label className="text-sm font-medium text-foreground">Does it need a key?</label>
+            <div className="mt-2 inline-flex rounded-lg border border-border bg-muted/50 p-1">
+              <SegmentedOption
+                label="No"
+                selected={!needsKey}
+                onClick={() => onNeedsKeyChange(false)}
+              />
+              <SegmentedOption
+                label="Yes"
+                selected={needsKey}
+                onClick={() => onNeedsKeyChange(true)}
+              />
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {needsKey
+                ? "Paste the key this app gave you."
+                : "Most servers just work from the address — pick Yes only if the server gave you a key, or if it asks you to sign in."}
+            </p>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {needsKey
-              ? "Paste the key this app gave you."
-              : "Most apps just work from the link — pick Yes only if the app gave you a key."}
-          </p>
-        </div>
+        )}
 
-        {needsKey && (
+        {(showSimpleKeyQuestion && needsKey) || authMode === "bearer" ? (
           <div className="space-y-4">
             <div>
-              <label className="text-sm font-medium text-foreground">App key</label>
+              <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-key">App key</label>
               <Input
+                id="generic-mcp-key"
                 type="password"
                 autoComplete="off"
                 value={keyValue}
@@ -1249,18 +1520,116 @@ function LinkConnectStep({
                 className="mt-2 h-11 font-mono"
               />
             </div>
-
-            <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
-              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-              <div>
-                <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
-                <div className="text-xs text-muted-foreground">
-                  You can replace it anytime from this app’s page.
-                </div>
-              </div>
-            </div>
+            <StoredSecurelyNote />
           </div>
-        )}
+        ) : null}
+
+        <Collapsible open={advancedOpen} onOpenChange={onAdvancedOpenChange}>
+          <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent/40">
+            Advanced authentication
+            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", advancedOpen && "rotate-180")} />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-5 pt-4">
+            <p className="text-xs text-muted-foreground">
+              Only needed when the server's docs are specific about how to authenticate.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {GENERIC_AUTH_MODE_OPTIONS.map((option) => (
+                <SegmentedOption
+                  key={option.mode}
+                  label={option.label}
+                  selected={authMode === option.mode}
+                  onClick={() => onAuthModeChange(option.mode)}
+                />
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {GENERIC_AUTH_MODE_OPTIONS.find((option) => option.mode === authMode)?.hint}
+            </p>
+
+            {authMode === "custom_headers" ? (
+              <div className="space-y-3">
+                {headers.map((row) => (
+                  <div key={row.id} className="flex items-start gap-2">
+                    <Input
+                      value={row.name}
+                      onChange={(e) => updateHeader(row.id, { name: e.target.value })}
+                      placeholder="Header name"
+                      aria-label="Header name"
+                      className="h-10 font-mono"
+                    />
+                    <Input
+                      type="password"
+                      autoComplete="off"
+                      value={row.value}
+                      onChange={(e) => updateHeader(row.id, { value: e.target.value })}
+                      placeholder="Value"
+                      aria-label={row.name.trim() ? `Value for ${row.name.trim()}` : "Header value"}
+                      className="h-10 font-mono"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-10 shrink-0"
+                      onClick={() => onHeadersChange(headers.filter((candidate) => candidate.id !== row.id))}
+                      disabled={headers.length === 1}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onHeadersChange([...headers, newCustomHeaderRow()])}
+                >
+                  Add another header
+                </Button>
+                {headerError ? <p className="text-xs text-destructive">{headerError}</p> : null}
+                <StoredSecurelyNote />
+              </div>
+            ) : null}
+
+            {authMode === "oauth" ? (
+              <div className="space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  Paperclip sets sign-in up on its own whenever the server allows it. Only fill these in when the
+                  server's docs tell you to register Paperclip yourself first.
+                </p>
+                <div>
+                  <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-client-id">
+                    Client ID
+                  </label>
+                  <Input
+                    id="generic-mcp-client-id"
+                    value={oauthClientId}
+                    onChange={(e) => onOAuthClientIdChange(e.target.value)}
+                    autoComplete="off"
+                    placeholder="Optional"
+                    className="mt-2 h-11 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-client-secret">
+                    Client secret
+                  </label>
+                  <Input
+                    id="generic-mcp-client-secret"
+                    type="password"
+                    autoComplete="off"
+                    value={oauthClientSecret}
+                    onChange={(e) => onOAuthClientSecretChange(e.target.value)}
+                    placeholder="Optional"
+                    className="mt-2 h-11 font-mono"
+                  />
+                </div>
+                <StoredSecurelyNote />
+              </div>
+            ) : null}
+          </CollapsibleContent>
+        </Collapsible>
       </div>
 
       <div className="mt-8 flex items-center justify-between">
@@ -1269,12 +1638,61 @@ function LinkConnectStep({
         </Button>
         <div className="flex items-center gap-3">
           <span className="hidden text-xs text-muted-foreground sm:inline">
-            We’ll check the link before turning anything on.
+            We'll check the server before turning anything on.
           </span>
-          <Button onClick={onConnect} disabled={submitting || (needsKey && keyValue.trim().length === 0)}>
+          <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {submitting ? "Checking…" : "Check link"}
           </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the operator is choosing is how the *server* authenticates, in its own
+ * terms. Paperclip decides internally whether that means a preconfigured client,
+ * a client ID metadata document, dynamic registration, or the credentials pasted
+ * below — none of which belongs on this screen.
+ */
+const GENERIC_AUTH_MODE_OPTIONS: Array<{ mode: GenericMcpAuthMode; label: string; hint: string }> = [
+  {
+    mode: "auto",
+    label: "Let Paperclip check",
+    hint: "Paperclip asks the server what it needs and walks you through it. Start here.",
+  },
+  {
+    mode: "none",
+    label: "No sign-in needed",
+    hint: "The server is open to anyone with the address.",
+  },
+  {
+    mode: "bearer",
+    label: "Key or token",
+    hint: "Paperclip sends your key as an Authorization header.",
+  },
+  {
+    mode: "custom_headers",
+    label: "Custom headers",
+    hint: "For servers that name their own headers. Values are stored as Paperclip secrets and can\u2019t be read back.",
+  },
+  {
+    mode: "oauth",
+    label: "Browser sign-in",
+    hint: "You\u2019ll sign in at the provider. Add a client ID and secret only if the provider requires you to register Paperclip first.",
+  },
+];
+
+function StoredSecurelyNote() {
+  return (
+    <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
+      <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+      <div>
+        <div className="text-sm font-medium text-foreground">Stored securely.</div>
+        <div className="text-xs text-muted-foreground">
+          Paperclip keeps this in its encrypted secret store. You can replace it anytime from this app's page,
+          but it can't be read back.
         </div>
       </div>
     </div>
@@ -1336,6 +1754,10 @@ function KeyStep({
   onNameChange,
   values,
   onChange,
+  methodKey,
+  onMethodChange,
+  configValues,
+  onConfigChange,
   googleSheetsLinks,
   googleSheetsError,
   onGoogleSheetsLinksChange,
@@ -1348,6 +1770,10 @@ function KeyStep({
   onNameChange: (next: string) => void;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  methodKey: string;
+  onMethodChange: (method: ConnectionMethodDef) => void;
+  configValues: Record<string, string | boolean>;
+  onConfigChange: (next: Record<string, string | boolean>) => void;
   googleSheetsLinks: string;
   googleSheetsError: string | null;
   onGoogleSheetsLinksChange: (next: string) => void;
@@ -1356,7 +1782,10 @@ function KeyStep({
   onConnect: () => void;
 }) {
   const copy = appCopyFor(entry.slug, entry.description);
-  const method = getAvailableConnectionMethod(entry);
+  const methods = getAvailableConnectionMethods(entry);
+  const method = methods.length > 1 && !methodKey
+    ? null
+    : getAvailableConnectionMethod(entry, methodKey || null);
   const fields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
     configPath: credentialConfigPath(field),
@@ -1365,6 +1794,21 @@ function KeyStep({
   const allFilled = fields.every(
     (f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0,
   );
+  const configFields = [...(method?.tenantFields ?? []), ...(method?.extensionFields ?? [])];
+  const standardConfigFields = configFields.filter((field) => field.advanced !== true);
+  const advancedConfigFields = configFields.filter((field) => field.advanced === true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const configFilled = configFields.every((field) => {
+    if (!field.required) return true;
+    const value = configValues[field.key];
+    return typeof value === "boolean" || (typeof value === "string" && value.trim().length > 0);
+  });
+  const alternativeKeys = method?.configRequirements?.atLeastOneOf ?? [];
+  const configRequirementMet = alternativeKeys.length === 0 || alternativeKeys.some((key) => {
+    const value = configValues[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+  const hasMethodSelection = methods.length <= 1 || Boolean(methodKey);
   const robotEmail = entry.availability?.robotEmail ?? null;
   const unavailable = entry.availability?.available === false;
 
@@ -1455,11 +1899,60 @@ function KeyStep({
       </div>
 
       <div className="mt-8 space-y-6">
+        {methods.length > 1 && (
+          <div>
+            <label className="text-sm font-medium text-foreground">How do you want to connect?</label>
+            <div className="mt-2 inline-flex rounded-lg bg-muted p-1">
+              {methods.map((candidate) => (
+                <SegmentedOption
+                  key={candidate.key}
+                  label={candidate.label ?? (candidate.auth === "oauth" ? `Sign in with ${entry.name}` : "Use an API key")}
+                  selected={candidate.key === methodKey}
+                  onClick={() => onMethodChange(candidate)}
+                />
+              ))}
+            </div>
+            {!method && <p className="mt-2 text-xs text-muted-foreground">Choose a method to continue.</p>}
+          </div>
+        )}
+
         <ConnectionNameField name={name} onNameChange={onNameChange} />
 
-        {fields.length === 0 ? (
+        {standardConfigFields.map((field) => (
+          <MethodConfigField
+            key={field.key}
+            field={field}
+            value={configValues[field.key]}
+            onChange={(value) => onConfigChange({ ...configValues, [field.key]: value })}
+          />
+        ))}
+
+        {advancedConfigFields.length > 0 && (
+          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+            <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+              <ChevronDown className={cn("h-4 w-4 transition-transform", advancedOpen && "rotate-180")} />
+              Advanced
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-4">
+              <div className="space-y-6">
+                {advancedConfigFields.map((field) => (
+                  <MethodConfigField
+                    key={field.key}
+                    field={field}
+                    value={configValues[field.key]}
+                    onChange={(value) => onConfigChange({ ...configValues, [field.key]: value })}
+                  />
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+
+        {method && fields.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            This app doesn’t need a key. Just connect to continue.
+            {method.auth === "oauth"
+              ? `You’ll continue to ${entry.name} to sign in securely.`
+              : "This app doesn’t need a key. Just connect to continue."}
           </p>
         ) : (
           fields.map((field) => (
@@ -1490,15 +1983,17 @@ function KeyStep({
           ))
         )}
 
-        <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
-          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          <div>
-            <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
-            <div className="text-xs text-muted-foreground">
-              You can replace it anytime from this app’s page.
+        {method?.auth === "api_key" && (
+          <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
+            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <div>
+              <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
+              <div className="text-xs text-muted-foreground">
+                You can replace it anytime from this app’s page.
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="mt-8 flex items-center justify-between">
@@ -1507,11 +2002,13 @@ function KeyStep({
         </Button>
         <div className="flex items-center gap-3">
           <span className="hidden text-xs text-muted-foreground sm:inline">
-            We’ll check the key before turning anything on.
+            {method?.auth === "oauth"
+              ? "You’ll sign in before anything turns on."
+              : "We’ll check the key before turning anything on."}
           </span>
-          <Button onClick={onConnect} disabled={submitting || !allFilled}>
+          <Button onClick={onConnect} disabled={submitting || !hasMethodSelection || !allFilled || !configFilled || !configRequirementMet}>
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {submitting ? "Checking…" : "Connect"}
+            {submitting ? "Checking…" : method?.auth === "oauth" ? "Continue to sign in" : "Connect"}
           </Button>
         </div>
       </div>
@@ -1519,142 +2016,54 @@ function KeyStep({
   );
 }
 
-function ActionGroup({
-  title,
-  hint,
-  actions,
-  enabled,
-  onToggle,
-  bulkLabel,
-  onBulk,
-  askFirstLevels,
+function MethodConfigField({
+  field,
+  value,
+  onChange,
 }: {
-  title: string;
-  hint: string;
-  actions: ToolAppConnectionActionSummary[];
-  enabled: Record<string, boolean>;
-  onToggle: (id: string, on: boolean) => void;
-  bulkLabel: string;
-  onBulk: () => void;
-  askFirstLevels: string[];
+  field: FieldDef;
+  value: string | boolean | undefined;
+  onChange: (value: string | boolean) => void;
 }) {
-  if (actions.length === 0) return null;
-  return (
-    <div className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-5 py-3">
-        <div className="text-sm">
-          <span className="font-bold text-foreground">{title}</span>
-          <span className="ml-2 text-muted-foreground">· {hint}</span>
-        </div>
-        <button
-          type="button"
-          onClick={onBulk}
-          className="text-xs text-muted-foreground hover:text-foreground"
-        >
-          {bulkLabel}
-        </button>
-      </div>
-      <div className="divide-y divide-border">
-        {actions.map((action) => {
-          const on = enabled[action.catalogEntryId] ?? false;
-          const showAskFirst = on && askFirstLevels.includes(action.riskLevel);
-          return (
-            <div key={action.catalogEntryId} className="flex items-center gap-4 px-5 py-3">
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-foreground">
-                  {action.title ?? action.toolName}
-                </div>
-                {action.description && (
-                  <div className="truncate text-xs text-muted-foreground">{action.description}</div>
-                )}
-              </div>
-              {showAskFirst && (
-                <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
-                  Ask first
-                </span>
-              )}
-              <ToggleSwitch checked={on} onCheckedChange={(next) => onToggle(action.catalogEntryId, next)} />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ActionsStep({
-  appName,
-  result,
-  enabled,
-  onToggle,
-  onBulk,
-  onBack,
-  onContinue,
-}: {
-  appName: string;
-  result: ConnectToolAppResult;
-  enabled: Record<string, boolean>;
-  onToggle: (id: string, on: boolean) => void;
-  onBulk: (ids: string[], on: boolean) => void;
-  onBack: () => void;
-  onContinue: () => void;
-}) {
-  const askFirstLevels = askFirstLevelsFrom(result);
-  const { readOnly, canMakeChanges } = result.actions;
-  const total = readOnly.length + canMakeChanges.length;
-  const enabledCount = Object.values(enabled).filter(Boolean).length;
-
-  return (
-    <div className="space-y-5">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-          <Check className="h-3.5 w-3.5" />
-        </span>
+  if (field.type === "checkbox") {
+    return (
+      <div className="flex items-start justify-between gap-4 rounded-lg border border-border p-4">
         <div>
-          <div className="text-lg font-bold text-foreground">
-            Connected to {appName} — it offers {total} {total === 1 ? "action" : "actions"}.
-          </div>
-          <div className="text-sm text-muted-foreground">
-            Read-only actions are on. Anything that can change something starts off — turn on the ones you want.
-          </div>
+          <div className="text-sm font-medium text-foreground">{field.label}</div>
+          {field.helperMd && <div className="mt-1 text-xs text-muted-foreground">{field.helperMd}</div>}
         </div>
+        <ToggleSwitch checked={value === true} onCheckedChange={onChange} />
       </div>
-
-      <ActionGroup
-        title="Read only"
-        hint="these can look but not change anything"
-        actions={readOnly}
-        enabled={enabled}
-        onToggle={onToggle}
-        bulkLabel="Turn all off"
-        onBulk={() => onBulk(readOnly.map((a) => a.catalogEntryId), false)}
-        askFirstLevels={askFirstLevels}
-      />
-
-      <ActionGroup
-        title="Can make changes"
-        hint="these change something in another app"
-        actions={canMakeChanges}
-        enabled={enabled}
-        onToggle={onToggle}
-        bulkLabel="Turn all on"
-        onBulk={() => onBulk(canMakeChanges.map((a) => a.catalogEntryId), true)}
-        askFirstLevels={askFirstLevels}
-      />
-
-      <div className="flex items-center justify-between pt-1">
-        <Button variant="ghost" onClick={onBack}>
-          Back
-        </Button>
-        <div className="flex items-center gap-3">
-          <span className="hidden text-xs text-muted-foreground sm:inline">
-            If {appName} adds new actions later, they start off until you review them.
-          </span>
-          <Button onClick={onContinue} disabled={enabledCount === 0}>
-            Continue with {enabledCount} {enabledCount === 1 ? "action" : "actions"} on
-          </Button>
-        </div>
-      </div>
+    );
+  }
+  return (
+    <div>
+      <label className="text-sm font-medium text-foreground">{field.label}</label>
+      {field.type === "textarea" ? (
+        <Textarea
+          value={typeof value === "string" ? value : ""}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.placeholder}
+          className="mt-2 min-h-24"
+        />
+      ) : field.type === "select" ? (
+        <select
+          value={typeof value === "string" ? value : ""}
+          onChange={(event) => onChange(event.target.value)}
+          className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
+        >
+          <option value="" disabled>Select an option</option>
+          {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      ) : (
+        <Input
+          value={typeof value === "string" ? value : ""}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={field.placeholder}
+          className="mt-2 h-11"
+        />
+      )}
+      {field.helperMd && <p className="mt-2 text-xs text-muted-foreground">{field.helperMd}</p>}
     </div>
   );
 }

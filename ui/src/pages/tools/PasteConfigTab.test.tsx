@@ -11,10 +11,13 @@ import { PasteConfigTab } from "./PasteConfigTab";
 const toolsApiMock = vi.hoisted(() => ({
   importMcpJson: vi.fn(),
   connectApp: vi.fn(),
+  startOAuth: vi.fn(),
   finishApp: vi.fn(),
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
+const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: toolsApiMock }));
+vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: navigateTopLevelMock }));
 // The tab uses `useNavigate` from the app router (PAP-11088 draft hand-off),
 // which needs CompanyProvider; stub it so the copy hint renders in isolation.
 vi.mock("@/lib/router", () => ({ useNavigate: () => mockNavigate }));
@@ -121,6 +124,47 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
     },
     suggestedDefaults: { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
     ...overrides,
+  };
+}
+
+const NOTION_CONFIG = '{ "mcpServers": { "notion": { "url": "https://mcp.notion.com/mcp" } } }';
+
+const NOTION_PREVIEW: McpJsonImportPreview = {
+  drafts: [{
+    name: "notion",
+    transport: "mcp_remote",
+    status: "draft",
+    config: { url: "https://mcp.notion.com/mcp" },
+    credentialRefs: [],
+    credentialFields: [],
+    warnings: [],
+  }],
+};
+
+function oauthConnectResult(startUrl: string | null = null): ConnectToolAppResult {
+  const base = connectResult();
+  return {
+    ...base,
+    application: {
+      ...base.application,
+      applicationKey: "app-gallery:link:notion-generic-test",
+      name: "notion",
+      metadata: { source: "link" },
+    },
+    connection: {
+      ...base.connection,
+      authKind: "oauth",
+      config: { url: "https://mcp.notion.com/mcp", unverifiedServer: true },
+      transportConfig: { url: "https://mcp.notion.com/mcp", unverifiedServer: true },
+    },
+    catalog: [],
+    actions: { readOnly: [], canMakeChanges: [] },
+    auth: {
+      kind: "oauth",
+      startUrl,
+      resource: "https://mcp.notion.com/mcp",
+      registrationSource: "cimd",
+    },
   };
 }
 
@@ -291,6 +335,92 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       name: "secure-demo",
       credentialValues: { "headers.Authorization": "Bearer new" },
     });
+  });
+
+  it("starts OAuth for the original generic connection instead of rendering an empty catalog", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const nameInput = container.querySelector('input[placeholder="notion"]') as HTMLInputElement;
+    await act(async () => setInputValue(nameInput, "Notion generic self-test 2026-08-17T20:00:00Z"));
+    await flushReact();
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult());
+    toolsApiMock.startOAuth.mockResolvedValue({
+      connectionId: "conn-1",
+      provider: "mcp.notion.com",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=redacted",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      registrationSource: "cimd",
+    });
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.connectApp).toHaveBeenCalledWith("company-1", {
+      link: "https://mcp.notion.com/mcp",
+      name: "Notion generic self-test 2026-08-17T20:00:00Z",
+      credentialValues: {},
+    });
+    expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=redacted",
+    );
+    expect(container.textContent).toContain("Unverified server");
+    expect(container.textContent).toContain("mcp.notion.com");
+    expect(container.textContent).not.toContain("Review actions for notion");
+  });
+
+  it("rejects an unsafe start URL and retries OAuth on the same connection", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("couldn’t connect");
+    expect(container.textContent).not.toContain("javascript:alert(1)");
+
+    toolsApiMock.startOAuth.mockResolvedValue({
+      connectionId: "conn-1",
+      provider: "mcp.notion.com",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=retry-redacted",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      registrationSource: "cimd",
+    });
+    await act(async () => {
+      buttonStartingWith("Try again")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.startOAuth).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=retry-redacted",
+    );
+  });
+
+  it("cancels to the original connection setup route without creating another draft", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonStartingWith("Back to apps")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/setup");
+    expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.startOAuth).not.toHaveBeenCalled();
   });
 
   it("does not offer Continue for a stdio draft (draft-only, no link to hand off)", async () => {

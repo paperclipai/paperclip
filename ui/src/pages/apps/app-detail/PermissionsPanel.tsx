@@ -110,8 +110,8 @@ function AccessSection({
   const canSave = draft.mode === "all" || draft.agentIds.size > 0;
 
   return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between px-5 py-4">
+    <section>
+      <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-bold text-foreground">Who can use it</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">{summary}</p>
@@ -124,7 +124,7 @@ function AccessSection({
       </div>
 
       {editing && (
-        <div className="space-y-3 border-t border-border px-5 py-4">
+        <div className="space-y-3 pt-4">
           <label className="flex items-start gap-3">
             <input
               type="radio"
@@ -206,8 +206,8 @@ function InstalledSection({
   const installedCount = install.onAll ? liveAgents.length : install.agentIds.size;
 
   return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between gap-3 px-5 py-4">
+    <section>
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-sm font-bold text-foreground">Installed on agents</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
@@ -228,7 +228,7 @@ function InstalledSection({
         </div>
       </div>
 
-      <div className="space-y-3 border-t border-border px-5 py-4">
+      <div className="space-y-3 pt-4">
         <InlineBanner tone="info" compact>
           {installInfoNotice(appName)}
         </InlineBanner>
@@ -255,12 +255,7 @@ function InstalledSection({
           />
         )}
 
-        <label
-          className={cn(
-            "flex items-start gap-3 rounded-lg border px-3 py-2.5",
-            install.onAll ? "border-foreground bg-muted/40" : "border-border bg-muted/20",
-          )}
-        >
+        <label className="flex items-start gap-3 py-2.5">
           <Checkbox
             checked={install.onAll}
             disabled={disabled}
@@ -417,8 +412,8 @@ function ActionGroup({
   }, [focusId]);
   if (actions.length === 0) return null;
   return (
-    <div className="rounded-xl border border-border bg-card">
-      <div className="border-b border-border px-5 py-3 text-sm">
+    <div>
+      <div className="pb-2 text-sm">
         <span className="font-bold text-foreground">{title}</span>
         <span className="ml-2 text-muted-foreground">- {hint}</span>
       </div>
@@ -431,7 +426,7 @@ function ActionGroup({
               key={action.id}
               ref={focused ? focusRef : undefined}
               className={cn(
-                "flex items-center gap-4 px-5 py-3",
+                "flex items-center gap-4 py-3",
                 focused && "rounded-md bg-primary/5 ring-2 ring-primary/40",
               )}
               data-action-id={action.id}

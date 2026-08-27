@@ -22,12 +22,14 @@ import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { installPayload, installStateFrom, type InstallState } from "@/lib/tool-installs";
+import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
+import { UnverifiedServerBadge } from "./UnverifiedServerBadge";
 import {
   appDefinitionLogoUrl,
   appDefinitionName,
@@ -60,6 +62,7 @@ export function AppDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   const activeTab: AppTabKey | null = isAppTabKey(tab) ? tab : null;
+  const needsCatalog = activeTab === "review" || activeTab === "permissions" || activeTab === "test";
 
   const connectionQuery = useQuery({
     queryKey: queryKeys.tools.connection(connectionId),
@@ -79,22 +82,22 @@ export function AppDetail() {
   const catalogQuery = useQuery({
     queryKey: queryKeys.tools.catalog(connectionId),
     queryFn: () => toolsApi.listCatalog(connectionId),
-    enabled: !!connectionId && !!activeTab,
+    enabled: !!connectionId && needsCatalog,
   });
   const profilesQuery = useQuery({
     queryKey: queryKeys.tools.profiles(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listProfiles(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!activeTab,
+    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
   });
   const policiesQuery = useQuery({
     queryKey: queryKeys.tools.policies(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listPolicies(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!activeTab,
+    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
   });
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!activeTab,
+    enabled: !!selectedCompanyId && (activeTab === "permissions" || activeTab === "activity"),
   });
   const activityQuery = useQuery({
     queryKey: queryKeys.tools.connectionActivity(connectionId),
@@ -246,7 +249,14 @@ export function AppDetail() {
   const startOAuth = useMutation({
     mutationFn: () => toolsApi.startOAuth(connectionId),
     onSuccess: ({ authorizationUrl }) => {
-      navigateTopLevel(authorizationUrl);
+      // Checked again at the navigation boundary (PAP-17099): the address came
+      // from the remote server, and this is where an unsafe scheme would run.
+      const target = resolveAuthorizationTarget(authorizationUrl);
+      if (!target.ok) {
+        pushToast({ title: "Couldn't start sign-in", body: target.message, tone: "error" });
+        return;
+      }
+      navigateTopLevel(target.url);
     },
     onError: (error) =>
       pushToast({
@@ -264,7 +274,7 @@ export function AppDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
         title: "App removed",
-        body: `${appName} no longer has access. You can connect it again any time.`,
+        body: `${appName} no longer has access and its credentials are deleted. Connecting it again needs a new sign-in or key.`,
         tone: "success",
       });
       navigate("/apps/connections");
@@ -350,7 +360,7 @@ export function AppDetail() {
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
   }
-  if (connectionQuery.isLoading || catalogQuery.isLoading) {
+  if (connectionQuery.isLoading) {
     return (
       <div className="max-w-3xl space-y-4">
         <Skeleton className="h-10 w-56" />
@@ -376,7 +386,11 @@ export function AppDetail() {
   const active = catalog.filter((e) => e.status !== "quarantined" && e.status !== "removed");
   const readOnly = active.filter((e) => e.isReadOnly);
   const canChange = active.filter((e) => !e.isReadOnly);
-  const actionCount = active.length;
+  const actionCount = catalogQuery.data ? active.length : null;
+  const reviewLoading = catalogQuery.isLoading || profilesQuery.isLoading || policiesQuery.isLoading;
+  const permissionsLoading = reviewLoading || installsQuery.isLoading || agentsQuery.isLoading;
+  const reviewFailed = catalogQuery.isError || profilesQuery.isError || policiesQuery.isError;
+  const permissionsFailed = reviewFailed || installsQuery.isError || agentsQuery.isError;
 
   return (
     <div className="max-w-3xl space-y-6 pb-12">
@@ -426,36 +440,58 @@ export function AppDetail() {
         />
       )}
       {activeTab === "review" && (
-        <ReviewPanel
-          connectionId={connectionId}
-          quarantined={quarantined}
-          pending={pending}
-          onReviewQuarantined={reviewQuarantined}
-        />
+        reviewFailed
+          ? <ToolsLoadError onRetry={() => {
+              void catalogQuery.refetch();
+              void profilesQuery.refetch();
+              void policiesQuery.refetch();
+            }} />
+          : reviewLoading
+          ? <ToolsLoading />
+          : <ReviewPanel
+              connectionId={connectionId}
+              quarantined={quarantined}
+              pending={pending}
+              onReviewQuarantined={reviewQuarantined}
+            />
       )}
       {activeTab === "permissions" && (
-        <PermissionsPanel
-          appName={appName}
-          access={access}
-          agents={agents}
-          install={install}
-          readOnly={readOnly}
-          canChange={canChange}
-          quarantined={quarantined}
-          enabledIds={enabledIds}
-          askFirstIds={askFirstIds}
-          pending={pending}
-          installPending={persistInstall.isPending || installsQuery.isLoading}
-          refreshPending={refreshTools.isPending}
-          onSaveAccess={(next) => apply({ access: next })}
-          onSaveInstall={(next) => persistInstall.mutate(next)}
-          onRefreshActions={() => refreshTools.mutate()}
-          onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
-          onReviewQuarantined={reviewQuarantined}
-        />
+        permissionsFailed
+          ? <ToolsLoadError onRetry={() => {
+              void catalogQuery.refetch();
+              void profilesQuery.refetch();
+              void policiesQuery.refetch();
+              void installsQuery.refetch();
+              void agentsQuery.refetch();
+            }} />
+          : permissionsLoading
+          ? <ToolsLoading />
+          : <PermissionsPanel
+              appName={appName}
+              access={access}
+              agents={agents}
+              install={install}
+              readOnly={readOnly}
+              canChange={canChange}
+              quarantined={quarantined}
+              enabledIds={enabledIds}
+              askFirstIds={askFirstIds}
+              pending={pending}
+              installPending={persistInstall.isPending}
+              refreshPending={refreshTools.isPending}
+              onSaveAccess={(next) => apply({ access: next })}
+              onSaveInstall={(next) => persistInstall.mutate(next)}
+              onRefreshActions={() => refreshTools.mutate()}
+              onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
+              onReviewQuarantined={reviewQuarantined}
+            />
       )}
       {activeTab === "test" && (
-        <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
+        catalogQuery.isError
+          ? <ToolsLoadError onRetry={() => { void catalogQuery.refetch(); }} />
+          : catalogQuery.isLoading
+          ? <ToolsLoading />
+          : <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
       )}
       {activeTab === "activity" && (
         <ActivityPanel
@@ -506,7 +542,7 @@ function AppDetailHeader({
   connection: ToolConnection;
   logoEntry: AppGalleryDisplayEntry | null;
   status: StatusInfo;
-  actionCount: number;
+  actionCount: number | null;
   renaming: boolean;
   nameDraft: string;
   renamePending: boolean;
@@ -515,6 +551,8 @@ function AppDetailHeader({
   onRenameCancel: () => void;
   onRenameSubmit: (value: string) => void;
 }) {
+  const unverifiedHost = unverifiedRemoteHost(connection);
+
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex items-center gap-3">
@@ -559,16 +597,59 @@ function AppDetailHeader({
           {connectionDisplaySecondaryHint(connection) && (
             <p className="text-xs text-muted-foreground">{connectionDisplaySecondaryHint(connection)}</p>
           )}
+          {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-1" /> : null}
           <div className="mt-1 flex items-center gap-2">
             <StatusBadge status={status} />
-            <span className="text-xs text-muted-foreground">
-              {actionCount} {actionCount === 1 ? "action" : "actions"} available
-            </span>
+            {actionCount !== null && (
+              <span className="text-xs text-muted-foreground">
+                {actionCount} {actionCount === 1 ? "action" : "actions"} available
+              </span>
+            )}
           </div>
         </div>
       </div>
     </header>
   );
+}
+
+function ToolsLoading() {
+  return (
+    <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Loading tools…
+    </div>
+  );
+}
+
+function ToolsLoadError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="space-y-3 py-8">
+      <p className="text-sm text-destructive">Couldn’t load tools for this app.</p>
+      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
+    </div>
+  );
+}
+
+function unverifiedRemoteHost(connection: ToolConnection): string | null {
+  const sourceTemplateKey = connection.config?.sourceTemplateKey ?? connection.transportConfig.sourceTemplateKey;
+  if (
+    connection.transport !== "mcp_remote"
+    || (typeof sourceTemplateKey === "string" && sourceTemplateKey.trim())
+  ) return null;
+
+  const value = connection.config?.url
+    ?? connection.config?.endpoint
+    ?? connection.config?.remoteUrl
+    ?? connection.transportConfig.url
+    ?? connection.transportConfig.endpoint
+    ?? connection.transportConfig.remoteUrl;
+  if (typeof value !== "string") return null;
+
+  try {
+    return new URL(value).host || null;
+  } catch {
+    return null;
+  }
 }
 
 type StatusInfo = { label: string; tone: "connected" | "attention" | "paused" };

@@ -190,6 +190,51 @@ export interface ToolConnectionInstallSnapshot {
   installs: ToolConnectionInstall[];
 }
 
+/**
+ * What a connection removal actually tore down (PAP-17119).
+ *
+ * Removing an app is a revocation boundary, not a cosmetic archive, so the
+ * receipt is counts and outcomes only — never a secret name, key, or value,
+ * because this summary is echoed into the activity log the whole company reads.
+ */
+export interface ToolConnectionRemovalSummary {
+  /** Connection-owned secrets revoked at the provider and deleted locally. */
+  secretsRevoked: number;
+  /** Secrets left in place because another consumer still binds them. */
+  secretsRetainedShared: number;
+  /** Credential refs cleared off the connection row. */
+  credentialRefsCleared: number;
+  /** `company_secret_bindings` rows removed for this connection. */
+  secretBindingsRemoved: number;
+  grantsRevoked: number;
+  installsRemoved: number;
+  /**
+   * `deleted` when the app-managed `app:<connectionId>` profile could go away,
+   * `archived` when a gateway still references it (the row survives with no
+   * entries and a non-active status), `absent` when there was never one.
+   */
+  appProfile: "deleted" | "archived" | "absent";
+  appProfileEntriesRemoved: number;
+  appProfileBindingsRemoved: number;
+  catalogEntriesMarkedRemoved: number;
+  oauthStatesDiscarded: number;
+  /** Token hashes wiped from the retained connection-token issuance ledger. */
+  tokenIssuanceHashesCleared: number;
+  /**
+   * Live local runtimes shut down. A running child process holds the injected
+   * credential in memory, so it is an access path of its own.
+   */
+  runtimeSlotsStopped: number;
+  gatewayTokensRevoked: number;
+  gatewaySessionsRevoked: number;
+  applicationArchived: boolean;
+}
+
+export interface ToolConnectionRemovalResult {
+  connection: ToolConnection;
+  removal: ToolConnectionRemovalSummary;
+}
+
 export type ConnectionTokenScope = string | string[];
 export type ConnectionTokenSubject = { type: "app" } | { type: "user"; userId: string };
 
@@ -911,6 +956,29 @@ export interface ToolAppConnectionActionSummary {
   status: ToolCatalogEntryStatus;
 }
 
+/**
+ * How Paperclip obtained the OAuth client it will use for a connection
+ * (PAP-17087). Ordered by preference: a client the deployment preconfigured for
+ * that issuer, then a Client ID Metadata Document, then dynamic registration,
+ * then client credentials the operator preregistered and pasted in.
+ */
+export type ToolOAuthClientRegistrationSource = "preconfigured" | "cimd" | "dcr" | "manual";
+
+/**
+ * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
+ * branch without re-probing. `manualClientRequired` means discovery succeeded but
+ * the authorization server supports neither CIMD nor DCR, so the operator has to
+ * supply a preregistered client under Advanced authentication.
+ */
+export interface ConnectToolAppAuthChallenge {
+  kind: "oauth";
+  startUrl: string | null;
+  issuer?: string | null;
+  resource?: string | null;
+  registrationSource?: ToolOAuthClientRegistrationSource | null;
+  manualClientRequired?: boolean;
+}
+
 export interface ConnectToolAppResult {
   connectionId: string;
   application: ToolApplication;
@@ -921,10 +989,7 @@ export interface ConnectToolAppResult {
     canMakeChanges: ToolAppConnectionActionSummary[];
   };
   suggestedDefaults: Record<string, unknown>;
-  auth?: {
-    kind: "oauth";
-    startUrl: string | null;
-  } | null;
+  auth?: ConnectToolAppAuthChallenge | null;
 }
 
 export interface ToolOAuthStartResult {
@@ -932,6 +997,11 @@ export interface ToolOAuthStartResult {
   provider: string;
   authorizationUrl: string;
   expiresAt: string;
+  /** Canonical authorization-server issuer this run is bound to, when discovered. */
+  issuer?: string | null;
+  /** RFC 8707 resource indicator sent with the request. */
+  resource?: string | null;
+  registrationSource?: ToolOAuthClientRegistrationSource | null;
 }
 
 export interface FinishToolAppResult {
@@ -1341,6 +1411,8 @@ export interface ToolConnectionTestAgent {
   role: string;
   title: string | null;
   status: string;
+  /** Zero-based depth in the company reporting tree; roots are highest-ranked. */
+  orgDepth: number;
   effectiveAccess: ToolConnectionAccessSummary;
 }
 

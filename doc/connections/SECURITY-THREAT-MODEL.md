@@ -111,6 +111,10 @@ Required controls:
   first, then persist only refs and redacted account metadata on the connection.
 - Create/update routes validate same-company ownership for every referenced
   secret, app, connection, agent, user, project, routine, and issue.
+- Create/update routes validate every configured token-broker exchange URL
+  against the private-host policy before persisting the connection. Minting
+  repeats the check and pins the approved address before transmitting the
+  parent credential, covering legacy rows and DNS rebinding.
 - Health and auth failures transition failure-closed: `missing_secret`,
   `degraded`, `failed`, `auth_required`, or disabled equivalents.
 - Error payloads and logs redact provider responses that may contain credentials.

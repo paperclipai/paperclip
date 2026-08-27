@@ -133,6 +133,7 @@ function agent(overrides: Record<string, unknown> = {}) {
     role: "engineer",
     title: "Engineer",
     status: "active",
+    orgDepth: 1,
     effectiveAccess: {
       connectionId: "conn-1",
       toolCount: 3,
@@ -231,6 +232,23 @@ describe("TestPanel", () => {
     expect(container.textContent).toContain("Allowed");
     expect(container.textContent).toContain("Ask first");
     expect(container.textContent).toContain("Off");
+    expect(container.querySelector(".bg-card")).toBeNull();
+  });
+
+  it("defaults to the highest-ranked accessible agent", async () => {
+    listTestAgentsMock.mockResolvedValue({
+      agents: [
+        agent({ id: "agent-report", name: "A report", orgDepth: 2 }),
+        agent({ id: "agent-root", name: "Root agent", orgDepth: 0 }),
+        agent({ id: "agent-manager", name: "Manager", orgDepth: 1 }),
+      ],
+    });
+
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(container.textContent).toContain("Root agent");
+    expect(container.textContent).not.toContain("A report");
   });
 
   it("shows the empty state when there are no actions", async () => {

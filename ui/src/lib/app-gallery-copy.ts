@@ -66,6 +66,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Read and update pages in your workspace.",
     short: "Read and update pages in your workspace.",
   },
+  posthog: {
+    tagline: "Explore product usage, errors, flags, and experiments.",
+    short: "Choose one project and the analytics tools your agents can use.",
+  },
   linear: {
     tagline: "Create, update and read tickets.",
     short: "Create, update and read tickets.",

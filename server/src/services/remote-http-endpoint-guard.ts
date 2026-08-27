@@ -39,7 +39,29 @@ export async function assertPublicRemoteHttpEndpoint(
   options: RemoteHttpEndpointGuardOptions,
   error: RemoteHttpEndpointErrorFactory,
 ): Promise<void> {
-  if (options.allowPrivateNetwork) return;
+  await resolveApprovedRemoteHttpAddresses(endpoint, options, error);
+}
+
+/**
+ * Validate a remote endpoint and return the exact address set that was approved.
+ *
+ * Callers must dial one of the returned addresses instead of letting the socket
+ * layer resolve the hostname a second time. A second resolution reopens a
+ * DNS-rebinding TOCTOU window: an attacker-controlled name server can answer
+ * with a public address while this guard is looking, then with a loopback,
+ * private or link-local address a moment later when the connection is made
+ * (PAP-17098). Returning the resolved set — rather than a bare `void` — is what
+ * lets `guardedRemoteHttpFetch` close that window.
+ *
+ * An empty result means "no address pinning required": the deployment allows
+ * private endpoints, so there is no boundary left to enforce.
+ */
+export async function resolveApprovedRemoteHttpAddresses(
+  endpoint: URL,
+  options: RemoteHttpEndpointGuardOptions,
+  error: RemoteHttpEndpointErrorFactory,
+): Promise<string[]> {
+  if (options.allowPrivateNetwork) return [];
 
   const hostname = endpoint.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (hostname === "localhost" || hostname.endsWith(".localhost")) {
@@ -51,7 +73,7 @@ export async function assertPublicRemoteHttpEndpoint(
     if (isPrivateOrReservedIp(hostname)) {
       throw error("Remote MCP connection URL cannot target private or reserved network addresses", "remote_http_private_endpoint");
     }
-    return;
+    return [hostname];
   }
 
   let results: LookupResult[];
@@ -70,6 +92,22 @@ export async function assertPublicRemoteHttpEndpoint(
   if (results.some((result) => isPrivateOrReservedIp(result.address))) {
     throw error("Remote MCP connection URL cannot resolve to private or reserved network addresses", "remote_http_private_endpoint");
   }
+  return results.map((result) => result.address);
+}
+
+/**
+ * Reduce an address to the form used for comparing an approved address against
+ * the peer a socket actually connected to. `socket.remoteAddress` may come back
+ * as an IPv4-mapped IPv6 address or carry an IPv6 zone index, neither of which
+ * appears in a DNS answer.
+ */
+export function normalizeIpAddress(address: string): string {
+  const lower = address.trim().toLowerCase().replace(/^\[|\]$/g, "").split("%")[0] ?? "";
+  const mappedIpv4 = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (mappedIpv4?.[1]) return mappedIpv4[1];
+  const mappedIpv4Hex = parseMappedIpv4Hex(lower);
+  if (mappedIpv4Hex) return mappedIpv4Hex;
+  return lower;
 }
 
 function defaultLookup(hostname: string): Promise<LookupResult[]> {
@@ -93,7 +131,7 @@ async function lookupWithTimeout(hostname: string, lookup: RemoteHttpEndpointLoo
   }
 }
 
-function isPrivateOrReservedIp(address: string): boolean {
+export function isPrivateOrReservedIp(address: string): boolean {
   const lower = address.toLowerCase();
   const mappedIpv4 = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
   if (mappedIpv4?.[1]) return isPrivateOrReservedIpv4(mappedIpv4[1]);

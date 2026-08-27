@@ -9,6 +9,26 @@ const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
 // "authorization". JWT-shaped values are still caught by the value guard below.
 const AUDIT_REASON_PAYLOAD_KEY_RE = /^authorizationReason$/;
 const AUDIT_SURFACE_PAYLOAD_KEY_RE = /^surface$/;
+/**
+ * Cleanup counts on a connection-removal receipt (PAP-17119). Their names name
+ * the thing they counted — secrets, bindings, tokens — so the key guard above
+ * would blank the whole receipt and leave the operator unable to see what a
+ * revocation actually tore down. They pass only while the value really is a
+ * finite number, so nothing that could carry material rides through on the
+ * strength of a familiar key name.
+ */
+const AUDIT_COUNT_PAYLOAD_KEYS = new Set([
+  "secretsRevoked",
+  "secretsRetainedShared",
+  "credentialRefsCleared",
+  "secretBindingsRemoved",
+  "tokenIssuanceHashesCleared",
+  "gatewayTokensRevoked",
+]);
+
+function isAuditCountField(key: string, value: unknown): boolean {
+  return AUDIT_COUNT_PAYLOAD_KEYS.has(key) && typeof value === "number" && Number.isFinite(value);
+}
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
@@ -107,7 +127,11 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = redactSensitiveText(value);
       continue;
     }
-    if (SECRET_PAYLOAD_KEY_RE.test(key) && !AUDIT_REASON_PAYLOAD_KEY_RE.test(key)) {
+    if (
+      SECRET_PAYLOAD_KEY_RE.test(key)
+      && !AUDIT_REASON_PAYLOAD_KEY_RE.test(key)
+      && !isAuditCountField(key, value)
+    ) {
       if (isSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);
         continue;

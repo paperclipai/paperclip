@@ -26,6 +26,7 @@ export function ReviewPanel({
         connectionId={connectionId}
         heading="Waiting for your OK"
         emptyState={showsQuarantinedActions ? "hidden" : "reassure"}
+        plain
       />
     </div>
   );

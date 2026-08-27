@@ -42,15 +42,41 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
-import { badRequest, forbidden, unprocessable } from "../errors.js";
+import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import {
+  OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
+  oauthClientIdMetadataDocument,
+} from "../services/tool-access.js";
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
   const raw = config?.allowedSpreadsheetIds;
   if (!Array.isArray(raw)) return [];
   return raw.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function agentOrgDepths(rows: Array<{ id: string; reportsTo: string | null }>): Map<string, number> {
+  const parentById = new Map(rows.map((row) => [row.id, row.reportsTo]));
+  const depthById = new Map<string, number>();
+
+  const depthFor = (agentId: string, path: Set<string>): number => {
+    const known = depthById.get(agentId);
+    if (known !== undefined) return known;
+    const parentId = parentById.get(agentId);
+    if (!parentId || !parentById.has(parentId) || path.has(agentId)) {
+      depthById.set(agentId, 0);
+      return 0;
+    }
+    const nextPath = new Set(path).add(agentId);
+    const depth = depthFor(parentId, nextPath) + 1;
+    depthById.set(agentId, depth);
+    return depth;
+  };
+
+  for (const row of rows) depthFor(row.id, new Set());
+  return depthById;
 }
 
 /**
@@ -109,9 +135,22 @@ export function toolAccessRoutes(
   function oauthRedirectUri() {
     const configured = configuredPublicBaseUrl();
     if (!configured) {
-      throw unprocessable("OAuth connections require PAPERCLIP_PUBLIC_URL or an auth public base URL");
+      throw unprocessable(
+        "This Paperclip needs a browser-reachable HTTPS address (or loopback HTTP) before browser sign-in can start.",
+        { code: "oauth_redirect_origin_unsupported" },
+      );
     }
     return new URL("/api/tools/oauth/callback", configured).toString();
+  }
+
+  async function oauthSetupPath(companyId: string, connectionId: string) {
+    const [company] = await db
+      .select({ issuePrefix: companies.issuePrefix })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    if (!company) throw new Error("OAuth callback connection belongs to a missing company");
+    return `/${company.issuePrefix}/apps/${connectionId}/setup`;
   }
   const access = accessService(db);
 
@@ -252,17 +291,48 @@ export function toolAccessRoutes(
     });
   });
 
+  /**
+   * Paperclip's Client ID Metadata Document (PAP-17087).
+   *
+   * The document's own URL is the `client_id` Paperclip presents to an
+   * authorization server that supports CIMD, so this endpoint has to be publicly
+   * readable — an authorization server fetches it server-to-server with no
+   * Paperclip session. It contains only this deployment's callback and the
+   * grant/response/auth methods Paperclip uses: no company, connection or secret
+   * data of any kind.
+   */
+  router.get(OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH.replace(/^\/api/, ""), (_req, res) => {
+    const redirectUri = oauthRedirectUri();
+    const clientId = new URL(OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH, new URL(redirectUri).origin).toString();
+    res.type("application/json").json(oauthClientIdMetadataDocument({ clientId, redirectUri }));
+  });
+
   router.post("/companies/:companyId/tools/apps/connect", validate(connectToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
       if (result.auth?.kind === "oauth") {
-        const start = await svc.startOAuth(companyId, result.connectionId, {
-          redirectUri: oauthRedirectUri(),
-          actor: getActorInfo(req),
-        });
-        result.auth.startUrl = start.authorizationUrl;
+        try {
+          const start = await svc.startOAuth(companyId, result.connectionId, {
+            redirectUri: oauthRedirectUri(),
+            actor: getActorInfo(req),
+          });
+          result.auth.startUrl = start.authorizationUrl;
+          result.auth.issuer = start.issuer ?? result.auth.issuer ?? null;
+          result.auth.resource = start.resource ?? result.auth.resource ?? null;
+          result.auth.registrationSource = start.registrationSource ?? null;
+        } catch (error) {
+          // An unknown server whose authorization server supports neither CIMD
+          // nor dynamic registration is not a failed connect: the draft
+          // connection is real and usable as soon as the operator supplies a
+          // client they registered themselves. Report that instead of a 4xx so
+          // the wizard can ask for it rather than losing the draft.
+          const code = error instanceof HttpError ? String((error.details as { code?: unknown })?.code ?? "") : "";
+          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required") throw error;
+          result.auth.startUrl = null;
+          result.auth.manualClientRequired = true;
+        }
       }
       await logActivity(db, {
         companyId,
@@ -323,20 +393,43 @@ export function toolAccessRoutes(
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const code = typeof req.query.code === "string" ? req.query.code : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
-    const errorDescription = typeof req.query.error_description === "string" ? req.query.error_description : null;
+    // `error_description` / `error_uri` are read from neither the query nor the
+    // provider's body: they are provider-authored prose, and Paperclip maps the
+    // `error` code to its own copy instead of reflecting them (PAP-17108).
+    const iss = typeof req.query.iss === "string" ? req.query.iss : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired OAuth state");
     }
     assertToolAppMutationAccess(req, pendingState.companyId);
-    const result = await svc.completeOAuthCallback({
-      state,
-      code,
-      error,
-      errorDescription,
-      redirectUri: oauthRedirectUri(),
-      actor: getActorInfo(req),
-    });
+    const acceptsHtml = req.get("accept")?.includes("text/html") === true;
+    let result: Awaited<ReturnType<typeof svc.completeOAuthCallback>>;
+    try {
+      result = await svc.completeOAuthCallback({
+        state,
+        code,
+        error,
+        iss,
+        redirectUri: oauthRedirectUri(),
+        actor: getActorInfo(req),
+      });
+    } catch (callbackError) {
+      if (!acceptsHtml) throw callbackError;
+      const details = callbackError instanceof HttpError
+        && callbackError.details
+        && typeof callbackError.details === "object"
+        && !Array.isArray(callbackError.details)
+        ? callbackError.details as Record<string, unknown>
+        : null;
+      const callbackErrorCode = typeof details?.code === "string" ? details.code : null;
+      const params = new URLSearchParams({
+        oauth: callbackErrorCode === "oauth_authorization_denied" ? "denied" : "failed",
+      });
+      if (callbackErrorCode) params.set("code", callbackErrorCode);
+      const setupPath = await oauthSetupPath(pendingState.companyId, pendingState.connectionId);
+      res.redirect(303, `${setupPath}?${params.toString()}`);
+      return;
+    }
     await logActivity(db, {
       companyId: result.connection.companyId,
       actorType: "user",
@@ -349,14 +442,9 @@ export function toolAccessRoutes(
         catalogEntryCount: result.catalog.length,
       },
     });
-    if (req.get("accept")?.includes("text/html")) {
-      const [company] = await db
-        .select({ issuePrefix: companies.issuePrefix })
-        .from(companies)
-        .where(eq(companies.id, result.connection.companyId))
-        .limit(1);
-      if (!company) throw new Error("OAuth callback connection belongs to a missing company");
-      res.redirect(303, `/${company.issuePrefix}/apps/${result.connection.id}/setup?oauth=connected`);
+    if (acceptsHtml) {
+      const setupPath = await oauthSetupPath(result.connection.companyId, result.connection.id);
+      res.redirect(303, `${setupPath}?oauth=connected`);
       return;
     }
     res.json(result);
@@ -674,9 +762,11 @@ export function toolAccessRoutes(
         role: agents.role,
         title: agents.title,
         status: agents.status,
+        reportsTo: agents.reportsTo,
       })
       .from(agents)
       .where(eq(agents.companyId, connection.companyId));
+    const orgDepthByAgentId = agentOrgDepths(rows);
     const candidates = [];
     for (const agent of rows) {
       try {
@@ -685,7 +775,12 @@ export function toolAccessRoutes(
         continue;
       }
       candidates.push({
-        ...agent,
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        title: agent.title,
+        status: agent.status,
+        orgDepth: orgDepthByAgentId.get(agent.id) ?? 0,
         effectiveAccess: await options.toolGateway.summarizeConnectionAccessForAgent({
           companyId: connection.companyId,
           connectionId: connection.id,
@@ -693,6 +788,7 @@ export function toolAccessRoutes(
         }),
       });
     }
+    candidates.sort((a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name));
     res.json({ agents: candidates });
   });
 
@@ -791,8 +887,15 @@ export function toolAccessRoutes(
     if (!existing) return;
     assertToolAppMutationAccess(req, existing.companyId);
     const applicationBefore = await svc.getApplication(existing.applicationId);
-    const connection = await svc.archiveConnection(existing.id);
+    const { connection, removal } = await svc.archiveConnection(
+      existing.id,
+      existing.companyId,
+      getActorInfo(req),
+    );
     const applicationAfter = await svc.getApplication(existing.applicationId);
+    // The receipt is counts and outcomes only. Removal is a revocation boundary
+    // (PAP-17119) and operators need to see what it tore down, but this row is
+    // company-readable activity, so it never carries a secret name or value.
     await logActivity(db, {
       companyId: connection.companyId,
       actorType: "user",
@@ -800,7 +903,7 @@ export function toolAccessRoutes(
       action: "tool_connection.archived",
       entityType: "tool_connection",
       entityId: connection.id,
-      details: { transport: connection.transport },
+      details: { transport: connection.transport, ...removal },
     });
     if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
       await logActivity(db, {
@@ -813,7 +916,7 @@ export function toolAccessRoutes(
         details: { type: applicationAfter.type, name: applicationAfter.name, reason: "last_connection_removed" },
       });
     }
-    res.json(connection);
+    res.json({ ...connection, removal });
   });
 
   router.post("/tool-connections/:connectionId/health-check", async (req, res) => {

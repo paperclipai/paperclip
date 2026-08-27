@@ -3,6 +3,7 @@ import type {
   ToolConnection,
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
+  ToolConnectionRemovalSummary,
   ConnectToolAppResult,
   FinishToolAppResult,
   ToolCatalogEntry,
@@ -290,8 +291,12 @@ export const toolsApi = {
     api.post<ToolConnection>(`/companies/${companyId}/tools/connections`, input),
   updateConnection: (connectionId: string, input: UpdateToolConnectionInput) =>
     api.patch<ToolConnection>(`/tool-connections/${connectionId}`, input),
+  // Removal is a credential-revoking teardown (PAP-17119), so the response
+  // carries the cleanup receipt alongside the archived connection.
   archiveConnection: (connectionId: string) =>
-    api.delete<ToolConnection>(`/tool-connections/${connectionId}`),
+    api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary }>(
+      `/tool-connections/${connectionId}`,
+    ),
   checkConnectionHealth: (connectionId: string) =>
     api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/health-check`, {}),
   reconnectConnection: (connectionId: string, credentialValues: Record<string, string>) =>

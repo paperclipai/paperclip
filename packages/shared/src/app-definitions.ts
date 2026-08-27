@@ -7,6 +7,7 @@ const CONNECTABLE_APP_SLUGS = new Set([
   "github",
   "slack",
   "notion",
+  "posthog",
   "linear",
   "google-sheets",
   "context7",
@@ -47,19 +48,27 @@ export function getAppDefinitionForUrl(
   ) ?? null;
 }
 
-export function getAvailableConnectionMethod(app: AppDefinition): ConnectionMethodDef | null {
+export function getAvailableConnectionMethods(app: AppDefinition): ConnectionMethodDef[] {
   const availability = app.ownershipAvailability ?? DEFAULT_OWNERSHIP_AVAILABILITY;
-  return app.methods.find((method) =>
+  return app.methods.filter((method) =>
     method.ownershipModes.some((ownership) => availability[ownership] !== false)
-  ) ?? null;
+  );
+}
+
+export function getAvailableConnectionMethod(
+  app: AppDefinition,
+  methodKey?: string | null,
+): ConnectionMethodDef | null {
+  const methods = getAvailableConnectionMethods(app);
+  return methodKey ? methods.find((method) => method.key === methodKey) ?? null : methods[0] ?? null;
 }
 
 export function credentialConfigPath(field: FieldDef): string {
   return `credentials.${field.key}`;
 }
 
-export function recommendedDefaultsForApp(app: AppDefinition): Record<string, unknown> {
-  const method = getAvailableConnectionMethod(app);
+export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
+  const method = getAvailableConnectionMethod(app, methodKey);
   return {
     access: "all_agents",
     askFirstRiskLevels: method?.riskTier === "S1" ? [] : ["write", "destructive"],
