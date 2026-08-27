@@ -6,31 +6,26 @@ exec time. The environment is a requirement, not a build step.
 
 This document states requirements. It does not state build steps.
 
-## bwrap prerequisites (advisory, optional)
+## Security boundary
 
-A sandbox provider can wrap a command with an advisory bubblewrap (`bwrap`)
-wrapper. The wrapper is advisory, best-effort, and automatic. It adds no
-security. The ephemeral sandbox model stays the only security posture. A missing
-prerequisite degrades to the plain command. It never fails the lease. Daytona is
-the current provider with bwrap support.
+The sandbox is the security boundary. One run owns one sandbox. Code inside a
+sandbox can change any file inside that sandbox. Paperclip protects the host,
+the cluster, and the network. Paperclip does not protect sandbox code from
+other sandbox code that shares the same sandbox.
 
-The wrapper needs three run-time prerequisites. Each prerequisite is a fact of
-the image or snapshot, not a fact of the runtime code. The runtime does not
-build the image or snapshot. The runtime only probes for the capability and
-degrades when the capability is absent. So each prerequisite is an owner
-responsibility under the requirement-not-build contract above:
+Two paths cross the boundary between a sandbox and the host:
 
-- The `bubblewrap` package is installed, and the `bwrap` binary is on the PATH
-  (normally `/usr/bin/bwrap`).
-- A passwordless `sudo` rule lets the sandbox user run `bwrap` as root.
-- The host and kernel allow an unprivileged user namespace.
+- Outbound workspace synchronization copies files from the sandbox to the
+  host.
+- The application programming interface bridge carries requests from the
+  sandbox to the host.
 
-The owner supplies these prerequisites through the image or snapshot. The
-provider README states the distro-specific install commands, the exact sudoers
-rule, the user-namespace setting, and the verification command. The install and
-the sudoers change are environment provisioning at the image or snapshot layer.
-Route them to DevOps through the board. Do not add a provisioning script to the
-repository.
+A sandbox provider must keep every host, cluster, mount, network, and
+host-import control that it has today.
+
+**Mount duty.** A provider must not map a host path into a sandbox
+synchronization path. This is a duty of the provider. No code in this
+repository enforces the duty today.
 
 ## Required on PATH
 
