@@ -14,6 +14,9 @@ execution and finalization path.
 - The server also binds the immutable completion-contract revision and criterion
   identifiers. A completed Codex turn emits one `run.result.proposed` followed
   by one `run.terminal`; server finalization accepts only that bound pair.
+- `run.prepare` also binds the coordinator's run-scoped semantic-tool
+  projection. Runnerd supplies the same immutable inventory to both
+  `thread/start` and `thread/resume`.
 - `session.open` initializes Codex and starts a thread. A recovered runner
   resumes the recorded thread and reads it before accepting another turn.
 - `turn.start` requires bounded non-empty `payload.text`. `turn.steer`,
@@ -37,9 +40,15 @@ later turn cannot diverge from Codex's native state.
 
 PRP journals every command before the provider effect. Exact command replay
 returns the durable result without invoking Codex again. A crash in the effect
-window remains indeterminate and is not retried. Codex JSON-RPC notifications
-received before a synchronous response are buffered rather than lost. Reusing
-a pending structured-input request ID with different content fails closed.
+window remains indeterminate and is not retried. Semantic tool calls use a
+narrower native recovery contract: runnerd persists the Codex `callId`, tool,
+and input before emitting `semantic_tool.input`. If Codex reissues that pending
+request after `thread/resume`, runnerd emits `semantic_tool.reconciled` instead
+of a second input event and delivers the control plane's durable result to the
+same call ID. Reuse with different content fails closed. Codex JSON-RPC
+notifications received before a synchronous response are buffered rather than
+lost. Reusing a pending structured-input request ID with different content
+also fails closed.
 Normalized events remain in the provider sidecar until the durable PRP outbox
 has committed and acknowledged them. The server persists the native binding
 before process launch and reuses it after restart, including when the rollout
@@ -51,6 +60,8 @@ Codex-native envelopes do not cross PRP. The provider backend emits bounded,
 redacted session, turn, item, plan, usage, tool-execution, notice, and structured
 input events. Unknown notifications are ignored.
 
-Codex starts with an empty dynamic-tool inventory. Catalog presence is not
-authorization. The coordinator projects only the already landed, same-task
-read bindings for the exact company and native run.
+Catalog presence is not authorization. The coordinator projects only bindings
+authorized for the exact company, task, actor, and native run. Read operations
+are run-bound. `report_progress` additionally uses a durable semantic receipt
+and a deterministic comment identity, so an interrupted or repeated dispatch
+can produce only one task comment.

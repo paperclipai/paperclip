@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -37,6 +37,34 @@ pub struct CodexProviderConfig {
     pub instructions: String,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexDynamicTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+impl CodexDynamicTool {
+    pub fn validate(&self) -> Result<(), LocalRunnerError> {
+        if self.name.is_empty()
+            || self.name.len() > 160
+            || self
+                .name
+                .chars()
+                .any(|character| !(character.is_ascii_alphanumeric() || "_-".contains(character)))
+            || self.description.is_empty()
+            || self.description.len() > 4_000
+            || !self.input_schema.is_object()
+        {
+            return Err(LocalRunnerError::invalid(
+                "Codex dynamic tool definition is malformed or oversized",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl CodexProviderConfig {
@@ -109,6 +137,11 @@ pub enum CodexProviderEvent {
         request_id: String,
         question_set: Value,
     },
+    ToolCall {
+        call_id: String,
+        operation_id: String,
+        input: Value,
+    },
     Exited {
         exit_code: Option<i32>,
         success: bool,
@@ -124,6 +157,13 @@ struct PendingRuntimeRequest {
     option_labels: QuestionOptionLabels,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct PendingToolCall {
+    rpc_id: Value,
+    operation_id: String,
+    input: Value,
+}
+
 pub struct CodexProvider {
     process: SupervisedProcess,
     next_request_id: u64,
@@ -132,6 +172,8 @@ pub struct CodexProvider {
     active_provider_turn_id: Option<String>,
     pending_messages: VecDeque<Value>,
     pending_runtime_requests: BTreeMap<String, PendingRuntimeRequest>,
+    pending_tool_calls: BTreeMap<String, PendingToolCall>,
+    authorized_tool_names: BTreeSet<String>,
     expected_shutdown: bool,
 }
 
@@ -139,8 +181,17 @@ impl CodexProvider {
     pub fn start(
         config: &CodexProviderConfig,
         resume_thread_id: Option<&str>,
+        dynamic_tools: &[CodexDynamicTool],
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
+        if dynamic_tools.len() > 128 {
+            return Err(LocalRunnerError::invalid(
+                "Codex dynamic tool inventory exceeds the 128 tool limit",
+            ));
+        }
+        for tool in dynamic_tools {
+            tool.validate()?;
+        }
         let mut provider = Self {
             process: SupervisedProcess::spawn(
                 &config.command,
@@ -154,6 +205,8 @@ impl CodexProvider {
             active_provider_turn_id: None,
             pending_messages: VecDeque::new(),
             pending_runtime_requests: BTreeMap::new(),
+            pending_tool_calls: BTreeMap::new(),
+            authorized_tool_names: dynamic_tools.iter().map(|tool| tool.name.clone()).collect(),
             expected_shutdown: false,
         };
         let initialized = provider.request(
@@ -176,21 +229,19 @@ impl CodexProvider {
             "cwd": config.cwd,
             "model": config.model,
             "approvalPolicy": config.approval_policy,
-            "permissions": "paperclip-runner-workspace-only",
+            "permissions": ":workspace",
             "runtimeWorkspaceRoots": [config.cwd],
             "baseInstructions": config.instructions,
         });
         let params_object = params
             .as_object_mut()
             .expect("Codex thread parameters are an object");
+        params_object.insert("dynamicTools".to_owned(), json!(dynamic_tools));
+        params_object.insert("experimentalRawEvents".to_owned(), json!(false));
         let method = if let Some(thread_id) = resume_thread_id {
             params_object.insert("threadId".to_owned(), json!(thread_id));
             "thread/resume"
         } else {
-            // This PR does not grant any semantic tools. A later catalog and
-            // authorization layer can project a run-scoped inventory here.
-            params_object.insert("dynamicTools".to_owned(), json!([]));
-            params_object.insert("experimentalRawEvents".to_owned(), json!(false));
             "thread/start"
         };
         let opened = provider.request(method, params)?;
@@ -252,7 +303,7 @@ impl CodexProvider {
             json!({
                 "threadId": self.thread_id,
                 "cwd": cwd,
-                "permissions": "paperclip-runner-workspace-only",
+                "permissions": ":workspace",
                 "runtimeWorkspaceRoots": [cwd],
                 "input": [{"type": "text", "text": message, "text_elements": []}],
             }),
@@ -326,6 +377,34 @@ impl CodexProvider {
         Ok(())
     }
 
+    pub fn deliver_tool_result(
+        &mut self,
+        call_id: &str,
+        result: &Value,
+        is_error: bool,
+    ) -> Result<(), LocalRunnerError> {
+        let pending = self
+            .pending_tool_calls
+            .get(call_id)
+            .cloned()
+            .ok_or_else(|| {
+                LocalRunnerError::invalid("semantic result has no pending Codex tool call")
+            })?;
+        self.process.send(&json!({
+            "id": pending.rpc_id,
+            "result": {
+                "success": !is_error,
+                "contentItems": [{"type": "inputText", "text": result.to_string()}],
+            },
+        }))?;
+        self.pending_tool_calls.remove(call_id);
+        Ok(())
+    }
+
+    pub fn has_pending_tool_call(&self, call_id: &str) -> bool {
+        self.pending_tool_calls.contains_key(call_id)
+    }
+
     pub fn poll(&mut self) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
         let message = if let Some(message) = self.pending_messages.pop_front() {
             message
@@ -347,6 +426,66 @@ impl CodexProvider {
             message.get("id").cloned(),
             message.get("method").and_then(Value::as_str),
         ) {
+            if method == "item/tool/call" {
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                if params.get("threadId").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex tool call named another thread",
+                    ));
+                }
+                let active_turn_id = self.active_provider_turn_id.as_deref().ok_or_else(|| {
+                    LocalRunnerError::invalid("Codex tool call arrived outside an active turn")
+                })?;
+                if params.get("turnId").and_then(Value::as_str) != Some(active_turn_id) {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex tool call named another turn",
+                    ));
+                }
+                let call_id = params
+                    .get("callId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty() && value.len() <= 160)
+                    .ok_or_else(|| LocalRunnerError::invalid("Codex tool call id is invalid"))?
+                    .to_owned();
+                let operation_id = params
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty() && value.len() <= 160)
+                    .ok_or_else(|| LocalRunnerError::invalid("Codex tool name is invalid"))?
+                    .to_owned();
+                if !self.authorized_tool_names.contains(&operation_id) {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex requested a tool outside its authorized inventory",
+                    ));
+                }
+                let input = params
+                    .get("arguments")
+                    .filter(|value| value.is_object())
+                    .cloned()
+                    .ok_or_else(|| {
+                        LocalRunnerError::invalid("Codex tool arguments must be an object")
+                    })?;
+                let pending = PendingToolCall {
+                    rpc_id,
+                    operation_id: operation_id.clone(),
+                    input: input.clone(),
+                };
+                if let Some(existing) = self.pending_tool_calls.get(&call_id) {
+                    if existing.operation_id != pending.operation_id
+                        || existing.input != pending.input
+                    {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex reused a tool call id with different input",
+                        ));
+                    }
+                }
+                self.pending_tool_calls.insert(call_id.clone(), pending);
+                return Ok(Some(CodexProviderEvent::ToolCall {
+                    call_id,
+                    operation_id,
+                    input,
+                }));
+            }
             if method == "item/tool/requestUserInput" {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
                 if params.get("threadId").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
@@ -400,7 +539,17 @@ impl CodexProvider {
         }
 
         if let Some(method) = message.get("method").and_then(Value::as_str) {
-            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            let mut params = message.get("params").cloned().unwrap_or(Value::Null);
+            if method == "thread/tokenUsage/updated" {
+                if let (Some(object), Some(turn_id)) = (
+                    params.as_object_mut(),
+                    self.active_provider_turn_id.as_deref(),
+                ) {
+                    object
+                        .entry("turnId".to_owned())
+                        .or_insert_with(|| json!(turn_id));
+                }
+            }
             validate_notification_binding(
                 &self.thread_id,
                 self.active_provider_turn_id.as_deref(),
@@ -420,6 +569,7 @@ impl CodexProvider {
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
         self.expected_shutdown = true;
         self.cancel_pending_runtime_requests()?;
+        self.pending_tool_calls.clear();
         self.process.terminate_group().map(|_| ())
     }
 

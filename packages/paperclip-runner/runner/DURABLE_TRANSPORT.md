@@ -53,6 +53,13 @@ the process dies inside the effect window, recovery records an indeterminate
 result and refuses to execute that command again. Recent results are bounded;
 commands older than the compacted controller cursor fail closed.
 
+Pending Codex semantic requests are provider events, not replayed control
+commands. Their native call identity is persisted in the provider sidecar. A
+restarted runner resumes the same Codex thread, recognizes the reissued call,
+and records reconciliation without producing another semantic input. The
+server's deterministic result command and durable semantic receipt then finish
+the original request and make the application effect idempotent.
+
 State written before complete-command fingerprints existed is migrated by
 compacting its legacy command journal through the last recorded controller
 sequence. The runner can recover, but it rejects redelivery of those older
@@ -69,7 +76,8 @@ Durable mode is selected only when `paperclip-runnerd` receives
 `--connect-url`. Its executor accepts a Codex app-server descriptor and bound
 completion contract through `run.prepare`, owns the provider process group,
 resumes the persisted Codex thread after runner restart, and translates
-provider notifications to PRP events. The server supplies the bootstrap ticket
-only through the child environment, stores the process identity for bounded
-cancellation, and waits for the durable result and terminal pair. The existing
-local fake-runner mode remains unchanged.
+provider notifications to PRP events. The server supplies each one-use
+bootstrap ticket only through the child environment, restarts an unexpectedly
+exited runner up to a fixed bound against the same state directory, stores each
+process identity for bounded cancellation, and waits for the durable result
+and terminal pair. The existing local fake-runner mode remains unchanged.

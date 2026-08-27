@@ -14,9 +14,11 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  nativeSemanticReceipts,
 } from "@paperclipai/db";
 import type {
   PrpEvent,
@@ -118,7 +120,9 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
     runnerPrpWebSocketInternals.resetForTests();
     await db.delete(nativeRunFinalizations);
     await db.delete(nativeRunResults);
+    await db.delete(nativeSemanticReceipts);
     await db.delete(heartbeatRunEvents);
+    await db.delete(issueComments);
     await db.update(issues).set({ executionRunId: null });
     await db.delete(heartbeatRuns);
     await db.delete(completionContracts);
@@ -270,6 +274,7 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
       "list_documents",
       "read_document",
       "list_document_revisions",
+      "report_progress",
     ]);
     expect(
       runnerPrpWebSocketInternals.activeRegistration({
@@ -335,6 +340,63 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
       ok: false,
       error: { code: "task_ownership_denied", retryable: false },
       resultReceipt: { phase: "result" },
+    });
+  });
+
+  it("applies one durable progress effect for idempotent semantic retries", async () => {
+    const seed = await seedNativeRun();
+    const authority = new PaperclipRunnerSemanticAuthority(db, {
+      companyId: seed.companyId,
+      issueId: seed.issueId,
+      runId: seed.runId,
+      agentId: seed.agentId,
+    });
+    const call = {
+      callId: "progress-call-1",
+      operationId: "report_progress",
+      correlation: {
+        runId: seed.runId,
+        normalizedSessionId: seed.sessionId,
+        turnId: "turn-1",
+        itemId: "item-1",
+      },
+      input: {
+        idempotencyKey: "progress-once",
+        body: "The native run resumed and completed its pending call.",
+      },
+    };
+    const applied = await authority.dispatch(call);
+    expect(applied).toMatchObject({
+      ok: true,
+      operationId: "report_progress",
+      duplicate: false,
+      value: { disposition: "applied" },
+    });
+    const duplicate = await authority.dispatch({
+      ...call,
+      callId: "progress-call-2",
+    });
+    expect(duplicate).toMatchObject({
+      ok: true,
+      operationId: "report_progress",
+      duplicate: true,
+    });
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.createdByRunId, seed.runId));
+    expect(comments).toEqual([
+      { body: "The native run resumed and completed its pending call." },
+    ]);
+    await expect(
+      authority.dispatch({
+        ...call,
+        callId: "progress-call-3",
+        input: { ...call.input, body: "Conflicting retry." },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "idempotency_conflict" },
     });
   });
 

@@ -14,7 +14,9 @@ export type {
   PaperclipSemanticActionBinding,
   PaperclipSemanticActionId,
   PaperclipSemanticAuthorizationRecord,
+  PaperclipSemanticIdempotencyStore,
   PaperclipSemanticRunContext,
+  PaperclipSemanticStoredOutcome,
   PaperclipSemanticToolCall,
   PaperclipSemanticToolDefinition,
   PaperclipSemanticToolResult,
@@ -35,6 +37,8 @@ const runner = await import(sourceUrl.href) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
+export const digestPaperclipSemanticContent =
+  runner.digestPaperclipSemanticContent;
 export const validatePrpEvent = runner.validatePrpEvent;
 export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;

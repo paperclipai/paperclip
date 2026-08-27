@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -11,7 +11,9 @@ use std::os::unix::fs::PermissionsExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::codex_provider::{CodexProvider, CodexProviderConfig, CodexProviderEvent};
+use crate::codex_provider::{
+    CodexDynamicTool, CodexProvider, CodexProviderConfig, CodexProviderEvent,
+};
 use crate::durable::{
     create_private_temporary_file, open_private_regular_file, verify_private_directory, Command,
     CommandExecution, CommandExecutor, DurableRunnerError, EventPriority, PolledEvent,
@@ -28,6 +30,51 @@ const MAX_EVENTS_PER_POLL: usize = 128;
 struct CompletionContractBinding {
     revision: String,
     criterion_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PendingSemanticCall {
+    operation_id: String,
+    input: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct CompletedSemanticCall {
+    operation_id: String,
+    input: Value,
+    result: Value,
+    is_error: bool,
+}
+
+fn semantic_tools(payload: &Value) -> Result<Vec<CodexDynamicTool>, DurableRunnerError> {
+    let tools = payload
+        .get("semanticTools")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let tools: Vec<CodexDynamicTool> = serde_json::from_value(tools).map_err(|error| {
+        DurableRunnerError::invalid(format!("run.prepare semanticTools is invalid: {error}"))
+    })?;
+    if tools.len() > 128 {
+        return Err(DurableRunnerError::invalid(
+            "run.prepare semanticTools exceeds the 128 tool limit",
+        ));
+    }
+    for tool in &tools {
+        tool.validate()
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+    }
+    let unique = tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<HashSet<_>>();
+    if unique.len() != tools.len() {
+        return Err(DurableRunnerError::invalid(
+            "run.prepare semanticTools contains duplicate names",
+        ));
+    }
+    Ok(tools)
 }
 
 fn initial_provider_event_seq() -> u64 {
@@ -156,6 +203,8 @@ struct CodexProviderState {
     lifecycle: String,
     config: CodexProviderConfig,
     #[serde(default)]
+    semantic_tools: Vec<CodexDynamicTool>,
+    #[serde(default)]
     completion_contract: Option<CompletionContractBinding>,
     #[serde(default)]
     thread_id: Option<String>,
@@ -166,6 +215,10 @@ struct CodexProviderState {
     #[serde(default)]
     last_agent_message: Option<String>,
     #[serde(default)]
+    pending_semantic_calls: BTreeMap<String, PendingSemanticCall>,
+    #[serde(default)]
+    completed_semantic_calls: BTreeMap<String, CompletedSemanticCall>,
+    #[serde(default)]
     pending_events: VecDeque<PolledEvent>,
     #[serde(default = "initial_provider_event_seq")]
     next_provider_event_seq: u64,
@@ -174,6 +227,7 @@ struct CodexProviderState {
 impl CodexProviderState {
     fn new(
         config: CodexProviderConfig,
+        semantic_tools: Vec<CodexDynamicTool>,
         completion_contract: Option<CompletionContractBinding>,
     ) -> Self {
         let thread_id = config.provider_session_id.clone();
@@ -181,11 +235,14 @@ impl CodexProviderState {
             schema: PROVIDER_STATE_SCHEMA.to_owned(),
             lifecycle: "prepared".to_owned(),
             config,
+            semantic_tools,
             completion_contract,
             thread_id,
             provider_session_id: None,
             active_provider_turn_id: None,
             last_agent_message: None,
+            pending_semantic_calls: BTreeMap::new(),
+            completed_semantic_calls: BTreeMap::new(),
             pending_events: VecDeque::new(),
             next_provider_event_seq: initial_provider_event_seq(),
         }
@@ -195,6 +252,10 @@ impl CodexProviderState {
         self.config
             .validate()
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        for tool in &self.semantic_tools {
+            tool.validate()
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         let mut pending_event_ids = HashSet::new();
         if self.schema != PROVIDER_STATE_SCHEMA
             || !matches!(
@@ -228,6 +289,24 @@ impl CodexProviderState {
                 .last_agent_message
                 .as_ref()
                 .is_some_and(|value| value.is_empty() || value.len() > 1_000_000)
+            || self.semantic_tools.len() > 128
+            || self.pending_semantic_calls.len() > 128
+            || self.completed_semantic_calls.len() > 128
+            || self.pending_semantic_calls.iter().any(|(call_id, call)| {
+                call_id.is_empty()
+                    || call_id.len() > 160
+                    || call.operation_id.is_empty()
+                    || call.operation_id.len() > 160
+                    || !call.input.is_object()
+                    || self.completed_semantic_calls.contains_key(call_id)
+            })
+            || self.completed_semantic_calls.iter().any(|(call_id, call)| {
+                call_id.is_empty()
+                    || call_id.len() > 160
+                    || call.operation_id.is_empty()
+                    || call.operation_id.len() > 160
+                    || !call.input.is_object()
+            })
             || (self.thread_id.is_none()
                 && (self.provider_session_id.is_some()
                     || self.active_provider_turn_id.is_some()
@@ -354,9 +433,10 @@ impl CodexCommandExecutor {
             DurableRunnerError::invalid("recoverable Codex state omitted its thread id")
         })?;
         let previous_active_turn_id = state.active_provider_turn_id.clone();
-        let provider = CodexProvider::start(&state.config, Some(&thread_id)).map_err(|error| {
-            DurableRunnerError::invalid(format!("failed to resume Codex provider: {error}"))
-        })?;
+        let provider = CodexProvider::start(&state.config, Some(&thread_id), &state.semantic_tools)
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("failed to resume Codex provider: {error}"))
+            })?;
         let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
         self.provider = Some(provider);
         if provider_had_exited || recovered_active_turn_id != previous_active_turn_id {
@@ -457,8 +537,12 @@ impl CodexCommandExecutor {
             .validate()
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         let completion_contract = completion_contract(payload)?;
+        let semantic_tools = semantic_tools(payload)?;
         if let Some(state) = &self.state {
-            if state.config != config || state.completion_contract != completion_contract {
+            if state.config != config
+                || state.semantic_tools != semantic_tools
+                || state.completion_contract != completion_contract
+            {
                 return Err(DurableRunnerError::invalid(
                     "Codex provider or completion contract changed across the durable run",
                 ));
@@ -469,7 +553,11 @@ impl CodexCommandExecutor {
                 ));
             }
         } else {
-            self.state = Some(CodexProviderState::new(config, completion_contract));
+            self.state = Some(CodexProviderState::new(
+                config,
+                semantic_tools,
+                completion_contract,
+            ));
             self.save_state()?;
         }
         Ok(CommandExecution::result(json!({
@@ -490,10 +578,14 @@ impl CodexCommandExecutor {
                     "Codex provider session is closed",
                 ));
             }
-            let provider = CodexProvider::start(&state.config, state.thread_id.as_deref())
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!("failed to start Codex provider: {error}"))
-                })?;
+            let provider = CodexProvider::start(
+                &state.config,
+                state.thread_id.as_deref(),
+                &state.semantic_tools,
+            )
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("failed to start Codex provider: {error}"))
+            })?;
             self.provider = Some(provider);
         }
         self.provider
@@ -675,6 +767,106 @@ impl CodexCommandExecutor {
         })
     }
 
+    fn resolve_semantic_tool(
+        &mut self,
+        payload: &Value,
+    ) -> Result<CommandExecution, DurableRunnerError> {
+        let call_id = payload
+            .get("callId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 160)
+            .ok_or_else(|| DurableRunnerError::invalid("semantic_tool.result requires callId"))?;
+        let result = payload
+            .get("result")
+            .cloned()
+            .ok_or_else(|| DurableRunnerError::invalid("semantic_tool.result requires result"))?;
+        let is_error = payload
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Some(completed) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.completed_semantic_calls.get(call_id))
+        {
+            if completed.result != result || completed.is_error != is_error {
+                return Err(DurableRunnerError::invalid(
+                    "semantic_tool.result conflicts with the completed call",
+                ));
+            }
+            return Ok(CommandExecution::result(json!({
+                "status": "duplicate",
+                "callId": call_id,
+            })));
+        }
+        let pending = self
+            .state
+            .as_ref()
+            .and_then(|state| state.pending_semantic_calls.get(call_id))
+            .cloned()
+            .ok_or_else(|| {
+                DurableRunnerError::invalid("semantic_tool.result has no pending call")
+            })?;
+        let result_receipt = result
+            .get("resultReceipt")
+            .filter(|receipt| {
+                receipt.get("schema").and_then(Value::as_str)
+                    == Some("paperclip.prp.semantic_tool.v1")
+                    && receipt.get("phase").and_then(Value::as_str) == Some("result")
+                    && receipt.get("callId").and_then(Value::as_str) == Some(call_id)
+                    && receipt.get("operationId").and_then(Value::as_str)
+                        == Some(pending.operation_id.as_str())
+            })
+            .cloned()
+            .ok_or_else(|| {
+                DurableRunnerError::invalid(
+                    "semantic_tool.result requires its matching canonical resultReceipt",
+                )
+            })?;
+        let state = self
+            .state
+            .as_mut()
+            .expect("Codex state exists while resolving semantic tool");
+        state.pending_semantic_calls.remove(call_id);
+        state.completed_semantic_calls.insert(
+            call_id.to_owned(),
+            CompletedSemanticCall {
+                operation_id: pending.operation_id,
+                input: pending.input,
+                result: result.clone(),
+                is_error,
+            },
+        );
+        self.save_state()?;
+        // Persist the completed result before crossing the provider boundary.
+        // If delivery is interrupted, Codex reissues the same native call on
+        // thread resume and poll_provider redelivers this stored result.
+        let provider = self.ensure_provider()?;
+        let delivered = if provider.has_pending_tool_call(call_id) {
+            provider
+                .deliver_tool_result(call_id, &result, is_error)
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "Codex tool result delivery failed: {error}"
+                    ))
+                })?;
+            true
+        } else {
+            false
+        };
+        Ok(CommandExecution {
+            result: json!({
+                "status": if delivered { "delivered" } else { "deferred" },
+                "callId": call_id,
+            }),
+            events: vec![(
+                "semantic_tool.result".to_owned(),
+                EventPriority::P0,
+                json!({"semantic_tool": result_receipt}),
+            )],
+        })
+    }
+
     fn close_session(&mut self) -> Result<CommandExecution, DurableRunnerError> {
         if let Some(provider) = self.provider.as_mut() {
             provider.shutdown().map_err(|error| {
@@ -768,8 +960,16 @@ impl CodexCommandExecutor {
                         }
                     }
                     if method == "turn/completed" {
+                        if !state.pending_semantic_calls.is_empty() {
+                            return Err(DurableRunnerError::invalid(
+                                "Codex completed a turn with pending semantic tool calls",
+                            ));
+                        }
                         state.active_provider_turn_id = None;
                         state.lifecycle = "session_open".to_owned();
+                        // A completed turn cannot reissue its tool requests. Keep results
+                        // only through that boundary so long-lived sessions stay bounded.
+                        state.completed_semantic_calls.clear();
                     }
                     state.extend_events(normalized)?;
                     if let Some(event_type) = terminal_event_type {
@@ -809,6 +1009,74 @@ impl CodexCommandExecutor {
                                 },
                             }),
                         })?;
+                    self.save_state()?;
+                }
+                CodexProviderEvent::ToolCall {
+                    call_id,
+                    operation_id,
+                    input,
+                } => {
+                    let state = self
+                        .state
+                        .as_mut()
+                        .expect("Codex state remains available while polling");
+                    if let Some(completed) = state.completed_semantic_calls.get(&call_id).cloned() {
+                        if completed.operation_id != operation_id || completed.input != input {
+                            return Err(DurableRunnerError::invalid(
+                                "Codex reused a completed tool call id with different input",
+                            ));
+                        }
+                        self.provider
+                            .as_mut()
+                            .expect("provider remains available while reconciling a tool call")
+                            .deliver_tool_result(&call_id, &completed.result, completed.is_error)
+                            .map_err(|error| {
+                                DurableRunnerError::invalid(format!(
+                                    "Codex reconciled tool result delivery failed: {error}"
+                                ))
+                            })?;
+                        state.push_event(NormalizedProviderEvent {
+                            event_type: "semantic_tool.reconciled".to_owned(),
+                            priority: EventPriority::P0,
+                            payload: json!({
+                                "callId": call_id,
+                                "operationId": operation_id,
+                                "outcome": "completed_result_redelivered",
+                            }),
+                        })?;
+                    } else if let Some(pending) = state.pending_semantic_calls.get(&call_id) {
+                        if pending.operation_id != operation_id || pending.input != input {
+                            return Err(DurableRunnerError::invalid(
+                                "Codex reused a pending tool call id with different input",
+                            ));
+                        }
+                        state.push_event(NormalizedProviderEvent {
+                            event_type: "semantic_tool.reconciled".to_owned(),
+                            priority: EventPriority::P0,
+                            payload: json!({
+                                "callId": call_id,
+                                "operationId": operation_id,
+                                "outcome": "pending_call_resumed",
+                            }),
+                        })?;
+                    } else {
+                        state.pending_semantic_calls.insert(
+                            call_id.clone(),
+                            PendingSemanticCall {
+                                operation_id: operation_id.clone(),
+                                input: input.clone(),
+                            },
+                        );
+                        state.push_event(NormalizedProviderEvent {
+                            event_type: "semantic_tool.input".to_owned(),
+                            priority: EventPriority::P0,
+                            payload: json!({
+                                "callId": call_id,
+                                "operationId": operation_id,
+                                "input": input,
+                            }),
+                        })?;
+                    }
                     self.save_state()?;
                 }
                 CodexProviderEvent::Exited { exit_code, success } => {
@@ -859,6 +1127,7 @@ impl CommandExecutor for CodexCommandExecutor {
                 self.interrupt_turn(&command.command_type)
             }
             "request.resolve" => self.resolve_request(&command.payload),
+            "semantic_tool.result" => self.resolve_semantic_tool(&command.payload),
             "session.snapshot" => self.snapshot(),
             "session.close" | "session.destroy" => self.close_session(),
             "runner.drain" | "runner.suspend" | "runner.shutdown" => {
@@ -937,11 +1206,14 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
             },
+            semantic_tools: Vec::new(),
             completion_contract: None,
             thread_id: Some("thread-1".to_owned()),
             provider_session_id: None,
             active_provider_turn_id: None,
             last_agent_message: None,
+            pending_semantic_calls: BTreeMap::new(),
+            completed_semantic_calls: BTreeMap::new(),
             pending_events: VecDeque::new(),
             next_provider_event_seq: initial_provider_event_seq(),
         };
@@ -966,6 +1238,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
             },
+            Vec::new(),
             Some(CompletionContractBinding {
                 revision: "1".to_owned(),
                 criterion_ids: vec!["objective".to_owned()],

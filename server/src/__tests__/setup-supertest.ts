@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { Server as TlsServer } from "node:tls";
 
+import { requireLiveCodexHome } from "./helpers/live-codex-home.js";
+
 type SupertestServer = NetServer & {
   address(): ReturnType<NetServer["address"]>;
   listen(port: number): NetServer;
@@ -24,7 +26,9 @@ type SupertestTestConstructor = {
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;
 
-if (!process.env.CODEX_HOME) {
+if (process.env.PAPERCLIP_LIVE_CODEX_NATIVE_RESUME === "1") {
+  process.env.CODEX_HOME = requireLiveCodexHome(process.env.CODEX_HOME);
+} else if (!process.env.CODEX_HOME) {
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-codex-home-"));
   fs.writeFileSync(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-vitest"}\n', { mode: 0o600 });
   process.env.CODEX_HOME = codexHome;

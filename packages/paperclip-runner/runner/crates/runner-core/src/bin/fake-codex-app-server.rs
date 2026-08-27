@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 struct FakeState {
     thread_id: String,
     active_turn_id: Option<String>,
+    #[serde(default)]
+    pending_semantic_call: bool,
 }
 
 fn argument(args: &[String], name: &str) -> Option<String> {
@@ -34,6 +36,7 @@ fn load_state(path: &Path) -> FakeState {
         .unwrap_or_else(|| FakeState {
             thread_id: "codex-thread-1".to_owned(),
             active_turn_id: None,
+            pending_semantic_call: false,
         })
 }
 
@@ -79,12 +82,31 @@ fn finish_turn(state_path: &Path, state: &mut FakeState, status: &str) -> io::Re
     save_state(state_path, state)
 }
 
+fn send_semantic_call(state: &FakeState) -> io::Result<()> {
+    send(json!({
+        "id": "semantic-rpc-1",
+        "method": "item/tool/call",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": "provider-turn-1",
+            "itemId": "semantic-item-1",
+            "callId": "semantic-call-1",
+            "tool": "report_progress",
+            "arguments": {
+                "idempotencyKey": "native-resume-proof-1",
+                "body": "Native resume completed one semantic effect."
+            },
+        }
+    }))
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let state_path =
         PathBuf::from(argument(&args, "--state-file").ok_or("--state-file is required")?);
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
     let emit_question = args.iter().any(|value| value == "--emit-question");
+    let emit_semantic_tool = args.iter().any(|value| value == "--emit-semantic-tool");
     let hold_turn = args.iter().any(|value| value == "--hold-turn");
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let pre_response_notification = args
@@ -94,6 +116,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     for line in io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line?)?;
+        if message.get("method").is_none() && message.get("id") == Some(&json!("semantic-rpc-1")) {
+            log_call(call_log.as_deref(), "semantic_tool/result")?;
+            state.pending_semantic_call = false;
+            save_state(&state_path, &state)?;
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
         if message.get("method").is_none() && message.get("id") == Some(&json!("runtime-request-1"))
         {
             finish_turn(&state_path, &mut state, "completed")?;
@@ -111,8 +140,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }))?,
             "initialized" => {}
             "thread/start" => {
+                if emit_semantic_tool
+                    && message
+                        .pointer("/params/dynamicTools")
+                        .and_then(Value::as_array)
+                        .is_none_or(|tools| {
+                            !tools.iter().any(|tool| {
+                                tool.get("name").and_then(Value::as_str) == Some("report_progress")
+                            })
+                        })
+                {
+                    return Err("semantic test requires the projected dynamic tool".into());
+                }
                 state.thread_id = "codex-thread-1".to_owned();
                 state.active_turn_id = None;
+                state.pending_semantic_call = false;
                 save_state(&state_path, &state)?;
                 if pre_response_notification {
                     send(json!({
@@ -125,10 +167,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
             }
-            "thread/resume" => send(json!({
-                "id": id,
-                "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
-            }))?,
+            "thread/resume" => {
+                send(json!({
+                    "id": id,
+                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
+                }))?;
+                if state.pending_semantic_call {
+                    send_semantic_call(&state)?;
+                }
+            }
             "thread/read" => {
                 let turns = state
                     .active_turn_id
@@ -174,6 +221,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }]
                         }
                     }))?;
+                } else if emit_semantic_tool {
+                    state.pending_semantic_call = true;
+                    save_state(&state_path, &state)?;
+                    send_semantic_call(&state)?;
                 } else if !hold_turn {
                     finish_turn(&state_path, &mut state, "completed")?;
                 }

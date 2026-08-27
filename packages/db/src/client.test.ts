@@ -1413,6 +1413,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       await applyPendingMigrations(connectionString);
 
       const nativePersistenceHash = await migrationHash("0227_modern_pandemic.sql");
+      const nativeSemanticReceiptHash = await migrationHash("0228_polite_black_knight.sql");
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       const companyId = "10000000-0000-4000-8000-000000000227";
       const agentId = "20000000-0000-4000-8000-000000000227";
@@ -1433,7 +1434,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
 
       try {
         await sql.unsafe(`
-          DROP TABLE IF EXISTS status_decision_effects, status_decisions, work_assessments,
+          DROP TABLE IF EXISTS native_semantic_receipts, status_decision_effects, status_decisions, work_assessments,
             native_run_finalizations, native_run_results, completion_contracts CASCADE;
           DROP TRIGGER IF EXISTS paperclip_issue_status_version_trigger ON issues;
           DROP FUNCTION IF EXISTS paperclip_bump_issue_status_version();
@@ -1467,7 +1468,10 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             DROP COLUMN IF EXISTS status_version,
             DROP COLUMN IF EXISTS last_status_decision_id;
         `);
-        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
+        await sql`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "hash" IN (${nativePersistenceHash}, ${nativeSemanticReceiptHash})
+        `;
         await sql`
           INSERT INTO companies (id, name, issue_prefix)
           VALUES (${companyId}, 'Native persistence fixture', 'NPF')

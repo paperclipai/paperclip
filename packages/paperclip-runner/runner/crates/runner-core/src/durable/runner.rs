@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
@@ -306,7 +307,10 @@ fn poll_executor_events<E: CommandExecutor>(
     if events.is_empty() {
         return Ok(());
     }
-    for event in events {
+    for mut event in events {
+        if event.event_type == "semantic_tool.input" {
+            event.payload = semantic_tool_input_payload(state, event.payload)?;
+        }
         // Commit and acknowledge one event at a time. If a later event is
         // oversized or the outbox is full, the accepted prefix is already
         // durable and the unacknowledged suffix remains with the executor.
@@ -330,6 +334,79 @@ fn poll_executor_events<E: CommandExecutor>(
         executor.acknowledge_events(1)?;
     }
     Ok(())
+}
+
+fn semantic_tool_input_payload(
+    state: &DurableState,
+    payload: Value,
+) -> Result<Value, DurableRunnerError> {
+    let call_id = payload
+        .get("callId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DurableRunnerError::invalid("semantic tool input omitted callId"))?;
+    let operation_id = payload
+        .get("operationId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DurableRunnerError::invalid("semantic tool input omitted operationId"))?;
+    let input = payload
+        .get("input")
+        .cloned()
+        .ok_or_else(|| DurableRunnerError::invalid("semantic tool input omitted input"))?;
+    let digest = format!(
+        "sha256:{:x}",
+        Sha256::digest(canonical_json(&input).as_bytes())
+    );
+    Ok(json!({
+        "semantic_tool": {
+            "schema": "paperclip.prp.semantic_tool.v1",
+            "schemaVersion": 1,
+            "phase": "input",
+            "operationId": operation_id,
+            "callId": call_id,
+            "correlation": {
+                "runId": state.run_id,
+                "normalizedSessionId": state.normalized_session_id,
+                "turnId": state.turn_id,
+                "itemId": state.item_id,
+            },
+            "idempotencyKey": input.get("idempotencyKey").and_then(Value::as_str),
+            "input": input,
+            "content": {
+                "digest": digest,
+                "redactionDisposition": "digest_only",
+                "references": [],
+            },
+        },
+    }))
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!(
+                        "{}:{}",
+                        serde_json::to_string(key).expect("JSON object key should serialize"),
+                        canonical_json(&values[key])
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        _ => value.to_string(),
+    }
 }
 
 fn process_command<E: CommandExecutor>(

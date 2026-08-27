@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use paperclip_runner_core::codex_provider::{
-    CodexProvider, CodexProviderConfig, CodexProviderEvent,
+    CodexDynamicTool, CodexProvider, CodexProviderConfig, CodexProviderEvent,
 };
 use paperclip_runner_core::durable::{Command, CommandExecutor, DurableRunnerError, PolledEvent};
 use paperclip_runner_core::provider_backend::CodexCommandExecutor;
@@ -51,6 +51,22 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
     }
 }
 
+fn semantic_tool() -> CodexDynamicTool {
+    CodexDynamicTool {
+        name: "report_progress".to_owned(),
+        description: "Append one durable progress update.".to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "idempotencyKey": {"type": "string"},
+                "body": {"type": "string"}
+            },
+            "required": ["idempotencyKey", "body"],
+            "additionalProperties": false,
+        }),
+    }
+}
+
 fn command(id: &str, sequence: u64, command_type: &str, payload: Value) -> Command {
     Command {
         schema: "paperclip.prp.command.v1".to_owned(),
@@ -84,7 +100,7 @@ fn poll_and_ack(
 fn codex_transport_buffers_notifications_while_waiting_for_responses() {
     let directory = temporary_directory("buffering");
     let config = provider_config(&directory, &["--notification-before-response"]);
-    let mut provider = CodexProvider::start(&config, None).expect("start fake Codex provider");
+    let mut provider = CodexProvider::start(&config, None, &[]).expect("start fake Codex provider");
     let event = provider
         .poll()
         .expect("poll buffered notification")
@@ -100,15 +116,18 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
         .start_turn("Complete the fake task.", &config.cwd)
         .expect("start provider turn");
     let mut event_types = Vec::new();
+    let mut usage_provider_turn_id = None;
     for _ in 0..16 {
         if let Some(CodexProviderEvent::Notification { method, params }) =
             provider.poll().expect("poll provider event")
         {
-            event_types.extend(
-                normalize_codex_notification(&method, &params)
-                    .into_iter()
-                    .map(|event| event.event_type),
-            );
+            for event in normalize_codex_notification(&method, &params) {
+                if event.event_type == "usage.reported" {
+                    usage_provider_turn_id =
+                        event.payload["providerTurnId"].as_str().map(str::to_owned);
+                }
+                event_types.push(event.event_type);
+            }
         }
         if event_types.iter().any(|event| event == "turn.completed") {
             break;
@@ -118,6 +137,7 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
     assert!(event_types.iter().any(|event| event == "item.completed"));
     assert!(event_types.iter().any(|event| event == "usage.reported"));
     assert!(event_types.iter().any(|event| event == "turn.completed"));
+    assert_eq!(usage_provider_turn_id.as_deref(), Some("provider-turn-1"));
     provider.shutdown().expect("stop provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
@@ -177,6 +197,147 @@ fn durable_backend_resumes_the_active_thread_without_restarting_the_turn() {
     recovered
         .shutdown()
         .expect("stop recovered provider process");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn durable_backend_resumes_one_pending_native_tool_call_with_the_same_identity() {
+    let directory = temporary_directory("semantic-resume");
+    let config = provider_config(&directory, &["--emit-semantic-tool"]);
+    let tools = vec![semantic_tool()];
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "semanticTools": tools}),
+        ))
+        .expect("prepare Codex provider with its authorized tool inventory");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Read the active task once."}),
+        ))
+        .expect("start provider turn");
+
+    let mut first_input = None;
+    for _ in 0..32 {
+        let events = first.poll_events().expect("poll semantic tool input");
+        if let Some(event) = events
+            .iter()
+            .find(|event| event.event_type == "semantic_tool.input")
+        {
+            first_input = Some(event.clone());
+            first
+                .acknowledge_events(events.len())
+                .expect("acknowledge semantic tool input");
+            break;
+        }
+        first
+            .acknowledge_events(events.len())
+            .expect("acknowledge events before semantic input");
+    }
+    let first_input = first_input.expect("observe semantic tool input");
+    assert_eq!(first_input.payload["callId"], "semantic-call-1");
+    assert_eq!(first_input.payload["operationId"], "report_progress");
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    first.shutdown().expect("stop first provider process");
+    drop(first);
+
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    let result = recovered
+        .execute(&command(
+            "semantic-result",
+            4,
+            "semantic_tool.result",
+            json!({
+                "callId": "semantic-call-1",
+                "result": {
+                    "ok": true,
+                    "value": {"task": "NCV-1"},
+                    "resultReceipt": {
+                        "schema": "paperclip.prp.semantic_tool.v1",
+                        "schemaVersion": 1,
+                        "phase": "result",
+                        "operationId": "report_progress",
+                        "callId": "semantic-call-1",
+                        "correlation": {
+                            "runId": "run-1",
+                            "normalizedSessionId": "session-1",
+                            "turnId": "turn-1",
+                            "itemId": "item-1"
+                        },
+                        "idempotencyKey": "native-resume-proof-1",
+                        "content": {
+                            "digest": format!("sha256:{}", "a".repeat(64)),
+                            "redactionDisposition": "digest_only",
+                            "references": []
+                        },
+                        "outcome": "succeeded",
+                        "code": "ok",
+                        "retryable": false,
+                        "authorizationBoundary": "active_task",
+                        "operationReceiptId": "receipt-1"
+                    }
+                },
+                "isError": false,
+            }),
+        ))
+        .expect("persist semantic tool result before Codex reissues its request");
+    assert_eq!(result.result["status"], "deferred");
+    let mut reconciled = None;
+    let mut completed = false;
+    for _ in 0..32 {
+        let events = recovered
+            .poll_events()
+            .expect("poll reconciled semantic call");
+        completed |= events
+            .iter()
+            .any(|event| event.event_type == "turn.completed");
+        if let Some(event) = events
+            .iter()
+            .find(|event| event.event_type == "semantic_tool.reconciled")
+        {
+            reconciled = Some(event.clone());
+            recovered
+                .acknowledge_events(events.len())
+                .expect("acknowledge reconciliation");
+            break;
+        }
+        recovered
+            .acknowledge_events(events.len())
+            .expect("acknowledge events before reconciliation");
+    }
+    let reconciled = reconciled.expect("observe native tool-call reconciliation");
+    assert_eq!(reconciled.payload["callId"], first_input.payload["callId"]);
+    assert_eq!(
+        reconciled.payload["outcome"],
+        "completed_result_redelivered"
+    );
+    assert_eq!(call_count(&directory, "thread/resume"), 1);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+
+    if !completed {
+        for _ in 0..256 {
+            let events = poll_and_ack(&mut recovered).expect("poll completed resumed turn");
+            completed |= events
+                .iter()
+                .any(|event| event.event_type == "turn.completed");
+            if completed {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    assert!(completed);
+    assert_eq!(call_count(&directory, "semantic_tool/result"), 1);
+    recovered.shutdown().expect("stop recovered provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 

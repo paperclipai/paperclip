@@ -43,7 +43,7 @@
         "session.starting", "session.started", "session.resuming", "session.resumed", "session.reconciled", "session.updated", "session.closed", "session.failed",
         "turn.submitted", "turn.accepted", "turn.started", "turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled",
         "item.started", "item.delta", "item.completed", "item.failed", "usage.reported",
-        "semantic_tool.input", "semantic_tool.result",
+        "semantic_tool.input", "semantic_tool.result", "semantic_tool.reconciled",
         "mcp_app.discovered", "mcp_app.resource.resolved", "mcp_app.initializing", "mcp_app.ready", "mcp_app.tool_input", "mcp_app.tool_result", "mcp_app.action.requested", "mcp_app.action.resolved", "mcp_app.host_context.changed", "mcp_app.failed", "mcp_app.teardown",
         "runtime_request.created", "runtime_request.resolved", "runtime_request.expired", "runtime_request.cancelled",
         "interaction.request.proposed", "interaction.request.materialized", "interaction.request.rejected", "interaction.response.progressed", "interaction.response.resolved", "interaction.response.delivered",

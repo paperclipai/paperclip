@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { and, desc, eq, isNull } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -9,14 +11,18 @@ import {
   issueComments,
   issueDocuments,
   issues,
+  nativeSemanticReceipts,
 } from "@paperclipai/db";
 import {
   PaperclipSemanticDispatcher,
+  digestPaperclipSemanticContent,
   type PaperclipJsonValue,
   type PaperclipSemanticActionBinding,
   type PaperclipSemanticActionId,
   type PaperclipSemanticAuthorizationRecord,
+  type PaperclipSemanticIdempotencyStore,
   type PaperclipSemanticRunContext,
+  type PaperclipSemanticStoredOutcome,
   type PaperclipSemanticToolCall,
   type PaperclipSemanticToolDefinition,
   type PaperclipSemanticToolResult,
@@ -35,6 +41,10 @@ const READ_OPERATION_IDS = [
   "list_documents",
   "read_document",
   "list_document_revisions",
+] as const satisfies readonly PaperclipSemanticActionId[];
+
+const WRITE_OPERATION_IDS = [
+  "report_progress",
 ] as const satisfies readonly PaperclipSemanticActionId[];
 
 type BoundContext = {
@@ -56,6 +66,183 @@ function requiredString(value: unknown): string {
   return value;
 }
 
+function requiredBody(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 20_000) {
+    throw new Error("paperclip_runner_semantic_input_invalid");
+  }
+  return value;
+}
+
+function stableUuid(value: string): string {
+  const digest = createHash("sha256").update(value).digest("hex");
+  return [
+    digest.slice(0, 8),
+    digest.slice(8, 12),
+    `5${digest.slice(13, 16)}`,
+    `8${digest.slice(17, 20)}`,
+    digest.slice(20, 32),
+  ].join("-");
+}
+
+function semanticScope(input: {
+  companyId: string;
+  runId: string;
+  operationId: PaperclipSemanticActionId;
+  idempotencyKey: string;
+}): string {
+  return digestPaperclipSemanticContent([
+    input.companyId,
+    input.runId,
+    input.operationId,
+    input.idempotencyKey,
+  ]);
+}
+
+function claimToken(scope: string): string {
+  return stableUuid(`paperclip-runner-semantic:${scope}`);
+}
+
+class RunnerSemanticIdempotencyStore implements PaperclipSemanticIdempotencyStore {
+  readonly #db: Db;
+  readonly #binding: PaperclipRunnerSemanticBinding;
+
+  constructor(db: Db, binding: PaperclipRunnerSemanticBinding) {
+    this.#db = db;
+    this.#binding = binding;
+  }
+
+  async claim(input: {
+    readonly scope: string;
+    readonly operationId: PaperclipSemanticActionId;
+    readonly inputDigest: string;
+  }) {
+    const token = claimToken(input.scope);
+    const inserted = await this.#db
+      .insert(nativeSemanticReceipts)
+      .values({
+        id: token,
+        companyId: this.#binding.companyId,
+        issueId: this.#binding.issueId,
+        runId: this.#binding.runId,
+        operationId: input.operationId,
+        scopeDigest: input.scope,
+        inputDigest: input.inputDigest,
+      })
+      .onConflictDoNothing()
+      .returning({ id: nativeSemanticReceipts.id });
+    if (inserted.length > 0) return { kind: "claimed" as const, token };
+    const [existing] = await this.#db
+      .select({
+        operationId: nativeSemanticReceipts.operationId,
+        scopeDigest: nativeSemanticReceipts.scopeDigest,
+        inputDigest: nativeSemanticReceipts.inputDigest,
+        status: nativeSemanticReceipts.status,
+        outcome: nativeSemanticReceipts.outcome,
+        updatedAt: nativeSemanticReceipts.updatedAt,
+      })
+      .from(nativeSemanticReceipts)
+      .where(
+        and(
+          eq(nativeSemanticReceipts.id, token),
+          eq(nativeSemanticReceipts.companyId, this.#binding.companyId),
+          eq(nativeSemanticReceipts.issueId, this.#binding.issueId),
+          eq(nativeSemanticReceipts.runId, this.#binding.runId),
+        ),
+      )
+      .limit(1);
+    if (!existing) throw new Error("paperclip_runner_semantic_receipt_missing");
+    if (
+      existing.operationId !== input.operationId ||
+      existing.scopeDigest !== input.scope ||
+      existing.inputDigest !== input.inputDigest
+    ) {
+      return { kind: "conflict" as const };
+    }
+    if (existing.status === "claimed") {
+      if (Date.now() - existing.updatedAt.getTime() < 60_000) {
+        return { kind: "in_progress" as const };
+      }
+      const reclaimed = await this.#db
+        .update(nativeSemanticReceipts)
+        .set({ updatedAt: new Date() })
+        .where(
+          and(
+            eq(nativeSemanticReceipts.id, token),
+            eq(nativeSemanticReceipts.status, "claimed"),
+            eq(nativeSemanticReceipts.updatedAt, existing.updatedAt),
+          ),
+        )
+        .returning({ id: nativeSemanticReceipts.id });
+      return reclaimed.length === 1
+        ? { kind: "claimed" as const, token }
+        : { kind: "in_progress" as const };
+    }
+    if (existing.status === "completed" && existing.outcome) {
+      return {
+        kind: "duplicate" as const,
+        outcome: existing.outcome as unknown as PaperclipSemanticStoredOutcome,
+      };
+    }
+    return { kind: "conflict" as const };
+  }
+
+  async complete(token: string, outcome: PaperclipSemanticStoredOutcome): Promise<void> {
+    const updated = await this.#db
+      .update(nativeSemanticReceipts)
+      .set({
+        status: "completed",
+        outcome: outcome as unknown as Record<string, unknown>,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(nativeSemanticReceipts.id, token),
+          eq(nativeSemanticReceipts.companyId, this.#binding.companyId),
+          eq(nativeSemanticReceipts.issueId, this.#binding.issueId),
+          eq(nativeSemanticReceipts.runId, this.#binding.runId),
+          eq(nativeSemanticReceipts.status, "claimed"),
+        ),
+      )
+      .returning({ id: nativeSemanticReceipts.id });
+    if (updated.length !== 1) throw new Error("paperclip_runner_semantic_receipt_missing");
+  }
+
+  async recover(token: string, outcome: PaperclipSemanticStoredOutcome): Promise<void> {
+    const [existing] = await this.#db
+      .select({
+        status: nativeSemanticReceipts.status,
+        outcome: nativeSemanticReceipts.outcome,
+      })
+      .from(nativeSemanticReceipts)
+      .where(eq(nativeSemanticReceipts.id, token))
+      .limit(1);
+    if (existing?.status === "completed" && existing.outcome) {
+      const stored = existing.outcome as unknown as PaperclipSemanticStoredOutcome;
+      if (JSON.stringify(stored) === JSON.stringify(outcome)) return;
+      throw new Error("paperclip_runner_semantic_receipt_conflict");
+    }
+    await this.complete(token, outcome);
+  }
+
+  async release(token: string): Promise<void> {
+    const released = await this.#db
+      .delete(nativeSemanticReceipts)
+      .where(
+        and(
+          eq(nativeSemanticReceipts.id, token),
+          eq(nativeSemanticReceipts.companyId, this.#binding.companyId),
+          eq(nativeSemanticReceipts.issueId, this.#binding.issueId),
+          eq(nativeSemanticReceipts.runId, this.#binding.runId),
+          eq(nativeSemanticReceipts.status, "claimed"),
+        ),
+      )
+      .returning({ id: nativeSemanticReceipts.id });
+    if (released.length !== 1) {
+      throw new Error("paperclip_runner_semantic_receipt_release_failed");
+    }
+  }
+}
+
 function jsonValue(value: unknown): PaperclipJsonValue {
   return JSON.parse(JSON.stringify(value)) as PaperclipJsonValue;
 }
@@ -68,8 +255,8 @@ function activeAgentStatus(status: string): "active" | "inactive" {
 
 /**
  * Run-scoped semantic authority for the hidden native coordinator.
- * This first server slice binds only same-task read operations. A catalog
- * entry remains undiscoverable until a later PR adds its guarded binding.
+ * Catalog entries remain undiscoverable until this authority supplies a
+ * run-scoped binding. Mutations additionally require a durable receipt store.
  */
 export class PaperclipRunnerSemanticAuthority {
   readonly #db: Db;
@@ -81,9 +268,11 @@ export class PaperclipRunnerSemanticAuthority {
     this.#binding = structuredClone(binding);
     this.#dispatcher = new PaperclipSemanticDispatcher({
       contextProvider: (runId) => this.#context(runId),
-      bindings: READ_OPERATION_IDS.map((operationId) =>
-        this.#readBinding(operationId),
-      ),
+      bindings: [
+        ...READ_OPERATION_IDS.map((operationId) => this.#readBinding(operationId)),
+        ...WRITE_OPERATION_IDS.map((operationId) => this.#writeBinding(operationId)),
+      ],
+      idempotencyStore: new RunnerSemanticIdempotencyStore(db, binding),
     });
   }
 
@@ -272,6 +461,68 @@ export class PaperclipRunnerSemanticAuthority {
             };
           }
         }
+      },
+    };
+  }
+
+  #writeBinding(
+    operationId: (typeof WRITE_OPERATION_IDS)[number],
+  ): PaperclipSemanticActionBinding {
+    return {
+      operationId,
+      execute: async (invocation) => {
+        const context = await this.#loadBoundContext();
+        this.#assertActiveContext(context, true);
+        const idempotencyKey = requiredString(invocation.input.idempotencyKey);
+        const body = requiredBody(invocation.input.body);
+        const scope = semanticScope({
+          companyId: this.#binding.companyId,
+          runId: this.#binding.runId,
+          operationId,
+          idempotencyKey,
+        });
+        const commentId = claimToken(scope);
+        await this.#db
+          .insert(issueComments)
+          .values({
+            id: commentId,
+            companyId: this.#binding.companyId,
+            issueId: this.#binding.issueId,
+            authorAgentId: this.#binding.agentId,
+            authorType: "agent",
+            createdByRunId: this.#binding.runId,
+            body,
+          })
+          .onConflictDoNothing();
+        const [comment] = await this.#db
+          .select({
+            id: issueComments.id,
+            body: issueComments.body,
+            authorAgentId: issueComments.authorAgentId,
+            createdByRunId: issueComments.createdByRunId,
+          })
+          .from(issueComments)
+          .where(eq(issueComments.id, commentId))
+          .limit(1);
+        if (
+          !comment ||
+          comment.body !== body ||
+          comment.authorAgentId !== this.#binding.agentId ||
+          comment.createdByRunId !== this.#binding.runId
+        ) {
+          throw new Error("paperclip_runner_semantic_effect_conflict");
+        }
+        return {
+          value: jsonValue({
+            commandId: `runner-semantic:${commentId}`,
+            disposition: "applied",
+            stateRevision: context.issue.statusVersion,
+            entityRefs: [commentId],
+            scheduledWakeIds: [],
+          }),
+          stateRevision: context.issue.statusVersion,
+          references: [{ kind: "task", id: context.issue.id }],
+        };
       },
     };
   }

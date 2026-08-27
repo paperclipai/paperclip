@@ -40,6 +40,7 @@ export interface PreparedRunnerPrpSession {
   readonly connectUrl: string;
   /** One-use secret. Pass it only through the runner's protected bootstrap channel. */
   readonly bootstrapTicket: string;
+  issueBootstrapTicket(): string;
   readonly semanticTools: readonly PaperclipSemanticToolDefinition[];
   queueCommand(
     type: string,
@@ -123,6 +124,11 @@ export function runnerPrpCoordinator(
   db: Db,
   options: {
     readonly stateRoot: string;
+    /** Internal restart-test seam. Production dispatch has no pause here. */
+    readonly onSemanticToolInputCommitted?: (input: {
+      readonly callId: string;
+      readonly operationId: string;
+    }) => Promise<void>;
   },
 ) {
   const stateRoot = resolve(options.stateRoot);
@@ -264,6 +270,10 @@ export function runnerPrpCoordinator(
           }
         },
         onSemanticToolInput: async (call) => {
+          await options.onSemanticToolInputCommitted?.({
+            callId: call.callId,
+            operationId: call.operationId,
+          });
           const result = await semanticAuthority.dispatch({
             callId: call.callId,
             operationId: call.operationId,
@@ -291,6 +301,10 @@ export function runnerPrpCoordinator(
       return {
         connectUrl: registration.connectUrl,
         bootstrapTicket,
+        issueBootstrapTicket: () => {
+          if (released) throw new Error("runner_prp_session_released");
+          return authority.issueBootstrapTicket(bootstrapTtlMs);
+        },
         semanticTools,
         queueCommand: (type, payload = {}, commandId) => {
           if (released) throw new Error("runner_prp_session_released");

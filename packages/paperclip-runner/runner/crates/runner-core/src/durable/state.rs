@@ -368,6 +368,7 @@ impl DurableState {
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
+        let sanitized_payload = sanitize_event_payload(&event_type, &payload);
         let envelope = json!({
             "protocol": PROTOCOL,
             "version": PROTOCOL_VERSION,
@@ -392,7 +393,7 @@ impl DurableState {
                 "schemaVersion": 1,
                 "priority": priority.number(),
                 "emittedAt": emitted_at,
-                "payload": sanitize_value(&payload),
+                "payload": sanitized_payload,
             },
         });
         let byte_size = serde_json::to_vec(&envelope)
@@ -1099,6 +1100,34 @@ fn sanitize_value(value: &Value) -> Value {
         Value::String(value) => Value::String(redact_text(value)),
         value => value.clone(),
     }
+}
+
+fn sanitize_event_payload(event_type: &str, payload: &Value) -> Value {
+    let mut sanitized = sanitize_value(payload);
+    if event_type == "semantic_tool.result" {
+        let boundary = payload
+            .pointer("/semantic_tool/authorizationBoundary")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                matches!(
+                    *value,
+                    "company"
+                        | "actor"
+                        | "active_task"
+                        | "grant"
+                        | "governed_action"
+                        | "lock"
+                        | "revision"
+                )
+            });
+        if let (Some(boundary), Some(target)) = (
+            boundary,
+            sanitized.pointer_mut("/semantic_tool/authorizationBoundary"),
+        ) {
+            *target = Value::String(boundary.to_owned());
+        }
+    }
+    sanitized
 }
 
 pub(crate) fn redact_text(input: &str) -> String {

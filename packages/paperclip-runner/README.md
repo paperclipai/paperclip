@@ -11,7 +11,12 @@ PRP transport. The transport authenticates and encrypts loopback WebSocket
 sessions, persists an ACK-driven outbox and command journal, and reconnects with
 a short-lived lease. The Rust runner now includes a Codex-only app-server
 provider bridge with durable thread resume, cancellation, structured questions,
-and provider-neutral event normalization. The root surface now also exposes an
+and provider-neutral event normalization. Token-bearing Codex usage receipts
+record at least one provider request when app-server omits its request count,
+mark that count as an inexact minimum, and carry the provider turn ID for
+correlation. App-server does not expose per-request response IDs or per-turn
+cost, so those values remain null/zero only with explicit unavailable and
+`unpriced` provenance. The root surface now also exposes an
 authenticated durable PRP authority for server-side use. It stores only
 bootstrap and reconnect credential digests, validates immutable run identity on
 every connection and event, and persists commands and cumulative event ACK

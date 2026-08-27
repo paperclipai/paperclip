@@ -8,7 +8,9 @@
     "provider": { "type": "string", "minLength": 1, "maxLength": 80 },
     "model": { "type": ["string", "null"], "maxLength": 240 },
     "providerSessionId": { "type": ["string", "null"], "maxLength": 240 },
+    "providerTurnId": { "type": ["string", "null"], "maxLength": 240 },
     "providerRequestId": { "type": ["string", "null"], "maxLength": 240 },
+    "providerRequestIdUnavailableReason": { "type": ["string", "null"], "maxLength": 240 },
     "cumulative": { "$ref": "#/$defs/measurement" },
     "runDelta": { "$ref": "#/$defs/measurement" }
   },
@@ -24,7 +26,11 @@
         "cacheWriteTokens": { "type": "integer", "minimum": 0 },
         "activeSeconds": { "type": "number", "minimum": 0 },
         "requests": { "type": "integer", "minimum": 0 },
-        "providerCostUsd": { "type": "number", "minimum": 0 }
+        "requestCountSource": { "enum": ["provider_reported", "token_bearing_turn_minimum", "unavailable"] },
+        "requestCountExact": { "type": "boolean" },
+        "providerCostUsd": { "type": "number", "minimum": 0 },
+        "providerCostStatus": { "enum": ["reported", "unpriced"] },
+        "providerCostUnavailableReason": { "type": ["string", "null"], "maxLength": 240 }
       },
       "additionalProperties": false
     }

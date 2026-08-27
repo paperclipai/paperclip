@@ -20,6 +20,49 @@ fn string(value: Option<&Value>) -> &str {
     value.and_then(Value::as_str).unwrap_or("")
 }
 
+fn notice_summary(method: &str, params: &Value) -> String {
+    let message = params
+        .get("message")
+        .or_else(|| params.pointer("/error/message"))
+        .or_else(|| params.pointer("/error/detail"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let code = params
+        .get("code")
+        .or_else(|| params.pointer("/error/code"))
+        .or_else(|| params.pointer("/error/type"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+
+    let summary = match (code, message) {
+        (Some(code), Some(message)) if !message.contains(code) => format!(
+            "{}: {}",
+            bounded_text(code, 240),
+            bounded_text(message, MAX_TEXT_CHARS)
+        ),
+        (_, Some(message)) => bounded_text(message, MAX_TEXT_CHARS),
+        (Some(code), None) => bounded_text(code, 240),
+        (None, None) => match params {
+            Value::Null => String::new(),
+            Value::Object(values) if values.is_empty() => String::new(),
+            Value::Array(values) if values.is_empty() => String::new(),
+            _ => bounded_text(
+                &serde_json::to_string(params).unwrap_or_default(),
+                MAX_TEXT_CHARS,
+            ),
+        },
+    };
+
+    if summary.trim().is_empty() {
+        bounded_text(
+            &format!("Codex {method} notification contained no details"),
+            MAX_TEXT_CHARS,
+        )
+    } else {
+        summary.chars().take(MAX_TEXT_CHARS).collect()
+    }
+}
+
 fn stable_id(value: &str, fallback: &str) -> String {
     let value: String = value
         .chars()
@@ -69,14 +112,52 @@ fn bounded_output(value: &str) -> Value {
 }
 
 fn measurement(value: &Value) -> Value {
+    let input_tokens = value
+        .get("inputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = value
+        .get("outputTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_read_tokens = value
+        .get("cachedInputTokens")
+        .or_else(|| value.get("cacheReadTokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cache_write_tokens = value
+        .get("cacheWriteTokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let reported_requests = value.get("requests").and_then(Value::as_u64);
+    let has_token_usage =
+        input_tokens > 0 || output_tokens > 0 || cache_read_tokens > 0 || cache_write_tokens > 0;
+    let (requests, request_count_source, request_count_exact) = match reported_requests {
+        Some(0) if has_token_usage => (1, "token_bearing_turn_minimum", false),
+        Some(requests) => (requests, "provider_reported", true),
+        None if has_token_usage => (1, "token_bearing_turn_minimum", false),
+        None => (0, "unavailable", false),
+    };
+    let reported_cost = value
+        .get("providerCostUsd")
+        .and_then(Value::as_f64)
+        .filter(|value| *value >= 0.0);
     json!({
-        "inputTokens": value.get("inputTokens").and_then(Value::as_u64).unwrap_or(0),
-        "outputTokens": value.get("outputTokens").and_then(Value::as_u64).unwrap_or(0),
-        "cacheReadTokens": value.get("cachedInputTokens").or_else(|| value.get("cacheReadTokens")).and_then(Value::as_u64).unwrap_or(0),
-        "cacheWriteTokens": value.get("cacheWriteTokens").and_then(Value::as_u64).unwrap_or(0),
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "cacheReadTokens": cache_read_tokens,
+        "cacheWriteTokens": cache_write_tokens,
         "activeSeconds": value.get("activeSeconds").and_then(Value::as_f64).filter(|value| *value >= 0.0).unwrap_or(0.0),
-        "requests": value.get("requests").and_then(Value::as_u64).unwrap_or(0),
-        "providerCostUsd": value.get("providerCostUsd").and_then(Value::as_f64).filter(|value| *value >= 0.0).unwrap_or(0.0),
+        "requests": requests,
+        "requestCountSource": request_count_source,
+        "requestCountExact": request_count_exact,
+        "providerCostUsd": reported_cost.unwrap_or(0.0),
+        "providerCostStatus": if reported_cost.is_some() { "reported" } else { "unpriced" },
+        "providerCostUnavailableReason": if reported_cost.is_some() {
+            Value::Null
+        } else {
+            json!("codex_app_server_does_not_report_per_turn_cost")
+        },
     })
 }
 
@@ -201,6 +282,17 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 .and_then(|value| value.get("last"))
                 .or_else(|| params.get("last"))
                 .unwrap_or(cumulative);
+            let provider_request_id = params
+                .get("responseId")
+                .or_else(|| params.get("requestId"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|value| bounded_text(value, 240));
+            let provider_request_id_unavailable_reason = if provider_request_id.is_some() {
+                Value::Null
+            } else {
+                json!("codex_app_server_does_not_expose_per_request_id")
+            };
             push(
                 &mut events,
                 "usage.reported",
@@ -209,7 +301,9 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "provider": "codex",
                     "model": params.get("model").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "providerSessionId": params.get("threadId").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
-                    "providerRequestId": Value::Null,
+                    "providerTurnId": params.get("turnId").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
+                    "providerRequestId": provider_request_id,
+                    "providerRequestIdUnavailableReason": provider_request_id_unavailable_reason,
                     "cumulative": measurement(cumulative),
                     "runDelta": measurement(run_delta),
                 }),
@@ -227,7 +321,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "scope": if method.contains("config") { "environment" } else { "turn" },
                 "recoverable": method != "error",
                 "userActionable": true,
-                "summary": bounded_text(string(params.get("message")), MAX_TEXT_CHARS),
+                "summary": notice_summary(method, params),
             }),
         ),
         "item/agentMessage/delta" => push(
@@ -356,6 +450,33 @@ mod tests {
     }
 
     #[test]
+    fn describes_error_notices_from_nested_fields_without_leaking_secrets() {
+        let events = normalize_codex_notification(
+            "error",
+            &json!({
+                "error": {
+                    "code": "authentication_failed",
+                    "message": "Authorization: Bearer top-secret"
+                }
+            }),
+        );
+        let summary = events[0].payload["summary"]
+            .as_str()
+            .expect("notice summary is text");
+        assert!(summary.contains("authentication_failed"));
+        assert!(!summary.contains("top-secret"));
+    }
+
+    #[test]
+    fn gives_detail_free_fatal_notices_an_actionable_summary() {
+        let events = normalize_codex_notification("error", &json!({}));
+        assert_eq!(
+            events[0].payload["summary"],
+            "Codex error notification contained no details"
+        );
+    }
+
+    #[test]
     fn maps_terminal_and_usage_events_at_priority_zero() {
         let terminal = normalize_codex_notification(
             "turn/completed",
@@ -370,6 +491,97 @@ mod tests {
         );
         assert_eq!(usage[0].event_type, "usage.reported");
         assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 12);
+        assert_eq!(usage[0].payload["cumulative"]["requests"], 1);
+        assert_eq!(
+            usage[0].payload["cumulative"]["requestCountSource"],
+            "token_bearing_turn_minimum"
+        );
+        assert_eq!(usage[0].payload["cumulative"]["requestCountExact"], false);
+        assert_eq!(
+            usage[0].payload["cumulative"]["providerCostStatus"],
+            "unpriced"
+        );
+        assert_eq!(
+            usage[0].payload["providerRequestIdUnavailableReason"],
+            "codex_app_server_does_not_expose_per_request_id"
+        );
         assert_eq!(usage[0].priority, EventPriority::P0);
+    }
+
+    #[test]
+    fn treats_zero_requests_with_positive_tokens_as_an_inexact_lower_bound() {
+        let usage = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({
+                "turnId": "provider-turn-with-usage",
+                "tokenUsage": {
+                    "total": {"inputTokens": 12, "outputTokens": 3, "requests": 0}
+                }
+            }),
+        );
+
+        assert_eq!(
+            usage[0].payload["providerTurnId"],
+            "provider-turn-with-usage"
+        );
+        assert_eq!(usage[0].payload["cumulative"]["requests"], 1);
+        assert_eq!(
+            usage[0].payload["cumulative"]["requestCountSource"],
+            "token_bearing_turn_minimum"
+        );
+        assert_eq!(usage[0].payload["cumulative"]["requestCountExact"], false);
+        assert_eq!(
+            usage[0].payload["cumulative"]["providerCostStatus"],
+            "unpriced"
+        );
+        assert_eq!(
+            usage[0].payload["cumulative"]["providerCostUnavailableReason"],
+            "codex_app_server_does_not_report_per_turn_cost"
+        );
+    }
+
+    #[test]
+    fn preserves_provider_reported_request_and_cost_receipts() {
+        let usage = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({
+                "turnId": "provider-turn-with-two-requests",
+                "responseId": "resp_123",
+                "tokenUsage": {
+                    "total": {"inputTokens": 12, "outputTokens": 3, "requests": 2, "providerCostUsd": 0.04},
+                    "last": {"inputTokens": 5, "outputTokens": 1, "requests": 1, "providerCostUsd": 0.01}
+                }
+            }),
+        );
+        assert_eq!(
+            usage[0].payload["providerTurnId"],
+            "provider-turn-with-two-requests"
+        );
+        assert_eq!(usage[0].payload["cumulative"]["requests"], 2);
+        assert_eq!(
+            usage[0].payload["cumulative"]["requestCountSource"],
+            "provider_reported"
+        );
+        assert_eq!(usage[0].payload["cumulative"]["requestCountExact"], true);
+        assert_eq!(usage[0].payload["providerRequestId"], "resp_123");
+        assert_eq!(
+            usage[0].payload["providerRequestIdUnavailableReason"],
+            Value::Null
+        );
+        assert_eq!(usage[0].payload["runDelta"]["requests"], 1);
+        assert_eq!(
+            usage[0].payload["runDelta"]["requestCountSource"],
+            "provider_reported"
+        );
+        assert_eq!(usage[0].payload["runDelta"]["requestCountExact"], true);
+        assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.01);
+        assert_eq!(
+            usage[0].payload["runDelta"]["providerCostStatus"],
+            "reported"
+        );
+        assert_eq!(
+            usage[0].payload["runDelta"]["providerCostUnavailableReason"],
+            Value::Null
+        );
     }
 }
