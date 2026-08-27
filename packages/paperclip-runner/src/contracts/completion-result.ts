@@ -36,12 +36,7 @@ export const PRP_ATTENTION_OWNER_CLASSES = [
 const completionClaimSchema = {
   type: "object",
   additionalProperties: false,
-  required: [
-    "contractRevision",
-    "objectiveSatisfied",
-    "criteria",
-    "remainingWork",
-  ],
+  required: ["contractRevision", "objectiveSatisfied", "criteria", "remainingWork"],
   properties: {
     contractRevision: { type: "string", minLength: 1 },
     objectiveSatisfied: { type: "boolean" },
@@ -100,21 +95,15 @@ const verificationSchema = {
       },
       reasonCode: {
         enum: [...PRP_VERIFICATION_REASON_CODES],
-        description:
-          "Required for not_run; identify why the check had no meaningful verdict.",
+        description: "Required for not_run; identify why the check had no meaningful verdict.",
       },
       detail: { type: "string" },
       artifactRef: { type: "string", minLength: 1 },
     },
-    allOf: [
-      {
-        if: {
-          properties: { status: { const: "not_run" } },
-          required: ["status"],
-        },
-        then: { required: ["reasonCode"] },
-      },
-    ],
+    allOf: [{
+      if: { properties: { status: { const: "not_run" } }, required: ["status"] },
+      then: { required: ["reasonCode"] },
+    }],
   },
 } as const;
 
@@ -130,15 +119,10 @@ const attentionRequestsSchema = {
       ownerClass: { enum: [...PRP_ATTENTION_OWNER_CLASSES] },
       targetAgentId: { type: "string", minLength: 1 },
     },
-    allOf: [
-      {
-        if: {
-          properties: { ownerClass: { const: "agent" } },
-          required: ["ownerClass"],
-        },
-        then: { required: ["targetAgentId"] },
-      },
-    ],
+    allOf: [{
+      if: { properties: { ownerClass: { const: "agent" } }, required: ["ownerClass"] },
+      then: { required: ["targetAgentId"] },
+    }],
   },
 } as const;
 
@@ -183,17 +167,11 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
   },
   allOf: [
     {
-      if: {
-        properties: { reportedWorkDisposition: { const: "done" } },
-        required: ["reportedWorkDisposition"],
-      },
+      if: { properties: { reportedWorkDisposition: { const: "done" } }, required: ["reportedWorkDisposition"] },
       then: { properties: { attentionRequests: { maxItems: 0 } } },
     },
     {
-      if: {
-        properties: { reportedWorkDisposition: { const: "needs_review" } },
-        required: ["reportedWorkDisposition"],
-      },
+      if: { properties: { reportedWorkDisposition: { const: "needs_review" } }, required: ["reportedWorkDisposition"] },
       then: { properties: { attentionRequests: { minItems: 1 } } },
     },
   ],
@@ -215,11 +193,7 @@ export const PRP_BLOCK_RESULT_OUTPUT_SCHEMA = {
   properties: {
     ...commonResultProperties,
     reportedWorkDisposition: { type: "string", const: "blocked" },
-    attentionRequests: {
-      type: "array",
-      maxItems: 0,
-      items: attentionRequestsSchema.items,
-    },
+    attentionRequests: { type: "array", maxItems: 0, items: attentionRequestsSchema.items },
     blocker: {
       type: "object",
       additionalProperties: false,
@@ -254,24 +228,13 @@ const providerVerificationCompatibilitySchema = {
       commandOrCheck: { type: "string", minLength: 1 },
       command: { type: "string", minLength: 1 },
       status: {
-        enum: [
-          "passed",
-          "failed",
-          "not_run",
-          "blocked",
-          "skipped",
-          "pass",
-          "success",
-          "succeeded",
-          "fail",
-        ],
+        enum: ["passed", "failed", "not_run", "blocked", "skipped", "pass", "success", "succeeded", "fail"],
         description:
           "passed: the check ran and succeeded. failed: the check ran to a meaningful verdict and found the work incorrect. not_run: no meaningful verdict because the check was not attempted or could not complete. Prefer not_run over legacy blocked/skipped, and include reasonCode for any unavailable check.",
       },
       reasonCode: {
         enum: [...PRP_VERIFICATION_REASON_CODES],
-        description:
-          "Required for not_run; identify why the check had no meaningful verdict.",
+        description: "Required for not_run; identify why the check had no meaningful verdict.",
       },
       detail: { type: "string" },
       result: { type: "string" },
