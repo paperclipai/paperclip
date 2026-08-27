@@ -462,7 +462,11 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("paused");
     expect(mockAgentService.pause).toHaveBeenCalledWith(agentId);
-    expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(agentId);
+    expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(
+      agentId,
+      undefined,
+      pausedAgent.pausedAt,
+    );
   });
 
   it("preserves board resume access", async () => {

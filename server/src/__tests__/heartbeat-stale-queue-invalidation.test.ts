@@ -221,6 +221,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     contextExtras?: Record<string, unknown>;
     invocationSource?: "assignment" | "automation";
     scheduledRetryReason?: string | null;
+    createdAt?: Date;
   }) {
     const wakeupRequestId = randomUUID();
     const runId = randomUUID();
@@ -233,6 +234,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       reason: input.wakeReason,
       payload: { issueId: input.issueId },
       status: "queued",
+      ...(input.createdAt ? { createdAt: input.createdAt, updatedAt: input.createdAt } : {}),
     });
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -248,6 +250,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         wakeReason: input.wakeReason,
         ...(input.contextExtras ?? {}),
       },
+      ...(input.createdAt ? { createdAt: input.createdAt, updatedAt: input.createdAt } : {}),
     });
     await db
       .update(agentWakeupRequests)
@@ -1229,6 +1232,94 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .then((rows) => rows[0] ?? null);
     expect(runAfterUnpause).toEqual({ status: "cancelled", errorCode: "agent_paused" });
     expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("does not let a stale paused-state cancellation drop work accepted after resume", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const staleIssueId = randomUUID();
+    const resumedIssueId = randomUUID();
+    const pauseBoundary = new Date("2026-08-27T18:00:00.000Z");
+    await db.insert(issues).values([
+      {
+        id: staleIssueId,
+        companyId,
+        title: "Pre-pause queued work",
+        status: "in_progress",
+        priority: "critical",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: resumedIssueId,
+        companyId,
+        title: "Post-resume queued work",
+        status: "in_progress",
+        priority: "critical",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    const stale = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId: staleIssueId,
+      wakeReason: "issue_continuation_needed",
+      invocationSource: "automation",
+      contextExtras: { retryReason: "issue_continuation_needed" },
+      createdAt: new Date(pauseBoundary.getTime() - 1_000),
+    });
+    await db
+      .update(agents)
+      .set({ status: "paused", pausedAt: pauseBoundary })
+      .where(eq(agents.id, agentId));
+    await db
+      .update(agents)
+      .set({ status: "idle", pausedAt: null })
+      .where(eq(agents.id, agentId));
+    const resumed = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId: resumedIssueId,
+      wakeReason: "issue_assigned",
+      createdAt: new Date(pauseBoundary.getTime() + 1_000),
+    });
+
+    await heartbeat.cancelActiveForAgent(agentId, undefined, pauseBoundary);
+
+    const [staleRun, staleWakeup, resumedRun, resumedWakeup] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, stale.runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, stale.wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, resumed.runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, resumed.wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(staleRun).toEqual({ status: "cancelled", errorCode: "agent_paused" });
+    expect(staleWakeup?.status).toBe("cancelled");
+    expect(resumedRun).toEqual({ status: "queued", errorCode: null });
+    expect(resumedWakeup?.status).toBe("queued");
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, resumed.runId))
+      .then((rows) => rows[0]?.status === "succeeded"));
+
+    expect(countExecuteCallsForRun(stale.runId)).toBe(0);
+    expect(countExecuteCallsForRun(resumed.runId)).toBe(1);
   });
 
   it("cancels queued max-turn continuations when the issue is no longer in_progress before the run starts", async () => {
