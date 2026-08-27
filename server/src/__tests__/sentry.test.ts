@@ -57,7 +57,7 @@ function mockSentryPackage() {
     onUnhandledRejectionIntegration,
   }));
   vi.doMock("../peer-version-check.js", () => ({
-    checkExactPeerVersions: () => ({ ok: true }),
+    checkExactPeerVersions: () => ({ ok: true, resolved: { "@sentry/node": "@sentry/node" } }),
   }));
 
   return { init, captureException, close, httpIntegration, onUnhandledRejectionIntegration };

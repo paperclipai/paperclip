@@ -37,10 +37,15 @@
 // Before it imports the package, the bootstrap checks the installed
 // `@sentry/node` version against the exact version this manifest's
 // `peerDependencies` declares — the same audited version documented in
-// `doc/observability.md`. A missing or a mismatched version logs one
-// diagnostic and leaves the server running without error monitoring; it
-// never throws. This gate mirrors the OpenTelemetry gate in
-// `instrumentation.ts`.
+// `doc/observability.md`. A missing, mismatched, or undeclared version, or a
+// server manifest the gate cannot read, logs one diagnostic and leaves the
+// server running without error monitoring; it never throws. This gate
+// mirrors the OpenTelemetry gate in `instrumentation.ts`.
+//
+// The bootstrap then imports the exact module URL the gate resolved
+// (`versionCheck.resolved`), not the bare `"@sentry/node"` specifier again.
+// One resolution feeds both the check and the load, so the checked package
+// and the loaded package cannot diverge — see `peer-version-check.ts`.
 
 import { checkExactPeerVersions } from "./peer-version-check.js";
 
@@ -166,7 +171,8 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     // eslint-disable-next-line no-console
     console.warn(
       "[paperclip] SENTRY_DSN is set but the @sentry/node package is not " +
-        "installed, or is installed at an unsupported version. Install the " +
+        "installed, is installed at an unsupported version, or the server " +
+        "manifest's declared version could not be read. Install the exact " +
         "declared version of @sentry/node to enable server error " +
         "monitoring. Continuing without it.",
       versionCheck.detail,
@@ -175,10 +181,11 @@ async function bootstrapSentry(dsn: string): Promise<void> {
   }
 
   try {
-    // Dynamic import so type-resolution doesn't require the package to be
-    // installed unless the operator actually opts in.
-    // @ts-ignore optional peer dep
-    const Sentry = await import("@sentry/node");
+    // Import the exact module URL the gate resolved above, not the bare
+    // specifier — see the module comment for why that matters. A dynamic
+    // import from a runtime string needs no `@ts-ignore`: TypeScript only
+    // attempts module-type resolution for a literal import specifier.
+    const Sentry = await import(versionCheck.resolved["@sentry/node"]);
 
     Sentry.init(buildSentryInitOptions(dsn, Sentry));
 
