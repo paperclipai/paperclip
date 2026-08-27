@@ -602,7 +602,9 @@ export function IssueBlockedNotice({
           <div className="min-w-0 space-y-1">
             <p className="font-medium leading-5">Active sub-task work is in progress</p>
             <p className="leading-5">
-              This aggregate task has no direct blocker. Do not move it back to todo while its sub-task work is active.
+              {blockers.length === 0
+                ? "This aggregate task has no direct blocker. Do not move it back to todo while its sub-task work is active."
+                : `This aggregate task also has ${blockers.length === 1 ? "a direct blocker" : `${blockers.length} direct blockers`}.`}
             </p>
           </div>
         </div>

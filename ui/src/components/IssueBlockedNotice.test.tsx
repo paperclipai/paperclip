@@ -485,6 +485,8 @@ describe("IssueBlockedNotice", () => {
 
     expect(node.querySelector('[data-testid="issue-blocked-notice-active-child"]')).not.toBeNull();
     expect(node.textContent).toContain("Active sub-task work is in progress");
+    expect(node.textContent).toContain("also has a direct blocker");
+    expect(node.textContent).not.toContain("no direct blocker");
     expect(node.textContent).not.toContain("Work on this task is blocked by the linked task");
   });
 
