@@ -120,6 +120,16 @@ export function requestedConnectionEntry(input: {
   return getConnectableAppDefinition(input.requestedAppKey);
 }
 
+export function isVercelConnectUnavailable(input: {
+  credentialSource: ToolConnectionCredentialSource;
+  available: boolean;
+  retainedReconnectMatches: boolean;
+}): boolean {
+  return input.credentialSource === "vercel_connect"
+    && !input.available
+    && !input.retainedReconnectMatches;
+}
+
 function appConnectHref(
   appKey: string,
   step: Step,
@@ -933,8 +943,11 @@ export function ConnectionSetupFlow({
     const methods = connectionMethodsForCredentialSource(requestedEntry, credentialSource);
     const method = methods.length === 1 ? methods[0]! : null;
     const automaticOAuth = credentialSource === "paperclip_vault" && Boolean(automaticOAuthMethod(requestedEntry));
-    const vercelUnavailable = credentialSource === "vercel_connect"
-      && galleryQuery.data.credentialSources?.vercelConnect.available !== true;
+    const vercelUnavailable = isVercelConnectUnavailable({
+      credentialSource,
+      available: galleryQuery.data.credentialSources?.vercelConnect.available === true,
+      retainedReconnectMatches: Boolean(reconnectConnectionId && reconnectSourceMatches),
+    });
     const unsupportedOAuth = methods.length === 1
       && method?.auth === "oauth"
       && !connectionMethodSupportsAutomaticOAuth(method)
@@ -1001,6 +1014,7 @@ export function ConnectionSetupFlow({
     reconnectGrantKind,
     reconnectConnection,
     reconnectConnectionId,
+    reconnectSourceMatches,
     resumeConnectionId,
     requestedAppKey,
     requestedAgentId,

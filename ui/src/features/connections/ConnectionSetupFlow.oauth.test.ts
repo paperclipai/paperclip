@@ -3,7 +3,11 @@
 import { describe, expect, it } from "vitest";
 import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
-import { readConnectionIntentOAuthOutcome, requestedConnectionEntry } from "./ConnectionSetupFlow";
+import {
+  isVercelConnectUnavailable,
+  readConnectionIntentOAuthOutcome,
+  requestedConnectionEntry,
+} from "./ConnectionSetupFlow";
 
 const origin = "https://paperclip.test";
 const interactionId = "interaction-123";
@@ -108,5 +112,18 @@ describe("retained reconnect definition lookup", () => {
       reconnectConnection: null,
       applications: [],
     })).toBe(visibleNotion);
+  });
+
+  it("does not apply fresh-setup availability to an exact retained reconnect", () => {
+    expect(isVercelConnectUnavailable({
+      credentialSource: "vercel_connect",
+      available: false,
+      retainedReconnectMatches: true,
+    })).toBe(false);
+    expect(isVercelConnectUnavailable({
+      credentialSource: "vercel_connect",
+      available: false,
+      retainedReconnectMatches: false,
+    })).toBe(true);
   });
 });
