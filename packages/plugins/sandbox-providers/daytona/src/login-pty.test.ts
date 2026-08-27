@@ -362,6 +362,19 @@ describe("createDaytonaLoginHomeFs — login-profile preamble", () => {
     expect(profileIndex).toBeGreaterThanOrEqual(0);
     expect(mkdirIndex).toBeGreaterThan(profileIndex);
   });
+
+  it("rejects the session and opens no pseudo-terminal when the create command exits non-zero", async () => {
+    // The sandbox `mkdir -p` command fails (for example, a read-only mount).
+    // The session must fail closed before it opens a pseudo-terminal.
+    const exec = createCapturingExec({ exitCode: 1, result: "" });
+    const fs = createDaytonaLoginHomeFs(exec);
+    const process = createFakeProcess();
+
+    await expect(openDaytonaLoginPtySession(process, fs, CLAUDE)).rejects.toThrow(
+      "LOGIN_PTY_HOME_REJECTED",
+    );
+    expect(process.createCount).toBe(0);
+  });
 });
 
 describe("createDaytonaLoginPtySessionOpener", () => {
