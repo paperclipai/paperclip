@@ -3,10 +3,20 @@
 import type { ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import { queryKeys } from "../lib/queryKeys";
 import { ProjectWorkspaceSummaryCard } from "./ProjectWorkspaceSummaryCard";
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => <a href={to} {...props}>{children}</a>,
@@ -18,6 +28,19 @@ vi.mock("./IssuesQuicklook", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+/**
+ * The card reads the managed-sandbox-only policy through the shared
+ * instance-settings query, so every render needs a query client. Renders here
+ * are synchronous, so a test that needs a resolved policy primes the cache.
+ */
+function withQueryClient(node: ReactNode, experimentalSettings?: Record<string, unknown>) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (experimentalSettings) {
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  }
+  return <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
+}
 
 function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -115,16 +138,18 @@ describe("ProjectWorkspaceSummaryCard", () => {
       configurable: true,
       value: true,
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
+    vi.clearAllMocks();
   });
 
-  it("renders a stacked mobile-friendly summary with metadata labels and compact issue pills", () => {
+  it("drops the path row when the instance runs agents only in the platform-managed environment", () => {
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary()}
@@ -133,7 +158,34 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={() => {}}
           onCloseWorkspace={() => {}}
         />,
-      );
+        { enableManagedSandboxOnly: true },
+      ));
+    });
+
+    expect(container.textContent).not.toContain("Path");
+    // Branch, service, and linked-task rows describe the workspace, not the host.
+    expect(container.textContent).toContain("Branch");
+    expect(container.textContent).toContain("Service");
+    expect(container.textContent).toContain("Linked tasks");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders a stacked mobile-friendly summary with metadata labels and compact issue pills", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary()}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      ));
     });
 
     expect(container.textContent).toContain("Execution workspace");
@@ -162,7 +214,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary({
@@ -178,7 +230,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={runtimeSpy}
           onCloseWorkspace={closeSpy}
         />,
-      );
+      ));
     });
 
     const titleLink = container.querySelector("a[href='/projects/paperclip-app/workspaces/workspace-1']");
@@ -195,7 +247,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary({
@@ -206,7 +258,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={() => {}}
           onCloseWorkspace={() => {}}
         />,
-      );
+      ));
     });
 
     expect(container.textContent).toContain("Retry close");
@@ -224,7 +276,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
     });
 
     await act(async () => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={summary}
@@ -233,7 +285,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={() => {}}
           onCloseWorkspace={() => {}}
         />,
-      );
+      ));
     });
 
     const branchTextButton = Array.from(container.querySelectorAll("button"))
@@ -277,7 +329,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <ProjectWorkspaceSummaryCard
           projectRef="paperclip-app"
           summary={createSummary({
@@ -290,7 +342,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
           onRuntimeAction={() => {}}
           onCloseWorkspace={() => {}}
         />,
-      );
+      ));
     });
 
     const serviceLink = container.querySelector("a[href='http://127.0.0.1:62475']");

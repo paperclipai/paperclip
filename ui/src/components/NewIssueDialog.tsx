@@ -1924,9 +1924,14 @@ export function NewIssueDialog() {
                   disablePortal
                 />
               )}
+              {/*
+                The label used to fall back to the workspace working directory,
+                a path on the execution host. It now falls back to a neutral
+                phrase, so the dialog never renders a host path.
+              */}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
                 <div className="text-(length:--text-micro) text-muted-foreground">
-                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
+                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? "existing execution workspace"}.
                 </div>
               )}
               {showParentWorkspaceWarning ? (

@@ -189,6 +189,9 @@ export function IssueProperties({
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
+  // Managed-sandbox-only policy: the workspace folder is a host filesystem
+  // path, so the Folder row disappears. The Branch row above it stays.
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
   // Classic Task Interface: gate the Properties | Plans | Artifacts tab shell.
   // Flag ON renders the legacy stacked sections verbatim (no Tabs wrapper);
   // flag OFF — including while settings load — renders the chat-style tab
@@ -2482,7 +2485,7 @@ export function IssueProperties({
               />
             </PropertyRow>
           )}
-          {issue.currentExecutionWorkspace?.cwd && (
+          {issue.currentExecutionWorkspace?.cwd && !managedSandboxOnly && (
             <PropertyRow label="Folder">
               <TruncatedCopyable
                 value={issue.currentExecutionWorkspace.cwd}

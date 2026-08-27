@@ -34,6 +34,13 @@ export interface AdapterConfigFieldsProps {
   models: { id: string; label: string }[];
   /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
   hideInstructionsFile?: boolean;
+  /**
+   * When true, the instance runs agents only in the platform-managed
+   * environment (`enableManagedSandboxOnly`). Adapters must then hide every
+   * host filesystem path field and every execution-engine choice. Non-path
+   * behavior toggles stay visible.
+   */
+  managedSandboxOnly?: boolean;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {
