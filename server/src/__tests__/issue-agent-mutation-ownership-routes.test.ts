@@ -22,6 +22,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
   getComment: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(),
   getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -363,6 +364,55 @@ async function createApp(actor: Record<string, unknown>, db?: unknown) {
   return app;
 }
 
+// Variant of createRunContextDb whose row resolution does not fabricate a
+// phantom row for arbitrary keyed selects (e.g. `{ id: ... }`), so guard
+// queries for pending interactions/approvals genuinely resolve to empty.
+function createGuardStrictDb() {
+  const runRows = [{
+    id: ownerRunId,
+    companyId,
+    agentId: ownerAgentId,
+    agentCompanyId: companyId,
+    contextSnapshot: {},
+  }];
+  const rowsForSelection = async (selection: Record<string, unknown>) => {
+    const keys = Object.keys(selection);
+    if (keys.includes("entityId")) return [];
+    if (keys.includes("contextSnapshot")) return runRows;
+    if (keys.includes("agentCompanyId")) return runRows;
+    if (keys.length === 0) {
+      const issue = await mockIssueService.getById(issueId);
+      return issue ? [issue] : [];
+    }
+    return [];
+  };
+  const buildQuery = (selection: Record<string, unknown>) => {
+    const whereResult = {
+      orderBy: vi.fn(async () => []),
+      limit: vi.fn(() => ({
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+      })),
+      for: vi.fn(() => ({
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+      })),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+    };
+    const query = {
+      innerJoin: vi.fn(() => query),
+      where: vi.fn(() => whereResult),
+    };
+    return query;
+  };
+  const dbStub = {
+    transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
+    select: vi.fn((selection: Record<string, unknown> = {}) => ({
+      from: vi.fn(() => buildQuery(selection)),
+    })),
+    insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+  };
+  return dbStub;
+}
+
 function peerActor(overrides: Record<string, unknown> = {}) {
   return {
     type: "agent",
@@ -459,6 +509,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById.mockReset();
     mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.getComment.mockReset();
+    mockIssueService.getCurrentScheduledRetry.mockReset();
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       blockerIssueIds: [],
@@ -1688,6 +1740,63 @@ describe("agent issue mutation checkout ownership", () => {
         unblockDescriptor: { owner: "board", action: "Review the blocker" },
       }),
     );
+  });
+
+  it("applies a board blocked transition that carries a comment alongside the unblockDescriptor", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress" }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(boardActor(), createGuardStrictDb())).patch(`/api/issues/${issueId}`).send({
+      status: "blocked",
+      comment: "Deferring remaining scope to the rebaseline window.",
+      unblockDescriptor: { owner: "board", action: "Rebaseline date arrives" },
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: "board", action: "Rebaseline date arrives" },
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  });
+
+  it("honors a stored unblockDescriptor when re-entering blocked without a payload descriptor", async () => {
+    const storedDescriptor = { owner: "board", action: "Rebaseline date arrives" };
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", unblockDescriptor: storedDescriptor }),
+    );
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_progress", unblockDescriptor: storedDescriptor }),
+      ...patch,
+    }));
+
+    const res = await request(await createApp(boardActor(), createGuardStrictDb()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "blocked" }),
+    );
+  });
+
+  it("still rejects entering blocked with no blockers, pending review path, or stored owner", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+
+    const res = await request(await createApp(boardActor(), createGuardStrictDb()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe("Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
