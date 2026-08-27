@@ -378,27 +378,32 @@ function isZstdCompressionSupported(): boolean {
 }
 
 /**
- * Stream-compress `sourcePath` to a new host temp file with zstd at
+ * Stream-compress `sourcePath` to a new file with zstd at
  * {@link ZSTD_COMPRESSION_LEVEL}, never buffering the whole file in memory.
- * The caller removes the returned temp file (on the accept path, after the
+ * The compressed file lives in a private directory this function creates with
+ * `fs.mkdtemp` (mode `0700`), and the file itself opens with `wx` and mode
+ * `0600` — so the workspace content this holds is never readable by another
+ * local principal, unlike a bare `os.tmpdir()` file at the default `0644`.
+ * The caller removes the returned directory (on the accept path, after the
  * upload; on every reject/error path, immediately) — this function only
  * removes it on its OWN failure, so a caller never has to distinguish a
- * partial temp file from a finished one.
+ * partial directory from a finished one.
  */
-async function compressFileToHostTemp(sourcePath: string): Promise<{ path: string; bytesOut: number }> {
-  const tempPath = path.join(os.tmpdir(), `paperclip-daytona-zstd-${randomUUID()}.zst`);
+async function compressFileToHostTemp(sourcePath: string): Promise<{ dir: string; path: string; bytesOut: number }> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-zstd-"));
+  const tempPath = path.join(dir, "artifact.zst");
   try {
     await pipeline(
       createReadStream(sourcePath),
       zlib.createZstdCompress({ params: { [zlib.constants.ZSTD_c_compressionLevel]: ZSTD_COMPRESSION_LEVEL } }),
-      createWriteStream(tempPath),
+      createWriteStream(tempPath, { flags: "wx", mode: 0o600 }),
     );
   } catch (error) {
-    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
   const bytesOut = (await fs.stat(tempPath)).size;
-  return { path: tempPath, bytesOut };
+  return { dir, path: tempPath, bytesOut };
 }
 
 /**
@@ -561,7 +566,10 @@ interface FileMappingPlan {
   compressed: null | {
     /** Reserved `.zst` scratch name, a direct child of `remoteDir`. */
     zstdScratch: string;
-    /** Host temp file holding the compressed bytes, removed after upload. */
+    /** Private `0700` host temp directory holding the compressed file, removed
+     * (recursively) after upload. */
+    hostTempDir: string;
+    /** Host temp file (`0600`, inside `hostTempDir`) holding the compressed bytes. */
     hostTempPath: string;
   };
 }
@@ -660,25 +668,26 @@ async function syncInFileMappings(input: {
       attributes: { [SPAN_ATTR.transferCompressionCodec]: "zstd" },
       run: async (span: PluginSpan) => {
         for (const plan of compressCandidates) {
-          let hostTempPath: string | null = null;
+          let hostTempDir: string | null = null;
           try {
             const compressed = await compressFileToHostTemp(plan.mapping.sourcePath);
-            hostTempPath = compressed.path;
+            hostTempDir = compressed.dir;
             compressBytesIn += plan.sourceSize;
             compressBytesOut += compressed.bytesOut;
             const savingRatio = 1 - compressed.bytesOut / plan.sourceSize;
             if (savingRatio < ZSTD_MIN_SAVING_RATIO) {
-              await fs.rm(compressed.path, { force: true }).catch(() => undefined);
+              await fs.rm(compressed.dir, { recursive: true, force: true }).catch(() => undefined);
               continue;
             }
             plan.compressed = {
               zstdScratch: path.posix.join(remoteDir, scratchName(".zst")),
+              hostTempDir: compressed.dir,
               hostTempPath: compressed.path,
             };
           } catch {
             // Host compression failed for this candidate — fall back to the raw
             // path for it. Never fail the whole sync over a compression error.
-            if (hostTempPath) await fs.rm(hostTempPath, { force: true }).catch(() => undefined);
+            if (hostTempDir) await fs.rm(hostTempDir, { recursive: true, force: true }).catch(() => undefined);
           }
         }
         span.setAttribute(SPAN_ATTR.transferCompressionBytesIn, compressBytesIn);
@@ -707,17 +716,18 @@ async function syncInFileMappings(input: {
   const allScratchNames = plans.flatMap((plan) =>
     plan.compressed ? [plan.rawScratch, plan.compressed.zstdScratch] : [plan.rawScratch],
   );
-  const hostTempPaths = plans
+  const hostTempDirs = plans
     .filter((plan): plan is FileMappingPlan & { compressed: NonNullable<FileMappingPlan["compressed"]> } =>
       plan.compressed !== null,
     )
-    .map((plan) => plan.compressed.hostTempPath);
+    .map((plan) => plan.compressed.hostTempDir);
 
   // A failed upload or a mid-batch `mv -f`/decompress failure leaves reserved
   // scratch (some targets promoted, others not) — sweep every reserved name on
   // any error so a retry never accumulates stale `.paperclip-upload-*` scratch.
-  // The host temp `.zst` file is removed in `finally` regardless of outcome
-  // (C2's "no temp remains after success or failure" applies host-side too).
+  // The private host temp directory is removed in `finally` regardless of
+  // outcome (C2's "no temp remains after success or failure" applies host-side
+  // too).
   try {
     // One batched bulk upload (single /files/bulk-upload) for all file mappings.
     // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
@@ -761,13 +771,14 @@ async function syncInFileMappings(input: {
     // A compressed mapping runs a decompression block, in the SAME `sh -c`
     // script, immediately before its own fd-pinned promote block (C1–C3):
     //  - `umask 077` + `set -C` (POSIX noclobber) scoped to a subshell, then
-    //    `exec 9> rawScratch` — an atomic exclusive, no-follow create: `set -C`
-    //    refuses to open an EXISTING name, including a symlink (dangling or
-    //    not — it fails on the name's own lstat, it never opens through it).
-    //    Proven empirically: a pre-created regular file, a symlink to an
-    //    existing file, and a dangling symlink all make this `exec` fail with
-    //    "File exists" and create/modify nothing. This is the retained
-    //    descriptor C1 requires — never a separate existence/symlink test.
+    //    `exec 9> rawScratch` — an atomic exclusive create: `set -C` opens
+    //    with `O_CREAT|O_EXCL`, which fails on any EXISTING name, including a
+    //    symlink (dangling or not), because `O_EXCL` fails on the name's own
+    //    lstat and never opens through it. The tests in this package verify
+    //    this for the shells and the platform under test; it is not a claim
+    //    of a portable `O_NOFOLLOW` guarantee across every POSIX shell. This
+    //    is the retained descriptor C1 requires — never a separate
+    //    existence/symlink test.
     //  - `zstd -d -c` writes into that retained descriptor (`>&9`), so the
     //    decompressed bytes land in the pinned inode even if the pathname is
     //    fought over mid-command.
@@ -818,9 +829,10 @@ async function syncInFileMappings(input: {
     }
     // `promote` span: atomically move the staged temp onto its target via a
     // pinned dir handle. When this batch decompressed at least one mapping,
-    // this round trip's wall time IS the decompress wall time (decompression
-    // is the first thing the script does), so it also carries
-    // `transfer.decompress.wall_ms`.
+    // this span also carries `transfer.decompress.wall_ms`. That value
+    // measures the WHOLE promote command — the canonicalizer preamble, every
+    // decompression, and every `mv` — not decompression alone. Treat it as an
+    // upper bound on the decompress wall time, not an exact measurement.
     await withProviderSpan({
       name: "promote",
       wallMsAttr: hasCompressedMapping ? SPAN_ATTR.transferDecompressWallMs : undefined,
@@ -836,7 +848,9 @@ async function syncInFileMappings(input: {
     await removeSandboxScratch(sandbox, allScratchNames, timeoutSeconds);
     throw error;
   } finally {
-    await Promise.all(hostTempPaths.map((tempPath) => fs.rm(tempPath, { force: true }).catch(() => undefined)));
+    await Promise.all(
+      hostTempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true }).catch(() => undefined)),
+    );
   }
 
   return { filesTransferred: mappings.length, bytesTransferred };

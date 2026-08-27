@@ -335,6 +335,35 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       expect(remaining.filter((name) => name.includes(".paperclip-upload"))).toHaveLength(0);
     });
 
+    it("removes the private compressed host temp directory after a successful sync (PAP-5397)", async () => {
+      const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
+      const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
+      const sourcePath = path.join(hostDir, "workspace-upload.tar");
+      await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
+      const targetPath = path.posix.join(remoteDir, "target.bin");
+
+      let capturedHostTempDir = "";
+      const { sandbox } = createRealExecSandbox({
+        uploadOverride: async (uploads) => {
+          const zstdUpload = uploads.find((upload) => upload.destination.endsWith(".zst"));
+          if (zstdUpload) capturedHostTempDir = path.dirname(zstdUpload.source);
+          for (const upload of uploads) await fs.copyFile(upload.source, upload.destination);
+          return true;
+        },
+      });
+      const operations: PluginSyncOperation[] = [{
+        operationId: "sync-op-1",
+        files: [{ sourcePath, targetPath, kind: "file" }],
+      }];
+
+      await performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 });
+
+      expect(capturedHostTempDir).toContain("paperclip-daytona-zstd-");
+      // The private host temp directory (not just the file inside it) is gone
+      // after a successful sync.
+      await expect(fs.stat(capturedHostTempDir)).rejects.toThrow();
+    });
+
     it("never promotes a partial file when decompression fails, and sweeps all reserved scratch", async () => {
       const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
@@ -767,6 +796,49 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       expect(after).toEqual(before); // no leftover host temp file
       const rmCommands = commands.filter((entry) => entry.command.includes("rm -f"));
       expect(rmCommands.length).toBeGreaterThan(0); // both reserved scratch names swept
+    });
+
+    it("stages the compressed artifact in a private 0700 directory with a 0600 file, and removes the directory when the upload fails (PAP-5397)", async () => {
+      const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
+      const sourcePath = path.join(hostDir, "big.tar");
+      await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
+      let capturedDir = "";
+      let capturedDirMode = -1;
+      let capturedFileMode = -1;
+      const sandbox = {
+        process: {
+          executeCommand: async (command: string) => ({
+            exitCode: 0,
+            result: command.includes("mkdir -p") ? "PAPERCLIP_ZSTD_AVAILABLE\n" : "",
+          }),
+        },
+        fs: {
+          uploadFiles: async (uploads: Array<{ source: string; destination: string }>) => {
+            const zstdUpload = uploads.find((upload) => upload.destination.endsWith(".zst"));
+            if (!zstdUpload) throw new Error("test setup: expected a compressed upload");
+            // Read the modes BEFORE throwing: the directory and its file still
+            // exist at this point, on the way to the (simulated) failed upload.
+            capturedDir = path.dirname(zstdUpload.source);
+            capturedDirMode = (await fs.stat(capturedDir)).mode & 0o777;
+            capturedFileMode = (await fs.stat(zstdUpload.source)).mode & 0o777;
+            throw new Error("simulated upload failure");
+          },
+          setFilePermissions: async () => undefined,
+        },
+      };
+      const operations: PluginSyncOperation[] = [{
+        operationId: "op-1",
+        files: [{ sourcePath, targetPath: "/workspace/target.bin", kind: "file" }],
+      }];
+
+      await expect(
+        performSyncIn({ sandbox: sandbox as never, operations, remoteDir: "/workspace", timeoutSeconds: 30 }),
+      ).rejects.toThrow(/simulated upload failure/);
+
+      expect(capturedDirMode).toBe(0o700);
+      expect(capturedFileMode).toBe(0o600);
+      // The private directory (not only the file) is removed after the upload fails.
+      await expect(fs.stat(capturedDir)).rejects.toThrow();
     });
 
     it("passes the caller's timeoutSeconds unchanged through every round trip on the compressed path", async () => {
