@@ -1021,6 +1021,31 @@ describeEmbeddedPostgres("companyService", () => {
       expect(logged).toHaveLength(0);
     });
 
+    it("keeps identifiers and the company prefix together under concurrent renames", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+      const svc = companyService(db);
+
+      // Both renames read the company before either commits. Without a row
+      // lock the loser re-keys from the prefix it read, finds nothing left to
+      // move, and strands the identifiers on the winner's prefix while the
+      // company row carries its own.
+      await Promise.all([
+        svc.update(companyId, { name: "Northwind Traders" }, TEST_ACTOR),
+        svc.update(companyId, { name: "Zenith Freight" }, TEST_ACTOR),
+      ]);
+
+      const [company] = await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, companyId));
+      const prefix = company!.issuePrefix;
+      expect(["NOR", "ZEN"]).toContain(prefix);
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: [`${prefix}-1`, `${prefix}-12`, null],
+        cases: [`${prefix}-C3`],
+      });
+    });
+
     it("leaves the prefix alone when only non-name fields change", async () => {
       const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
 

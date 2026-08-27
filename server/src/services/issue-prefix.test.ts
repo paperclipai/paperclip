@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { like } from "drizzle-orm";
-import { companies } from "@paperclipai/db";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import {
   ISSUE_PREFIX_FALLBACK,
   MAX_ISSUE_PREFIX_ATTEMPTS,
@@ -108,8 +108,19 @@ describe("pickAvailableIssuePrefix", () => {
   it("returns the bare base when nothing holds it", async () => {
     const { db, conditions } = stubPrefixReadDb([]);
     await expect(pickAvailableIssuePrefix(db, "ACM")).resolves.toBe("ACM");
-    // The read narrows to the base's own suffix family, not the whole table.
-    expect(conditions).toEqual([like(companies.issuePrefix, "ACM%")]);
+    // The read narrows to the base's own suffix family, not the whole table,
+    // and it compares an exact head rather than a LIKE pattern, so a base is
+    // never interpreted as one.
+    expect(conditions).toHaveLength(1);
+    const query = new PgDialect().sqlToQuery(conditions[0] as SQL);
+    expect(query.sql).toBe('left("companies"."issue_prefix", $1::int) = $2');
+    expect(query.params).toEqual([3, "ACM"]);
+  });
+
+  it("compares against a base that carries LIKE metacharacters without treating it as a pattern", async () => {
+    const { db, conditions } = stubPrefixReadDb([]);
+    await expect(pickAvailableIssuePrefix(db, "A%_")).resolves.toBe("A%_");
+    expect(new PgDialect().sqlToQuery(conditions[0] as SQL).params).toEqual([3, "A%_"]);
   });
 
   it("skips every prefix already taken in the same family", async () => {

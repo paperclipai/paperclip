@@ -218,7 +218,8 @@ export function companyService(db: Db) {
   }
 
   /**
-   * Decides whether a rename must move the company onto a new issue prefix.
+   * Decides whether a rename must move the company onto a new issue prefix, and
+   * returns the exact prefix pair to re-key.
    *
    * Self-hosted companies pick their prefix from the name at creation and keep
    * it, so a rename leaves the prefix alone. On a hosted/managed instance the
@@ -229,9 +230,9 @@ export function companyService(db: Db) {
    */
   async function resolveRenamedIssuePrefix(
     tx: CompanyTx,
-    existing: { name: string; issuePrefix: string },
+    existing: { id: string; name: string },
     companyPatch: Partial<typeof companies.$inferInsert>,
-  ): Promise<string | null> {
+  ): Promise<{ fromPrefix: string; toPrefix: string } | null> {
     // An explicit prefix in the patch is the caller's decision; never override it.
     if (companyPatch.issuePrefix !== undefined) return null;
     const nextName = companyPatch.name;
@@ -239,15 +240,31 @@ export function companyService(db: Db) {
     if (nextName === existing.name) return null;
     if (!isCloudManagedInstance()) return null;
 
+    // Lock the company row before deciding anything. Two concurrent renames of
+    // the same company would otherwise both re-key from the prefix they read
+    // before either committed: the second one would look for identifiers the
+    // first had already moved, find none, and leave the stored identifiers on
+    // the first rename's prefix while the company row carried the second one's.
+    // Reading the row under the lock makes the loser re-key from what the
+    // winner actually wrote. Only a managed rename pays for this lock; an
+    // ordinary company update never reaches it.
+    const locked = await tx
+      .select({ name: companies.name, issuePrefix: companies.issuePrefix })
+      .from(companies)
+      .where(eq(companies.id, existing.id))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!locked || nextName === locked.name) return null;
+
     const nextBase = deriveIssuePrefixBase(nextName);
     // A rename that keeps the same base keeps the current prefix, including
     // any disambiguating suffix it was allocated.
-    if (nextBase === deriveIssuePrefixBase(existing.name)) return null;
-    if (nextBase === existing.issuePrefix) return null;
+    if (nextBase === deriveIssuePrefixBase(locked.name)) return null;
+    if (nextBase === locked.issuePrefix) return null;
 
     const candidate = await pickAvailableIssuePrefix(tx, nextBase);
-    if (!candidate || candidate === existing.issuePrefix) return null;
-    return candidate;
+    if (!candidate || candidate === locked.issuePrefix) return null;
+    return { fromPrefix: locked.issuePrefix, toPrefix: candidate };
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
@@ -329,13 +346,13 @@ export function companyService(db: Db) {
           }
         }
 
-        const nextIssuePrefix = await resolveRenamedIssuePrefix(tx, existing, companyPatch);
+        const renamedPrefix = await resolveRenamedIssuePrefix(tx, existing, companyPatch);
 
         const updated = await tx
           .update(companies)
           .set({
             ...companyPatch,
-            ...(nextIssuePrefix ? { issuePrefix: nextIssuePrefix } : {}),
+            ...(renamedPrefix ? { issuePrefix: renamedPrefix.toPrefix } : {}),
             updatedAt: new Date(),
           })
           .where(eq(companies.id, id))
@@ -349,15 +366,15 @@ export function companyService(db: Db) {
           issuesRekeyed: number;
           casesRekeyed: number;
         } | null = null;
-        if (nextIssuePrefix) {
+        if (renamedPrefix) {
           const rekeyed = await rekeyCompanyIssueIdentifiers(tx, {
             companyId: id,
-            fromPrefix: existing.issuePrefix,
-            toPrefix: nextIssuePrefix,
+            fromPrefix: renamedPrefix.fromPrefix,
+            toPrefix: renamedPrefix.toPrefix,
           });
           issuePrefixRederived = {
-            previousIssuePrefix: existing.issuePrefix,
-            issuePrefix: nextIssuePrefix,
+            previousIssuePrefix: renamedPrefix.fromPrefix,
+            issuePrefix: renamedPrefix.toPrefix,
             issuesRekeyed: rekeyed.issues,
             casesRekeyed: rekeyed.cases,
           };

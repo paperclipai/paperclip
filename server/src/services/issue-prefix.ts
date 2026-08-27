@@ -1,4 +1,5 @@
-import { and, eq, like, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { cases, companies, issues } from "@paperclipai/db";
 
@@ -85,7 +86,10 @@ export async function pickAvailableIssuePrefix(
     await database
       .select({ issuePrefix: companies.issuePrefix })
       .from(companies)
-      .where(like(companies.issuePrefix, `${base}%`))
+      // An exact head comparison rather than LIKE, so a base is never read as a
+      // pattern. `deriveIssuePrefixBase` cannot produce a LIKE metacharacter,
+      // but this helper does not get to assume its caller used it.
+      .where(sql`left(${companies.issuePrefix}, ${base.length}::int) = ${base}`)
       .then((rows) => rows.map((row) => row.issuePrefix)),
   );
   for (let attempt = 1; attempt <= MAX_ISSUE_PREFIX_ATTEMPTS; attempt += 1) {
@@ -100,10 +104,10 @@ export async function pickAvailableIssuePrefix(
  * prefix.
  *
  * Issue identifiers mint as `${prefix}-${issueNumber}` and case identifiers as
- * `${prefix}-C${caseNumber}`, so both start with `${prefix}-` and one pattern
- * covers both tables. Only the prefix is replaced; the number after the dash
- * is preserved. The statements run in the caller's transaction so the company
- * row and its identifiers move together.
+ * `${prefix}-C${caseNumber}`, so both start with `${prefix}-` and one head
+ * comparison covers both tables. Only the prefix is replaced; the separator and
+ * the number after it are preserved. The statements run in the caller's
+ * transaction so the company row and its identifiers move together.
  */
 export async function rekeyCompanyIssueIdentifiers(
   tx: IssuePrefixWriteDb,
@@ -112,7 +116,11 @@ export async function rekeyCompanyIssueIdentifiers(
   const { companyId, fromPrefix, toPrefix } = input;
   if (fromPrefix === toPrefix) return { issues: 0, cases: 0 };
 
-  const legacyPattern = `${fromPrefix}-%`;
+  const legacyHead = `${fromPrefix}-`;
+  // An exact head comparison rather than LIKE, so a stored prefix is never read
+  // as a pattern.
+  const matchesLegacyHead = (identifier: PgColumn) =>
+    sql`left(${identifier}, ${legacyHead.length}::int) = ${legacyHead}`;
   // 1-based index of the "-" that follows the prefix, so the tail keeps its
   // separator and number. The `::int` cast is load-bearing: the driver binds
   // the parameter as text, and `substring(text from text)` is the SQL-regex
@@ -122,13 +130,13 @@ export async function rekeyCompanyIssueIdentifiers(
   const rekeyedIssues = await tx
     .update(issues)
     .set({ identifier: sql`${toPrefix} || substring(${issues.identifier} from ${tailStart})` })
-    .where(and(eq(issues.companyId, companyId), like(issues.identifier, legacyPattern)))
+    .where(and(eq(issues.companyId, companyId), matchesLegacyHead(issues.identifier)))
     .returning({ id: issues.id });
 
   const rekeyedCases = await tx
     .update(cases)
     .set({ identifier: sql`${toPrefix} || substring(${cases.identifier} from ${tailStart})` })
-    .where(and(eq(cases.companyId, companyId), like(cases.identifier, legacyPattern)))
+    .where(and(eq(cases.companyId, companyId), matchesLegacyHead(cases.identifier)))
     .returning({ id: cases.id });
 
   return { issues: rekeyedIssues.length, cases: rekeyedCases.length };
