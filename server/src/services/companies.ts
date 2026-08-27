@@ -34,6 +34,15 @@ import {
   routines,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { isCloudManagedInstance } from "./cloud-instance.js";
+import {
+  MAX_ISSUE_PREFIX_ATTEMPTS,
+  deriveIssuePrefixBase,
+  isIssuePrefixConflict,
+  issuePrefixSuffixForAttempt,
+  pickAvailableIssuePrefix,
+  rekeyCompanyIssueIdentifiers,
+} from "./issue-prefix.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
@@ -56,7 +65,6 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
 };
 
 export function companyService(db: Db) {
-  const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
@@ -209,36 +217,44 @@ export function companyService(db: Db) {
       .leftJoin(companyLogos, eq(companyLogos.companyId, companies.id));
   }
 
-  function deriveIssuePrefixBase(name: string) {
-    const normalized = name.toUpperCase().replace(/[^A-Z]/g, "");
-    return normalized.slice(0, 3) || ISSUE_PREFIX_FALLBACK;
-  }
+  /**
+   * Decides whether a rename must move the company onto a new issue prefix.
+   *
+   * Self-hosted companies pick their prefix from the name at creation and keep
+   * it, so a rename leaves the prefix alone. On a hosted/managed instance the
+   * company is provisioned for the operator, so the name is the only prefix
+   * source the operator ever chose — a rename re-derives it. Returns null when
+   * the current prefix is already correct or when the suffix space is
+   * exhausted.
+   */
+  async function resolveRenamedIssuePrefix(
+    tx: CompanyTx,
+    existing: { name: string; issuePrefix: string },
+    companyPatch: Partial<typeof companies.$inferInsert>,
+  ): Promise<string | null> {
+    // An explicit prefix in the patch is the caller's decision; never override it.
+    if (companyPatch.issuePrefix !== undefined) return null;
+    const nextName = companyPatch.name;
+    if (typeof nextName !== "string" || nextName.trim().length === 0) return null;
+    if (nextName === existing.name) return null;
+    if (!isCloudManagedInstance()) return null;
 
-  function suffixForAttempt(attempt: number) {
-    if (attempt <= 1) return "";
-    return "A".repeat(attempt - 1);
-  }
+    const nextBase = deriveIssuePrefixBase(nextName);
+    // A rename that keeps the same base keeps the current prefix, including
+    // any disambiguating suffix it was allocated.
+    if (nextBase === deriveIssuePrefixBase(existing.name)) return null;
+    if (nextBase === existing.issuePrefix) return null;
 
-  function isIssuePrefixConflict(error: unknown) {
-    const seen = new Set<unknown>();
-    let current = error;
-    while (typeof current === "object" && current !== null && !seen.has(current)) {
-      seen.add(current);
-      const maybe = current as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
-      const constraint = maybe.constraint ?? maybe.constraint_name;
-      if (maybe.code === "23505" && constraint === "companies_issue_prefix_idx") {
-        return true;
-      }
-      current = maybe.cause;
-    }
-    return false;
+    const candidate = await pickAvailableIssuePrefix(tx, nextBase);
+    if (!candidate || candidate === existing.issuePrefix) return null;
+    return candidate;
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
-    while (suffix < 10000) {
-      const candidate = `${base}${suffixForAttempt(suffix)}`;
+    while (suffix <= MAX_ISSUE_PREFIX_ATTEMPTS) {
+      const candidate = `${base}${issuePrefixSuffixForAttempt(suffix)}`;
       try {
         const rows = await db
           .insert(companies)
@@ -313,13 +329,39 @@ export function companyService(db: Db) {
           }
         }
 
+        const nextIssuePrefix = await resolveRenamedIssuePrefix(tx, existing, companyPatch);
+
         const updated = await tx
           .update(companies)
-          .set({ ...companyPatch, updatedAt: new Date() })
+          .set({
+            ...companyPatch,
+            ...(nextIssuePrefix ? { issuePrefix: nextIssuePrefix } : {}),
+            updatedAt: new Date(),
+          })
           .where(eq(companies.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
+
+        let issuePrefixRederived: {
+          previousIssuePrefix: string;
+          issuePrefix: string;
+          issuesRekeyed: number;
+          casesRekeyed: number;
+        } | null = null;
+        if (nextIssuePrefix) {
+          const rekeyed = await rekeyCompanyIssueIdentifiers(tx, {
+            companyId: id,
+            fromPrefix: existing.issuePrefix,
+            toPrefix: nextIssuePrefix,
+          });
+          issuePrefixRederived = {
+            previousIssuePrefix: existing.issuePrefix,
+            issuePrefix: nextIssuePrefix,
+            issuesRekeyed: rekeyed.issues,
+            casesRekeyed: rekeyed.cases,
+          };
+        }
 
         let agentsRestored = 0;
         if (willReactivate) {
@@ -376,9 +418,27 @@ export function companyService(db: Db) {
           company: enrichCompany(hydrated),
           reactivated: shouldLogReactivation ? { agentsRestored } : null,
           archiveCascade,
+          issuePrefixRederived,
         };
       });
       if (!result) return null;
+      if (result.issuePrefixRederived) {
+        await logActivity(db, {
+          companyId: id,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          action: "company.updated",
+          entityType: "company",
+          entityId: id,
+          details: {
+            source: "company_rename",
+            reason: "issue_prefix_rederived",
+            ...result.issuePrefixRederived,
+          },
+        });
+      }
       if (result.reactivated) {
         await logActivity(db, {
           companyId: id,

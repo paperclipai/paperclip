@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -39,6 +40,9 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  // Managed instances derive the task ID prefix from the company name, so a
+  // rename here also renumbers the existing task IDs.
+  const isCloudManaged = Boolean(useCloudInstance());
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -214,6 +218,12 @@ export function CompanySettings() {
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
             />
+            {isCloudManaged && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Renaming can change this company's task ID prefix. Existing task IDs are
+                renumbered and old task links stop resolving.
+              </p>
+            )}
           </Field>
           <Field
             label="Description"
