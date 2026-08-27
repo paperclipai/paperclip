@@ -808,6 +808,10 @@ function credentialFieldsFor(app: AppDefinition, methodKey?: string | null) {
   }));
 }
 
+function credentialRefConfigPath(ref: { name: string }): string {
+  return ref.name.startsWith("credentials.") ? ref.name : `credentials.${ref.name}`;
+}
+
 export function normalizeConnectionMethodConfig(
   method: ConnectionMethodDef,
   configValues: Record<string, unknown> | undefined,
@@ -3571,10 +3575,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(companySecretBindings.targetId, connection.id),
         ),
       );
-    const bindings = [
+    const rawBindings = [
       ...connection.credentialRefs.map((ref) => ({
         secretId: ref.secretId,
-        configPath: `credentials.${ref.name}`,
+        configPath: credentialRefConfigPath(ref),
         projectionClass: "unclassified",
         projectionAllowlistKey: null,
       })),
@@ -3585,6 +3589,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         projectionAllowlistKey: ref.projectionAllowlistKey ?? null,
       })),
     ];
+    const bindings = [...new Map(rawBindings.map((ref) => [
+      `${ref.secretId}:${ref.configPath}`,
+      ref,
+    ])).values()];
     if (bindings.length === 0) return;
     await db.insert(companySecretBindings).values(bindings.map((ref) => ({
       companyId: connection.companyId,
@@ -4071,11 +4079,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const scope = credentialScope(connection);
     for (const ref of connection.credentialRefs) {
       let value: string;
+      const configPath = credentialRefConfigPath(ref);
       try {
         value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
           consumerType: "tool_connection",
           consumerId: connection.id,
-          configPath: `credentials.${ref.name}`,
+          configPath,
           actorType: "system",
         });
       } catch (error) {
@@ -9529,6 +9538,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .returning();
       await syncCredentialBindings(row);
       await ensureRuntimeSlot(row);
+      if (isComposioConnection(row)) {
+        if (row.enabled) await restoreComposioChildren(row);
+        else await disableComposioChildren(row);
+      }
       return toConnection(row);
     },
 

@@ -138,6 +138,13 @@ async function createComposioParentAndChild(
       label: "Composio API key",
     }],
   }).returning();
+  await db.insert(companySecretBindings).values({
+    companyId,
+    secretId: apiKey.id,
+    targetType: "tool_connection",
+    targetId: parent!.id,
+    configPath: "credentials.apiKey",
+  });
   const [child] = await db.insert(toolConnections).values({
     companyId,
     applicationId: application!.id,
@@ -5887,7 +5894,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     expect(JSON.stringify(connect.connection.config)).not.toContain("link-secret");
     await expect(db.select().from(companySecrets)).resolves.toHaveLength(1);
-    await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(2);
+    await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(1);
   });
 
   it("returns a sign-in-required code when a pasted link answers with an OAuth challenge", async () => {
