@@ -877,7 +877,11 @@ describe("evaluateCodexCredentialReadiness", () => {
       const alpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
       const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
       expect(alpha).toContain('[mcp_servers."alpha"]');
-      expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      // Codex's MCP server config key is `http_headers` (its TOML schema has no
+      // plain `headers`); writing `headers` makes codex silently ignore the
+      // server, so every governed gateway vanishes from the agent's toolset.
+      expect(alpha).toContain('http_headers = { Authorization = "Bearer alpha-token" }');
+      expect(alpha).not.toMatch(/\n\s*headers = /);
       expect(zero).not.toContain("mcp_servers.");
       expect(zero).not.toContain("stale-token");
       expect(alphaHome).not.toBe(zeroHome);
