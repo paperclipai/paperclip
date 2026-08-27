@@ -81,9 +81,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS "connection_grant_delegations_grant_agent_uq" 
 -- remove only personal-grant references and require those users to
 -- reauthorize. Organization grants, shared/fallback connections, company
 -- bindings, and routine triggers keep the original company-scoped secret so
--- their existing consumers continue to resolve it. A replay-safe per-user
--- connection with a direct legacy reference is the only connection row that
--- is quarantined here.
+-- their existing consumers continue to resolve it. Connection rows also keep
+-- direct references: policy-aware resolution ignores them for strict per-user
+-- access, while stripping them would break an independent shared consumer.
 DROP TABLE IF EXISTS "phase4_ambiguous_personal_secrets";
 --> statement-breakpoint
 CREATE TEMP TABLE "phase4_ambiguous_personal_secrets" ON COMMIT DROP AS
@@ -156,36 +156,6 @@ WHERE grant_row."kind" = 'user'
 	FROM jsonb_array_elements(grant_row."credential_secret_refs") ref
 	JOIN ambiguous_secrets ambiguous
 		ON ambiguous."company_id" = grant_row."company_id"
-		AND ref ->> 'secretId' = ambiguous."secret_id"::text
-);
---> statement-breakpoint
-WITH ambiguous_secrets AS (
-	SELECT "secret_id", "company_id" FROM "phase4_ambiguous_personal_secrets"
-)
-UPDATE "tool_connections" connection_row
-SET
-	"credential_secret_refs" = COALESCE((
-		SELECT jsonb_agg(ref)
-		FROM jsonb_array_elements(connection_row."credential_secret_refs") ref
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM ambiguous_secrets ambiguous
-			WHERE ambiguous."company_id" = connection_row."company_id"
-				AND ref ->> 'secretId' = ambiguous."secret_id"::text
-		)
-	), '[]'::jsonb),
-	"status" = 'draft',
-	"enabled" = false,
-	"health_status" = 'missing_secret',
-	"health_message" = 'Legacy personal credential ownership was ambiguous. Reauthorize this connection.',
-	"last_error" = 'oauth_reauthorization_required',
-	"updated_at" = now()
-WHERE connection_row."credential_policy" = 'per_user'
-	AND EXISTS (
-	SELECT 1
-	FROM jsonb_array_elements(connection_row."credential_secret_refs") ref
-	JOIN ambiguous_secrets ambiguous
-		ON ambiguous."company_id" = connection_row."company_id"
 		AND ref ->> 'secretId' = ambiguous."secret_id"::text
 );
 --> statement-breakpoint

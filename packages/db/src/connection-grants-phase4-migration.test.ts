@@ -43,9 +43,8 @@ describe("connection grants phase 4 migration", () => {
     expect(migrationSql).toContain(`FROM "company_secret_bindings" binding`);
     expect(migrationSql).toContain(`FROM "routine_triggers" routine_trigger`);
     expect(migrationSql).toContain(`grant_row."kind" = 'user'`);
-    expect(migrationSql).toContain(`connection_row."credential_policy" = 'per_user'`);
+    expect(migrationSql).not.toContain(`UPDATE "tool_connections" connection_row`);
     expect(migrationSql).toContain(`"status" = 'needs_reauthorization'`);
-    expect(migrationSql).toContain(`"health_status" = 'missing_secret'`);
   });
 });
 
@@ -69,6 +68,7 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
       includeConnectionReference?: boolean;
       includeCompanyBinding?: boolean;
       includeRoutineTrigger?: boolean;
+      credentialPolicy?: "shared" | "per_user" | "per_user_with_fallback";
     }) {
       const companyId = randomUUID();
       const applicationId = randomUUID();
@@ -85,10 +85,11 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
       await sql`
         INSERT INTO "tool_connections" (
           "id", "company_id", "application_id", "name", "uid", "transport",
-          "status", "enabled", "health_status", "credential_secret_refs"
+          "status", "enabled", "health_status", "credential_policy", "credential_secret_refs"
         ) VALUES (
           ${connectionId}, ${companyId}, ${applicationId}, ${`Connection ${connectionId}`},
           ${`connection-${connectionId}`}, 'mcp_remote', 'active', true, 'healthy',
+          ${input.credentialPolicy ?? "shared"},
           ${sql.json(input.includeConnectionReference ? [{ secretId, version: "latest" }] : [])}
         )
       `;
@@ -160,7 +161,9 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
 
       const bound = await seedLegacyCredential({
         ownerUserIds: ["binding-owner"],
+        includeConnectionReference: true,
         includeCompanyBinding: true,
+        credentialPolicy: "per_user",
       });
       await rewindMigration();
       await applyPendingMigrations(database.connectionString);
@@ -169,10 +172,21 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
         FROM "company_secrets"
         WHERE "id" = ${bound.secretId}
       `).toEqual([{ scope: "company", owner_user_id: null }]);
+      expect(await sql<{ status: string; enabled: boolean; credential_secret_refs: unknown[] }[]>`
+        SELECT "status", "enabled", "credential_secret_refs"
+        FROM "tool_connections"
+        WHERE "id" = ${bound.connectionId}
+      `).toEqual([{
+        status: "active",
+        enabled: true,
+        credential_secret_refs: [{ secretId: bound.secretId, version: "latest" }],
+      }]);
 
       const routine = await seedLegacyCredential({
         ownerUserIds: ["routine-owner"],
+        includeConnectionReference: true,
         includeRoutineTrigger: true,
+        credentialPolicy: "per_user",
       });
       await rewindMigration();
       await applyPendingMigrations(database.connectionString);
@@ -181,6 +195,15 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
         FROM "company_secrets"
         WHERE "id" = ${routine.secretId}
       `).toEqual([{ scope: "company", owner_user_id: null }]);
+      expect(await sql<{ status: string; enabled: boolean; credential_secret_refs: unknown[] }[]>`
+        SELECT "status", "enabled", "credential_secret_refs"
+        FROM "tool_connections"
+        WHERE "id" = ${routine.connectionId}
+      `).toEqual([{
+        status: "active",
+        enabled: true,
+        credential_secret_refs: [{ secretId: routine.secretId, version: "latest" }],
+      }]);
       expect(await sql<{ status: string; credential_secret_refs: unknown[] }[]>`
         SELECT "status", "credential_secret_refs"
         FROM "connection_grants"
@@ -191,6 +214,15 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
         FROM "routine_triggers"
         WHERE "company_id" = ${routine.companyId}
       `).toEqual([{ secret_id: routine.secretId }]);
+      expect(await sql<{ status: string; enabled: boolean; credential_secret_refs: unknown[] }[]>`
+        SELECT "status", "enabled", "credential_secret_refs"
+        FROM "tool_connections"
+        WHERE "id" = ${routine.connectionId}
+      `).toEqual([{
+        status: "active",
+        enabled: true,
+        credential_secret_refs: [{ secretId: routine.secretId, version: "latest" }],
+      }]);
 
       // Replaying also preserves the direct routine-trigger reference.
       await rewindMigration();
@@ -219,6 +251,15 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
         FROM "company_secrets"
         WHERE "id" = ${bound.secretId}
       `).toEqual([{ scope: "company", owner_user_id: null }]);
+      expect(await sql<{ status: string; enabled: boolean; credential_secret_refs: unknown[] }[]>`
+        SELECT "status", "enabled", "credential_secret_refs"
+        FROM "tool_connections"
+        WHERE "id" = ${bound.connectionId}
+      `).toEqual([{
+        status: "active",
+        enabled: true,
+        credential_secret_refs: [{ secretId: bound.secretId, version: "latest" }],
+      }]);
 
       const ambiguous = await seedLegacyCredential({ ownerUserIds: ["alice", "bob"] });
       await rewindMigration();
