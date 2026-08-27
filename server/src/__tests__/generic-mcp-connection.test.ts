@@ -36,6 +36,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { ComposioApiError, type ComposioClient } from "../services/composio.js";
+import { createComposioSessionManager } from "../services/composio-session-manager.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -465,6 +467,177 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(connection!.credentialRefs)).not.toContain("fixture-key-123");
     expect(JSON.stringify(result.connection)).not.toContain("fixture-key-123");
     expect(connection!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["credentials.authorization"]);
+  });
+
+  it("stores and validates a Composio API key without returning plaintext", async () => {
+    const company = await createCompany(db);
+    const validatedKeys: string[] = [];
+    const service = toolAccessService(db, {
+      composioClientFactory: (apiKey) => ({
+        validateApiKey: async () => { validatedKeys.push(apiKey); },
+      }) as unknown as ComposioClient,
+    });
+
+    const result = await service.connectGalleryApp(company.id, {
+      galleryKey: "composio",
+      connectionMethodKey: "api-key",
+      credentialValues: { "credentials.apiKey": "ak_composio_fixture" },
+    });
+
+    expect(validatedKeys).toEqual(["ak_composio_fixture"]);
+    expect(result.catalog).toEqual([]);
+    expect(result.actions).toEqual({ readOnly: [], canMakeChanges: [] });
+    expect(result.connection).toMatchObject({
+      transport: "rest_api",
+      authKind: "api_key",
+      healthStatus: "ok",
+    });
+    expect(result.connection.healthMessage).toContain("returned its toolkits");
+
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, result.connectionId));
+    expect(connection!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["credentials.apiKey"]);
+    expect(connection!.credentialRefs).toEqual([
+      expect.objectContaining({ placement: "header", key: "x-api-key", prefix: null }),
+    ]);
+    expect(JSON.stringify({ result, connection })).not.toContain("ak_composio_fixture");
+  });
+
+  it("rejects an invalid Composio key and removes the draft and secret", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db, {
+      composioClientFactory: () => ({
+        validateApiKey: async () => { throw new ComposioApiError("Composio rejected the API key.", 401); },
+      }) as unknown as ComposioClient,
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "composio",
+      connectionMethodKey: "api-key",
+      credentialValues: { "credentials.apiKey": "bad_composio_fixture" },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "composio_api_key_rejected" },
+    });
+
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecrets)).resolves.toHaveLength(0);
+  });
+
+  it("creates, refreshes, and disconnects a Composio toolkit child", async () => {
+    const company = await createCompany(db);
+    const connectRequests: unknown[] = [];
+    const sessionRequests: unknown[] = [];
+    const deletedAccounts: string[] = [];
+    const client = {
+      validateApiKey: async () => undefined,
+      listToolkits: async () => ({ items: [{ slug: "github", name: "GitHub", meta: { tools_count: 1 } }] }),
+      listAuthConfigs: async () => ({
+        items: [{
+          id: "auth-github",
+          auth_scheme: "OAUTH2",
+          is_composio_managed: true,
+          status: "ACTIVE",
+          toolkit: { slug: "github" },
+        }],
+      }),
+      createConnectLink: async (input: unknown) => {
+        connectRequests.push(input);
+        return { link_token: "link-token", redirect_url: "https://connect.composio.test/github", expires_at: "2026-08-21T20:00:00Z" };
+      },
+      listConnectedAccounts: async () => ({
+        items: [{
+          id: "account-github",
+          user_id: `paperclip:${company.id}`,
+          status: "ACTIVE",
+          toolkit: { slug: "github" },
+          auth_config: { id: "auth-github", auth_scheme: "OAUTH2", is_composio_managed: true },
+        }],
+      }),
+      deleteConnectedAccount: async (accountId: string) => { deletedAccounts.push(accountId); },
+      createSession: async (userId: string, options: unknown) => {
+        sessionRequests.push({ userId, options });
+        return {
+          session_id: "session-github",
+          mcp: { url: "https://mcp.composio.test/github", headers: { Authorization: "Bearer session-secret" } },
+        };
+      },
+    } as unknown as ComposioClient;
+    const service = toolAccessService(db, {
+      composioClientFactory: () => client,
+      remoteHttpRequest: async (_url, init) => {
+        expect(new Headers(init.headers).get("authorization")).toBe("Bearer session-secret");
+        return jsonResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "GITHUB_LIST_REPOS", description: "List repositories", annotations: { readOnlyHint: true } }] },
+        });
+      },
+    });
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "composio",
+      connectionMethodKey: "api-key",
+      credentialValues: { "credentials.apiKey": "ak_composio_fixture" },
+    });
+
+    const listed = await service.listComposioServices(connected.connectionId);
+    expect(listed.services).toEqual([
+      expect.objectContaining({
+        status: "connected",
+        connectedAccountId: "account-github",
+        childConnectionId: expect.any(String),
+      }),
+    ]);
+    const childId = listed.services[0]!.childConnectionId!;
+    const [child] = await db.select().from(toolConnections).where(eq(toolConnections.id, childId));
+    expect(child).toMatchObject({
+      companyId: company.id,
+      applicationId: connected.application.id,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: {
+        provider: "composio",
+        parentConnectionId: connected.connectionId,
+        toolkitSlug: "github",
+        connectedAccountId: "account-github",
+      },
+    });
+    await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, childId))).resolves.toEqual([
+      expect.objectContaining({ toolName: "GITHUB_LIST_REPOS", status: "active" }),
+    ]);
+    expect(sessionRequests).toEqual([
+      expect.objectContaining({ userId: `paperclip:${company.id}`, options: expect.objectContaining({ toolkits: ["github"], mcp: true }) }),
+    ]);
+    const sessionManager = createComposioSessionManager(db, { composioClientFactory: () => client });
+    const [readScope, writeScope] = await Promise.all([
+      sessionManager.ensureSession(childId, { tools: ["GITHUB_LIST_REPOS"] }),
+      sessionManager.ensureSession(childId, { tools: ["GITHUB_CREATE_ISSUE"] }),
+    ]);
+    expect(readScope.scopeKey).not.toBe(writeScope.scopeKey);
+    expect(sessionRequests.slice(1)).toEqual([
+      expect.objectContaining({ options: expect.objectContaining({ tools: { github: { enable: ["GITHUB_LIST_REPOS"] } } }) }),
+      expect.objectContaining({ options: expect.objectContaining({ tools: { github: { enable: ["GITHUB_CREATE_ISSUE"] } } }) }),
+    ]);
+
+    await expect(service.startComposioServiceConnect(connected.connectionId, "github", {})).resolves.toMatchObject({
+      toolkitSlug: "github",
+      authConfigId: "auth-github",
+      redirect_url: "https://connect.composio.test/github",
+    });
+    expect(connectRequests).toEqual([
+      expect.objectContaining({ authConfigId: "auth-github", userId: `paperclip:${company.id}` }),
+    ]);
+    await expect(service.pollComposioService(connected.connectionId, "github")).resolves.toMatchObject({
+      child: { id: childId },
+    });
+    await expect(service.disconnectComposioService(connected.connectionId, "github")).resolves.toMatchObject({
+      disconnectedAccountIds: ["account-github"],
+      removedChildIds: [childId],
+    });
+    expect(deletedAccounts).toEqual(["account-github"]);
+    const [archivedChild] = await db.select().from(toolConnections).where(eq(toolConnections.id, childId));
+    expect(archivedChild).toMatchObject({ status: "archived", enabled: false, credentialSecretRefs: [] });
   });
 
   it("stores custom header values as secrets and shows only header names", async () => {

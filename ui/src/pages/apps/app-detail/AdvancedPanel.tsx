@@ -16,11 +16,13 @@ export function AdvancedPanel({
   connection,
   appName,
   galleryEntry,
+  childConnectionCount,
   removing,
   onRemove,
   onReplaced,
 }: Pick<AppDetailSectionProps, "connection" | "appName" | "galleryEntry"> & {
   removing: boolean;
+  childConnectionCount?: number;
   onRemove: () => void;
   onReplaced: () => void;
 }) {
@@ -28,7 +30,12 @@ export function AdvancedPanel({
     <div className="space-y-6">
       <KeySection connection={connection} galleryEntry={galleryEntry} onReplaced={onReplaced} />
       <TechnicalDetails connection={connection} />
-      <DangerZone appName={appName} removing={removing} onRemove={onRemove} />
+      <DangerZone
+        appName={appName}
+        childConnectionCount={childConnectionCount}
+        removing={removing}
+        onRemove={onRemove}
+      />
     </div>
   );
 }
@@ -269,10 +276,12 @@ function TechnicalDetails({ connection }: { connection: ToolConnection }) {
 
 export function DangerZone({
   appName,
+  childConnectionCount = 0,
   removing,
   onRemove,
 }: {
   appName: string;
+  childConnectionCount?: number;
   removing: boolean;
   onRemove: () => void;
 }) {
@@ -286,8 +295,9 @@ export function DangerZone({
         <div>
           <p className="text-sm font-medium text-foreground">Remove this app</p>
           <p className="text-xs text-muted-foreground">
-            Deletes the saved credentials for {appName} and takes agent access away right away.
-            Connecting it again later needs a new sign-in or key.
+            {childConnectionCount > 0
+              ? `Deletes the saved credentials for ${appName} and removes ${childConnectionCount} connected ${childConnectionCount === 1 ? "service" : "services"}. Agents lose access to all of them right away.`
+              : `Deletes the saved credentials for ${appName} and takes agent access away right away. Connecting it again later needs a new sign-in or key.`}
           </p>
         </div>
         {confirming ? (

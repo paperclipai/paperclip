@@ -158,7 +158,16 @@ export const connectionGrants = pgTable(
     connectionId: uuid("connection_id").notNull(),
     kind: text("kind").$type<ConnectionGrantKind>().notNull(),
     subjectUserId: text("subject_user_id"),
-    providerTenant: jsonb("provider_tenant").$type<{ name?: string; externalId?: string }>(),
+    providerTenant: jsonb("provider_tenant").$type<{
+      name?: string;
+      externalId?: string;
+      oauth?: {
+        strategy?: string;
+        accessTokenExpiresAt?: string;
+        scopes?: string[];
+        tokenType?: string;
+      };
+    }>(),
     credentialSecretRefs: jsonb("credential_secret_refs").$type<ToolCredentialSecretRef[]>().notNull().default([]),
     status: text("status").$type<ConnectionGrantStatus>().notNull().default("active"),
     isDefault: boolean("is_default").notNull().default(false),

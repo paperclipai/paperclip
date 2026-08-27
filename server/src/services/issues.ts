@@ -6717,6 +6717,11 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
+      // A child may target another project. Parent workspace identity is only
+      // valid inside the parent's project, so do not forward it across that
+      // boundary; create() then resolves the target project's own workspaces.
+      const childProjectId = issueData.projectId ?? parent.projectId;
+      const childInheritsParentProject = childProjectId === parent.projectId;
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
         issueData.executionWorkspacePreference !== undefined ||
@@ -6728,8 +6733,10 @@ export function issueService(db: Db) {
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
-        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
+        projectId: childProjectId,
+        projectWorkspaceId:
+          issueData.projectWorkspaceId ??
+          (inheritStrategyOnly && childInheritsParentProject ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
         trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
@@ -7162,10 +7169,19 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          // Workspace linkage is only inheritable inside the source project. A
+          // cross-project child (for example, a Paperclip ID issue created from
+          // a Paperclip App parent) must fall through to its own project's
+          // default workspaces, otherwise the inherited ids fail the
+          // project-match assertions below and the create is impossible without
+          // the caller naming the target workspaces explicitly.
+          const inheritsSourceProject =
+            issueData.projectId == null || issueData.projectId === workspaceSource.projectId;
+          if (inheritsSourceProject && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
+            inheritsSourceProject &&
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId

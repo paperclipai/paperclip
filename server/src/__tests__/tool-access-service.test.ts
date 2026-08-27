@@ -52,6 +52,7 @@ import { canonicalToolArguments, signToolArguments } from "../services/tool-cont
 import { createToolGatewayService as createToolGatewayServiceBase, type ToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
+import type { ComposioClient } from "../services/composio.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -91,6 +92,89 @@ async function createCompany(db: ReturnType<typeof createDb>) {
     })
     .returning()
     .then((rows) => rows[0]!);
+}
+
+async function createComposioParentAndChild(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+) {
+  const secrets = secretService(db);
+  const apiKey = await secrets.create(companyId, {
+    name: `Composio test key ${randomUUID().slice(0, 8)}`,
+    key: `tool_app.${randomUUID()}.credentials_apiKey`,
+    provider: "local_encrypted",
+    value: "composio-test-key",
+  });
+  const [application] = await db.insert(toolApplications).values({
+    companyId,
+    name: "Composio",
+    type: "rest_api",
+    status: "active",
+  }).returning();
+  const [parent] = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application!.id,
+    name: "Composio",
+    uid: `composio/${randomUUID()}`,
+    transport: "rest_api",
+    authKind: "api_key",
+    status: "active",
+    enabled: true,
+    config: { sourceTemplateKey: "composio" },
+    transportConfig: { sourceTemplateKey: "composio" },
+    credentialRefs: [{
+      name: "credentials.apiKey",
+      secretId: apiKey.id,
+      version: "latest",
+      placement: "header",
+      key: "x-api-key",
+      prefix: null,
+    }],
+    credentialSecretRefs: [{
+      secretId: apiKey.id,
+      versionSelector: "latest",
+      configPath: "credentials.apiKey",
+      required: true,
+      label: "Composio API key",
+    }],
+  }).returning();
+  const [child] = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application!.id,
+    name: "GitHub (via Composio)",
+    uid: `composio/github/${randomUUID()}`,
+    transport: "mcp_remote",
+    authKind: "none",
+    status: "active",
+    enabled: true,
+    config: {
+      provider: "composio",
+      parentConnectionId: parent!.id,
+      toolkitSlug: "github",
+      connectedAccountId: "account-github",
+    },
+    transportConfig: {},
+  }).returning();
+  return { parent: parent!, child: child! };
+}
+
+function fakeComposioClient(accountStatus: () => string): ComposioClient {
+  return {
+    validateApiKey: vi.fn(async () => undefined),
+    listToolkits: vi.fn(async () => ({ items: [{ slug: "github", name: "GitHub" }] })),
+    listAuthConfigs: vi.fn(async () => ({ items: [] })),
+    createConnectLink: vi.fn(async () => ({ link_token: "link", redirect_url: "https://composio.test/link", expires_at: new Date().toISOString() })),
+    listConnectedAccounts: vi.fn(async () => ({ items: [{
+      id: "account-github",
+      user_id: "paperclip:test",
+      status: accountStatus(),
+      toolkit: { slug: "github" },
+      auth_config: { id: "auth-github", auth_scheme: "OAUTH2", is_composio_managed: true },
+    }] })),
+    deleteConnectedAccount: vi.fn(async () => undefined),
+    createSession: vi.fn(async () => ({ session_id: "session", mcp: { url: "https://composio.test/mcp" } })),
+    resumeSession: vi.fn(async () => ({ session_id: "session", mcp: { url: "https://composio.test/mcp" } })),
+  };
 }
 
 // Build a Response-like object that mirrors what `fetch` returns for an MCP
@@ -3321,7 +3405,13 @@ describeEmbeddedPostgres("tool access service", () => {
       "linear",
       "google-sheets",
       "context7",
+      "composio",
+      "gmail",
     ]);
+    expect(res.body.apps.find((app: { slug: string }) => app.slug === "gmail").availability).toEqual({
+      available: false,
+      reason: "Gmail is not available on this Paperclip instance yet.",
+    });
     expect(res.body.apps.map((app: { slug: string }) => app.slug)).not.toContain("google-drive");
     expect(res.body.apps).toEqual(
       expect.arrayContaining([
@@ -3362,6 +3452,75 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+  });
+
+  it("degrades a Composio child when its connected account becomes inactive", async () => {
+    const company = await createCompany(db);
+    const { child } = await createComposioParentAndChild(db, company.id);
+    const client = fakeComposioClient(() => "INACTIVE");
+    const service = createTestToolAccessService(db, { composioClientFactory: () => client });
+
+    await expect(service.checkHealth(child.id)).rejects.toMatchObject({
+      status: 502,
+      details: {
+        code: "composio_connected_account_inactive",
+        connection: expect.objectContaining({ id: child.id, healthStatus: "degraded" }),
+      },
+    });
+    await expect(service.getConnection(child.id)).resolves.toMatchObject({
+      healthStatus: "degraded",
+      healthMessage: expect.stringContaining("INACTIVE"),
+    });
+    expect(client.listConnectedAccounts).toHaveBeenCalledWith(expect.objectContaining({
+      toolkitSlugs: ["github"],
+    }));
+  });
+
+  it("cascades Composio parent pause, restores active children, and keeps inactive children disabled", async () => {
+    const company = await createCompany(db);
+    const { parent, child } = await createComposioParentAndChild(db, company.id);
+    let accountStatus = "ACTIVE";
+    const service = createTestToolAccessService(db, {
+      composioClientFactory: () => fakeComposioClient(() => accountStatus),
+    });
+
+    await service.updateConnection(parent.id, { enabled: false });
+    await expect(service.getConnection(child.id)).resolves.toMatchObject({
+      enabled: false,
+      config: expect.objectContaining({ disabledByComposioParent: true }),
+    });
+
+    accountStatus = "INACTIVE";
+    await service.updateConnection(parent.id, { enabled: true });
+    await expect(service.getConnection(child.id)).resolves.toMatchObject({
+      enabled: false,
+      healthStatus: "degraded",
+      healthMessage: expect.stringContaining("INACTIVE"),
+    });
+
+    accountStatus = "ACTIVE";
+    await service.updateConnection(parent.id, { enabled: true });
+    const restored = await service.getConnection(child.id);
+    expect(restored).toMatchObject({ enabled: true, healthStatus: "unchecked", healthMessage: null });
+    expect(restored.config).not.toHaveProperty("disabledByComposioParent");
+  });
+
+  it("requires child-removal confirmation before deleting a Composio parent", async () => {
+    const company = await createCompany(db);
+    const { parent, child } = await createComposioParentAndChild(db, company.id);
+    const service = createTestToolAccessService(db);
+
+    await expect(service.archiveConnection(parent.id, company.id)).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "composio_child_removal_confirmation_required",
+        childConnectionCount: 1,
+      },
+    });
+    await expect(service.archiveConnection(parent.id, company.id, undefined, {
+      confirmComposioChildren: true,
+    })).resolves.toMatchObject({ connection: expect.objectContaining({ status: "archived" }) });
+    await expect(service.getConnection(child.id)).resolves.toMatchObject({ status: "archived", enabled: false });
   });
 
   it("returns server-derived create capabilities for a non-manager member", async () => {
@@ -8246,6 +8405,66 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(get.body.installs).toEqual(expect.arrayContaining([
       expect.objectContaining({ targetType: "agent", targetId: agent.id }),
     ]));
+  });
+
+  it("removes the install-derived binding when an agent is uninstalled, and keeps an operator-authored one", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const other = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const app = createRouteApp(db, undefined, createToolGatewayService(db, {
+      toolActionSigningSecret: "test-secret",
+    }));
+
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [{ targetType: "agent", targetId: agent.id }] })
+      .expect(200);
+
+    const [profile] = await db
+      .select()
+      .from(toolProfiles)
+      .where(eq(toolProfiles.profileKey, `app:${connection.id}`));
+    expect(profile).toBeDefined();
+
+    const bindingsFor = async (targetId: string) => db
+      .select()
+      .from(toolProfileBindings)
+      .where(and(
+        eq(toolProfileBindings.profileId, profile!.id),
+        eq(toolProfileBindings.targetType, "agent"),
+        eq(toolProfileBindings.targetId, targetId),
+      ));
+
+    expect(await bindingsFor(agent.id)).toHaveLength(1);
+
+    // A binding the operator authored through the access model, not through an
+    // install. Uninstalling must not touch it.
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: other.id,
+      priority: 100,
+      metadata: { source: "operator" },
+    });
+
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [] })
+      .expect(200);
+
+    // The install row is gone, so the agent can no longer reach the connection.
+    expect(await db.select().from(toolConnectionInstalls)
+      .where(eq(toolConnectionInstalls.connectionId, connection.id))).toHaveLength(0);
+    // The binding the install created is gone too, so the permission state cannot
+    // report an agent the operator already removed.
+    expect(await bindingsFor(agent.id)).toHaveLength(0);
+    // The operator-authored binding survives.
+    expect(await bindingsFor(other.id)).toHaveLength(1);
+
+    const effective = await createTestToolAccessService(db).getEffectiveProfilesForAgent(company.id, agent.id);
+    expect(effective.installedConnections.map((item) => item.id)).not.toContain(connection.id);
   });
 
   it("limits connection configuration to the creator or a manager with role defaults", async () => {

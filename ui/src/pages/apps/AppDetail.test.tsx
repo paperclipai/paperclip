@@ -11,6 +11,7 @@ import { APP_TABS } from "./app-tabs";
 const getConnectionMock = vi.hoisted(() => vi.fn());
 const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listCatalogMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
 const listPoliciesMock = vi.hoisted(() => vi.fn());
@@ -40,6 +41,7 @@ vi.mock("@/api/tools", () => ({
     getConnection: (connectionId: string) => getConnectionMock(connectionId),
     getConnectionInstalls: (connectionId: string) => getConnectionInstallsMock(connectionId),
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listConnections: (companyId: string) => listConnectionsMock(companyId),
     listCatalog: (connectionId: string) => listCatalogMock(connectionId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
     listPolicies: (companyId: string) => listPoliciesMock(companyId),
@@ -265,6 +267,7 @@ describe("AppDetail", () => {
     mockSearchParams.value = new URLSearchParams();
     getConnectionMock.mockResolvedValue(connection());
     getConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
+    listConnectionsMock.mockResolvedValue({ connections: [] });
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
       grants: [],
@@ -380,6 +383,9 @@ describe("AppDetail", () => {
     expect(APP_TABS.map((tab) => tab.key)).toEqual([
       "setup",
       "test",
+      // Services (PAP-17865) sits below Test rather than above it, so the
+      // Setup→Test adjacency this test exists to protect still holds.
+      "services",
       "review",
       "permissions",
       "activity",

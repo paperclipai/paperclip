@@ -163,7 +163,16 @@ export interface ConnectionGrant {
   connectionId: string;
   kind: ConnectionGrantKind;
   subjectUserId: string | null;
-  providerTenant: { name?: string; externalId?: string } | null;
+  providerTenant: {
+    name?: string;
+    externalId?: string;
+    oauth?: {
+      strategy?: string;
+      accessTokenExpiresAt?: string;
+      scopes?: string[];
+      tokenType?: string;
+    };
+  } | null;
   credentialSecretRefs: ToolCredentialSecretRef[];
   status: ConnectionGrantStatus;
   isDefault: boolean;

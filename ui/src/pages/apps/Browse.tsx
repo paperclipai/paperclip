@@ -39,6 +39,8 @@ function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   if (slug === "notion") return NOTION_CONNECT_HREF;
   if (slug === "zapier") return ZAPIER_CONNECT_HREF;
   if (slug === "posthog") return "/apps/connect?byo=1&appKey=posthog&stage=setup";
+  if (slug === "composio") return "/apps/connect?byo=1&appKey=composio&stage=setup";
+  if (slug === "gmail") return "/apps/connect?byo=1&appKey=gmail&stage=access";
   return null;
 }
 
@@ -173,6 +175,7 @@ export function Browse() {
   const tileProps = (entry: AppGalleryDisplayEntry) => {
     const summary = connectionSummaryBySlug.get(appDefinitionSlug(entry));
     const connectHref = connectHrefFor(entry);
+    const available = entry.availability?.available !== false;
     const primaryConnection = summary?.primaryConnection ?? null;
     const owner = primaryConnection ? connectionOwnerProfile(primaryConnection, userProfileById) : null;
     const addAnotherHref = summary
@@ -188,7 +191,7 @@ export function Browse() {
         ? () => navigate(summary && summary.count > 1
             ? `/apps/app/${summary.applicationId}/setup`
             : `/apps/${primaryConnection.id}/setup`)
-        : connectHref
+        : available && connectHref
           ? () => navigate(connectHref)
           : undefined,
       onAddAnother: addAnotherHref ? () => navigate(addAnotherHref) : undefined,

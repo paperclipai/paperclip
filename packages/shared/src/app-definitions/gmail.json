@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "slug": "gmail",
+  "name": "Gmail",
+  "description": "Search and read Gmail messages and create drafts without enabling mail sending.",
+  "categories": ["communication", "productivity"],
+  "featured": true,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=gmail.com&sz=128"
+  },
+  "urlPatterns": ["https://gmailmcp.googleapis.com/*"],
+  "docsUrl": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "paperclip-id-oauth",
+      "label": "Connect Gmail",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_id_connector",
+      "grantKinds": ["user"],
+      "ownershipModes": ["customer"],
+      "whenToUse": "Use Paperclip ID for a personal Gmail connection with centrally registered Google OAuth.",
+      "defaults": {
+        "serverUrl": "https://gmailmcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose"
+        ]
+      },
+      "guidanceMd": "Connect your Gmail identity. Paperclip can search and read mail and create drafts. Sending mail is not enabled.",
+      "warnings": [
+        "This connection is personal. Agents need an explicit install, profile, and delegation before they can use it."
+      ],
+      "riskTier": "S3"
+    }
+  ]
+}

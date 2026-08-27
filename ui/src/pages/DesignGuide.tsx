@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { ServicesList } from "./apps/app-detail/ServicesPanel";
+import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
+import type { ComposioServiceRow } from "./apps/composio-services";
 import {
   BookOpen,
   Bot,
@@ -231,6 +234,58 @@ const DESIGN_GUIDE_DEGRADED_OUTPUTS: IssueWorkProduct[] = [
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Composio service rows for the design guide (PAP-17865). One row per state, so
+ * a reader can compare all four side by side rather than connecting a real
+ * Composio project to see them.
+ */
+const DESIGN_GUIDE_COMPOSIO_ROWS: ComposioServiceRow[] = [
+  {
+    toolkitSlug: "github",
+    name: "GitHub",
+    description: "Issues, pull requests, and repository actions",
+    logoUrl: null,
+    state: "connected",
+    connectedAccountStatus: "ACTIVE",
+    childConnectionId: "design-guide-child",
+    toolCount: 42,
+    noAuth: false,
+  },
+  {
+    toolkitSlug: "hubspot",
+    name: "HubSpot",
+    description: "CRM contacts and deals",
+    logoUrl: null,
+    state: "attention",
+    connectedAccountStatus: "EXPIRED",
+    childConnectionId: "design-guide-child-2",
+    toolCount: 18,
+    noAuth: false,
+  },
+  {
+    toolkitSlug: "slack",
+    name: "Slack",
+    description: "Channels and messages",
+    logoUrl: null,
+    state: "pending",
+    connectedAccountStatus: "INITIALIZING",
+    childConnectionId: null,
+    toolCount: 12,
+    noAuth: false,
+  },
+  {
+    toolkitSlug: "gmail",
+    name: "Gmail",
+    description: "Read and send mail",
+    logoUrl: null,
+    state: "not_connected",
+    connectedAccountStatus: null,
+    childConnectionId: null,
+    toolCount: 9,
+    noAuth: false,
+  },
+];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -1944,6 +1999,49 @@ export function DesignGuide() {
             action="New connection"
             onAction={() => {}}
           />
+        </SubSection>
+      </Section>
+
+      <Section title="Composio Services">
+        <p className="text-sm text-muted-foreground">
+          A broker connection (Composio) fronts many services, so its detail page lists toolkits
+          with per-service state instead of one credential. Row state comes from Composio's own
+          account status, which is why there is a fourth <code>attention</code> state alongside the
+          three the design asks for: an expired credential is neither connected nor still settling.
+        </p>
+        <SubSection title="Row states">
+          <ServicesList
+            rows={DESIGN_GUIDE_COMPOSIO_ROWS}
+            busySlug={null}
+            onConnect={() => {}}
+            onRecheck={() => {}}
+            onDisconnect={() => {}}
+          />
+        </SubSection>
+        <SubSection title="Busy row">
+          <ServicesList
+            rows={[DESIGN_GUIDE_COMPOSIO_ROWS[2]!]}
+            busySlug={DESIGN_GUIDE_COMPOSIO_ROWS[2]!.toolkitSlug}
+            onConnect={() => {}}
+            onRecheck={() => {}}
+            onDisconnect={() => {}}
+          />
+        </SubSection>
+        <SubSection title="Provenance chip">
+          <p className="mb-2 text-xs text-muted-foreground">
+            Shown wherever a brokered child connection appears, so the parent/child coupling is
+            legible. Links to the broker's Services tab when the parent is known.
+          </p>
+          <div className="flex items-center gap-3">
+            <ComposioProvenanceChip
+              connection={{
+                config: { provider: "composio", parentConnectionId: "parent-1", toolkitSlug: "github" },
+              }}
+            />
+            <ComposioProvenanceChip
+              connection={{ config: { provider: "composio", toolkitSlug: "gmail" } }}
+            />
+          </div>
         </SubSection>
       </Section>
 

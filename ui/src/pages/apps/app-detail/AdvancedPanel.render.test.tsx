@@ -27,6 +27,16 @@ function renderDangerZone() {
   return container;
 }
 
+function renderComposioDangerZone() {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => root.render(
+    <DangerZone appName="Composio" childConnectionCount={2} removing={false} onRemove={vi.fn()} />,
+  ));
+  return container;
+}
+
 /**
  * Remove app deletes the operator's credentials and revokes agent access
  * (PAP-17119). The confirmation has to say so before the operator commits — a
@@ -55,5 +65,11 @@ describe("DangerZone", () => {
     expect(text).toContain("Yes, remove it");
     expect(text).toContain("Deletes the saved credentials for PostHog");
     expect(text).toContain("needs a new sign-in or key");
+  });
+
+  it("names every child service that parent removal will take down", () => {
+    const node = renderComposioDangerZone();
+    expect(node.textContent).toContain("removes 2 connected services");
+    expect(node.textContent).toContain("Agents lose access to all of them right away");
   });
 });

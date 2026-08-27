@@ -26,6 +26,7 @@ const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
+const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -422,6 +423,32 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(posthog.wholeOrg?.getAttribute("aria-checked")).toBe("false");
     expect(posthog.justMe?.disabled).toBe(false);
     expect(posthog.wholeOrg?.disabled).toBe(false);
+  });
+
+  it("shows Gmail as a personal-only identity", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [GMAIL] });
+    await render();
+
+    await act(async () => {
+      buttonContaining("Gmail")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Just me.");
+    expect(document.body.textContent).toContain("Agents use this Gmail identity only when work runs for you.");
+    expect(document.body.textContent).not.toContain("The whole organization");
+  });
+
+  it("opens a brokered Gmail deep link at the access step", async () => {
+    mockParams.appKey = "gmail";
+    mockSearch.value = "byo=1&appKey=gmail&stage=access";
+    listGalleryMock.mockResolvedValue({ apps: [GMAIL] });
+
+    await render();
+
+    expect(document.body.textContent).toContain("Who is this credential for?");
+    expect(document.body.textContent).toContain("Just me.");
+    expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
   /**

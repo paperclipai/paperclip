@@ -79,8 +79,8 @@ const APP_COPY: Record<string, AppCopy> = {
     short: "Share each sheet with the robot email, then paste the links.",
   },
   gmail: {
-    tagline: "Read mail and send drafts for your review.",
-    short: "Read mail and send drafts for your review.",
+    tagline: "Read mail and create drafts for your review.",
+    short: "Read mail and create drafts for your review.",
   },
   hubspot: {
     tagline: "Look up contacts and update deal stages.",

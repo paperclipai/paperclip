@@ -71,6 +71,14 @@ import {
   type ToolRuntimeSlotView,
 } from "./tool-runtime-supervisor.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { composioChildConfig, createComposioSessionManager } from "./composio-session-manager.js";
+import type { ComposioClient } from "./composio.js";
+import {
+  createPaperclipIdGmailConnector,
+  paperclipIdGmailConnectorConfigFromEnv,
+  PaperclipIdConnectorError,
+  type PaperclipIdGmailConnector,
+} from "./paperclip-id-gmail-connector.js";
 import {
   canonicalToolArguments,
   readSignedToolArgumentsPayload,
@@ -784,6 +792,10 @@ export function createToolGatewayService(
     toolActionSigningSecret?: string;
     /** Test seam for deterministic remote MCP protocol fixtures. */
     remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
+    /** Test seam for Composio session creation without vendor traffic. */
+    composioClientFactory?: (apiKey: string) => ComposioClient;
+    /** Test seam for refreshing personal Gmail grants. */
+    paperclipIdGmailConnector?: PaperclipIdGmailConnector | null;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
       gatewayRequests: Partial<McpGatewayRateLimitConfig>;
@@ -803,6 +815,18 @@ export function createToolGatewayService(
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
   const secrets = secretService(db);
+  const gmailConnectorConfig = options.paperclipIdGmailConnector === undefined
+    ? paperclipIdGmailConnectorConfigFromEnv()
+    : null;
+  const gmailConnector = options.paperclipIdGmailConnector
+    ?? (gmailConnectorConfig
+      ? createPaperclipIdGmailConnector({ config: gmailConnectorConfig, now: options.now })
+      : null);
+  const gmailRefreshFlights = new Map<string, Promise<typeof connectionGrants.$inferSelect>>();
+  const composioSessions = createComposioSessionManager(db, {
+    composioClientFactory: options.composioClientFactory,
+    now: options.now ? () => new Date(options.now!()) : undefined,
+  });
   const protocolLimits = mcpGatewayProtocolLimits(options.mcpGatewayProtocolLimits);
   let nextProtocolRateLimitPruneAt = 0;
 
@@ -2422,11 +2446,116 @@ export function createToolGatewayService(
     );
   }
 
+  async function maybeRefreshPaperclipIdGmailGrant(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+  ): Promise<typeof connectionGrants.$inferSelect> {
+    const oauth = asRecord(asRecord(connection.config)?.oauth);
+    if (oauth?.strategy !== "paperclip_id_connector") return grant;
+    const grantOauth = asRecord(asRecord(grant.providerTenant)?.oauth);
+    const expiresAt = typeof grantOauth?.accessTokenExpiresAt === "string"
+      ? Date.parse(grantOauth.accessTokenExpiresAt)
+      : Number.NaN;
+    const currentTime = options.now?.() ?? Date.now();
+    if (Number.isFinite(expiresAt) && expiresAt > currentTime + 60_000) return grant;
+    const existingFlight = gmailRefreshFlights.get(grant.id);
+    if (existingFlight) return existingFlight;
+    const refresh = (async () => {
+      if (!gmailConnector || !grant.subjectUserId) {
+        await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(currentTime) })
+          .where(eq(connectionGrants.id, grant.id));
+        throw new ToolGatewayHttpError(409, "Gmail authorization must be reconnected", "gmail_reauthorization_required", {
+          connectionId: connection.id,
+          grantId: grant.id,
+        });
+      }
+      const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+      const refreshRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+      if (!accessRef || !refreshRef) {
+        await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(currentTime) })
+          .where(eq(connectionGrants.id, grant.id));
+        throw new ToolGatewayHttpError(409, "Gmail authorization must be reconnected", "gmail_reauthorization_required", {
+          connectionId: connection.id,
+          grantId: grant.id,
+        });
+      }
+      const refreshToken = await secrets.resolveSecretValue(
+        connection.companyId,
+        refreshRef.secretId,
+        refreshRef.versionSelector ?? "latest",
+        {
+          accessContext: {
+            consumerType: "tool_connection",
+            consumerId: connection.id,
+            configPath: refreshRef.configPath,
+            actorType: "system",
+            actorId: session.agentId,
+            issueId: session.issueId,
+            heartbeatRunId: session.runId,
+          },
+        },
+      );
+      try {
+        const credentials = await gmailConnector.refresh({
+          subject: grant.subjectUserId,
+          companyId: connection.companyId,
+          refreshToken,
+        });
+        await secrets.rotate(accessRef.secretId, { value: credentials.accessToken });
+        if (credentials.refreshToken) {
+          await secrets.rotate(refreshRef.secretId, { value: credentials.refreshToken });
+        }
+        const providerTenant = {
+          ...(grant.providerTenant ?? {}),
+          oauth: {
+            ...(grant.providerTenant?.oauth ?? {}),
+            strategy: "paperclip_id_connector",
+            accessTokenExpiresAt: credentials.accessTokenExpiresAt,
+            scopes: credentials.scopes,
+            tokenType: credentials.tokenType,
+          },
+        };
+        const [updated] = await db.update(connectionGrants).set({ providerTenant, updatedAt: new Date(options.now?.() ?? Date.now()) })
+          .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.status, "active")))
+          .returning();
+        if (!updated) {
+          throw new ToolGatewayHttpError(409, "Gmail authorization is no longer active", "gmail_reauthorization_required", {
+            connectionId: connection.id,
+            grantId: grant.id,
+          });
+        }
+        return updated;
+      } catch (error) {
+        if (error instanceof ToolGatewayHttpError) throw error;
+        if (error instanceof PaperclipIdConnectorError && error.code === "REAUTHORIZATION_REQUIRED") {
+          await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date(options.now?.() ?? Date.now()) })
+            .where(eq(connectionGrants.id, grant.id));
+          throw new ToolGatewayHttpError(409, "Gmail authorization must be reconnected", "gmail_reauthorization_required", {
+            connectionId: connection.id,
+            grantId: grant.id,
+          });
+        }
+        throw new ToolGatewayHttpError(502, "Gmail authorization could not be refreshed", "gmail_refresh_failed", {
+          connectionId: connection.id,
+          grantId: grant.id,
+        });
+      }
+    })();
+    gmailRefreshFlights.set(grant.id, refresh);
+    try {
+      return await refresh;
+    } finally {
+      if (gmailRefreshFlights.get(grant.id) === refresh) gmailRefreshFlights.delete(grant.id);
+    }
+  }
+
   async function resolveCredentialHeaders(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
     grant: typeof connectionGrants.$inferSelect,
   ): Promise<Record<string, string>> {
+    grant = await maybeRefreshPaperclipIdGmailGrant(session, connection, grant);
     const headers: Record<string, string> = {};
     for (const ref of connection.credentialRefs ?? []) {
       if (ref.placement !== "header") continue;
@@ -3406,27 +3535,37 @@ export function createToolGatewayService(
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
     const grant = await resolveConnectionGrant(session, connection);
-    const endpoint = remoteEndpoint(connection.config ?? {});
+    const composioScopeRevision = `${grant.id}:${grant.status}:${grant.updatedAt.toISOString()}`;
+    const composioChild = composioChildConfig(connection);
+    let composioSession = composioChild
+      ? await composioSessions.ensureSession(connection.id, {
+          tools: [entry.toolName],
+          scopeRevision: composioScopeRevision,
+        })
+      : null;
+    let endpoint = composioSession?.url ?? remoteEndpoint(connection.config ?? {});
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
-    const credentialHeaders = {
+    let credentialHeaders = composioSession?.headers ?? {
       ...projectedConnectionHeaders(connection),
       ...await resolveCredentialHeaders(session, connection, grant),
     };
-    const { headers, summary: headerSummary } = buildRemoteHeaders({
+    let builtHeaders = buildRemoteHeaders({
       session,
       connection,
       credentialHeaders,
       callerHeaders,
     });
+    let headers = builtHeaders.headers;
+    let headerSummary = builtHeaders.summary;
     const requestId = `paperclip-tool-${randomUUID()}`;
     const execution: RemoteHttpExecutionAudit = {
       transport: "mcp_remote",
       request: {
         protocol: "MCP JSON-RPC 2.0",
         httpMethod: "POST",
-        endpoint: auditSafeEndpoint(endpoint),
+        endpoint: composioChild ? `${new URL(endpoint).origin}/[composio-session]` : auditSafeEndpoint(endpoint),
         mcpMethod: "tools/call",
         requestId,
         upstreamToolName: entry.toolName,
@@ -3458,7 +3597,7 @@ export function createToolGatewayService(
           },
         }),
       };
-      const response = options.remoteHttpRequest
+      let response = options.remoteHttpRequest
         ? await options.remoteHttpRequest(endpoint, requestInit)
         : await guardedRemoteHttpFetch(endpoint, requestInit, {
             ...remoteHttpFetchOptions(),
@@ -3467,6 +3606,25 @@ export function createToolGatewayService(
             // letting the tighter default cut a legitimately slow tool short.
             responseTimeoutMs: ms,
           });
+      if (response.status === 401 && composioChild) {
+        composioSession = await composioSessions.ensureSession(connection.id, {
+          tools: [entry.toolName],
+          scopeRevision: composioScopeRevision,
+          force: true,
+        });
+        endpoint = composioSession.url;
+        credentialHeaders = composioSession.headers;
+        builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
+        headers = builtHeaders.headers;
+        headerSummary = builtHeaders.summary;
+        const retryInit = { ...requestInit, headers: mcpHttpRequestHeaders(headers) };
+        response = options.remoteHttpRequest
+          ? await options.remoteHttpRequest(endpoint, retryInit)
+          : await guardedRemoteHttpFetch(endpoint, retryInit, {
+              ...remoteHttpFetchOptions(),
+              responseTimeoutMs: ms,
+            });
+      }
       const body = await readBoundedRemoteResponse(response);
       execution.response = {
         httpStatus: response.status,

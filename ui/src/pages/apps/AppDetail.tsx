@@ -38,6 +38,8 @@ import {
 } from "./app-definition-display";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
 import { SetupPanel, connectionProviderName } from "./app-detail/SetupPanel";
+import { ServicesPanel } from "./app-detail/ServicesPanel";
+import { ComposioProvenanceChip } from "./ComposioProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
 import { actsAsSummary } from "./connection-identity";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
@@ -77,6 +79,11 @@ export function AppDetail() {
     queryKey: queryKeys.tools.connection(connectionId),
     queryFn: () => toolsApi.getConnection(connectionId),
     enabled: !!connectionId && !!activeTab,
+  });
+  const connectionsQuery = useQuery({
+    queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listConnections(selectedCompanyId!),
+    enabled: !!selectedCompanyId && activeTab === "setup",
   });
   const installsQuery = useQuery({
     queryKey: queryKeys.tools.connectionInstalls(connectionId),
@@ -136,6 +143,11 @@ export function AppDetail() {
   });
 
   const connection = connectionQuery.data;
+  const composioChildConnectionCount = (connectionsQuery.data?.connections ?? []).filter(
+    (candidate) => candidate.status !== "archived"
+      && candidate.config?.provider === "composio"
+      && candidate.config?.parentConnectionId === connectionId,
+  ).length;
   const logoEntry = useMemo(
     () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
     [galleryQuery.data, connection],
@@ -433,7 +445,9 @@ export function AppDetail() {
   });
 
   const removeApp = useMutation({
-    mutationFn: () => toolsApi.archiveConnection(connectionId),
+    mutationFn: () => toolsApi.archiveConnection(connectionId, {
+      confirmComposioChildren: composioChildConnectionCount > 0,
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
@@ -649,6 +663,7 @@ export function AppDetail() {
             connection={connection}
             appName={appName}
             galleryEntry={logoEntry}
+            childConnectionCount={composioChildConnectionCount}
             removing={removeApp.isPending}
             onRemove={() => removeApp.mutate()}
             onReplaced={() => {
@@ -658,6 +673,9 @@ export function AppDetail() {
             }}
           />
         </div>
+      )}
+      {activeTab === "services" && (
+        <ServicesPanel connectionId={connectionId} appName={appName} />
       )}
       {activeTab === "review" && (
         reviewFailed
@@ -819,6 +837,7 @@ function AppDetailHeader({
             </div>
           )}
           {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-1" /> : null}
+          <ComposioProvenanceChip connection={connection} className="mt-1" />
           <div className="mt-1 flex items-center gap-2">
             <StatusBadge status={status} />
             {actionCount !== null && (

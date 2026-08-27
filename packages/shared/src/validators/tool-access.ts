@@ -189,6 +189,12 @@ export const connectionGrantSchema = z.object({
   providerTenant: z.object({
     name: z.string().trim().min(1).max(200).optional(),
     externalId: z.string().trim().min(1).max(400).optional(),
+    oauth: z.object({
+      strategy: z.string().trim().min(1).max(100).optional(),
+      accessTokenExpiresAt: z.string().datetime().optional(),
+      scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      tokenType: z.string().trim().min(1).max(100).optional(),
+    }).optional(),
   }).nullable(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema),
   status: connectionGrantStatusSchema,

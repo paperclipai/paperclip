@@ -112,6 +112,7 @@ function defaultGrantKindFor(
   entry: AppDefinition | null,
   method: ConnectionMethodDef | null,
 ): ConnectionGrantKind {
+  if (method?.grantKinds?.length === 1) return method.grantKinds[0]!;
   const auth = method?.auth ?? (entry ? getAvailableConnectionMethod(entry)?.auth : null);
   return auth === "oauth" ? "user" : "organization";
 }
@@ -522,7 +523,8 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     const method = requestedEntry ? getAvailableConnectionMethod(requestedEntry) : null;
     const methods = requestedEntry ? getAvailableConnectionMethods(requestedEntry) : [];
     const directOAuth = method?.auth === "oauth" && isMcpDirectOAuthConnectSlug(requestedEntry?.slug);
-    const unsupportedOAuth = methods.length === 1 && method?.auth === "oauth" && !directOAuth;
+    const brokeredOAuth = method?.oauthStrategy === "paperclip_id_connector";
+    const unsupportedOAuth = methods.length === 1 && method?.auth === "oauth" && !brokeredOAuth && !directOAuth;
     if (!requestedEntry || unsupportedOAuth || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");
@@ -837,6 +839,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
           methodKey={connectionMethodKey}
           onMethodChange={(nextMethod) => {
             setConnectionMethodKey(nextMethod.key);
+            if (nextMethod.grantKinds?.length === 1) setGrantKind(nextMethod.grantKinds[0]!);
             setCredentials({});
             setConfigValues(defaultMethodConfig(nextMethod));
           }}
@@ -930,6 +933,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
           providerName={entry?.name ?? appName}
           companyId={selectedCompanyId}
           authKind={accessStepAuthKind}
+          grantKinds={accessStepMethod?.grantKinds}
           grantKind={grantKind}
           setGrantKind={setGrantKind}
           installChoice={installChoice}
@@ -1268,7 +1272,8 @@ function GalleryStep({
               const copy = appCopyFor(app.slug, app.description);
               const methods = getAvailableConnectionMethods(app);
               const oauth = methods[0]?.auth === "oauth";
-              const oauthBlocked = methods.length === 1 && oauth && !isMcpDirectOAuthConnectSlug(app.slug);
+              const brokeredOAuth = methods[0]?.oauthStrategy === "paperclip_id_connector";
+              const oauthBlocked = methods.length === 1 && oauth && !brokeredOAuth && !isMcpDirectOAuthConnectSlug(app.slug);
               const unavailable = app.availability?.available === false;
               return (
                 <button
@@ -2183,6 +2188,7 @@ export function AccessStep({
   providerName,
   companyId,
   authKind,
+  grantKinds,
   grantKind,
   setGrantKind,
   installChoice,
@@ -2198,6 +2204,7 @@ export function AccessStep({
   providerName: string;
   companyId: string;
   authKind: ToolConnectionAuthKind;
+  grantKinds?: ConnectionGrantKind[];
   grantKind: ConnectionGrantKind;
   setGrantKind: (kind: ConnectionGrantKind) => void;
   installChoice: "specific" | "all";
@@ -2229,6 +2236,7 @@ export function AccessStep({
   // scope stays legible instead of quietly disappearing.
   const canSetCompanyInstall = capabilities?.canSetCompanyInstall ?? true;
   const needsIdentityChoice = authKind !== "none";
+  const allowedGrantKinds = grantKinds ?? (["user", "organization"] satisfies ConnectionGrantKind[]);
   const canContinue = installChoice === "all"
     ? canSetCompanyInstall
     : installAgentIds.size > 0;
@@ -2244,7 +2252,12 @@ export function AccessStep({
         <div className="mt-6 space-y-6">
           <div>
             <h3 className="text-sm font-semibold text-foreground">Who is this credential for?</h3>
-            {needsIdentityChoice ? (
+            {needsIdentityChoice && allowedGrantKinds.length === 1 ? (
+              <p className="mt-2 text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">Just me.</span>{" "}
+                Agents use this {appName} identity only when work runs for you.
+              </p>
+            ) : needsIdentityChoice ? (
               <RadioCardGroup
                 ariaLabel="Who is this credential for?"
                 className="mt-2 sm:grid-cols-2"
@@ -2261,7 +2274,7 @@ export function AccessStep({
                     title: "The whole organization",
                     description: "Agents use one shared identity for eligible organization members.",
                   },
-                ]}
+                ].filter((option) => allowedGrantKinds.includes(option.value as ConnectionGrantKind))}
               />
             ) : (
               // A connection with no credential has no identity to choose, so

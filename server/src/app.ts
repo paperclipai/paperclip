@@ -721,6 +721,19 @@ export async function createApp(
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
     }
+    if (process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https") {
+      // The managed-runtime supervisor waits for the app port AND its derived
+      // Vite HMR companion port to bind before publishing the service. Static
+      // mode has no Vite, so bind the same placeholder listener dev mode uses
+      // or the supervisor kills a healthy server at the readiness deadline
+      // (PAP-18043).
+      const hmrServer = createHttpServer((_req, res) => {
+        res.writeHead(426, { "Content-Type": "text/plain" });
+        res.end("Upgrade Required");
+      });
+      await listenViteHmrServer(hmrServer, resolveViteHmrPort(opts.serverPort), opts.bindHost);
+      viteHmrServer = hmrServer;
+    }
   }
 
   if (opts.uiMode === "vite-dev") {

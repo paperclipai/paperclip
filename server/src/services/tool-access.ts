@@ -151,6 +151,14 @@ import {
 import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
 import { listConnectionLifecycleEvents } from "./tool-connection-activity.js";
+import { ComposioApiError, createComposioClient, type ComposioClient } from "./composio.js";
+import { composioChildConfig, createComposioSessionManager } from "./composio-session-manager.js";
+import {
+  createPaperclipIdGmailConnector,
+  GMAIL_CONNECTOR_SCOPES,
+  paperclipIdGmailConnectorConfigFromEnv,
+  type PaperclipIdGmailConnector,
+} from "./paperclip-id-gmail-connector.js";
 
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -483,6 +491,10 @@ type ToolAccessServiceOptions = {
   remoteHttpEndpointLookup?: RemoteHttpEndpointLookup;
   /** Test seam for protocol fixtures. Production uses the DNS-pinned transport. */
   remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
+  /** Test seam for Composio without live vendor traffic. */
+  composioClientFactory?: (apiKey: string) => ComposioClient;
+  /** Test seam for the centrally registered Gmail OAuth broker. */
+  paperclipIdGmailConnector?: PaperclipIdGmailConnector | null;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -702,6 +714,7 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
 };
 
 const GOOGLE_SHEETS_GALLERY_KEY = "google-sheets";
+const COMPOSIO_GALLERY_KEY = "composio";
 const GOOGLE_SHEETS_TEMPLATE_ID = "paperclip.google-sheets";
 const GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV = "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS";
 const CONNECTION_TOKEN_MINT_TOOL_NAME = "connection_token.mint";
@@ -1684,6 +1697,12 @@ export function classifyRisk(tool: McpToolDescriptor, sourceTemplateKey?: string
   return "read";
 }
 
+export function isGmailToolPermanentlyBlocked(tool: McpToolDescriptor): boolean {
+  const riskLevel = classifyRisk(tool, "gmail");
+  return verbMatches(tool.name, "send|trash|spam|delete|remove|destroy|execute|run")
+    || (normalizedProviderToolName(tool.name).includes("label") && riskLevel !== "read");
+}
+
 function descriptorHash(tool: McpToolDescriptor, riskLevel: ToolRiskLevel): string {
   return stableHash({
     name: tool.name,
@@ -1717,13 +1736,24 @@ function isOAuthEndpointRejection(error: unknown): boolean {
 
 function healthFailureHttpStatus(failure: { status: ToolConnectionHealthStatus; code: string }): number {
   if (failure.status === "missing_secret") return 422;
+  if (failure.code === "composio_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
   return 502;
 }
 
 function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStatus; message: string; code: string } {
+  if (error instanceof ComposioApiError) {
+    return {
+      status: "error",
+      message: error.message,
+      code: error.status === 401 || error.status === 403 ? "composio_api_key_rejected" : "composio_request_failed",
+    };
+  }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
+    if (code === "composio_connected_account_inactive") {
+      return { status: "degraded", message: error.message, code };
+    }
     if (typeof code === "string" && code.startsWith("remote_http_")) {
       return { status: "error", message: error.message, code };
     }
@@ -1800,8 +1830,19 @@ function readStdioTemplateId(config: Record<string, unknown>): string {
 
 export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}) {
   const secrets = secretService(db);
+  const composioSessions = createComposioSessionManager(db, {
+    composioClientFactory: options.composioClientFactory,
+    now: options.now,
+  });
   const policySvc = toolAccessPolicyService(db);
   const now = options.now ?? (() => new Date());
+  const gmailConnectorConfig = options.paperclipIdGmailConnector === undefined
+    ? paperclipIdGmailConnectorConfigFromEnv()
+    : null;
+  const gmailConnector = options.paperclipIdGmailConnector
+    ?? (gmailConnectorConfig
+      ? createPaperclipIdGmailConnector({ config: gmailConnectorConfig, now: () => now().getTime() })
+      : null);
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
   // These maps remove duplicate work inside one service instance. OAuth also
   // uses the database refresh lease below as its cross-process boundary.
@@ -3672,10 +3713,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     connectionId: string,
     companyId?: string,
     actor?: ActorInfo,
+    removalOptions: { confirmComposioChildren?: boolean } = {},
   ): Promise<ToolConnectionRemovalResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     const now = new Date();
     const binding = actorBinding(actor);
+
+    if (isComposioConnection(connection)) {
+      const children = (await existingComposioChildren(connection)).filter((child) => child.status !== "archived");
+      if (children.length > 0 && removalOptions.confirmComposioChildren !== true) {
+        throw conflict("Deleting this Composio connection also removes its connected services. Confirm child removal to continue.", {
+          code: "composio_child_removal_confirmation_required",
+          childConnectionCount: children.length,
+        });
+      }
+      for (const child of children) {
+        await removeConnection(child.id, child.companyId, actor, { confirmComposioChildren: true });
+      }
+    }
 
     // Grants are read before they are revoked: a retried removal must still see
     // the credential refs of a grant an earlier pass already marked revoked.
@@ -4059,12 +4114,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return headers;
   }
 
-  async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
-    const headers = { ...projectedConnectionHeaders(connection), ...await resolveCredentialHeaders(connection) };
+  async function remoteTools(
+    connection: typeof toolConnections.$inferSelect,
+    credentialHeaders?: Record<string, string>,
+  ): Promise<McpToolDescriptor[]> {
+    const composioChild = composioChildConfig(connection);
+    const composioSession = composioChild ? await composioSessions.ensureSession(connection.id) : null;
+    const headers = composioSession?.headers
+      ?? credentialHeaders
+      ?? { ...projectedConnectionHeaders(connection), ...await resolveCredentialHeaders(connection) };
+    const endpoint = composioSession?.url ?? remoteEndpoint(connection.config);
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
     // PAP-17098 closed for the OAuth endpoints.
-    const response = await requestRemoteHttpEndpoint(new URL(remoteEndpoint(connection.config)), {
+    let response = await requestRemoteHttpEndpoint(new URL(endpoint), {
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
@@ -4076,6 +4139,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         params: {},
       }),
     });
+    if (response.status === 401 && composioChild) {
+      const refreshed = await composioSessions.ensureSession(connection.id, { force: true });
+      response = await requestRemoteHttpEndpoint(new URL(refreshed.url), {
+        method: "POST",
+        headers: mcpHttpRequestHeaders(refreshed.headers),
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh-retry",
+          method: "tools/list",
+          params: {},
+        }),
+      });
+    }
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";
       if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
@@ -4141,8 +4217,293 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }));
   }
 
-  async function discoverTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
-    if (connection.transport === "mcp_remote") return remoteTools(connection);
+  function isComposioConnection(connection: typeof toolConnections.$inferSelect): boolean {
+    return asRecord(connection.config).sourceTemplateKey === COMPOSIO_GALLERY_KEY;
+  }
+
+  async function composioClientForParent(parent: typeof toolConnections.$inferSelect) {
+    if (!isComposioConnection(parent) || parent.transport !== "rest_api") {
+      throw unprocessable("This connection is not a parent Composio connection.", { code: "not_composio_parent" });
+    }
+    const headers = await resolveCredentialHeaders(parent);
+    const apiKey = Object.entries(headers).find(([name]) => name.toLowerCase() === "x-api-key")?.[1];
+    if (!apiKey) throw unprocessable("The Composio API key secret is missing.", { code: "secret_missing" });
+    return options.composioClientFactory?.(apiKey) ?? createComposioClient({ apiKey });
+  }
+
+  async function existingComposioChildren(parent: typeof toolConnections.$inferSelect) {
+    const rows = await db.select().from(toolConnections).where(and(
+      eq(toolConnections.companyId, parent.companyId),
+      eq(toolConnections.applicationId, parent.applicationId),
+    ));
+    return rows.filter((row) => composioChildConfig(row)?.parentConnectionId === parent.id);
+  }
+
+  async function assertComposioConnectedAccountActive(child: typeof toolConnections.$inferSelect) {
+    const childConfig = composioChildConfig(child);
+    if (!childConfig) return;
+    const parent = await getConnectionRow(childConfig.parentConnectionId, child.companyId);
+    const client = await composioClientForParent(parent);
+    const accounts = await client.listConnectedAccounts({
+      toolkitSlugs: [childConfig.toolkitSlug],
+      userIds: [`paperclip:${child.companyId}`],
+      limit: 100,
+    });
+    const account = childConfig.connectedAccountId
+      ? accounts.items.find((candidate) => candidate.id === childConfig.connectedAccountId)
+      : accounts.items.find((candidate) => candidate.toolkit.slug === childConfig.toolkitSlug);
+    if (account?.status.toUpperCase() === "ACTIVE") return;
+    const status = account?.status.trim().toUpperCase() || "MISSING";
+    throw unprocessable(
+      `Composio reports the ${childConfig.toolkitSlug} connected account as ${status}. Reconnect it in Composio.`,
+      { code: "composio_connected_account_inactive", connectedAccountStatus: status },
+    );
+  }
+
+  async function disableComposioChildren(parent: typeof toolConnections.$inferSelect) {
+    const children = await existingComposioChildren(parent);
+    for (const child of children) {
+      if (child.status === "archived") continue;
+      const config = asRecord(child.config);
+      await db.update(toolConnections).set({
+        enabled: false,
+        config: child.enabled ? { ...config, disabledByComposioParent: true } : config,
+        updatedAt: now(),
+      }).where(eq(toolConnections.id, child.id));
+    }
+  }
+
+  async function restoreComposioChildren(parent: typeof toolConnections.$inferSelect) {
+    const children = await existingComposioChildren(parent);
+    const restorable = children.filter((child) =>
+      child.status !== "archived" && asRecord(child.config).disabledByComposioParent === true,
+    );
+    if (restorable.length === 0) return;
+
+    let accounts: Awaited<ReturnType<ComposioClient["listConnectedAccounts"]>>["items"] = [];
+    try {
+      const client = await composioClientForParent(parent);
+      accounts = (await client.listConnectedAccounts({
+        userIds: [`paperclip:${parent.companyId}`],
+        limit: 1000,
+      })).items;
+    } catch {
+      // Fail closed while Composio is unavailable. A later resume or reconnect
+      // can retry without exposing a child whose account state is unknown.
+      return;
+    }
+
+    for (const child of restorable) {
+      const childConfig = composioChildConfig(child)!;
+      const account = childConfig.connectedAccountId
+        ? accounts.find((candidate) => candidate.id === childConfig.connectedAccountId)
+        : accounts.find((candidate) => candidate.toolkit.slug === childConfig.toolkitSlug);
+      const config = { ...asRecord(child.config) };
+      delete config.disabledByComposioParent;
+      const active = account?.status.toUpperCase() === "ACTIVE";
+      await db.update(toolConnections).set({
+        enabled: active,
+        config: active ? config : { ...config, disabledByComposioParent: true },
+        healthStatus: active ? "unchecked" : "degraded",
+        healthMessage: active
+          ? null
+          : `Composio reports the ${childConfig.toolkitSlug} connected account as ${account?.status.toUpperCase() ?? "MISSING"}. Reconnect it in Composio.`,
+        updatedAt: now(),
+      }).where(eq(toolConnections.id, child.id));
+    }
+  }
+
+  async function syncComposioChild(
+    parent: typeof toolConnections.$inferSelect,
+    account: { id: string; status: string; toolkit: { slug: string } },
+    toolkitName: string,
+    actor?: ActorInfo,
+  ) {
+    if (account.status.toUpperCase() !== "ACTIVE") return null;
+    const children = await existingComposioChildren(parent);
+    const existing = children.find((candidate) => {
+      const config = composioChildConfig(candidate);
+      return config?.toolkitSlug === account.toolkit.slug && candidate.status !== "archived";
+    });
+    if (existing) {
+      const config = composioChildConfig(existing)!;
+      if (config.connectedAccountId !== account.id) {
+        const nextConfig = { ...existing.config, connectedAccountId: account.id };
+        const [updated] = await db.update(toolConnections).set({
+          config: nextConfig,
+          transportConfig: { ...existing.transportConfig, connectedAccountId: account.id, composioSessions: {} },
+          updatedAt: now(),
+        }).where(eq(toolConnections.id, existing.id)).returning();
+        return updated;
+      }
+      return existing;
+    }
+    const connectionId = randomUUID();
+    const binding = actorBinding(actor);
+    const config = {
+      provider: "composio",
+      parentConnectionId: parent.id,
+      toolkitSlug: account.toolkit.slug,
+      connectedAccountId: account.id,
+    };
+    const [created] = await db.insert(toolConnections).values({
+      id: connectionId,
+      companyId: parent.companyId,
+      applicationId: parent.applicationId,
+      name: `${toolkitName} (via Composio)`,
+      uid: connectionUid(`composio:${parent.id}`, account.toolkit.slug, connectionId),
+      connectionKind: "managed",
+      ownership: parent.ownership,
+      transport: "mcp_remote",
+      authKind: "none",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config,
+      transportConfig: { ...config, composioSessions: {} },
+      credentialRefs: [],
+      credentialSecretRefs: [],
+      createdByAgentId: binding.actorType === "agent" ? binding.actorId : null,
+      createdByUserId: binding.actorType === "user" ? binding.actorId : null,
+    }).returning();
+    if (!created) throw new Error("Failed to create Composio toolkit connection");
+    await ensureDefaultOrganizationGrant(created);
+    await syncCredentialBindings(created);
+    await ensureRuntimeSlot(created);
+    await audit({
+      companyId: created.companyId,
+      connectionId: created.id,
+      action: "composio.child_created",
+      outcome: "success",
+      actor,
+      details: { parentConnectionId: parent.id, toolkitSlug: account.toolkit.slug },
+    });
+    return created;
+  }
+
+  async function syncComposioToolkit(
+    parent: typeof toolConnections.$inferSelect,
+    toolkitSlug: string,
+    actor?: ActorInfo,
+  ) {
+    const client = await composioClientForParent(parent);
+    const userId = `paperclip:${parent.companyId}`;
+    const [toolkits, accounts] = await Promise.all([
+      client.listToolkits({ limit: 1000 }),
+      client.listConnectedAccounts({ toolkitSlugs: [toolkitSlug], userIds: [userId], limit: 100 }),
+    ]);
+    const toolkit = toolkits.items.find((item) => item.slug === toolkitSlug);
+    if (!toolkit) throw notFound("Composio toolkit not found");
+    const account = accounts.items.find((item) => item.toolkit.slug === toolkitSlug && item.status.toUpperCase() === "ACTIVE")
+      ?? accounts.items.find((item) => item.toolkit.slug === toolkitSlug)
+      ?? null;
+    const child = account ? await syncComposioChild(parent, account, toolkit.name, actor) : null;
+    if (child) await refreshCatalog(child.id, actor, { enableAllByDefault: true });
+    return { toolkit, account, child: child ? toConnection(await getConnectionRow(child.id)) : null };
+  }
+
+  async function validateComposioConnection(connection: typeof toolConnections.$inferSelect) {
+    const client = await composioClientForParent(connection);
+    await client.validateApiKey();
+  }
+
+  async function listComposioServices(parentConnectionId: string, actor?: ActorInfo) {
+    const parent = await getConnectionRow(parentConnectionId);
+    const client = await composioClientForParent(parent);
+    const userId = `paperclip:${parent.companyId}`;
+    const [toolkits, accounts] = await Promise.all([
+      client.listToolkits({ limit: 1000 }),
+      client.listConnectedAccounts({ userIds: [userId], limit: 1000 }),
+    ]);
+    const children = await existingComposioChildren(parent);
+    const childByToolkit = new Map(children.filter((child) => child.status !== "archived").map((child) => [
+      composioChildConfig(child)?.toolkitSlug,
+      child,
+    ]));
+    const services = [];
+    for (const toolkit of toolkits.items) {
+      const toolkitAccounts = accounts.items.filter((account) => account.toolkit.slug === toolkit.slug);
+      const account = toolkitAccounts.find((candidate) => candidate.status.toUpperCase() === "ACTIVE")
+        ?? toolkitAccounts[0]
+        ?? null;
+      let child = childByToolkit.get(toolkit.slug) ?? null;
+      if (account?.status.toUpperCase() === "ACTIVE" && !child) {
+        child = await syncComposioChild(parent, account, toolkit.name, actor);
+        if (child) await refreshCatalog(child.id, actor, { enableAllByDefault: true });
+      }
+      services.push({
+        toolkit,
+        status: account?.status.toUpperCase() === "ACTIVE"
+          ? "connected"
+          : account ? "pending" : "not_connected",
+        connectedAccountId: account?.id ?? null,
+        connectedAccountStatus: account?.status ?? null,
+        childConnectionId: child?.id ?? null,
+      });
+    }
+    return { parentConnectionId: parent.id, userId, services };
+  }
+
+  async function startComposioServiceConnect(
+    parentConnectionId: string,
+    toolkitSlug: string,
+    input: { authConfigId?: string; callbackUrl?: string },
+  ) {
+    const parent = await getConnectionRow(parentConnectionId);
+    const client = await composioClientForParent(parent);
+    let authConfigId = input.authConfigId?.trim();
+    if (!authConfigId) {
+      const configs = await client.listAuthConfigs({ toolkitSlugs: [toolkitSlug], showDisabled: false, limit: 100 });
+      authConfigId = configs.items.find((config) => config.toolkit.slug === toolkitSlug && config.status !== "DISABLED")?.id;
+    }
+    if (!authConfigId) throw unprocessable("This Composio toolkit has no enabled auth configuration.", { code: "composio_auth_config_missing" });
+    const link = await client.createConnectLink({
+      authConfigId,
+      userId: `paperclip:${parent.companyId}`,
+      alias: `paperclip-${parent.companyId}-${toolkitSlug}`,
+      ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
+    });
+    return { toolkitSlug, authConfigId, ...link };
+  }
+
+  async function disconnectComposioService(parentConnectionId: string, toolkitSlug: string, actor?: ActorInfo) {
+    const parent = await getConnectionRow(parentConnectionId);
+    const client = await composioClientForParent(parent);
+    const accounts = await client.listConnectedAccounts({
+      toolkitSlugs: [toolkitSlug],
+      userIds: [`paperclip:${parent.companyId}`],
+      limit: 100,
+    });
+    for (const account of accounts.items.filter((candidate) => candidate.toolkit.slug === toolkitSlug)) {
+      await client.deleteConnectedAccount(account.id);
+    }
+    const children = await existingComposioChildren(parent);
+    const removedChildIds: string[] = [];
+    for (const child of children) {
+      if (composioChildConfig(child)?.toolkitSlug !== toolkitSlug || child.status === "archived") continue;
+      await removeConnection(child.id, child.companyId, actor);
+      removedChildIds.push(child.id);
+    }
+    await audit({
+      companyId: parent.companyId,
+      connectionId: parent.id,
+      action: "composio.service_disconnected",
+      outcome: "success",
+      actor,
+      details: { toolkitSlug, connectedAccountCount: accounts.items.length, removedChildCount: removedChildIds.length },
+    });
+    return { toolkitSlug, disconnectedAccountIds: accounts.items.map((account) => account.id), removedChildIds };
+  }
+
+  async function discoverTools(
+    connection: typeof toolConnections.$inferSelect,
+    credentialHeaders?: Record<string, string>,
+  ): Promise<McpToolDescriptor[]> {
+    if (connection.transport === "mcp_remote") return remoteTools(connection, credentialHeaders);
+    if (isComposioConnection(connection)) {
+      await validateComposioConnection(connection);
+      return [];
+    }
     await resolveCredentialHeaders(connection);
     return localTools(connection);
   }
@@ -4178,14 +4539,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const connection = await getConnectionRow(connectionId);
     try {
       if (connection.transport === "mcp_remote") {
+        await assertComposioConnectedAccountActive(connection);
         await remoteTools(connection);
+      } else if (isComposioConnection(connection)) {
+        await validateComposioConnection(connection);
       } else {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
       }
-      const updated = await updateConnectionHealth(connection, "ok", connection.transport === "local_stdio"
-        ? "Approved stdio template is ready."
-        : "Remote MCP server responded to tools/list.");
+      const updated = await updateConnectionHealth(
+        connection,
+        "ok",
+        isComposioConnection(connection)
+          ? "Composio accepted the API key and returned its toolkits."
+          : connection.transport === "local_stdio"
+            ? "Approved stdio template is ready."
+            : "Remote MCP server responded to tools/list.",
+      );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
         companyId: connection.companyId,
@@ -4222,13 +4592,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function refreshCatalog(
     connectionId: string,
     actor?: ActorInfo,
-    refreshOptions: { enableAllByDefault?: boolean; restoreDraftDefaults?: boolean } = {},
+    refreshOptions: {
+      enableAllByDefault?: boolean;
+      restoreDraftDefaults?: boolean;
+      credentialHeaders?: Record<string, string>;
+    } = {},
   ): Promise<ToolCatalogRefreshResult> {
     const connection = await getConnectionRow(connectionId);
     const refreshedAt = now();
     let descriptors: McpToolDescriptor[];
     try {
-      descriptors = await discoverTools(connection);
+      descriptors = await discoverTools(connection, refreshOptions.credentialHeaders);
     } catch (error) {
       const failure = sanitizeHttpFailure(error);
       const updated = await updateConnectionHealth(connection, failure.status, failure.message);
@@ -4270,14 +4644,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         && (!existing || changed)
         && existing?.status !== "disabled"
         && (!safeDefault || riskLevel !== "read");
-      const status = shouldQuarantine
-        ? "quarantined"
-        : existing?.status === "disabled"
-          ? "disabled"
-          : quarantineOnRefresh && existing?.status === "quarantined"
-            ? "quarantined"
-            : "active";
-      if (shouldQuarantine) quarantinedCount += 1;
+      const gmailPermanentlyBlocked = sourceTemplateKey === "gmail" && isGmailToolPermanentlyBlocked(descriptor);
+      const status = gmailPermanentlyBlocked
+        ? "disabled"
+        : shouldQuarantine
+          ? "quarantined"
+          : existing?.status === "disabled"
+            ? "disabled"
+            : quarantineOnRefresh && existing?.status === "quarantined"
+              ? "quarantined"
+              : "active";
+      if (shouldQuarantine && !gmailPermanentlyBlocked) quarantinedCount += 1;
 
       if (existing) {
         const [updated] = await db
@@ -6530,6 +6907,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       throw badRequest("Choose a connection method for this app");
     }
     const method = galleryEntry ? connectionMethodFor(galleryEntry, input.connectionMethodKey) : null;
+    const requestedGrantKind = input.grantKind ?? "organization";
+    if (method?.grantKinds && !method.grantKinds.includes(requestedGrantKind)) {
+      throw badRequest(`${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`);
+    }
     const transport = method?.transport ?? "mcp_remote";
     const normalizedMethodConfig = galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY || !method
       ? null
@@ -6550,6 +6931,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
         }
       : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
+    if (method?.oauthStrategy === "paperclip_id_connector") {
+      config.oauth = {
+        strategy: method.oauthStrategy,
+        provider: "gmail",
+        resource: method.defaults?.serverUrl,
+        scopes: [...GMAIL_CONNECTOR_SCOPES],
+      };
+      config.quarantineNewEntries = true;
+    }
     // A pasted URL may arrive with a client the operator preregistered in the
     // provider's own console, because that authorization server supports neither
     // CIMD nor dynamic registration. Record the client id now; the secret becomes
@@ -6812,8 +7202,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         };
       }
 
+      let health: ToolConnectionHealthCheckResult;
       try {
-        await checkConnectionHealth(connectionRow.id, actor);
+        health = await checkConnectionHealth(connectionRow.id, actor);
       } catch (error) {
         if (!galleryEntry && error instanceof HttpError && asRecord(error.details).code === "oauth_challenge") {
           const [oauthConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionRow.id));
@@ -6850,6 +7241,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           };
         }
         throw error;
+      }
+      if (galleryEntry?.slug === COMPOSIO_GALLERY_KEY) {
+        const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
+        return {
+          connectionId: health.connection.id,
+          application: toApplication(application),
+          connection: health.connection,
+          catalog: [],
+          actions: { readOnly: [], canMakeChanges: [] },
+          suggestedDefaults: recommendedDefaultsForApp(galleryEntry, method?.key),
+        };
       }
       const restoreDraftDefaults = Boolean(revivedConnectionPrevious);
       const refresh = await refreshCatalog(connectionRow.id, actor, {
@@ -7300,6 +7702,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .returning();
     await syncCredentialBindings(updated);
     const health = await checkConnectionHealth(updated.id, actor);
+    if (isComposioConnection(updated) && updated.enabled && updated.status === "active") {
+      await restoreComposioChildren(updated);
+    }
     const catalogBefore = await db
       .select({ id: toolCatalogEntries.id, riskLevel: toolCatalogEntries.riskLevel })
       .from(toolCatalogEntries)
@@ -7335,6 +7740,66 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
     assertOAuthRedirectConstraints(galleryEntry, input.redirectUri);
+    const galleryMethod = galleryEntry ? connectionMethodForConnection(galleryEntry, connection) : null;
+    if (galleryMethod?.oauthStrategy === "paperclip_id_connector") {
+      if (!gmailConnector) {
+        throw unprocessable("Gmail connections are not available on this Paperclip instance yet", {
+          code: "paperclip_id_connector_unavailable",
+        });
+      }
+      const binding = actorBinding(input.actor);
+      if (!binding.actorType || !binding.actorId) {
+        throw forbidden("Gmail sign-in requires an authenticated actor");
+      }
+      const subjectUserId = input.subjectUserId ?? (binding.actorType === "user" ? binding.actorId : null);
+      if (!subjectUserId) {
+        throw forbidden("Agent-started Gmail sign-in requires an authorized user subject");
+      }
+      if (binding.actorType === "user" && subjectUserId !== binding.actorId) {
+        throw forbidden("Board users may only authorize their own Gmail identity");
+      }
+      await db.delete(toolOauthStates).where(lt(toolOauthStates.expiresAt, now()));
+      const state = randomOauthToken();
+      const returnUri = new URL(input.redirectUri);
+      returnUri.pathname = "/api/tools/oauth/paperclip-id/callback";
+      returnUri.search = "";
+      returnUri.hash = "";
+      const session = await gmailConnector.startAuthorization({
+        subject: subjectUserId,
+        companyId,
+        returnUri: returnUri.toString(),
+        returnState: state,
+      });
+      const remoteExpiry = new Date(session.expiresAt);
+      const expiresAt = Number.isFinite(remoteExpiry.getTime())
+        ? new Date(Math.min(remoteExpiry.getTime(), now().getTime() + 10 * 60 * 1000))
+        : new Date(now().getTime() + 10 * 60 * 1000);
+      await db.insert(toolOauthStates).values({
+        state,
+        companyId,
+        connectionId: connection.id,
+        // Paperclip ID owns PKCE for this flow. The local state row remains the
+        // single-use browser correlator and never stores broker token material.
+        codeVerifier: "paperclip-id-connector",
+        createdByActorType: binding.actorType,
+        createdByActorId: binding.actorId,
+        createdBySessionId: binding.sessionId,
+        subjectUserId,
+        requestedScopes: [...GMAIL_CONNECTOR_SCOPES],
+        returnTo: input.returnTo,
+        issueId: input.issueId,
+        expiresAt,
+      });
+      return {
+        connectionId: connection.id,
+        provider: "gmail",
+        authorizationUrl: session.authorizationUrl,
+        expiresAt: expiresAt.toISOString(),
+        issuer: "https://accounts.google.com",
+        resource: galleryMethod.defaults?.serverUrl ?? null,
+        registrationSource: null,
+      };
+    }
     const endpoints = await oauthEndpointsForConnection(connection, null, input.redirectUri);
     if (endpoints.grantType === "client_credentials") {
       throw unprocessable("This app uses shared machine credentials and does not need browser sign in");
@@ -7611,6 +8076,160 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         eq(issueThreadInteractions.companyId, stateRow.companyId),
         eq(issueThreadInteractions.status, "pending"),
       ));
+  }
+
+  async function completePaperclipIdGmailCallback(input: {
+    state: string;
+    claimId?: string | null;
+    error?: string | null;
+    actor?: ActorInfo;
+  }): Promise<ConnectToolAppResult> {
+    const stateRow = await consumeOAuthState(input.state, input.actor);
+    if (input.error) {
+      await rejectPendingOAuthInteraction(stateRow, input.actor);
+      throw new HttpError(400, "Google authorization did not complete. Start a new Gmail connection to try again.", {
+        code: input.error === "access_denied" ? "oauth_authorization_denied" : "paperclip_id_connector_failed",
+      });
+    }
+    if (!input.claimId) throw badRequest("Gmail callback is missing a claim identifier");
+    if (!gmailConnector) {
+      throw unprocessable("Gmail connections are not available on this Paperclip instance yet", {
+        code: "paperclip_id_connector_unavailable",
+      });
+    }
+    let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
+    const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
+    const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+    const method = galleryEntry ? connectionMethodForConnection(galleryEntry, connection) : null;
+    if (method?.oauthStrategy !== "paperclip_id_connector" || !stateRow.subjectUserId) {
+      throw badRequest("OAuth state does not belong to a Gmail connector flow");
+    }
+    const credentials = await gmailConnector.claim({
+      subject: stateRow.subjectUserId,
+      companyId: stateRow.companyId,
+      claimId: input.claimId,
+    });
+    if (!credentials.refreshToken) {
+      throw unprocessable("Google did not return offline access. Reconnect Gmail and grant both requested scopes.", {
+        code: "oauth_refresh_missing",
+      });
+    }
+
+    const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, connection.companyId),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, stateRow.subjectUserId),
+      eq(companyMemberships.status, "active"),
+    )).limit(1);
+    if (!membership) {
+      throw forbidden("Your company membership is no longer active. Restore access before you connect Gmail again.");
+    }
+    const [existingUserGrant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, connection.companyId),
+      eq(connectionGrants.connectionId, connection.id),
+      eq(connectionGrants.kind, "user"),
+      eq(connectionGrants.subjectUserId, stateRow.subjectUserId),
+    )).limit(1);
+    const existingRefs = existingUserGrant?.credentialSecretRefs ?? [];
+    const accessRef = await createOrRotateOAuthSecret({
+      companyId: connection.companyId,
+      connection,
+      configPath: "oauth.access_token",
+      label: "Gmail access token",
+      value: credentials.accessToken,
+      actor: input.actor,
+      existingRefs,
+      ownerUserId: stateRow.subjectUserId,
+    });
+    const refreshRef = await createOrRotateOAuthSecret({
+      companyId: connection.companyId,
+      connection,
+      configPath: "oauth.refresh_token",
+      label: "Gmail refresh token",
+      value: credentials.refreshToken,
+      actor: input.actor,
+      existingRefs,
+      ownerUserId: stateRow.subjectUserId,
+    });
+    const credentialSecretRefs = [
+      ...existingRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
+      accessRef,
+      refreshRef,
+    ];
+    const grantValues = {
+      providerTenant: {
+        name: "Gmail",
+        externalId: credentials.subject,
+        oauth: {
+          strategy: "paperclip_id_connector",
+          accessTokenExpiresAt: credentials.accessTokenExpiresAt,
+          scopes: credentials.scopes,
+          tokenType: credentials.tokenType,
+        },
+      },
+      credentialSecretRefs,
+      status: "active" as const,
+      revokedAt: null,
+      revokedByAgentId: null,
+      revokedByUserId: null,
+      updatedAt: now(),
+    };
+    if (existingUserGrant) {
+      await db.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
+    } else {
+      await db.insert(connectionGrants).values({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        kind: "user",
+        subjectUserId: stateRow.subjectUserId,
+        ...grantValues,
+        isDefault: false,
+        createdByUserId: stateRow.subjectUserId,
+      });
+    }
+    const nextConfig = {
+      ...connection.config,
+      oauth: {
+        ...oauthConfig(connection),
+        strategy: "paperclip_id_connector",
+        provider: "gmail",
+        resource: method.defaults?.serverUrl,
+        scopes: [...GMAIL_CONNECTOR_SCOPES],
+      },
+    };
+    [connection] = await db.update(toolConnections).set({
+      status: "active",
+      enabled: true,
+      authKind: "oauth",
+      config: nextConfig,
+      transportConfig: nextConfig,
+      updatedAt: now(),
+    }).where(eq(toolConnections.id, connection.id)).returning();
+    await db.update(toolApplications).set({ status: "active", updatedAt: now() }).where(eq(toolApplications.id, connection.applicationId));
+    await syncCredentialBindings(connection, credentialSecretRefs);
+    if (stateRow.interactionId) {
+      await db.update(issueThreadInteractions).set({
+        status: "accepted",
+        result: { version: 1, outcome: "accepted" },
+        resolvedByUserId: stateRow.subjectUserId,
+        resolvedAt: now(),
+        updatedAt: now(),
+      }).where(eq(issueThreadInteractions.id, stateRow.interactionId));
+    }
+    const refresh = await refreshCatalog(connection.id, input.actor, {
+      enableAllByDefault: false,
+      credentialHeaders: { Authorization: `Bearer ${credentials.accessToken}` },
+    });
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
+    return {
+      connectionId: connection.id,
+      application: toApplication(application),
+      connection: refresh.connection,
+      catalog: refresh.catalog,
+      actions: groupedActions(refresh.catalog),
+      suggestedDefaults: recommendedDefaultsForApp(galleryEntry!, method.key),
+      auth: null,
+    };
   }
 
   async function completeOAuthCallback(input: {
@@ -7970,6 +8589,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     peekOAuthState,
 
+    completePaperclipIdGmailCallback,
+
     completeOAuthCallback,
 
     listExamples: async (companyId: string): Promise<ToolExampleSummary[]> => {
@@ -8244,6 +8865,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return connections;
     },
 
+    listComposioServices,
+
+    startComposioServiceConnect,
+
+    pollComposioService: async (parentConnectionId: string, toolkitSlug: string, actor?: ActorInfo) => {
+      const parent = await getConnectionRow(parentConnectionId);
+      return syncComposioToolkit(parent, toolkitSlug, actor);
+    },
+
+    disconnectComposioService,
+
     createConnection: async (companyId: string, input: CreateToolConnection, actor?: ActorInfo): Promise<ToolConnection> => {
       let applicationId = input.applicationId;
       let applicationNamespace = input.applicationName ?? input.name;
@@ -8300,6 +8932,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await ensureDefaultOrganizationGrant(row);
       await syncCredentialBindings(row);
       await ensureRuntimeSlot(row);
+      if (isComposioConnection(row) && (input.enabled !== undefined || input.status !== undefined)) {
+        if (!row.enabled || row.status !== "active") await disableComposioChildren(row);
+        else await restoreComposioChildren(row);
+      }
       return toConnection(row);
     },
 
@@ -8610,6 +9246,43 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     revokeConnectionGrant: async (idOrUid: string, grantId: string, actor?: ActorInfo) => {
       const connection = await getConnectionRow(idOrUid);
       const binding = actorBinding(actor);
+      const [currentGrant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.id, grantId),
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+      )).limit(1);
+      if (!currentGrant) throw notFound("Connection grant not found");
+      let providerRevocation = "not_applicable";
+      if (oauthConfig(connection).strategy === "paperclip_id_connector" && currentGrant.subjectUserId && gmailConnector) {
+        const tokenRef = currentGrant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")
+          ?? currentGrant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+        if (tokenRef) {
+          try {
+            const token = await secrets.resolveSecretValue(
+              connection.companyId,
+              tokenRef.secretId,
+              tokenRef.versionSelector ?? "latest",
+              {
+                consumerType: "tool_connection",
+                consumerId: connection.id,
+                configPath: tokenRef.configPath,
+                actorType: binding.actorType ?? "system",
+                actorId: binding.actorId,
+              },
+            );
+            await gmailConnector.revoke({
+              subject: currentGrant.subjectUserId,
+              companyId: connection.companyId,
+              token,
+            });
+            providerRevocation = "success";
+          } catch {
+            // Local revocation is authoritative for Paperclip and must not be
+            // rolled back because Google or the broker is temporarily offline.
+            providerRevocation = "failed";
+          }
+        }
+      }
       const grant = await db.transaction(async (tx) => {
         const removedDelegations = await tx.delete(connectionGrantDelegations).where(and(
           eq(connectionGrantDelegations.companyId, connection.companyId),
@@ -8651,7 +9324,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         action: "connection_grant.revoked",
         outcome: "success",
         reasonCode: "grant_revoked",
-        details: { grantId: grant.id, kind: grant.kind },
+        details: { grantId: grant.id, kind: grant.kind, providerRevocation },
       });
       return grant;
     },
@@ -8730,10 +9403,43 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             eq(toolConnectionInstalls.connectionId, connection.id),
           ));
         const existingKeys = new Set(existing.map((install) => `${install.targetType}:${install.targetId}`));
-        const removeIds = existing
-          .filter((install) => !requested.has(`${install.targetType}:${install.targetId}`))
-          .map((install) => install.id);
-        if (removeIds.length > 0) await tx.delete(toolConnectionInstalls).where(inArray(toolConnectionInstalls.id, removeIds));
+        const removals = existing
+          .filter((install) => !requested.has(`${install.targetType}:${install.targetId}`));
+        const removeIds = removals.map((install) => install.id);
+        if (removeIds.length > 0) {
+          await tx.delete(toolConnectionInstalls).where(inArray(toolConnectionInstalls.id, removeIds));
+          // Uninstalling must also drop the binding this path created. Installing
+          // writes both an install row and a profile binding, so deleting only the
+          // install row leaves a binding that no surface can see or remove. The
+          // install row is the reach gate (`mintConnectionTokenForAgent` fails with
+          // `installation_required`, and the heartbeat only hands over installed
+          // connections), so a stale binding grants no reach on its own — but it
+          // still makes `finishApp`, which rebuilds `access` from the bindings,
+          // read a target the operator already removed.
+          //
+          // Only bindings tagged `source: "tool_connection_install"` are removed.
+          // A binding the operator authored through the access model carries a
+          // different source and must survive an uninstall.
+          const [installProfile] = await tx
+            .select({ id: toolProfiles.id })
+            .from(toolProfiles)
+            .where(and(
+              eq(toolProfiles.companyId, connection.companyId),
+              eq(toolProfiles.profileKey, `app:${connection.id}`),
+            ))
+            .limit(1);
+          if (installProfile) {
+            for (const install of removals) {
+              await tx.delete(toolProfileBindings).where(and(
+                eq(toolProfileBindings.companyId, connection.companyId),
+                eq(toolProfileBindings.profileId, installProfile.id),
+                eq(toolProfileBindings.targetType, install.targetType),
+                eq(toolProfileBindings.targetId, install.targetId),
+                sql`${toolProfileBindings.metadata}->>'source' = 'tool_connection_install'`,
+              ));
+            }
+          }
+        }
         const additions = [...requested.entries()].filter(([key]) => !existingKeys.has(key)).map(([, install]) => install);
         if (additions.length > 0) {
           await tx.insert(toolConnectionInstalls).values(additions.map((install) => ({

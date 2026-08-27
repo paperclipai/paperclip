@@ -48,6 +48,8 @@ import { getActorInfo, assertBoard, assertCompanyAccess, getAccessibleResource, 
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import type { ComposioClient } from "../services/composio.js";
+import { paperclipIdGmailConnectorConfigFromEnv } from "../services/paperclip-id-gmail-connector.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
@@ -134,6 +136,7 @@ export function toolAccessRoutes(
     /** Test-only seams forwarded to the tool access service. */
     remoteHttpEndpointLookup?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpEndpointLookup"];
     remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
+    composioClientFactory?: (apiKey: string) => ComposioClient;
   } = {},
 ) {
   const router = Router();
@@ -471,6 +474,7 @@ export function toolAccessRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const googleSheetsAvailability = googleSheetsRobotEmailFromEnv();
+    const gmailAvailable = paperclipIdGmailConnectorConfigFromEnv() !== null;
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       apps: CONNECTABLE_APP_DEFINITIONS.map((app) =>
@@ -482,7 +486,15 @@ export function toolAccessRoutes(
                 ? { available: true, robotEmail: googleSheetsAvailability.robotEmail }
                 : { available: false, reason: googleSheetsAvailability.reason },
             }
-          : { ...app, ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY },
+          : app.slug === "gmail"
+            ? {
+                ...app,
+                ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY,
+                availability: gmailAvailable
+                  ? { available: true }
+                  : { available: false, reason: "Gmail is not available on this Paperclip instance yet." },
+              }
+            : { ...app, ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY },
       ),
     });
   });
@@ -590,6 +602,56 @@ export function toolAccessRoutes(
       actor: getActorInfo(req),
     });
     res.json(result);
+  });
+
+  router.get("/tools/oauth/paperclip-id/callback", async (req, res) => {
+    assertBoard(req);
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const claimId = typeof req.query.claim_id === "string" ? req.query.claim_id : null;
+    const error = typeof req.query.error === "string" ? req.query.error : null;
+    const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
+      throw badRequest("Invalid or expired OAuth state");
+    }
+    const pendingConnection = await svc.getConnection(pendingState.connectionId, pendingState.companyId);
+    if (pendingState.subjectUserId && pendingState.subjectUserId === req.actor.userId) {
+      await assertToolConnectionAccess(req, pendingConnection);
+    } else {
+      await assertToolConnectionConfigureAccess(req, pendingConnection);
+    }
+    const acceptsHtml = req.get("accept")?.includes("text/html") === true;
+    try {
+      const result = await svc.completePaperclipIdGmailCallback({
+        state,
+        claimId,
+        error,
+        actor: getActorInfo(req),
+      });
+      await logActivity(db, {
+        companyId: result.connection.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_connected",
+        entityType: "tool_connection",
+        entityId: result.connection.id,
+        details: { applicationId: result.application.id, catalogEntryCount: result.catalog.length, provider: "gmail" },
+      });
+      if (acceptsHtml) {
+        const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
+        res.redirect(303, `${testPath}?success=1`);
+        return;
+      }
+      res.json(result);
+    } catch (callbackError) {
+      if (!acceptsHtml) throw callbackError;
+      const details = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object"
+        ? callbackError.details as Record<string, unknown>
+        : null;
+      const params = new URLSearchParams({ oauth: details?.code === "oauth_authorization_denied" ? "denied" : "failed" });
+      if (typeof details?.code === "string") params.set("code", details.code);
+      const setupPath = await oauthAppPath(pendingState.companyId, pendingState.connectionId, "setup");
+      res.redirect(303, `${setupPath}?${params.toString()}`);
+    }
   });
 
   router.get("/tools/oauth/callback", async (req, res) => {
@@ -871,6 +933,58 @@ export function toolAccessRoutes(
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
     res.json(connection);
+  });
+
+  router.get("/tool-connections/:connectionId/services", async (req, res) => {
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertToolConnectionConfigureAccess(req, connection);
+    res.json(await svc.listComposioServices(connection.id, getActorInfo(req)));
+  });
+
+  router.post("/tool-connections/:connectionId/services/:toolkitSlug/connect", async (req, res) => {
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertToolConnectionConfigureAccess(req, connection);
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const result = await svc.startComposioServiceConnect(connection.id, req.params.toolkitSlug as string, {
+      ...(typeof body.authConfigId === "string" ? { authConfigId: body.authConfigId } : {}),
+      ...(typeof body.callbackUrl === "string" ? { callbackUrl: body.callbackUrl } : {}),
+    });
+    await logActivity(db, {
+      companyId: connection.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "composio.service_connect_started",
+      entityType: "tool_connection",
+      entityId: connection.id,
+      details: { toolkitSlug: req.params.toolkitSlug, authConfigId: result.authConfigId },
+    });
+    res.status(201).json(result);
+  });
+
+  router.get("/tool-connections/:connectionId/services/:toolkitSlug/status", async (req, res) => {
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertToolConnectionConfigureAccess(req, connection);
+    res.json(await svc.pollComposioService(connection.id, req.params.toolkitSlug as string, getActorInfo(req)));
+  });
+
+  router.delete("/tool-connections/:connectionId/services/:toolkitSlug", async (req, res) => {
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertToolConnectionConfigureAccess(req, connection);
+    const result = await svc.disconnectComposioService(connection.id, req.params.toolkitSlug as string, getActorInfo(req));
+    await logActivity(db, {
+      companyId: connection.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "composio.service_disconnected",
+      entityType: "tool_connection",
+      entityId: connection.id,
+      details: { toolkitSlug: req.params.toolkitSlug, removedChildCount: result.removedChildIds.length },
+    });
+    res.json(result);
   });
 
   router.get("/tool-connections/:connectionId/grants", async (req, res) => {
@@ -1272,6 +1386,7 @@ export function toolAccessRoutes(
       existing.id,
       existing.companyId,
       getActorInfo(req),
+      { confirmComposioChildren: req.query.confirmComposioChildren === "true" },
     );
     const applicationAfter = await svc.getApplication(existing.applicationId);
     // The receipt is counts and outcomes only. Removal is a revocation boundary

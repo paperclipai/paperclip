@@ -33,6 +33,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { AppLogo } from "./AppLogo";
+import { ComposioProvenanceChip } from "./ComposioProvenanceChip";
+import { composioChildParentConnectionId } from "./composio-services";
 import {
   appApplicationSourceSlug,
   appDefinitionLogoUrl,
@@ -116,6 +118,7 @@ export function Connections() {
     id: string;
     appName: string;
     remainingConnectionCount: number;
+    childConnectionCount: number;
   } | null>(null);
 
   useEffect(() => {
@@ -154,8 +157,15 @@ export function Connections() {
   });
 
   const deleteConnection = useMutation({
-    mutationFn: (target: { id: string; appName: string; remainingConnectionCount: number }) =>
-      toolsApi.archiveConnection(target.id),
+    mutationFn: (target: {
+      id: string;
+      appName: string;
+      remainingConnectionCount: number;
+      childConnectionCount: number;
+    }) =>
+      toolsApi.archiveConnection(target.id, {
+        confirmComposioChildren: target.childConnectionCount > 0,
+      }),
     onSuccess: (_connection, target) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
@@ -395,8 +405,9 @@ export function Connections() {
                             size={32}
                           />
                           <div className="min-w-0">
-                            <div className="font-medium text-foreground">
-                              {row.displayName}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-foreground">{row.displayName}</span>
+                              <ComposioProvenanceChip connection={row.connection} />
                             </div>
                             {hint && (
                               <div className="truncate text-xs text-muted-foreground">{hint}</div>
@@ -449,6 +460,9 @@ export function Connections() {
                                   id: connection.id,
                                   appName: application.name,
                                   remainingConnectionCount: row.remainingAgentAvailableConnectionCount,
+                                  childConnectionCount: connections.filter(
+                                    (candidate) => composioChildParentConnectionId(candidate) === connection.id,
+                                  ).length,
                                 });
                               }}
                             >
@@ -485,7 +499,9 @@ export function Connections() {
               Delete {connectionToDelete?.appName ?? "this"} connection?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {connectionToDelete && connectionToDelete.remainingConnectionCount > 0
+              {connectionToDelete && connectionToDelete.childConnectionCount > 0
+                ? `This also removes ${connectionToDelete.childConnectionCount} connected ${connectionToDelete.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
+                : connectionToDelete && connectionToDelete.remainingConnectionCount > 0
                 ? `This connection's saved credentials are deleted and agents lose access through it immediately. Agents can still use ${connectionToDelete.appName} through ${connectionToDelete.remainingConnectionCount} other active ${connectionToDelete.remainingConnectionCount === 1 ? "connection" : "connections"}.`
                 : "The saved credentials are deleted and agents lose access immediately. Connecting it again later needs a new sign-in or key."}
             </AlertDialogDescription>
