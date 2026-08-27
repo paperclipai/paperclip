@@ -1,5 +1,4 @@
 import { legacyIssueThreadInteractionResolverPolicyAlias } from "@paperclipai/shared";
-import type { ConnectionIntentInteraction } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "../api/heartbeats";
 import type {
   IssueChatComment,
@@ -24,45 +23,6 @@ export const issueThreadInteractionFixtureMeta = {
   issueId: "issue-thread-interactions",
   currentUserId: "user-board",
 } as const;
-
-export const pendingConnectionIntentInteraction: ConnectionIntentInteraction = {
-  id: "interaction-connection-intent-default",
-  companyId: issueThreadInteractionFixtureMeta.companyId,
-  issueId: issueThreadInteractionFixtureMeta.issueId,
-  kind: "connection_intent",
-  title: "Connect Notion",
-  summary: "Researcher needs this connection to continue.",
-  status: "pending",
-  continuationPolicy: "wake_assignee",
-  createdByAgentId: "11111111-1111-4111-8111-111111111111",
-  createdByUserId: null,
-  resolvedByAgentId: null,
-  resolvedByUserId: null,
-  addresseeUserId: issueThreadInteractionFixtureMeta.currentUserId,
-  createdAt: new Date("2026-04-20T15:08:00.000Z"),
-  updatedAt: new Date("2026-04-20T15:08:00.000Z"),
-  resolvedAt: null,
-  payload: {
-    version: 1,
-    serviceSlug: "notion",
-    serviceName: "Notion",
-    serviceLogoUrl: null,
-    serviceDarkLogoUrl: null,
-    requestingAgentId: "11111111-1111-4111-8111-111111111111",
-    requestingAgentName: "Researcher",
-    phase: "requested",
-  },
-  result: null,
-  resolverPolicy: "human_only",
-  requestedResolverPolicy: "human_only",
-  effectiveResolverPolicy: "human_only",
-  resolverPolicyProvenance: "explicit",
-  effectiveResolverPolicySource: "governed_action",
-  legacyResolverPolicyAliases: {
-    requested: "board_only",
-    effective: "board_only",
-  },
-};
 
 /**
  * Resolver-audience snapshot fields shared by every interaction fixture.

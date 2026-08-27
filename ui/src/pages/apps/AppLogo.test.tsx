@@ -2,8 +2,11 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAppBrandManifestCacheForTests } from "@/lib/app-brand-assets";
 import { AppLogo } from "./AppLogo";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("AppLogo", () => {
   let container: HTMLDivElement;
@@ -13,15 +16,21 @@ describe("AppLogo", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    resetAppBrandManifestCacheForTests();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ schemaVersion: 1, providers: [] }),
+    }));
   });
 
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.unstubAllGlobals();
   });
 
-  it("renders decorative local light and dark provider marks", () => {
-    act(() => {
+  it("renders decorative local light and dark provider marks", async () => {
+    await act(async () => {
       root.render(
         <AppLogo
           name="Notion"
@@ -30,6 +39,8 @@ describe("AppLogo", () => {
           size={36}
         />,
       );
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     const images = Array.from(container.querySelectorAll("img"));
@@ -43,8 +54,12 @@ describe("AppLogo", () => {
     expect(images[1]?.className).toContain("dark:block");
   });
 
-  it("uses the deterministic letter tile only after a runtime image failure", () => {
-    act(() => root.render(<AppLogo name="Jira" logoUrl="/brands/apps/missing.svg" />));
+  it("uses the deterministic letter tile only after a runtime image failure", async () => {
+    await act(async () => {
+      root.render(<AppLogo name="Jira" logoUrl="/brands/apps/missing.svg" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     const image = container.querySelector("img");
     expect(image).toBeTruthy();
 
