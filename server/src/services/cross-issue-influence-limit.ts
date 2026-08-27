@@ -76,6 +76,8 @@ export async function observeCrossIssueInfluence(
     responsibleUserId?: string | null;
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
+    targetCheckoutRunId?: string | null;
+    targetAssigneeAgentId?: string | null;
     kind: CrossIssueInfluenceKind;
     now?: Date;
   },
@@ -110,6 +112,15 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    // Timer wakes omit issueId. A checkout lock on this run's assigned issue is
+    // still same-issue influence, not a missing run.
+    if (
+      !sourceIssueId &&
+      input.targetCheckoutRunId === input.runId &&
+      input.targetAssigneeAgentId === input.agentId
+    ) {
+      return null;
+    }
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||
