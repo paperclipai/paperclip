@@ -31,9 +31,9 @@ const SPAN_ATTR = {
   // for a download from the sandbox. Operation identity comes from the parent
   // span, so the transfer span never carries an operation label.
   transferDirection: `${SPAN_ATTR_PREFIX}transfer.direction`,
-  // The five zstd-transport-compression attributes (PAP-5387). Values are a
-  // closed codec set or a finite number — never a path, a command line, file
-  // content, a raw identifier, or error text.
+  // The five zstd-transport-compression attributes. Values are a closed codec
+  // set or a finite number — never a path, a command line, file content, a
+  // raw identifier, or error text.
   transferCompressionCodec: `${SPAN_ATTR_PREFIX}transfer.compression.codec`,
   transferCompressionWallMs: `${SPAN_ATTR_PREFIX}transfer.compression.wall_ms`,
   transferCompressionBytesIn: `${SPAN_ATTR_PREFIX}transfer.compression.bytes_in`,
@@ -346,9 +346,9 @@ async function assertSandboxCommandOk(
   await assertSandboxCommandOkWithOutput(sandbox, command, timeoutSeconds, label);
 }
 
-// ---------------------------------------------------------------------------
-// zstd transport compression (PAP-5387, inbound file-mapping path only)
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------
+// zstd transport compression (inbound file-mapping path only)
+// -------------------------------------------------------------
 
 /** A source file below this size never compresses: the round-trip and CPU
  * cost of compression is not worth it for a small file. */
@@ -358,7 +358,7 @@ const ZSTD_MIN_SOURCE_BYTES = 8 * 1024 * 1024;
  * source size (a saving under 10 percent falls back to the raw path). */
 const ZSTD_MIN_SAVING_RATIO = 0.1;
 
-/** The zstd compression level for the host-side compressor (PAP-5387: level 3). */
+/** The zstd compression level for the host-side compressor. */
 const ZSTD_COMPRESSION_LEVEL = 3;
 
 /** Marker the mkdir+probe command echoes to sandbox stdout when the sandbox
@@ -547,11 +547,12 @@ async function removeSandboxScratch(
 
 /**
  * Try to remove each `.zst` scratch name a SECOND time, after every target in
- * the batch already promoted successfully (PAP-5412).
+ * the batch already promoted successfully.
  *
- * The promote script's own cleanup (`rm -f ... || true`, PAP-5408) already
- * tried once. It never fails the sync when that cleanup fails, because a
- * completed and safely promoted target must never read back as a failure.
+ * The promote script's own cleanup (`rm -f ... || true`) already  tried once.
+ * It never fails the sync when that cleanup fails, because a completed and
+ * safely promoted target must never read back as a failure.
+ * 
  * This function does not touch the promote script or its fail-closed guards.
  * It runs one separate, later sandbox command that retries the removal, then
  * reports how many names are still present. This makes a leftover that
@@ -644,13 +645,13 @@ async function syncInFileMappings(input: {
   let guardRoundTrips = 0;
 
   // Ensure every target directory exists before the bulk upload writes its temp.
-  // The zstd availability probe rides this SAME round trip (PAP-5387): no new
-  // sandbox round trip and no availability cache — a cache at any scope would
-  // hold one principal's observation and reuse it for another, so probing fresh
-  // on every call has no poisoning surface. `command -v zstd` runs only after a
-  // successful `mkdir -p`, and always reports success itself (`|| true`), so a
-  // sandbox with no `zstd` binary never fails the mkdir step — it only fails
-  // closed on compression eligibility below.
+  // The zstd availability probe rides this SAME round trip: no new sandbox round
+  // trip and no availability cache — a cache at any scope would hold one
+  // principal's observation and reuse it for another, so probing fresh on every
+  // call has no poisoning surface. `command -v zstd` runs only after a successful
+  // `mkdir -p`, and always reports success itself (`|| true`), so a sandbox with no
+  // `zstd` binary never fails the mkdir step — it only fails closed on compression
+  // eligibility below.
   const mkdirCommand = [...parentDirs].map((dir) => `mkdir -p ${shellQuote(dir)}`).join(" && ");
   const mkdirAndProbeCommand = [
     mkdirCommand,
@@ -757,8 +758,8 @@ async function syncInFileMappings(input: {
   );
   const hostTempDirs = compressedPlans.map((plan) => plan.compressed.hostTempDir);
   // The `.zst` scratch names for compressed mappings. The bounded post-success
-  // sweep below uses this list (PAP-5412). It excludes the raw scratch names,
-  // because the promote script's own rename already consumes them.
+  // sweep below uses this list. It excludes the raw scratch names, because the
+  // promote script's own rename already consumes them.
   const compressedZstdScratchNames = compressedPlans.map((plan) => plan.compressed.zstdScratch);
 
   // A failed upload or a mid-batch `mv -f`/decompress failure leaves reserved
@@ -897,8 +898,8 @@ async function syncInFileMappings(input: {
   }
 
   // Every target is already promoted at this point. Give the promote
-  // script's own `.zst` cleanup (`|| true`, PAP-5408) one more, separate try.
-  // Log a count, never a path, when a leftover survives both tries (PAP-5412).
+  // script's own `.zst` cleanup (`|| true`) one more, separate try.
+  // Log a count, never a path, when a leftover survives both tries.
   if (compressedZstdScratchNames.length > 0) {
     const leftoverCount = await sweepZstdScratchAfterSuccess(sandbox, compressedZstdScratchNames, timeoutSeconds);
     if (leftoverCount > 0) {
