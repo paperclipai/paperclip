@@ -78,9 +78,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS "connection_grant_delegations_grant_agent_uq" 
 -- A legacy company-scoped credential can only become user-scoped when exactly
 -- one personal owner references it and no organization grant, connection, or
 -- company binding also references it. Ambiguous rows fail closed in-place:
--- remove every personal-connection reference, require reauthorization, and
--- disable affected connections. Company bindings keep the original
--- company-scoped secret so their existing consumers continue to resolve it.
+-- remove only personal-grant references and require those users to
+-- reauthorize. Organization grants, shared/fallback connections, company
+-- bindings, and routine triggers keep the original company-scoped secret so
+-- their existing consumers continue to resolve it. A replay-safe per-user
+-- connection with a direct legacy reference is the only connection row that
+-- is quarantined here.
 DROP TABLE IF EXISTS "phase4_ambiguous_personal_secrets";
 --> statement-breakpoint
 CREATE TEMP TABLE "phase4_ambiguous_personal_secrets" ON COMMIT DROP AS
@@ -147,7 +150,8 @@ SET
 	"status" = 'needs_reauthorization',
 	"is_default" = false,
 	"updated_at" = now()
-WHERE EXISTS (
+WHERE grant_row."kind" = 'user'
+	AND EXISTS (
 	SELECT 1
 	FROM jsonb_array_elements(grant_row."credential_secret_refs") ref
 	JOIN ambiguous_secrets ambiguous
@@ -176,7 +180,8 @@ SET
 	"health_message" = 'Legacy personal credential ownership was ambiguous. Reauthorize this connection.',
 	"last_error" = 'oauth_reauthorization_required',
 	"updated_at" = now()
-WHERE EXISTS (
+WHERE connection_row."credential_policy" = 'per_user'
+	AND EXISTS (
 	SELECT 1
 	FROM jsonb_array_elements(connection_row."credential_secret_refs") ref
 	JOIN ambiguous_secrets ambiguous

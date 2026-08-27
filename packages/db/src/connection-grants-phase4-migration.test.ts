@@ -42,6 +42,8 @@ describe("connection grants phase 4 migration", () => {
     expect(migrationSql).toContain(`organization_grant."kind" <> 'user'`);
     expect(migrationSql).toContain(`FROM "company_secret_bindings" binding`);
     expect(migrationSql).toContain(`FROM "routine_triggers" routine_trigger`);
+    expect(migrationSql).toContain(`grant_row."kind" = 'user'`);
+    expect(migrationSql).toContain(`connection_row."credential_policy" = 'per_user'`);
     expect(migrationSql).toContain(`"status" = 'needs_reauthorization'`);
     expect(migrationSql).toContain(`"health_status" = 'missing_secret'`);
   });
@@ -82,10 +84,11 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
       `;
       await sql`
         INSERT INTO "tool_connections" (
-          "id", "company_id", "application_id", "name", "uid", "transport", "credential_secret_refs"
+          "id", "company_id", "application_id", "name", "uid", "transport",
+          "status", "enabled", "health_status", "credential_secret_refs"
         ) VALUES (
           ${connectionId}, ${companyId}, ${applicationId}, ${`Connection ${connectionId}`},
-          ${`connection-${connectionId}`}, 'mcp_remote',
+          ${`connection-${connectionId}`}, 'mcp_remote', 'active', true, 'healthy',
           ${sql.json(input.includeConnectionReference ? [{ secretId, version: "latest" }] : [])}
         )
       `;
@@ -257,20 +260,40 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
         FROM "tool_connections"
         WHERE "id" = ${mixed.connectionId}
       `).toEqual([{
-        status: "draft",
-        enabled: false,
-        health_status: "missing_secret",
-        credential_secret_refs: [],
+        status: "active",
+        enabled: true,
+        health_status: "healthy",
+        credential_secret_refs: [{ secretId: mixed.secretId, version: "latest" }],
       }]);
-      expect(await sql<{ status: string; credential_secret_refs: unknown[] }[]>`
-        SELECT "status", "credential_secret_refs"
+      expect(await sql<{
+        kind: string;
+        status: string;
+        is_default: boolean;
+        credential_secret_refs: unknown[];
+      }[]>`
+        SELECT "kind", "status", "is_default", "credential_secret_refs"
         FROM "connection_grants"
         WHERE "company_id" = ${mixed.companyId}
-        ORDER BY "kind"
+        ORDER BY "kind", "is_default" DESC, "id"
       `).toEqual([
-        { status: "needs_reauthorization", credential_secret_refs: [] },
-        { status: "needs_reauthorization", credential_secret_refs: [] },
-        { status: "needs_reauthorization", credential_secret_refs: [] },
+        {
+          kind: "organization",
+          status: "active",
+          is_default: true,
+          credential_secret_refs: [{ secretId: mixed.secretId, version: "latest" }],
+        },
+        {
+          kind: "organization",
+          status: "active",
+          is_default: false,
+          credential_secret_refs: [{ secretId: mixed.secretId, version: "latest" }],
+        },
+        {
+          kind: "user",
+          status: "needs_reauthorization",
+          is_default: false,
+          credential_secret_refs: [],
+        },
       ]);
     } finally {
       await sql.end();
