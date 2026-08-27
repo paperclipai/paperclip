@@ -41,8 +41,10 @@ const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
+const mockDbSelectLimit = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   orderBy: mockDbSelectOrderBy,
+  limit: mockDbSelectLimit,
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([]).then(onFulfilled, onRejected),
 })));
@@ -272,12 +274,15 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectFrom.mockReset();
     mockDbSelectWhere.mockReset();
     mockDbSelectOrderBy.mockReset();
+    mockDbSelectLimit.mockReset();
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
     mockDbSelectOrderBy.mockResolvedValue([]);
+    mockDbSelectLimit.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
+      limit: mockDbSelectLimit,
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([]).then(onFulfilled, onRejected),
     }));
