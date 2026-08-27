@@ -84,8 +84,6 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/environments")).toBe("instance-environments");
     expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
-    expect(getCompanySettingsTab("/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
-    expect(getCompanySettingsTab("/PAP/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
@@ -131,7 +129,6 @@ describe("CompanySettingsNav", () => {
           { value: "instance-profile", label: "Profile" },
           { value: "instance-environments", label: "Environments" },
           { value: "instance-access", label: "Access" },
-          { value: "instance-heartbeats", label: "Heartbeats" },
           { value: "instance-experimental", label: "Experimental" },
           { value: "instance-plugins", label: "Plugins" },
           { value: "instance-adapters", label: "Adapters" },
@@ -158,7 +155,7 @@ describe("CompanySettingsNav", () => {
     const root = createRoot(container);
 
     await act(async () => {
-      renderNav(root, ["instance.plugins", "instance.heartbeats"]);
+      renderNav(root, ["instance.plugins"]);
     });
 
     const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(

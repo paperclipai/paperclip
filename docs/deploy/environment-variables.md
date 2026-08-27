@@ -27,7 +27,7 @@ All environment variables that Paperclip uses for server configuration.
 `packages/shared/src/settings-visibility.ts`:
 
 - Any instance settings page: `instance.profile`, `instance.environments`,
-  `instance.access`, `instance.heartbeats`, `instance.experimental`,
+  `instance.access`, `instance.experimental`,
   `instance.plugins`, `instance.adapters` — removed from navigation and
   routing (the General page is the settings root and stays visible). Hiding
   `instance.access`, `instance.plugins`, or `instance.adapters` also floors
@@ -52,7 +52,9 @@ All environment variables that Paperclip uses for server configuration.
   `403 cloud_managed`, independent of this variable.
 
 Unknown keys are logged and ignored, so one list can be rolled across a fleet
-of mixed app versions. With the variable unset nothing is hidden and behavior
+of mixed app versions, and retired keys (like `instance.heartbeats`, whose
+page was removed) can stay in an operator list without breaking older or
+newer releases. With the variable unset nothing is hidden and behavior
 is identical to earlier releases. Hiding a toggle does not change its value;
 pair hiding with the desired default where it matters.
 
