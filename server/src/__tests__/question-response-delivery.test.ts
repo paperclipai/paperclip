@@ -551,23 +551,56 @@ describeEmbeddedPostgres("question response delivery", () => {
 
   it("keeps a long wake claim leased while the side effect is active", async () => {
     const seeded = await seed({ sourceStatus: "running" });
-    let releaseWake!: (value: null) => void;
-    const wakeup = vi.fn(() => new Promise<null>((resolve) => {
-      releaseWake = resolve;
-    }));
+    // Each call gets its own resolver. A second, unexpected call fails at
+    // once instead of sharing one resolver with the first call and hanging.
+    const wakeResolvers: Array<(value: null) => void> = [];
+    const wakeup = vi.fn(() => {
+      if (wakeResolvers.length > 0) {
+        throw new Error(
+          "wakeup was invoked a second time for the same claim; a re-entrant delivery must fail at once, not hang",
+        );
+      }
+      return new Promise<null>((resolve) => {
+        wakeResolvers.push(resolve);
+      });
+    });
+
+    // The renewal timer and the sweep both read time from this injected
+    // clock. The test moves the clock by hand, so the assertions below do
+    // not depend on the speed of a database round trip or a timer callback.
+    let clock = new Date("2026-01-01T00:00:00.000Z");
     const service = questionResponseDeliveryService(db, {
       heartbeat: { wakeup } as never,
       steer: vi.fn(),
+      now: () => clock,
       claimStaleMs: 40,
       claimRefreshMs: 5,
     });
 
     const deliveryPromise = service.deliver(seeded.interaction.id);
     await vi.waitFor(() => expect(wakeup).toHaveBeenCalledTimes(1));
-    await new Promise((resolve) => setTimeout(resolve, 70));
+    const [claimedRow] = await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+    const claimedAt = claimedRow!.lastAttemptAt!.getTime();
+
+    // Move the clock past claimStaleMs, then wait for a real renewal tick to
+    // pick it up. This proves the renewal ran. It does not only assert that
+    // a fixed real-time sleep was long enough.
+    clock = new Date(clock.getTime() + 1000);
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(issueQuestionResponseDeliveries)
+        .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+      expect(row?.lastAttemptAt?.getTime()).toBeGreaterThan(claimedAt);
+    });
+
     await expect(service.sweepPending()).resolves.toMatchObject({ scanned: 0 });
-    releaseWake(null);
+    wakeResolvers[0]!(null);
     await expect(deliveryPromise).resolves.toBeNull();
+
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+    expect(delivery).toMatchObject({ status: "pending", attemptCount: 1 });
   });
 
   it("fences a stale worker after a newer claim generation takes ownership", async () => {
