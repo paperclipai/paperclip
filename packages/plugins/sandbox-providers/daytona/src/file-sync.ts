@@ -770,13 +770,15 @@ async function syncInFileMappings(input: {
     for (const plan of plans) {
       if (plan.compressed) {
         // `zstd -d -o` copies the mode of its INPUT (the uploaded `.zst`
-        // scratch) onto its output with its own `chmod` call, which runs
-        // AFTER creation and so overrides any `umask` in effect — a mapping
+        // scratch) onto its output with its own `chmod` call. That call runs
+        // AFTER creation, so it overrides any `umask` in effect — a mapping
         // with no explicit `mode` must not rely on the scratch file's mode
         // being owner-only already. Always `chmod` the decompressed file
         // right after decompression: to the mapping's `mode` when set, or to
-        // owner-only (0600) — the same default the raw (uncompressed) path
-        // and the pre-refactor decompression step both used — otherwise.
+        // owner-only (0600) otherwise. The pre-refactor decompression step
+        // applied the same 0600 default. The raw (uncompressed) path above
+        // applies no `chmod` when the mapping sets no `mode`, so the two
+        // inbound branches do not use the same no-mode default today.
         const targetMode = typeof plan.mapping.mode === "number" ? plan.mapping.mode : 0o600;
         renameScript.push(
           `zstd -d -o ${shellQuote(plan.rawScratch)} ${shellQuote(plan.compressed.zstdScratch)} || { echo "decompress failed"; exit 49; };`,

@@ -516,12 +516,12 @@ describe("daytona file-sync inbound zstd transport compression", () => {
       const targetNoMode = path.posix.join(remoteDir, "no-mode.bin");
       const targetWithMode = path.posix.join(remoteDir, "with-mode.bin");
 
-      // `zstd -d -o` inherits the mode of its INPUT (the uploaded `.zst`
-      // scratch), not the process umask alone. Widen every `.zst` scratch to
-      // 0644 here, standing in for a Daytona upload that does not preserve a
-      // host-side 0600 origin, so a pass on the no-mode assertion below proves
-      // the promote script's OWN `umask 077` forces 0600 — not that the
-      // scratch happened to arrive owner-only already.
+      // `zstd -d -o` copies the mode of its INPUT (the uploaded `.zst`
+      // scratch) onto its output. Widen every `.zst` scratch to 0644 here,
+      // standing in for a Daytona upload that does not preserve a host-side
+      // 0600 origin. A pass on the no-mode assertion below then proves the
+      // promote script's OWN `chmod` forces 0600 — not that the scratch
+      // happened to arrive owner-only already.
       const { sandbox } = createRealExecSandbox({
         uploadOverride: async (uploads) => {
           for (const upload of uploads) {
@@ -541,11 +541,11 @@ describe("daytona file-sync inbound zstd transport compression", () => {
 
       await performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 });
 
-      // A mapping with no `mode` still lands owner-only (0600): the promote
-      // script's `umask 077` makes the decompressed file 0600 the moment it
-      // is created, before any `chmod` runs — even though its `.zst` scratch
-      // arrived at 0644 above. A mapping with an explicit `mode` gets that
-      // mode instead, applied by `chmod` after creation.
+      // A mapping with no `mode` lands owner-only (0600): the promote script
+      // always runs `chmod` on the decompressed file right after
+      // `zstd -d -o`, and uses 0600 when the mapping sets no `mode` — even
+      // though its `.zst` scratch arrived at 0644 above. A mapping with an
+      // explicit `mode` gets that mode instead.
       expect((await fs.stat(targetNoMode)).mode & 0o777).toBe(0o600);
       expect((await fs.stat(targetWithMode)).mode & 0o777).toBe(0o640);
     });
