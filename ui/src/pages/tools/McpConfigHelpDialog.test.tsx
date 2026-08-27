@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,14 +23,6 @@ vi.mock("@/lib/clipboard", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
 
 async function flushReact() {
   await act(async () => {
@@ -64,6 +56,7 @@ function promptTextarea(): HTMLTextAreaElement | undefined {
  */
 describe("Paste a config — MCP config help", () => {
   let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -72,13 +65,14 @@ describe("Paste a config — MCP config help", () => {
   });
 
   afterEach(() => {
-    document.body.removeChild(container);
+    act(() => root?.unmount());
+    container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
   });
 
   async function render() {
-    const root = createRoot(container);
+    root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
