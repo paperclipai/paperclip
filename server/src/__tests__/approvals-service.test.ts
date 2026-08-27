@@ -136,6 +136,82 @@ describe("approvalService resolution idempotency", () => {
   });
 });
 
+function createDbStubForCreate(
+  selectResults: (ApprovalRecord | null)[][],
+  insertRows: ApprovalRecord[],
+  insertError?: unknown,
+) {
+  const pendingSelectResults = [...selectResults];
+  const selectWhere = vi.fn(() => Promise.resolve(pendingSelectResults.shift() ?? []));
+  const from = vi.fn(() => ({ where: selectWhere }));
+  const select = vi.fn(() => ({ from }));
+
+  const returning = vi.fn(() =>
+    insertError ? Promise.reject(insertError) : Promise.resolve(insertRows),
+  );
+  const values = vi.fn(() => ({ returning }));
+  const insert = vi.fn(() => ({ values }));
+
+  return { db: { select, insert }, selectWhere, returning };
+}
+
+describe("approvalService.create idempotency", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns created:true and the new approval when no matching idempotencyKey exists", async () => {
+    const newApproval = createApproval("pending");
+    const stub = createDbStubForCreate([[]], [newApproval]);
+    const svc = approvalService(stub.db as any);
+
+    const result = await svc.create("company-1", {
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      idempotencyKey: "key-new",
+    } as any);
+
+    expect(result.created).toBe(true);
+    expect(result.approval.id).toBe("approval-1");
+    expect(stub.returning).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns created:false and the existing approval when idempotencyKey already exists", async () => {
+    const existing = createApproval("pending");
+    const stub = createDbStubForCreate([[existing]], []);
+    const svc = approvalService(stub.db as any);
+
+    const result = await svc.create("company-1", {
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      idempotencyKey: "key-already-used",
+    } as any);
+
+    expect(result.created).toBe(false);
+    expect(result.approval.id).toBe("approval-1");
+    expect(stub.returning).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the existing approval on concurrent-insert constraint conflict", async () => {
+    const existing = createApproval("pending");
+    const conflictError = { code: "23505", constraint: "approvals_company_idempotency_uq" };
+    const stub = createDbStubForCreate([[], [existing]], [], conflictError);
+    const svc = approvalService(stub.db as any);
+
+    const result = await svc.create("company-1", {
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      idempotencyKey: "key-race",
+    } as any);
+
+    expect(result.created).toBe(false);
+    expect(result.approval.id).toBe("approval-1");
+  });
+});
+
 describe("approvalService.findOpenHireApprovalForAgent", () => {
   beforeEach(() => {
     vi.clearAllMocks();

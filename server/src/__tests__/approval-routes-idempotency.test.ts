@@ -32,6 +32,10 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 
+const mockIssueService = vi.hoisted(() => ({
+  listReviewAttention: vi.fn(),
+}));
+
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
@@ -40,6 +44,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
   }));
 }
 
@@ -116,8 +123,10 @@ describe("approval routes idempotent retries", () => {
     vi.doUnmock("../routes/approvals.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/issues.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockApprovalService.list.mockReset();
     mockApprovalService.getById.mockReset();
     mockApprovalService.create.mockReset();
@@ -324,29 +333,32 @@ describe("approval routes idempotent retries", () => {
 
   it("lets agents create generic issue-linked board approval requests", async () => {
     mockApprovalService.create.mockResolvedValue({
-      id: "approval-1",
-      companyId: "company-1",
-      type: "request_board_approval",
-      requestedByAgentId: "agent-1",
-      requestedByUserId: null,
-      status: "pending",
-      payload: { title: "Approve hosting spend" },
-      decisionNote: null,
-      decidedByUserId: null,
-      decidedAt: null,
-      createdAt: new Date("2026-04-06T00:00:00.000Z"),
-      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+        status: "pending",
+        payload: { title: "Approve hosting spend" },
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+        createdAt: new Date("2026-04-06T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+      },
+      created: true,
     });
 
     const res = await request(await createAgentApp())
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",
-        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        issueIds: ["00000000-0000-0000-0000-000000000000"],
         payload: { title: "Approve hosting spend" },
       });
 
-    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body).toMatchObject({
       companyId: "company-1",
       type: "request_board_approval",
@@ -357,7 +369,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
       "approval-1",
-      ["00000000-0000-0000-0000-000000000001"],
+      ["00000000-0000-0000-0000-000000000000"],
       { agentId: "agent-1", userId: null },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -369,6 +381,38 @@ describe("approval routes idempotent retries", () => {
         action: "approval.created",
       }),
     );
+  });
+
+  it("returns 200 and skips logActivity when idempotencyKey matches an existing approval", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+        status: "pending",
+        payload: { title: "Approve hosting spend" },
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+        createdAt: new Date("2026-04-06T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+      },
+      created: false,
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        idempotencyKey: "key-already-used",
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ id: "approval-1", companyId: "company-1", status: "pending" });
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("blocks status-only recovery runs from creating approvals", async () => {
