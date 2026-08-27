@@ -43,6 +43,7 @@ import {
   isCodeBuddyUnknownSessionError,
   parseCodeBuddyStreamJson,
 } from "./parse.js";
+import { estimateCodeBuddyCostUsd } from "./pricing.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 type CleanupEntry = { kind: "file" | "dir"; path: string };
@@ -308,6 +309,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         loginMeta.requiresLogin ||
         resultFailed;
       const parsedSessionId = attempt.parsed.sessionId ?? (clearSession ? null : savedSessionId || null);
+      // LOCAL-ONLY: opt-out via config.estimateCostFromTokens = false to
+      // restore the original subscription_included ($0) behavior.
+      const estimatedCostUsd = asBoolean(config.estimateCostFromTokens, true)
+        ? estimateCodeBuddyCostUsd(attempt.parsed.model || model, attempt.parsed.usage)
+        : null;
       return {
         exitCode: failed && (attempt.proc.exitCode ?? 0) === 0 ? 1 : attempt.proc.exitCode,
         signal: attempt.proc.signal,
@@ -339,8 +345,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: "tencent",
         biller: "codebuddy",
         model: attempt.parsed.model || model,
-        billingType: "subscription_included",
-        costUsd: attempt.parsed.costUsd,
+        // LOCAL-ONLY: estimate cost from token usage so the Budget/Spend
+        // dashboards show non-zero numbers for CodeBuddy runs. See
+        // ./pricing.ts for rationale and caveats. The CLI itself reports
+        // total_cost_usd as a flat 0 (subscription plan), so prefer our
+        // estimate whenever it's available rather than `?? `-falling back
+        // (0 is a valid number and would otherwise win over the estimate).
+        // Falls back to the original subscription_included ($0) behavior
+        // when there's no usage to price from.
+        billingType: estimatedCostUsd !== null ? "metered_api" : "subscription_included",
+        costUsd: estimatedCostUsd !== null ? estimatedCostUsd : attempt.parsed.costUsd,
         resultJson: attempt.parsed.resultJson,
         summary: attempt.parsed.summary,
         clearSession: clearSession && !parsedSessionId,
