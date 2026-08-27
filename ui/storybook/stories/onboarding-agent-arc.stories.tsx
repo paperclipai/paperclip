@@ -6,6 +6,11 @@ import { PillGuy } from "@/components/onboarding/PillGuy";
 import { Stepper } from "@/components/onboarding/Stepper";
 import { useCompanyListQuery } from "@/api/companies-query";
 import { useDialog } from "@/context/DialogContext";
+import {
+  STORYBOOK_COMPANY_ID,
+  clearOnboardingDraft,
+  seedOnboardingDraft,
+} from "../fixtures/onboardingDraft";
 
 /**
  * The onboarding wizard's agent arc: create the agent, connect a model, review.
@@ -27,13 +32,11 @@ const meta = {
 
 export default meta;
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-const STORYBOOK_COMPANY_ID = "company-storybook";
-
 /**
- * Seeds the draft the wizard restores from, and opens it.
+ * Seeds the draft the wizard restores from, opens it, and takes the draft back
+ * out again on the way past.
  *
- * Two details the wizard's own design forces:
+ * Three details the wizard's own design forces:
  *
  * The draft is written during render, not in an effect. Roughly twenty
  * `useState(saved?.x ?? default)` initializers read the restored blob exactly
@@ -49,27 +52,19 @@ const STORYBOOK_COMPANY_ID = "company-storybook";
  * Step 5 is seeded rather than requested: `openOnboarding({ initialStep })`
  * accepts 1–4 only, because the review step is somewhere the wizard arrives
  * rather than somewhere it starts.
+ *
+ * And the cleanup is not housekeeping. That same per-origin storage is shared
+ * with every other story in the session: a draft left behind makes the next
+ * story restore a saved step ahead of the one it asked for, so the reviewer
+ * lands on a screen they did not click on and reads it as a wizard bug.
  */
 function WizardAtStep({ step }: { step: 3 | 4 | 5 }) {
   const [seeded] = useState(() => {
-    window.localStorage.setItem(
-      ONBOARDING_STORAGE_KEY,
-      JSON.stringify({
-        step,
-        companyName: "Paperclip Storybook",
-        agentName: "Darnold",
-        agentRole: "general",
-        adapterType: "claude_code",
-        createdCompanyId: STORYBOOK_COMPANY_ID,
-        createdCompanyPrefix: "PAP",
-        // Only from the review step onward. Before the hire there is no agent,
-        // and filling this in earlier would hide the incomplete-state guard
-        // that step 5 shows when it is reached without one.
-        createdAgentId: step >= 5 ? "agent-storybook" : "",
-      }),
-    );
+    seedOnboardingDraft(step);
     return true;
   });
+
+  useEffect(() => clearOnboardingDraft, []);
 
   // Nothing is mounted until the companies list has settled, and that ordering
   // is load-bearing rather than tidiness. The wizard's own mount gate waits on
