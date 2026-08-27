@@ -21,6 +21,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          # A branch pushed with the default GITHUB_TOKEN triggers no
+          # pull_request workflows, so the lockfile PR's required checks
+          # never start and the auto-merge below waits forever with master
+          # desynced. Prefer a bot credential that does trigger workflows:
+          # a fine-grained PAT with contents + pull-requests write, stored
+          # as the LOCKFILE_BOT_TOKEN secret. Falls back to GITHUB_TOKEN,
+          # in which case the verification step below fails loudly instead
+          # of leaving the PR silently stuck.
+          token: ${{ secrets.LOCKFILE_BOT_TOKEN || github.token }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -53,7 +63,7 @@ jobs:
       - name: Create or update pull request
         id: upsert-pr
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.LOCKFILE_BOT_TOKEN || github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
           if git diff --quiet -- pnpm-lock.yaml; then
@@ -91,6 +101,46 @@ jobs:
       - name: Enable auto-merge for lockfile PR
         if: steps.upsert-pr.outputs.pr_url != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.LOCKFILE_BOT_TOKEN || github.token }}
         run: |
           gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
+
+      # Auto-merge only fires once the required checks report. If the push
+      # above went out on the default GITHUB_TOKEN, they never start: the
+      # PR sits BLOCKED while every frozen-lockfile install on master keeps
+      # failing. Turn that silent stall into a red run with instructions.
+      - name: Verify required checks started on the lockfile PR
+        if: steps.upsert-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.LOCKFILE_BOT_TOKEN || github.token }}
+          PR_URL: ${{ steps.upsert-pr.outputs.pr_url }}
+        run: |
+          head_sha="$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)"
+          for attempt in 1 2 3 4; do
+            sleep 45
+            count="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs" --jq .total_count)"
+            echo "check runs on ${head_sha}: ${count} (attempt ${attempt})"
+            if [ "${count:-0}" -ge 8 ]; then
+              echo "Required checks are running; auto-merge will complete the refresh."
+              exit 0
+            fi
+          done
+          {
+            echo "## Lockfile PR is stuck without required checks"
+            echo ""
+            echo "The push used the default GITHUB_TOKEN, which does not trigger"
+            echo "pull_request workflows, so ${PR_URL} cannot pass its required"
+            echo "checks and auto-merge will never fire. Until it merges, every"
+            echo "frozen-lockfile install on master fails."
+            echo ""
+            echo "Durable fix: create a fine-grained PAT (contents + pull-requests"
+            echo "write on this repository) and store it as the LOCKFILE_BOT_TOKEN"
+            echo "secret."
+            echo ""
+            echo "Immediate recovery (either works):"
+            echo '- push an empty commit to chore/refresh-lockfile with any human'
+            echo '  credential: git commit --allow-empty -m "chore: trigger checks"'
+            echo "- or close and reopen the PR from a human account"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Lockfile PR has no required checks running; see the job summary for recovery."
+          exit 1
