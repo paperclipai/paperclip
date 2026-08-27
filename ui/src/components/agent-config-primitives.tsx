@@ -141,6 +141,8 @@ export function ToggleWithNumber({
   numberHint,
   numberPrefix,
   showNumber,
+  disabled,
+  toggleTestId,
 }: {
   label: string;
   hint?: string;
@@ -152,6 +154,8 @@ export function ToggleWithNumber({
   numberHint?: string;
   numberPrefix?: string;
   showNumber: boolean;
+  disabled?: boolean;
+  toggleTestId?: string;
 }) {
   return (
     <div className="space-y-2">
@@ -162,7 +166,9 @@ export function ToggleWithNumber({
         </div>
         <ToggleSwitch
           checked={checked}
-          onCheckedChange={onCheckedChange}
+          onCheckedChange={disabled ? () => undefined : onCheckedChange}
+          disabled={disabled}
+          data-testid={toggleTestId}
         />
       </div>
       {showNumber && (

@@ -64,10 +64,31 @@ const agentModelProfileConfigSchema = z.object({
 }).strict();
 
 export const agentRuntimeConfigSchema = z.object({
+  executionModel: z.enum(["push", "pull"]).optional(),
+  pull: z.object({
+    dispatchEnabled: z.boolean().optional(),
+    leaseTtlSec: z.number().int().min(15).max(3600).optional(),
+  }).strict().optional(),
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
   }).strict().optional(),
 }).catchall(z.unknown());
+
+export const pullAgentLifecycleReportSchema = z.object({
+  state: z.enum(["running", "idle", "blocked"]).optional(),
+  source: z.string().trim().min(1).max(100),
+  leaseTtlSec: z.number().int().min(15).max(3600).optional(),
+  evidence: z.array(z.object({
+    kind: z.enum(["claim", "task_session", "external_lease"]),
+    id: z.string().trim().min(1).max(200).optional(),
+    active: z.boolean(),
+    status: z.string().trim().min(1).max(100).optional(),
+    observedAt: z.string().datetime().optional(),
+    detail: z.string().trim().min(1).max(500).optional(),
+  }).strict()).max(50).optional(),
+}).strict();
+
+export type PullAgentLifecycleReportInput = z.infer<typeof pullAgentLifecycleReportSchema>;
 
 export const createAgentSchema = z.object({
   name: z.string().min(1),

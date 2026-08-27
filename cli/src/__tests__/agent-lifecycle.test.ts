@@ -79,6 +79,16 @@ describe("agent lifecycle commands", () => {
     await run(["agent", "config-revisions", AGENT_ID]);
     await run(["agent", "config-revision:get", AGENT_ID, REVISION_ID]);
     await run(["agent", "config-revision:rollback", AGENT_ID, REVISION_ID]);
+    await run(["agent", "lifecycle", AGENT_ID]);
+    await run([
+      "agent",
+      "lifecycle-report",
+      AGENT_ID,
+      "--source",
+      "resident-seat",
+      "--state",
+      "running",
+    ]);
     await run(["agent", "runtime-state", AGENT_ID]);
     await run(["agent", "runtime-state:reset-session", AGENT_ID, "--task-key", "task-1"]);
     await run(["agent", "task-sessions", AGENT_ID]);
@@ -105,6 +115,8 @@ describe("agent lifecycle commands", () => {
       ["GET", `http://localhost:3100/api/agents/${AGENT_ID}/config-revisions`],
       ["GET", `http://localhost:3100/api/agents/${AGENT_ID}/config-revisions/${REVISION_ID}`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/config-revisions/${REVISION_ID}/rollback`],
+      ["GET", `http://localhost:3100/api/agents/${AGENT_ID}/lifecycle`],
+      ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/lifecycle-report`],
       ["GET", `http://localhost:3100/api/agents/${AGENT_ID}/runtime-state`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/runtime-state/reset-session`],
       ["GET", `http://localhost:3100/api/agents/${AGENT_ID}/task-sessions`],

@@ -20,6 +20,7 @@ import type {
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
+  PullAgentLifecycle,
   AgentWakeupResponse,
   HeartbeatRun,
   Approval,
@@ -200,6 +201,18 @@ export const agentsApi = {
     api.delete<{ ok: true }>(agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`)),
   runtimeState: (id: string, companyId?: string) =>
     api.get<AgentRuntimeState>(agentPath(id, companyId, "/runtime-state")),
+  lifecycle: (id: string, companyId?: string) =>
+    api.get<PullAgentLifecycle>(agentPath(id, companyId, "/lifecycle")),
+  reportLifecycle: (
+    id: string,
+    data: {
+      source: string;
+      state?: "running" | "idle" | "blocked";
+      leaseTtlSec?: number;
+      evidence?: PullAgentLifecycle["evidence"];
+    },
+    companyId?: string,
+  ) => api.post<PullAgentLifecycle>(agentPath(id, companyId, "/lifecycle-report"), data),
   taskSessions: (id: string, companyId?: string) =>
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>

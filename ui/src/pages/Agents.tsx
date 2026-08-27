@@ -35,6 +35,7 @@ import {
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { agentRosterStatus, rosterMatchesActiveFilter } from "../lib/pull-agent-roster";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -86,9 +87,9 @@ const HIDDEN_AGENT_STATUSES = new Set(["terminated", "pending_approval"]);
 
 function matchesFilter(status: string, tab: FilterTab): boolean {
   if (tab === "all") return true;
-  if (tab === "active") return status === "active" || status === "running" || status === "idle";
+  if (tab === "active") return rosterMatchesActiveFilter(status);
   if (tab === "paused") return status === "paused";
-  if (tab === "error") return status === "error";
+  if (tab === "error") return status === "error" || status === "unreachable";
   return true;
 }
 
@@ -98,7 +99,7 @@ function filterAgents(agents: Agent[], tab: FilterTab, builtInAgentIds: Set<stri
       if (HIDDEN_AGENT_STATUSES.has(a.status)) return false;
       // The `builtin` filter keys on the built-in marker, not agent status.
       if (tab === "builtin") return builtInAgentIds.has(a.id);
-      return matchesFilter(a.status, tab);
+      return matchesFilter(agentRosterStatus(a), tab);
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -167,19 +168,26 @@ function resolveAgentEnvironment(
     : describeMissingEnvironment(environmentId);
 }
 
-function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<string>): OrgNode[] {
+function filterOrgTree(
+  nodes: OrgNode[],
+  tab: FilterTab,
+  builtInAgentIds: Set<string>,
+  agentsById: Map<string, Agent>,
+): OrgNode[] {
   return nodes
     .reduce<OrgNode[]>((acc, node) => {
-      const filteredReports = filterOrgTree(node.reports, tab, builtInAgentIds);
+      const filteredReports = filterOrgTree(node.reports, tab, builtInAgentIds, agentsById);
       // Hidden agents (terminated / pending_approval) never render as a row, but
       // any visible reports are promoted so the tree doesn't lose live agents.
       if (HIDDEN_AGENT_STATUSES.has(node.status)) {
         acc.push(...filteredReports);
         return acc;
       }
+      const rosterAgent = agentsById.get(node.id);
+      const rosterStatus = rosterAgent ? agentRosterStatus(rosterAgent) : node.status;
       const nodeMatches = tab === "builtin"
         ? builtInAgentIds.has(node.id)
-        : matchesFilter(node.status, tab);
+        : matchesFilter(rosterStatus, tab);
       if (nodeMatches || filteredReports.length > 0) {
         acc.push({ ...node, reports: filteredReports });
       }
@@ -336,7 +344,7 @@ export function Agents() {
   }
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
+  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, agentMap);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -356,6 +364,7 @@ export function Agents() {
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
+    const rosterStatus = agentRosterStatus(agent);
     // Lifecycle chip + inline `Set up`. Rendered inline in
     // `meta` at xl (where there's room and the meta columns align) and on a
     // dedicated full-width line beneath the name below xl, so the chips never
@@ -403,7 +412,7 @@ export function Agents() {
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={agent.status} />
+          <AgentStatusCapsule status={rosterStatus} />
         )}
         secondaryRow={
           builtInCluster ? (
@@ -439,8 +448,8 @@ export function Agents() {
                   liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                 />
               )}
-              <span className="w-20 flex justify-end">
-                <AgentStatusBadge status={agent.status} />
+              <span className="min-w-20 flex justify-end" title={agent.pullLifecycle ? "Pull lifecycle" : undefined}>
+                <AgentStatusBadge status={rosterStatus} />
               </span>
               {/* Row actions mirror the agent detail page; stop the click
                   from bubbling to the row link so buttons don't navigate.
@@ -658,6 +667,7 @@ function OrgTreeNode({
   const starPending = pending && membershipMutation.variables?.starred !== undefined;
   const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
   const starred = isStarred(memberships, "agent", node.id);
+  const rosterStatus = agent ? agentRosterStatus(agent) : node.status;
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
@@ -672,7 +682,7 @@ function OrgTreeNode({
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
-          <AgentStatusCapsule status={node.status} />
+          <AgentStatusCapsule status={rosterStatus} />
         )}
         <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
           {/* Name floor + `truncate` keeps the primary identifier readable; the
@@ -712,7 +722,7 @@ function OrgTreeNode({
                 liveCount={liveRunByAgent.get(node.id)!.liveCount}
               />
             ) : (
-              <AgentStatusBadge status={node.status} />
+              <AgentStatusBadge status={rosterStatus} />
             )}
           </span>
           <div className="hidden sm:flex items-center gap-3">
@@ -736,8 +746,8 @@ function OrgTreeNode({
                 />
               </div>
             )}
-            <span className="w-20 flex justify-end">
-              <AgentStatusBadge status={node.status} />
+            <span className="min-w-20 flex justify-end" title={agent?.pullLifecycle ? "Pull lifecycle" : undefined}>
+              <AgentStatusBadge status={rosterStatus} />
             </span>
           </div>
           <MembershipAction

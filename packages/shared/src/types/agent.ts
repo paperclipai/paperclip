@@ -30,7 +30,44 @@ export interface AgentModelProfileConfig {
 }
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {
+  executionModel?: "push" | "pull";
+  pull?: {
+    /** Explicit opt-in for Paperclip adapter dispatch. Pull agents default to no dispatch. */
+    dispatchEnabled?: boolean;
+    leaseTtlSec?: number;
+  };
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+}
+
+export type PullAgentLifecycleState = "running" | "idle" | "idle_queued" | "blocked" | "unreachable";
+export type PullAgentEvidenceKind = "claim" | "task_session" | "external_lease";
+
+export interface PullAgentLifecycleEvidence {
+  kind: PullAgentEvidenceKind;
+  id?: string;
+  active: boolean;
+  status?: string;
+  observedAt?: string;
+  detail?: string;
+}
+
+export interface PullAgentLifecycleReport {
+  state?: "running" | "idle" | "blocked";
+  source: string;
+  leaseTtlSec?: number;
+  evidence?: PullAgentLifecycleEvidence[];
+}
+
+export interface PullAgentLifecycle {
+  executionModel: "push" | "pull";
+  state: PullAgentLifecycleState;
+  source: string | null;
+  evidence: PullAgentLifecycleEvidence[];
+  observedAt: Date | null;
+  expiresAt: Date | null;
+  queuedIssueCount: number;
+  blockedIssueCount: number;
+  dispatchEnabled: boolean;
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";
@@ -105,11 +142,13 @@ export interface Agent {
   orgChainHealth?: AgentOrgChainHealth;
   createdAt: Date;
   updatedAt: Date;
+  pullLifecycle?: PullAgentLifecycle;
 }
 
 export interface AgentDetail extends Agent {
   chainOfCommand: AgentChainOfCommandEntry[];
   access: AgentAccessState;
+  pullLifecycle?: PullAgentLifecycle;
 }
 
 export type ClearAgentErrorResponse = Agent;

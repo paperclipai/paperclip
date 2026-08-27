@@ -47,20 +47,23 @@ import type {
   AgentInstructionsFileSummary,
   HeartbeatRun,
 } from "@paperclipai/shared";
+import { isPullAgent, pullAgentHeartbeatDispatchEnabled } from "../lib/pull-agent-roster";
 
 export function RunButton({
   onClick,
   disabled,
   label = "Run now",
   size = "sm",
+  title,
 }: {
   onClick: () => void;
   disabled?: boolean;
   label?: string;
   size?: "sm" | "default";
+  title?: string;
 }) {
   return (
-    <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
+    <Button variant="outline" size={size} onClick={onClick} disabled={disabled} title={title}>
       <Play className="h-3.5 w-3.5 sm:mr-1" />
       <span className="hidden sm:inline">{label}</span>
     </Button>
@@ -344,8 +347,11 @@ export function AgentActionButtons({
   });
 
   const isPendingApproval = agent.status === "pending_approval";
+  const pullHeartbeatBlocked = isPullAgent(agent) && !pullAgentHeartbeatDispatchEnabled(agent);
+  const pullHeartbeatReason = "Pull agents do not take adapter heartbeats unless dispatch is enabled.";
   const disabled = actionsDisabled || agentAction.isPending;
   const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled;
+  const runDisabled = assignAndRunDisabled || pullHeartbeatBlocked;
   const pauseResumeDisabled = disabled || isPendingApproval || (isPaused && workActionsDisabled);
   const clearErrorDisabled = disabled;
 
@@ -363,12 +369,14 @@ export function AgentActionButtons({
       </Button>
       <RunButton
         onClick={() => {
+          if (pullHeartbeatBlocked) return;
           if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
           agentAction.mutate("invoke");
         }}
-        disabled={assignAndRunDisabled}
+        disabled={runDisabled}
         label={runLabel}
         size={size}
+        title={pullHeartbeatBlocked ? pullHeartbeatReason : workActionsDisabled ? workActionsDisabledReason : undefined}
       />
       {isError ? (
         <ClearErrorButton

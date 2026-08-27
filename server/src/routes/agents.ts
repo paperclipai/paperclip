@@ -15,6 +15,7 @@ import {
   deriveAgentUrlKey,
   isUuidLike,
   normalizeIssueIdentifier,
+  pullAgentLifecycleReportSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentDesiredSkillEntry,
@@ -176,6 +177,8 @@ import {
   changeConsentGateService,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
+import { applyPullHeartbeatWriteGuard } from "../services/pull-agent-dispatch.js";
+import { pullAgentLifecycleService } from "../services/pull-agent-lifecycle.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -480,6 +483,7 @@ export function agentRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const pullLifecycle = pullAgentLifecycleService(db);
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
@@ -1089,11 +1093,22 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
-    return {
+    const detail = {
       ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
       chainOfCommand,
       access: accessState,
     };
+    if (asRecord(agent.runtimeConfig)?.executionModel === "pull") {
+      const lifecycle = await pullLifecycle.reconcile(agent);
+      const latest = await svc.getById(agent.id);
+      return {
+        ...detail,
+        status: latest?.status ?? detail.status,
+        updatedAt: latest?.updatedAt ?? detail.updatedAt,
+        pullLifecycle: lifecycle,
+      };
+    }
+    return detail;
   }
 
   async function resolveAgentSelfTrustPreset(req: Request, agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
@@ -1745,9 +1760,13 @@ export function agentRoutes(
   }
 
   function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
-    const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
+    const config = asRecord(runtimeConfig) ?? {};
+    const heartbeat = asRecord(config.heartbeat) ?? {};
+    const pull = asRecord(config.pull) ?? {};
+    const pullDispatchDisabled = config.executionModel === "pull" &&
+      (parseBooleanLike(pull.dispatchEnabled) ?? false) !== true;
     return {
-      enabled: parseBooleanLike(heartbeat.enabled) ?? false,
+      enabled: !pullDispatchDisabled && (parseBooleanLike(heartbeat.enabled) ?? false),
       intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
     };
   }
@@ -1783,6 +1802,7 @@ export function agentRoutes(
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
+    Object.assign(normalizedRuntimeConfig, applyPullHeartbeatWriteGuard(normalizedRuntimeConfig));
 
     const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
     const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
@@ -2971,11 +2991,15 @@ export function agentRoutes(
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result);
+    if (!canReadConfigs) {
+      res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    const withLifecycle = await Promise.all(result.map(async (agent) => {
+      if (asRecord(agent.runtimeConfig)?.executionModel !== "pull") return agent;
+      return { ...agent, pullLifecycle: await pullLifecycle.get(agent) };
+    }));
+    res.json(withLifecycle);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -3002,6 +3026,12 @@ export function agentRoutes(
     const items: InstanceSchedulerHeartbeatAgent[] = rows
       .map((row) => {
         const policy = parseSchedulerHeartbeatPolicy(row.runtimeConfig);
+        const runtime = asRecord(row.runtimeConfig) ?? {};
+        const pull = asRecord(runtime.pull) ?? {};
+        const executionModel: InstanceSchedulerHeartbeatAgent["executionModel"] =
+          runtime.executionModel === "pull" ? "pull" : "push";
+        const pullDispatchEnabled = executionModel === "push"
+          || (parseBooleanLike(pull.dispatchEnabled) ?? false) === true;
         const statusEligible =
           row.status !== "paused" &&
           row.status !== "terminated" &&
@@ -3022,6 +3052,8 @@ export function agentRoutes(
           heartbeatEnabled: policy.enabled,
           schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
           lastHeartbeatAt: row.lastHeartbeatAt,
+          executionModel,
+          pullDispatchEnabled,
         };
       })
       .filter((item) =>
@@ -3291,6 +3323,56 @@ export function agentRoutes(
     const state = await heartbeat.getRuntimeState(id);
     res.json(state);
   });
+
+  router.get("/agents/:id/lifecycle", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    if (!(await assertAgentReadAllowed(req, res, agent))) return;
+
+    res.json(await pullLifecycle.reconcile(agent));
+  });
+
+  router.post(
+    "/agents/:id/lifecycle-report",
+    validate(pullAgentLifecycleReportSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+      if (!agent) return;
+
+      if (req.actor.type === "agent") {
+        if (req.actor.agentId !== id) {
+          res.status(403).json({ error: "Agent can only report its own lifecycle" });
+          return;
+        }
+      } else {
+        await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+      }
+      if (agent.runtimeConfig.executionModel !== "pull") {
+        throw unprocessable("Lifecycle reports are only accepted for pull-executed agents");
+      }
+
+      const lifecycle = await pullLifecycle.report(agent, req.body);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "agent.pull_lifecycle_reported",
+        entityType: "agent",
+        entityId: id,
+        details: {
+          source: lifecycle.source,
+          state: lifecycle.state,
+          evidenceCount: lifecycle.evidence.length,
+          expiresAt: lifecycle.expiresAt?.toISOString() ?? null,
+        },
+      });
+      res.json(lifecycle);
+    },
+  );
 
   router.get("/agents/:id/task-sessions", async (req, res) => {
     assertBoard(req);
@@ -4080,12 +4162,13 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
-      patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
+      const normalized = await normalizeRuntimeConfigAdapterConfigsForPersistence(
         existing.companyId,
         requestedAdapterType,
         requestedRuntimeConfig,
         baseAdapterConfig,
       );
+      patchData.runtimeConfig = applyPullHeartbeatWriteGuard(normalized);
     }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
@@ -4141,6 +4224,17 @@ export function agentRoutes(
       entityId: agent.id,
       details: summarizeAgentUpdateDetails(patchData),
     });
+
+    if (
+      asRecord(agent.runtimeConfig)?.executionModel === "pull"
+      && requestedRuntimeConfig
+      && Object.prototype.hasOwnProperty.call(requestedRuntimeConfig, "pullLifecycle")
+    ) {
+      const lifecycle = await pullLifecycle.ingestRuntimeConfigLease(agent);
+      const latest = await svc.getById(agent.id);
+      res.json({ ...(latest ?? agent), pullLifecycle: lifecycle });
+      return;
+    }
 
     res.json(agent);
   });

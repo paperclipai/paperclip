@@ -9,6 +9,7 @@ import {
   updateAgentSchema,
   upsertAgentInstructionsFileSchema,
   wakeAgentSchema,
+  pullAgentLifecycleReportSchema,
   type Agent,
   type AgentWakeupResponse,
   type Issue,
@@ -67,6 +68,13 @@ interface AgentDeleteOptions extends BaseClientOptions {
 
 interface AgentResetSessionOptions extends BaseClientOptions {
   taskKey?: string;
+}
+
+interface AgentLifecycleReportOptions extends BaseClientOptions {
+  source?: string;
+  state?: string;
+  leaseTtlSec?: string;
+  evidenceJson?: string;
 }
 
 interface AgentSkillsSyncOptions extends BaseClientOptions {
@@ -517,6 +525,52 @@ export function registerAgentCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const result = await ctx.api.post(apiPath`/api/agents/${agentId}/config-revisions/${revisionId}/rollback`, {});
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("lifecycle")
+      .description("Get pull-agent lifecycle evidence and derived status")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.get(apiPath`/api/agents/${agentId}/lifecycle`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("lifecycle-report")
+      .description("Report a pull-agent lease without waking the heartbeat scheduler")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--source <source>", "Lease source, e.g. resident-seat")
+      .option("--state <state>", "running, idle, or blocked")
+      .option("--lease-ttl-sec <seconds>", "Lease TTL in seconds")
+      .option("--evidence-json <json>", "JSON array of lease evidence")
+      .action(async (agentId: string, opts: AgentLifecycleReportOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          let evidence: unknown;
+          if (opts.evidenceJson) {
+            evidence = JSON.parse(opts.evidenceJson);
+          }
+          const payload = pullAgentLifecycleReportSchema.parse({
+            source: opts.source,
+            state: opts.state,
+            leaseTtlSec: opts.leaseTtlSec ? Number(opts.leaseTtlSec) : undefined,
+            evidence,
+          });
+          const result = await ctx.api.post(apiPath`/api/agents/${agentId}/lifecycle-report`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

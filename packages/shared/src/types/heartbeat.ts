@@ -259,4 +259,6 @@ export interface InstanceSchedulerHeartbeatAgent {
   heartbeatEnabled: boolean;
   schedulerActive: boolean;
   lastHeartbeatAt: Date | null;
+  executionModel: "push" | "pull";
+  pullDispatchEnabled: boolean;
 }
