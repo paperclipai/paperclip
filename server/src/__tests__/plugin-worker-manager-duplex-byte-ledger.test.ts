@@ -163,20 +163,16 @@ describe("plugin worker manager duplex aggregate byte ledger", () => {
 
   it("fails closed and retains nothing when a buffered reservation would pass the ceiling", async () => {
     const telemetry = countingTelemetry();
-    // A four-byte ceiling. The six-byte echoed reply cannot fit.
+    // A four-byte ceiling. One five-byte chunk cannot fit.
     const ledger = new DuplexAggregateByteLedger({ ceilingBytes: 4, telemetry });
     const handle = makeDuplexHandle({ duplexAggregateByteLedger: ledger });
     try {
       await handle.start();
-      // Open with no scripted data, so the fixture sends only the open reply.
-      // The route is bound and live by the time this line resolves.
-      const session = await handle.openDuplexChannel(duplexOpenInput({ echoInput: true }));
-      // The write happens strictly after the bind, so the worker's echoed
-      // reply is a genuine post-bind event, never a frame racing the open
-      // reply. No listener attaches, so the echo tries to buffer. Its six raw
-      // bytes ("echo:" plus the one written byte) pass the four-byte ceiling,
-      // so the reservation rejects and the route ends.
-      session.write(new TextEncoder().encode("a"));
+      await handle.openDuplexChannel(
+        // No listener attaches, so "hello" tries to buffer. Its five raw bytes pass
+        // the four-byte ceiling, so the reservation rejects and the route ends.
+        duplexOpenInput({ data: [{ chunk: "hello" }] }),
+      );
       await vi.waitFor(() => {
         expect(telemetry.rejections).toBeGreaterThanOrEqual(1);
         expect(ledger.bytesInUse).toBe(0);
