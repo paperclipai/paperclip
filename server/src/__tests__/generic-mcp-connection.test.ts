@@ -344,7 +344,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await tempDb?.cleanup();
   });
 
-  it("connects a public unknown endpoint with every discovered tool enabled", async () => {
+  it("discovers every tool for a public unknown endpoint without activating the draft", async () => {
     installMcpOAuthFixture({ auth: "public" });
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -363,21 +363,11 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     // this connection cannot be depending on gallery metadata for anything.
     expect(connection!.config).not.toHaveProperty("sourceTemplateKey");
     expect(connection!.config).not.toHaveProperty("connectionMethodKey");
-    const [profile] = await db.select().from(toolProfiles).where(eq(
+    const profiles = await db.select().from(toolProfiles).where(eq(
       toolProfiles.profileKey,
       `app:${result.connectionId}`,
     ));
-    expect(profile).toBeTruthy();
-    await expect(db.select().from(toolProfileEntries).where(eq(
-      toolProfileEntries.profileId,
-      profile!.id,
-    ))).resolves.toHaveLength(2);
-    await expect(db.select().from(toolProfileBindings).where(eq(
-      toolProfileBindings.profileId,
-      profile!.id,
-    ))).resolves.toEqual([
-      expect.objectContaining({ targetType: "company", targetId: company.id }),
-    ]);
+    expect(profiles).toEqual([]);
   });
 
   it("emits DNS guidance for a real NXDOMAIN failure", async () => {

@@ -4985,7 +4985,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(connect.connection).toMatchObject({
       status: "draft",
       enabled: false,
-      config: { url: "https://links.example.test/actions", quarantineNewEntries: true },
+      config: { url: "https://links.example.test/actions", quarantineNewEntries: false },
       credentialSecretRefs: [
         expect.objectContaining({
           configPath: "credentials.authorization",
@@ -5563,7 +5563,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(attentionAfterReview.apps).toEqual([]);
   });
 
-  it("enables every discovered tool by default while preserving tools explicitly turned off later", async () => {
+  it("enables newly discovered tools after setup while preserving tools explicitly turned off", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
     const fetchMock = mockToolsList([
@@ -5578,30 +5578,16 @@ describeEmbeddedPostgres("tool access service", () => {
       }, { actorType: "user", actorId: "board" }));
     const listEntry = connect.catalog.find((entry) => entry.toolName === "list_zaps")!;
     const updateEntry = connect.catalog.find((entry) => entry.toolName === "update_zap")!;
-    const [defaultProfile] = await db.select().from(toolProfiles).where(eq(
-      toolProfiles.profileKey,
-      `app:${connect.connectionId}`,
-    ));
-    expect(defaultProfile).toBeTruthy();
-    await expect(db.select().from(toolProfileEntries).where(eq(
-      toolProfileEntries.profileId,
-      defaultProfile!.id,
-    ))).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({ catalogEntryId: listEntry.id, effect: "include" }),
-      expect.objectContaining({ catalogEntryId: updateEntry.id, effect: "include" }),
-    ]));
-    await expect(db.select().from(toolProfileBindings).where(eq(
-      toolProfileBindings.profileId,
-      defaultProfile!.id,
-    ))).resolves.toEqual([
-      expect.objectContaining({ targetType: "company", targetId: company.id }),
-    ]);
-
     await service.finishGalleryAppConnection(company.id, connect.connectionId, {
       enabledCatalogEntryIds: [listEntry.id],
       askFirstCatalogEntryIds: [],
       access: "all_agents",
     }, { actorType: "user", actorId: "board" });
+    const [defaultProfile] = await db.select().from(toolProfiles).where(eq(
+      toolProfiles.profileKey,
+      `app:${connect.connectionId}`,
+    ));
+    expect(defaultProfile).toBeTruthy();
     fetchMock.mockResolvedValueOnce(mcpHttpResponse({
       jsonrpc: "2.0",
       id: "paperclip-catalog-refresh",

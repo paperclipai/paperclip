@@ -410,7 +410,10 @@ export function toolAccessRoutes(
         code,
         error,
         iss,
-        redirectUri: oauthRedirectUri(),
+        // A provider denial is bound and consumed by state alone. Avoid
+        // requiring this deployment's callback origin just to record that the
+        // user declined; successful code exchange still validates the origin.
+        redirectUri: error ? "" : oauthRedirectUri(),
         actor: getActorInfo(req),
       });
     } catch (callbackError) {
