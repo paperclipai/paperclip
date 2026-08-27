@@ -5,7 +5,11 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
+import {
+  createCapturedOutputBuffer,
+  parseJsonObjectFromCommandOutput,
+  parseJsonResponseWithLimit,
+} from "./dev-runner-output.ts";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
@@ -412,7 +416,7 @@ async function getMigrationStatusPayload() {
   }
 
   try {
-    return JSON.parse(status.stdout.trim()) as { status?: string; pendingMigrations?: string[] };
+    return parseJsonObjectFromCommandOutput<{ status?: string; pendingMigrations?: string[] }>(status.stdout);
   } catch (error) {
     process.stderr.write(
       status.stderr ||

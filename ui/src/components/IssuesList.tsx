@@ -143,7 +143,7 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 
 /* ── View state ── */
 
-export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "interaction" | "workflow";
 export type BoardCardDensity = "auto" | "compact" | "comfortable";
 export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
 export type BoardColumnPageSize = KanbanColumnPageSize;
@@ -215,11 +215,12 @@ function getInitialViewState(
   key: string,
   initialAssignees?: string[],
   defaultSortField?: IssueSortField,
+  defaultSortDir: "asc" | "desc" = "asc",
 ): IssueViewState {
   const hasStored = hasStoredViewState(key);
   const stored = getViewState(key);
   const base = !hasStored && defaultSortField
-    ? { ...stored, sortField: defaultSortField, sortDir: "asc" as const }
+    ? { ...stored, sortField: defaultSortField, sortDir: defaultSortDir }
     : stored;
   if (!initialAssignees) return base;
   return {
@@ -234,8 +235,9 @@ function getInitialWorkspaceViewState(
   initialAssignees?: string[],
   initialWorkspaces?: string[],
   defaultSortField?: IssueSortField,
+  defaultSortDir: "asc" | "desc" = "asc",
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees, defaultSortField);
+  const stored = getInitialViewState(key, initialAssignees, defaultSortField, defaultSortDir);
   if (!initialWorkspaces) return stored;
   return {
     ...stored,
@@ -298,6 +300,11 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
         return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       case "updated":
         return dir * (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+      case "interaction":
+        return dir * (
+          new Date(a.myLastInteractionAt ?? a.updatedAt).getTime()
+          - new Date(b.myLastInteractionAt ?? b.updatedAt).getTime()
+        );
       default:
         return 0;
     }
@@ -481,6 +488,8 @@ interface IssuesListProps {
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
+  defaultSortDir?: "asc" | "desc";
+  showInteractionSort?: boolean;
   showProgressSummary?: boolean;
   /**
    * When set together with `showProgressSummary`, the progress strip fetches
@@ -697,6 +706,8 @@ export function IssuesList({
   baseCreateIssueDefaults,
   createIssueLabel,
   defaultSortField,
+  defaultSortDir = "asc",
+  showInteractionSort = false,
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
@@ -764,7 +775,7 @@ export function IssuesList({
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField, defaultSortDir),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -786,9 +797,23 @@ export function IssuesList({
     const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      setViewState(getInitialWorkspaceViewState(
+        scopedKey,
+        initialAssignees,
+        initialWorkspaces,
+        defaultSortField,
+        defaultSortDir,
+      ));
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
+  }, [
+    scopedKey,
+    initialAssignees,
+    initialAssigneesKey,
+    initialWorkspaces,
+    initialWorkspacesKey,
+    defaultSortField,
+    defaultSortDir,
+  ]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -1836,8 +1861,10 @@ export function IssuesList({
                     ["title", "Title"],
                     ["created", "Created"],
                     ["updated", "Updated"],
+                    ["interaction", "Last interaction"],
                   ] as const)
-                    .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
+                    .filter(([field]) => (SHOW_TASK_PRIORITY_UI || field !== "priority")
+                      && (showInteractionSort || field !== "interaction"))
                     .map(([field, label]) => (
                     <button
                       key={field}

@@ -63,6 +63,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableSummaries: z.boolean().default(false),
   enableStatusCards: z.boolean().default(false),
   enableDecisions: z.boolean().default(false),
+  enableRecentTasksSidebar: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
   enableSimplifiedEnglishInteractions: z.boolean().default(false),

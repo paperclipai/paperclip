@@ -614,6 +614,8 @@ export type {
   Issue,
   IssueChangeReceiptEntry,
   IssueChanges,
+  IssueUserRecencyKind,
+  RecentIssue,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerDiagnosticFlag,

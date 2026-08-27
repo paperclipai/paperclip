@@ -6,7 +6,11 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
-import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
+import {
+  createCapturedOutputBuffer,
+  parseJsonObjectFromCommandOutput,
+  parseJsonResponseWithLimit,
+} from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
@@ -304,7 +308,7 @@ async function getMigrationStatusPayload() {
   }
 
   try {
-    return JSON.parse(status.stdout.trim());
+    return parseJsonObjectFromCommandOutput(status.stdout);
   } catch (error) {
     process.stderr.write(
       status.stderr ||

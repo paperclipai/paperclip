@@ -384,6 +384,7 @@ export function InstanceExperimentalSettings() {
   const statusCardsBlockedByManagedSummaries = summariesManaged && !enableSummaries;
   const summariesRequiredByManagedStatusCards = statusCardsManaged && enableStatusCards;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
+  const enableRecentTasksSidebar = experimentalQuery.data?.enableRecentTasksSidebar === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
@@ -771,6 +772,17 @@ export function InstanceExperimentalSettings() {
           </div>
         </Card>
       ) : null}
+
+      <ExperimentalToggleCard
+        title="Recent Tasks Sidebar"
+        description="Show the current user's recently changed tasks in the main sidebar."
+        checked={enableRecentTasksSidebar}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableRecentTasksSidebar: checked })}
+        disabled={toggleMutation.isPending}
+        settingKey="enableRecentTasksSidebar"
+        managed={managedKeys.enableRecentTasksSidebar}
+        ariaLabel="Toggle recent tasks sidebar experimental setting"
+      />
 
       <ExperimentalToggleCard
         title="Server Info Debug View"

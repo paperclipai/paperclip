@@ -77,6 +77,18 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("requests current-user activity sorted by last interaction", async () => {
+    await issuesApi.listCompact("company-1", {
+      touchedByUserId: "me",
+      sortField: "last_interaction",
+      sortDir: "desc",
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?touchedByUserId=me&sortField=last_interaction&sortDir=desc&view=compact",
+    );
+  });
+
   it("passes plan document filters through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", { hasPlanDocument: false, limit: 25 });
 

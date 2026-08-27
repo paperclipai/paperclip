@@ -186,6 +186,12 @@ These rows are company-scoped and user-scoped. A missing row means the user is j
 
 Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
 
+## Recent issue interactions
+
+`issue_user_recency` stores the latest qualifying issue interaction for each `(user_id, company_id, issue_id)` tuple. User-authored issue creation, comments, interaction-card answers, approval decisions, selected field edits, and issue-document updates refresh the row. Agent, system, inbound, and view-only activity does not. The recent-issues API joins the current issue at read time and only returns rows from the last 30 days, so deleted or hidden issues do not leave stale sidebar snapshots.
+
+The recent-issues API derives `needsAttention` and `attentionHref` from the same eligible pending interaction or approval. Resolver-policy exclusions therefore apply to both the sidebar label and its navigation target.
+
 ## Decision training snapshot retention
 
 `decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.

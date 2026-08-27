@@ -182,6 +182,9 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-in_progress);    /* blocked shape, blue */
+  /* Recent-sidebar attention pill: WCAG AA text contrast in both themes. */
+  --recent-attention-bg: #fef3c7;
+  --recent-attention-fg: #78350f;
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -345,6 +348,8 @@
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
+  --recent-attention-bg: #78350f;
+  --recent-attention-fg: #fef3c7;
 }
 
 ::highlight(paperclip-doc-annotation-open) {
@@ -369,7 +374,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
   html {
     height: 100%;

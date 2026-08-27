@@ -29,6 +29,7 @@ import {
   issueComments,
   issueDocuments,
   issueReadStates,
+  issueUserRecency,
   issueThreadInteractions,
   issues,
   labels,
@@ -573,7 +574,7 @@ export interface IssueFilters {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated";
+  sortField?: "updated" | "last_interaction";
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
@@ -1459,6 +1460,16 @@ function touchedByUserCondition(companyId: string, userId: string) {
   `;
 }
 
+function interactedByUserCondition(companyId: string, userId: string) {
+  return sql<boolean>`EXISTS (
+    SELECT 1
+    FROM ${issueUserRecency}
+    WHERE ${issueUserRecency.companyId} = ${companyId}
+      AND ${issueUserRecency.userId} = ${userId}
+      AND ${issueUserRecency.issueId} = ${issues.id}
+  )`;
+}
+
 function participatedByAgentCondition(companyId: string, agentId: string) {
   return sql<boolean>`
     (
@@ -1776,15 +1787,31 @@ function issueListOrderBy(
     searchOrder,
     sortField,
     sortDir,
+    lastInteractionUserId,
   }: {
     hasSearch: boolean;
     priorityOrder: SQL;
     searchOrder: SQL;
     sortField?: IssueFilters["sortField"];
     sortDir?: IssueFilters["sortDir"];
+    lastInteractionUserId?: string;
   },
 ) {
   const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+  if (sortField === "last_interaction" && lastInteractionUserId) {
+    const lastInteractionAt = sql<Date | null>`(
+      SELECT ${issueUserRecency.lastInteractedAt}
+      FROM ${issueUserRecency}
+      WHERE ${issueUserRecency.companyId} = ${companyId}
+        AND ${issueUserRecency.userId} = ${lastInteractionUserId}
+        AND ${issueUserRecency.issueId} = ${issues.id}
+    )`;
+    const interactionOrder = sortDir === "asc" ? asc(lastInteractionAt) : desc(lastInteractionAt);
+    const idOrder = sortDir === "asc" ? asc(issues.id) : desc(issues.id);
+    return hasSearch
+      ? [asc(searchOrder), interactionOrder, idOrder]
+      : [interactionOrder, idOrder];
+  }
   if (sortField === "updated") {
     const activityOrder = sortDir === "asc"
       ? asc(canonicalLastActivityAt)
@@ -3320,6 +3347,26 @@ async function userReadStatsForIssues(
     stats.push(...rows);
   }
   return stats;
+}
+
+async function userRecencyRowsForIssues(
+  dbOrTx: any,
+  companyId: string,
+  userId: string,
+  issueIds: string[],
+): Promise<Array<{ issueId: string; lastInteractedAt: Date }>> {
+  if (issueIds.length === 0) return [];
+  return dbOrTx
+    .select({
+      issueId: issueUserRecency.issueId,
+      lastInteractedAt: issueUserRecency.lastInteractedAt,
+    })
+    .from(issueUserRecency)
+    .where(and(
+      eq(issueUserRecency.companyId, companyId),
+      eq(issueUserRecency.userId, userId),
+      inArray(issueUserRecency.issueId, issueIds),
+    ));
 }
 
 async function lastActivityStatsForIssues(
@@ -5638,7 +5685,9 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       }
       if (touchedByUserId) {
-        conditions.push(touchedByUserCondition(companyId, touchedByUserId));
+        conditions.push(filters?.sortField === "last_interaction"
+          ? interactedByUserCondition(companyId, touchedByUserId)
+          : touchedByUserCondition(companyId, touchedByUserId));
       }
       if (inboxArchivedByUserId) {
         conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
@@ -5715,6 +5764,7 @@ export function issueService(db: Db) {
           searchOrder,
           sortField: filters?.sortField,
           sortDir: filters?.sortDir,
+          lastInteractionUserId: touchedByUserId,
         }));
       const pageQuery = offset > 0
         ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
@@ -5731,12 +5781,15 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, archiveRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
+      const [statsRows, readRows, recencyRows, lastActivityRows, archiveRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
         contextUserId
           ? userReadStatsForIssues(db, companyId, contextUserId, issueIds)
+          : Promise.resolve([]),
+        touchedByUserId
+          ? userRecencyRowsForIssues(db, companyId, touchedByUserId, issueIds)
           : Promise.resolve([]),
         lastActivityStatsForIssues(db, companyId, issueIds),
         contextUserId
@@ -5750,6 +5803,7 @@ export function issueService(db: Db) {
           : Promise.resolve(new Map<string, number>()),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
+      const recencyByIssueId = new Map(recencyRows.map((row) => [row.issueId, row.lastInteractedAt]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
       const archiveByIssueId = new Map(archiveRows.map((row) => [row.issueId, row]));
       const [
@@ -5815,6 +5869,7 @@ export function issueService(db: Db) {
             myLastReadAt: readByIssueId.get(row.id) ?? null,
             lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
           }),
+          ...(touchedByUserId ? { myLastInteractionAt: recencyByIssueId.get(row.id) ?? null } : {}),
         };
       });
     },

@@ -55,6 +55,8 @@ const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
   'button[aria-label="Toggle goals sidebar link experimental setting"]';
 const DECISIONS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle decisions experimental setting"]';
+const RECENT_TASKS_SIDEBAR_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle recent tasks sidebar experimental setting"]';
 const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
@@ -89,6 +91,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableSummaries: false,
     enableStatusCards: false,
     enableDecisions: false,
+    enableRecentTasksSidebar: false,
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
     enableServerInfoDebugView: false,
@@ -363,6 +366,28 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableDecisions: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("renders and patches the Recent Tasks Sidebar experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Recent Tasks Sidebar");
+    expect(container.textContent).toContain(
+      "Show the current user's recently changed tasks in the main sidebar.",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      RECENT_TASKS_SIDEBAR_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(() => toggle?.click());
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableRecentTasksSidebar: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });

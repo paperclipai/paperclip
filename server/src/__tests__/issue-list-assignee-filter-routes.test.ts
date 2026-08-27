@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueUserRecency, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -182,6 +182,14 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       priority: "medium",
       billingCode: "product",
     });
+    const lastInteractedAt = new Date("2026-08-27T12:34:56.000Z");
+    await db.insert(issueUserRecency).values({
+      companyId,
+      userId: "cloud-user-1",
+      issueId,
+      lastInteractedAt,
+      kind: "interaction",
+    });
     const recoveryAction = await issueRecoveryActionService(db).upsertSourceScoped({
       companyId,
       sourceIssueId: issueId,
@@ -212,7 +220,13 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const app = createApp(companyId);
     const res = await request(app)
       .get(`/api/companies/${companyId}/issues`)
-      .query({ view: "compact", limit: "20" });
+      .query({
+        view: "compact",
+        touchedByUserId: "me",
+        sortField: "last_interaction",
+        sortDir: "desc",
+        limit: "20",
+      });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.headers.etag).toMatch(/^"compact-issues:/);
@@ -226,6 +240,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       status: "todo",
       priority: "medium",
       billingCode: "product",
+      myLastInteractionAt: lastInteractedAt.toISOString(),
       activeRecoveryAction: {
         id: recoveryAction.id,
         sourceIssueId: issueId,

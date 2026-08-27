@@ -25,6 +25,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listComments: vi.fn(),
   listAttachments: vi.fn(),
   listWorkProducts: vi.fn(),
+  listInteractions: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
   update: vi.fn(),
@@ -318,12 +319,18 @@ vi.mock("../components/TaskChatThread", () => ({
       onSelect: (runId: string) => Promise<void> | void;
     }[];
     footer?: ReactNode;
+    interactions?: Array<{ id: string }>;
   }) => {
     mockIssueChatThreadRender(props);
     return (
       <div data-testid="task-chat-thread">
         {props.threadHeader}
         Task chat thread
+        {props.interactions?.map((interaction) => (
+          <div id={`interaction-${interaction.id}`} key={interaction.id}>
+            Interaction {interaction.id}
+          </div>
+        ))}
         {props.onStopRun ? (
           <button type="button" onClick={() => void props.onStopRun?.("run-active-1")}>
             {props.stopRunLabel ?? "Stop run"}
@@ -1049,6 +1056,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
@@ -1134,6 +1142,62 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("scrolls to and highlights an interaction fragment on direct load", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    mockLocation.hash = "#interaction-confirmation-1";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listInteractions.mockResolvedValue([{ id: "confirmation-1" }]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const target = container.querySelector("#interaction-confirmation-1");
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    expect(target?.classList.contains("ring-2")).toBe(true);
+    expect(target?.classList.contains("ring-primary/50")).toBe(true);
+  });
+
+  it("scrolls to and highlights an interaction when the fragment changes", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listInteractions.mockResolvedValue([{ id: "confirmation-2" }]);
+
+    const renderDetail = () => (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+
+    mockLocation.hash = "#interaction-confirmation-2";
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+
+    const target = container.querySelector("#interaction-confirmation-2");
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    expect(target?.classList.contains("ring-2")).toBe(true);
   });
 
   it("opens a closed desktop pane and routes an ordinary document to Artifacts on direct load", async () => {

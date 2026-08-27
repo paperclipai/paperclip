@@ -184,6 +184,14 @@ export {
   type ActivityPublication,
   type LogActivityInput,
 } from "./activity-log.js";
+export {
+  issueRecencyKindForActivity,
+  issueUserRecencyService,
+  recordIssueUserRecency,
+  recordIssueUserRecencyFromActivity,
+  RECENT_ISSUES_MAX_LIMIT,
+  RECENT_ISSUES_WINDOW_DAYS,
+} from "./issue-user-recency.js";
 export { summarySlotService, SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

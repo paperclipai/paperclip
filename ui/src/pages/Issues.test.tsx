@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { buildIssuesSearchUrl, getNextIssuesPageOffset, mergeIssuePagesStable } from "./Issues";
+import {
+  buildIssuesSearchUrl,
+  getNextIssuesPageOffset,
+  getTouchedByUserRouteFilter,
+  mergeIssuePagesStable,
+} from "./Issues";
 
 function createIssue(id: string, title: string): Issue {
   return { id, title } as Issue;
@@ -43,5 +48,12 @@ describe("issues page pagination helpers", () => {
       second,
       third,
     ]);
+  });
+});
+
+describe("issues activity route", () => {
+  it("accepts only the current-user activity predicate", () => {
+    expect(getTouchedByUserRouteFilter(new URLSearchParams("touchedByUserId=me"))).toBe("me");
+    expect(getTouchedByUserRouteFilter(new URLSearchParams("touchedByUserId=other-user"))).toBeUndefined();
   });
 });

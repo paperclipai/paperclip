@@ -57,6 +57,25 @@ export function createCapturedOutputBuffer(maxBytes = DEFAULT_CAPTURED_OUTPUT_BY
   };
 }
 
+export function parseJsonObjectFromCommandOutput(output) {
+  const lines = output.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line) continue;
+
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Package managers can prefix command output with warnings or reporter lines.
+    }
+  }
+
+  throw new SyntaxError("Command output did not contain a valid JSON object line");
+}
+
 export async function parseJsonResponseWithLimit(response, maxBytes = DEFAULT_JSON_RESPONSE_BYTES) {
   const limit = normalizeByteLimit(maxBytes);
   const contentLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);

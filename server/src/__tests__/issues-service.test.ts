@@ -21,6 +21,7 @@ import {
   issueReadStates,
   issueRelations,
   issueThreadInteractions,
+  issueUserRecency,
   issues,
   projectWorkspaces,
   projects,
@@ -1332,6 +1333,68 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([recentMediumIssueId]);
+  });
+
+  it("sorts a user's activity view by their last interaction", async () => {
+    const companyId = randomUUID();
+    const userId = `user-${randomUUID()}`;
+    const recentlyUpdatedIssueId = randomUUID();
+    const recentlyInteractedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: recentlyUpdatedIssueId,
+        companyId,
+        title: "Recently updated",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        updatedAt: new Date("2026-05-20T00:00:00.000Z"),
+      },
+      {
+        id: recentlyInteractedIssueId,
+        companyId,
+        title: "Recently interacted",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        updatedAt: new Date("2026-05-01T00:00:00.000Z"),
+      },
+    ]);
+    await db.insert(issueUserRecency).values([
+      {
+        companyId,
+        userId,
+        issueId: recentlyUpdatedIssueId,
+        kind: "edited",
+        lastInteractedAt: new Date("2026-05-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        userId,
+        issueId: recentlyInteractedIssueId,
+        kind: "commented",
+        lastInteractedAt: new Date("2026-05-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      touchedByUserId: userId,
+      sortField: "last_interaction",
+      sortDir: "desc",
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([
+      recentlyInteractedIssueId,
+      recentlyUpdatedIssueId,
+    ]);
+    expect(result[0]?.myLastInteractionAt).toEqual(new Date("2026-05-19T00:00:00.000Z"));
   });
 
   it("ranks comment matches ahead of description-only matches", async () => {

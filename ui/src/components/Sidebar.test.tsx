@@ -20,6 +20,10 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockRecentIssuesApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 vi.mock("@/lib/router", () => ({
   NavLink: ({ to, children, className, ...props }: {
     to: string;
@@ -76,6 +80,10 @@ vi.mock("../api/attention", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/recentIssues", () => ({
+  recentIssuesApi: mockRecentIssuesApi,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -148,6 +156,7 @@ describe("Sidebar", () => {
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockAttentionApi.list.mockResolvedValue({ items: [] });
+    mockRecentIssuesApi.list.mockResolvedValue([]);
     mockSidebar.isMobile = false;
     mockSidebar.collapsed = false;
     mockSidebar.peeking = false;
@@ -310,6 +319,28 @@ describe("Sidebar", () => {
     flushSync(() => {
       root.unmount();
     });
+  });
+
+  it("does not fetch or flash Recent while its flag is off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableRecentTasksSidebar: false });
+    const root = await renderSidebar();
+
+    expect(mockRecentIssuesApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Recent");
+
+    flushSync(() => root.unmount());
+  });
+
+  it("hides an enabled Recent section when the endpoint returns no rows", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableRecentTasksSidebar: true });
+    mockRecentIssuesApi.list.mockResolvedValue([]);
+    const root = await renderSidebar();
+
+    expect(mockRecentIssuesApi.list).toHaveBeenCalledWith("company-1", 25);
+    expect(mockAttentionApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Recent");
+
+    flushSync(() => root.unmount());
   });
 
   it("shows Status directly below Decisions in primary navigation", async () => {

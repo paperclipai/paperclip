@@ -2396,6 +2396,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.scheduledRetry ? { scheduledRetry: issue.scheduledRetry } : {}),
     ...(issue.liveDescendantCount !== undefined ? { liveDescendantCount: issue.liveDescendantCount } : {}),
     ...(issue.myLastTouchAt !== undefined ? { myLastTouchAt: issue.myLastTouchAt } : {}),
+    ...(issue.myLastInteractionAt !== undefined ? { myLastInteractionAt: issue.myLastInteractionAt } : {}),
     ...(issue.lastExternalCommentAt !== undefined ? { lastExternalCommentAt: issue.lastExternalCommentAt } : {}),
     ...(issue.lastActivityAt !== undefined ? { lastActivityAt: issue.lastActivityAt } : {}),
     ...(issue.isUnreadForMe !== undefined ? { isUnreadForMe: issue.isUnreadForMe } : {}),
@@ -6009,8 +6010,12 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
-    if (sortField !== undefined && sortField !== "updated") {
-      res.status(400).json({ error: "sortField must be 'updated' when provided" });
+    if (sortField !== undefined && sortField !== "updated" && sortField !== "last_interaction") {
+      res.status(400).json({ error: "sortField must be 'updated' or 'last_interaction' when provided" });
+      return;
+    }
+    if (sortField === "last_interaction" && !touchedByUserId) {
+      res.status(400).json({ error: "sortField=last_interaction requires touchedByUserId" });
       return;
     }
     if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
@@ -6080,7 +6085,7 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
-      sortField: sortField === "updated" ? "updated" : undefined,
+      sortField: sortField === "updated" || sortField === "last_interaction" ? sortField : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
     };

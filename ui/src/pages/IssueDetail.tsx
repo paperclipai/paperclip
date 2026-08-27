@@ -3777,6 +3777,38 @@ export function IssueDetail() {
     };
   }, [location.hash, workProducts, attachments]);
 
+  // Interaction links are rendered inside the thread's own scroll container,
+  // so native document-fragment scrolling cannot reliably reveal them. Retry
+  // while interaction data and the selected thread implementation render, then
+  // mark the destination briefly so the user can identify the linked request.
+  useEffect(() => {
+    const match = location.hash.match(/^#interaction-(.+)$/);
+    if (!match) return;
+    const targetId = `interaction-${match[1]!}`;
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tryScroll = () => {
+      if (cancelled) return;
+      const element = document.getElementById(targetId);
+      if (!element) {
+        if (attempts < 30) {
+          attempts += 1;
+          timer = setTimeout(tryScroll, 100);
+        }
+        return;
+      }
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      element.classList.add("ring-2", "ring-primary/50", "transition-shadow");
+      timer = setTimeout(() => element.classList.remove("ring-2", "ring-primary/50", "transition-shadow"), 3000);
+    };
+    tryScroll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [interactions, location.hash]);
+
   useEffect(() => {
     if (pendingCommentComposerFocusKey === 0) return;
     if (detailTab !== "chat") return;

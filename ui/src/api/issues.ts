@@ -68,7 +68,7 @@ export type IssueListFilters = {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated";
+  sortField?: "updated" | "last_interaction";
   sortDir?: "asc" | "desc";
 };
 

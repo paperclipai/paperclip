@@ -24,7 +24,7 @@ import {
   GanttChartSquare,
   LayoutGrid,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -47,6 +47,8 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { SidebarRecentIssues } from "./SidebarRecentIssues";
+import { recentIssuesApi } from "../api/recentIssues";
 
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
@@ -92,11 +94,12 @@ export function Sidebar() {
   // item is hidden entirely until the flag is enabled (same no-flash pattern as
   // showWorkspacesLink — it defaults hidden, so no placeholder is needed).
   const showDecisions = experimentalSettings?.enableDecisions === true;
+  const showRecentIssues = experimentalSettings?.enableRecentTasksSidebar === true;
   const { data: attentionFeed } = useQuery({
     queryKey: queryKeys.attention(selectedCompanyId!),
     queryFn: () => attentionApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && showDecisions,
-    refetchInterval: 60_000,
+    refetchInterval: showDecisions ? 60_000 : false,
   });
   const attentionCount = attentionBadgeCount(attentionFeed);
   const showCases = experimentalSettings?.enableCases === true;
@@ -110,6 +113,15 @@ export function Sidebar() {
   // is a new surface, hidden entirely while the flag is off (same no-flash
   // pattern as showWorkspacesLink above).
   const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;
+  const { data: recentIssues = [] } = useQuery({
+    queryKey: queryKeys.recentIssues(selectedCompanyId!),
+    queryFn: () => recentIssuesApi.list(selectedCompanyId!, 25),
+    enabled: !!selectedCompanyId && showRecentIssues,
+  });
+  const liveIssueIds = useMemo(
+    () => liveRuns ? new Set(liveRuns.flatMap((run) => run.issueId ? [run.issueId] : [])) : undefined,
+    [liveRuns],
+  );
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -223,6 +235,14 @@ export function Sidebar() {
             <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
           ) : null}
         </div>
+
+        {showRecentIssues && recentIssues.length > 0 ? (
+          <SidebarRecentIssues
+            key={selectedCompanyId}
+            issues={recentIssues}
+            liveIssueIds={liveIssueIds}
+          />
+        ) : null}
 
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />

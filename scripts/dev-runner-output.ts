@@ -63,6 +63,25 @@ export function createCapturedOutputBuffer(maxBytes = DEFAULT_CAPTURED_OUTPUT_BY
   };
 }
 
+export function parseJsonObjectFromCommandOutput<T extends Record<string, unknown>>(output: string): T {
+  const lines = output.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line) continue;
+
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as T;
+      }
+    } catch {
+      // Package managers can prefix command output with warnings or reporter lines.
+    }
+  }
+
+  throw new SyntaxError("Command output did not contain a valid JSON object line");
+}
+
 export async function parseJsonResponseWithLimit<T>(
   response: Response,
   maxBytes = DEFAULT_JSON_RESPONSE_BYTES,

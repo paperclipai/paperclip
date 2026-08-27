@@ -384,6 +384,31 @@ describe("Layout", () => {
     await act(async () => { root.unmount(); });
   });
 
+  it("opens the collapsed-rail peek when keyboard focus enters the panel", async () => {
+    mockSidebarState.collapsed = true;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const panel = [...container.querySelectorAll<HTMLElement>("div")].find(
+      (element) => element.className.includes("inset-y-0") && element.className.includes("overflow-hidden"),
+    );
+    expect(panel).toBeTruthy();
+    await act(async () => {
+      panel!.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    expect(mockSetPeeking).toHaveBeenCalledWith(true);
+
+    await act(async () => { root.unmount(); });
+  });
+
   it("keeps the app sidebar and shows the settings sidebar in the secondary pane on settings routes", async () => {
     currentPathname = "/PAP/company/settings/access";
     mockPluginSlots.slots = [

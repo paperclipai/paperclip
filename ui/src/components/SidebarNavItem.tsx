@@ -67,6 +67,8 @@ interface SidebarNavItemProps {
   trailingLabel?: string;
   /** Rendered inside the right-aligned status cluster, before the live dot. */
   liveAccessory?: ReactNode;
+  /** Optional full-row tooltip content for dense data-backed sidebar rows. */
+  tooltip?: ReactNode;
 }
 
 export function SidebarNavItem({
@@ -88,6 +90,7 @@ export function SidebarNavItem({
   trailing,
   trailingLabel,
   liveAccessory,
+  tooltip,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A fixed-width contextual pane (SecondarySidebar) forces full labels even
@@ -162,7 +165,7 @@ export function SidebarNavItem({
           />
         )}
       </span>
-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+      <span dir="auto" className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
       {!rail && trailing}
       {!rail && textBadge && (
         <Badge variant="ghost"
@@ -207,7 +210,7 @@ export function SidebarNavItem({
     </NavLink>
   );
 
-  if (!rail) return link;
+  if (!rail && !tooltip) return link;
 
   // The tooltip wraps a plain block element rather than the NavLink directly:
   // Radix `asChild` (Slot) drops React Router's *function* className, which would
@@ -220,7 +223,9 @@ export function SidebarNavItem({
       <TooltipTrigger asChild>
         <div>{link}</div>
       </TooltipTrigger>
-      <TooltipContent side="right">{label}</TooltipContent>
+      <TooltipContent side="right" className="max-w-xs whitespace-pre-line break-words">
+        {tooltip ?? label}
+      </TooltipContent>
     </Tooltip>
   );
 }

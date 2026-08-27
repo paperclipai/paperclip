@@ -46,6 +46,7 @@ describe("instance settings service", () => {
       enableSummaries: false,
       enableStatusCards: false,
       enableDecisions: false,
+      enableRecentTasksSidebar: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       enableSimplifiedEnglishInteractions: false,

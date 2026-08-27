@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "../../../scripts/dev-runner-output.mjs";
+import {
+  createCapturedOutputBuffer,
+  parseJsonObjectFromCommandOutput,
+  parseJsonResponseWithLimit,
+} from "../../../scripts/dev-runner-output.mjs";
 
 describe("createCapturedOutputBuffer", () => {
   it("keeps small output unchanged", () => {
@@ -25,6 +29,21 @@ describe("createCapturedOutputBuffer", () => {
     expect(result.totalBytes).toBe(12);
     expect(result.text).toContain("total 12 bytes");
     expect(result.text.endsWith("efghijkl")).toBe(true);
+  });
+
+  it("parses a JSON object after prefixed command output", () => {
+    const output = [
+      '. | WARN Unsupported engine: wanted: {"node":">=24.11.0"}',
+      "Scope: 2 of 41 workspace projects",
+      '{"source":"embedded-postgres@54623","status":"upToDate","pendingMigrations":[]}',
+      "",
+    ].join("\n");
+
+    expect(parseJsonObjectFromCommandOutput(output)).toEqual({
+      source: "embedded-postgres@54623",
+      status: "upToDate",
+      pendingMigrations: [],
+    });
   });
 
   it("parses bounded JSON responses", async () => {

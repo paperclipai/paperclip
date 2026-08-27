@@ -784,6 +784,26 @@ export interface IssueChangeReceiptEntry {
 
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
+export type IssueUserRecencyKind =
+  | "created"
+  | "commented"
+  | "interaction"
+  | "approval"
+  | "edited"
+  | "document";
+
+export interface RecentIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  lastInteractedAt: Date | string;
+  kind: IssueUserRecencyKind;
+  hasActiveRun: boolean;
+  needsAttention: boolean;
+  attentionHref: string | null;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -859,6 +879,7 @@ export interface Issue {
   workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
+  myLastInteractionAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
@@ -916,6 +937,7 @@ export type CompactIssue = Pick<
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
   myLastTouchAt?: Date | null;
+  myLastInteractionAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;

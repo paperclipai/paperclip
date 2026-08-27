@@ -975,6 +975,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.recentIssues(companyId) });
+    if (action?.startsWith("issue.thread_interaction_")) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+    }
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
@@ -1041,6 +1045,11 @@ function invalidateActivityQueries(
       }
     }
     return;
+  }
+
+  if (entityType === "approval") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.recentIssues(companyId) });
   }
 
   if (entityType === "agent") {
