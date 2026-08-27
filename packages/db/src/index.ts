@@ -11,7 +11,20 @@ export {
   migratePostgresIfEmpty,
   type MigrationBootstrapResult,
   type Db,
+  type CircuitBreakerSettings,
+  type DatabaseClientOptions,
 } from "./client.js";
+export {
+  ConnectionCircuitBreaker,
+  DatabaseUnavailableError,
+  isConnectionFailure,
+  DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+  DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+  type CircuitBreakerOptions,
+  type CircuitBreakerSnapshot,
+  type CircuitBreakerState,
+} from "./connection-circuit-breaker.js";
+export { withConnectionCircuitBreaker } from "./circuit-breaker-sql.js";
 export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
