@@ -76,6 +76,8 @@ export function accessService(db: Db) {
     const ownedSecretSet = new Set(ownedSecretIds);
     const retainedSecretIds = new Set<string>();
     const sharedConnectionSecretIds = new Set<string>();
+    let grantMemberRefs: Array<{ grantId: string; subjectId: string }> = [];
+    let activeMemberUserIds = new Set<string>();
     let grantRefs: Array<{
       id: string;
       connectionId: string;
@@ -92,7 +94,14 @@ export function accessService(db: Db) {
       const definitionIds = ownedSecrets.flatMap((secret) =>
         secret.userSecretDefinitionId ? [secret.userSecretDefinitionId] : [],
       );
-      const [bindingRefs, declarationRefs, allGrantRefs, allConnectionRefs] = await Promise.all([
+      const [
+        bindingRefs,
+        declarationRefs,
+        allGrantRefs,
+        allConnectionRefs,
+        allGrantMemberRefs,
+        activeMembershipRefs,
+      ] = await Promise.all([
         tx.select({
           secretId: companySecretBindings.secretId,
           targetType: companySecretBindings.targetType,
@@ -119,9 +128,24 @@ export function accessService(db: Db) {
           credentialRefs: toolConnections.credentialRefs,
           credentialSecretRefs: toolConnections.credentialSecretRefs,
         }).from(toolConnections).where(eq(toolConnections.companyId, companyId)),
+        tx.select({
+          grantId: connectionGrantMembers.grantId,
+          subjectId: connectionGrantMembers.subjectId,
+        }).from(connectionGrantMembers).where(and(
+          eq(connectionGrantMembers.companyId, companyId),
+          eq(connectionGrantMembers.subjectType, "user"),
+        )),
+        tx.select({ userId: companyMemberships.principalId }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+          ne(companyMemberships.principalId, userId),
+        )),
       ]);
       grantRefs = allGrantRefs;
       connectionRefs = allConnectionRefs;
+      grantMemberRefs = allGrantMemberRefs;
+      activeMemberUserIds = new Set(activeMembershipRefs.map((row) => row.userId));
 
       for (const binding of bindingRefs) {
         if (binding.targetType !== "tool_connection" || !affectedConnections.has(binding.targetId)) {
@@ -136,14 +160,23 @@ export function accessService(db: Db) {
       }
       for (const grant of grantRefs) {
         if (ownedGrantIds.has(grant.id)) continue;
+        const grantAudience = grantMemberRefs.filter((member) => member.grantId === grant.id);
+        const hasSurvivingOrganizationAudience = grant.kind === "organization"
+          && grant.status === "active"
+          && (
+            grantAudience.length === 0
+              ? activeMemberUserIds.size > 0
+              : grantAudience.some((member) => activeMemberUserIds.has(member.subjectId))
+          );
         for (const ref of grant.credentialSecretRefs) {
           if (!ownedSecretSet.has(ref.secretId)) continue;
           if (!affectedConnections.has(grant.connectionId)) {
             retainedSecretIds.add(ref.secretId);
-          } else if (grant.kind === "user") {
+          } else if (grant.kind === "user" || hasSurvivingOrganizationAudience) {
             // A connection may temporarily carry separate user grants that
-            // reference the same credential. Removing its owner must not
-            // destroy the surviving member's still-active grant.
+            // reference the same credential, or an organization grant may
+            // still have another active audience member. Removing its owner
+            // must not destroy the surviving member's still-active access.
             retainedSecretIds.add(ref.secretId);
             sharedConnectionSecretIds.add(ref.secretId);
           }

@@ -499,6 +499,104 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
   });
 
+  it("retains an organization credential for another active audience member", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const [departing, surviving] = await db.insert(companyMemberships).values([
+      {
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId: `departing-org-${randomUUID()}`,
+        status: "active" as const,
+        membershipRole: "member" as const,
+      },
+      {
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId: `surviving-org-${randomUUID()}`,
+        status: "active" as const,
+        membershipRole: "member" as const,
+      },
+    ]).returning();
+    const application = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `shared-org-${randomUUID()}`,
+      name: "Shared organization app",
+      type: "mcp",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Shared organization connection",
+      uid: `shared-org-${randomUUID()}`,
+      connectionKind: "managed",
+      ownership: "customer",
+      transport: "mcp_remote",
+      authKind: "oauth",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+    }).returning().then((rows) => rows[0]!);
+    const definition = await db.insert(userSecretDefinitions).values({
+      companyId: company.id,
+      key: `shared-org-${randomUUID()}`,
+      name: "Shared organization token",
+    }).returning().then((rows) => rows[0]!);
+    const secret = await db.insert(companySecrets).values({
+      companyId: company.id,
+      scope: "user",
+      ownerUserId: departing!.principalId,
+      userSecretDefinitionId: definition.id,
+      key: `shared-org-${randomUUID()}`,
+      name: "Shared organization token",
+    }).returning().then((rows) => rows[0]!);
+    const credentialSecretRefs = [{ secretId: secret.id, configPath: "oauth.access_token" }];
+    await db.update(toolConnections).set({ credentialSecretRefs }).where(eq(toolConnections.id, connection.id));
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      kind: "user",
+      subjectUserId: departing!.principalId,
+      status: "active",
+      credentialSecretRefs,
+    });
+    const organizationGrant = await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      kind: "organization",
+      status: "active",
+      isDefault: true,
+      credentialSecretRefs,
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(connectionGrantMembers).values([
+      {
+        companyId: company.id,
+        grantId: organizationGrant.id,
+        subjectType: "user" as const,
+        subjectId: departing!.principalId,
+      },
+      {
+        companyId: company.id,
+        grantId: organizationGrant.id,
+        subjectType: "user" as const,
+        subjectId: surviving!.principalId,
+      },
+    ]);
+
+    await accessService(db).archiveMember(company.id, departing!.id, {
+      reassignment: { assigneeUserId: owner.principalId },
+    });
+
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))
+      .toHaveLength(1);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
+      .toEqual([expect.objectContaining({ status: "active", isDefault: true, credentialSecretRefs })]);
+    expect(await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.grantId, organizationGrant.id)))
+      .toEqual([expect.objectContaining({ subjectId: surviving!.principalId })]);
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
+      .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
+  });
+
   it("revokes delegated personal connection access when membership is suspended", async () => {
     const { company } = await createCompanyWithOwner(db);
     const member = await db.insert(companyMemberships).values({
