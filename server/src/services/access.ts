@@ -2,6 +2,7 @@ import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
+  companySecretBindings,
   companySecrets,
   connectionGrantDelegations,
   connectionGrantMembers,
@@ -11,6 +12,7 @@ import {
   principalPermissionGrants,
   toolAccessAuditEvents,
   toolConnections,
+  userSecretDeclarations,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
@@ -50,22 +52,99 @@ export function accessService(db: Db) {
       eq(connectionGrants.subjectUserId, userId),
     ));
     const grantIds = ownedGrants.map((grant) => grant.id);
+    const ownedGrantIds = new Set(grantIds);
+    const affectedConnectionIds = [...new Set(ownedGrants.map((grant) => grant.connectionId))];
+    const affectedConnections = new Set(affectedConnectionIds);
     // Membership removal revokes personal connection identities. It must not
     // erase unrelated user-scoped values used by agent or environment secret
-    // declarations. Delete only secrets that the departing user's grants
-    // explicitly own, and verify ownership before deleting a referenced row.
+    // declarations or bindings. Start with only secrets the departing user's
+    // grants explicitly reference, then fail toward retention whenever another
+    // consumer still names the secret or its user-secret definition.
     const referencedSecretIds = [...new Set(ownedGrants.flatMap((grant) =>
       grant.credentialSecretRefs.map((ref) => ref.secretId),
     ))];
     const ownedSecrets = referencedSecretIds.length === 0 ? [] : await tx.select({
       id: companySecrets.id,
+      userSecretDefinitionId: companySecrets.userSecretDefinitionId,
     }).from(companySecrets).where(and(
       eq(companySecrets.companyId, companyId),
       eq(companySecrets.scope, "user"),
       eq(companySecrets.ownerUserId, userId),
       inArray(companySecrets.id, referencedSecretIds),
     ));
-    const secretIds = ownedSecrets.map((secret) => secret.id);
+    const ownedSecretIds = ownedSecrets.map((secret) => secret.id);
+    const ownedSecretSet = new Set(ownedSecretIds);
+    const retainedSecretIds = new Set<string>();
+    let grantRefs: Array<{
+      id: string;
+      connectionId: string;
+      status: typeof connectionGrants.$inferSelect.status;
+      credentialSecretRefs: typeof connectionGrants.$inferSelect.credentialSecretRefs;
+    }> = [];
+    let connectionRefs: Array<{
+      id: string;
+      credentialRefs: typeof toolConnections.$inferSelect.credentialRefs;
+      credentialSecretRefs: typeof toolConnections.$inferSelect.credentialSecretRefs;
+    }> = [];
+    if (ownedSecretIds.length > 0) {
+      const definitionIds = ownedSecrets.flatMap((secret) =>
+        secret.userSecretDefinitionId ? [secret.userSecretDefinitionId] : [],
+      );
+      const [bindingRefs, declarationRefs, allGrantRefs, allConnectionRefs] = await Promise.all([
+        tx.select({
+          secretId: companySecretBindings.secretId,
+          targetType: companySecretBindings.targetType,
+          targetId: companySecretBindings.targetId,
+        }).from(companySecretBindings).where(and(
+          eq(companySecretBindings.companyId, companyId),
+          inArray(companySecretBindings.secretId, ownedSecretIds),
+        )),
+        definitionIds.length === 0 ? Promise.resolve([]) : tx.select({
+          userSecretDefinitionId: userSecretDeclarations.userSecretDefinitionId,
+        }).from(userSecretDeclarations).where(and(
+          eq(userSecretDeclarations.companyId, companyId),
+          inArray(userSecretDeclarations.userSecretDefinitionId, definitionIds),
+        )),
+        tx.select({
+          id: connectionGrants.id,
+          connectionId: connectionGrants.connectionId,
+          status: connectionGrants.status,
+          credentialSecretRefs: connectionGrants.credentialSecretRefs,
+        }).from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
+        tx.select({
+          id: toolConnections.id,
+          credentialRefs: toolConnections.credentialRefs,
+          credentialSecretRefs: toolConnections.credentialSecretRefs,
+        }).from(toolConnections).where(eq(toolConnections.companyId, companyId)),
+      ]);
+      grantRefs = allGrantRefs;
+      connectionRefs = allConnectionRefs;
+
+      for (const binding of bindingRefs) {
+        if (binding.targetType !== "tool_connection" || !affectedConnections.has(binding.targetId)) {
+          retainedSecretIds.add(binding.secretId);
+        }
+      }
+      const declaredDefinitions = new Set(declarationRefs.map((row) => row.userSecretDefinitionId));
+      for (const secret of ownedSecrets) {
+        if (secret.userSecretDefinitionId && declaredDefinitions.has(secret.userSecretDefinitionId)) {
+          retainedSecretIds.add(secret.id);
+        }
+      }
+      for (const grant of grantRefs) {
+        if (ownedGrantIds.has(grant.id) || affectedConnections.has(grant.connectionId)) continue;
+        for (const ref of grant.credentialSecretRefs) {
+          if (ownedSecretSet.has(ref.secretId)) retainedSecretIds.add(ref.secretId);
+        }
+      }
+      for (const connection of connectionRefs) {
+        if (affectedConnections.has(connection.id)) continue;
+        for (const ref of [...connection.credentialRefs, ...connection.credentialSecretRefs]) {
+          if (ownedSecretSet.has(ref.secretId)) retainedSecretIds.add(ref.secretId);
+        }
+      }
+    }
+    const secretIdsToDelete = ownedSecretIds.filter((secretId) => !retainedSecretIds.has(secretId));
     const removedDelegations = grantIds.length === 0 ? [] : await tx
       .delete(connectionGrantDelegations)
       .where(and(
@@ -86,27 +165,19 @@ export function accessService(db: Db) {
         inArray(connectionGrants.id, grantIds),
       ));
     }
-    if (secretIds.length > 0) {
-      const removedSecretIds = new Set(secretIds);
-      const [grantRefs, connectionRefs] = await Promise.all([
-        tx.select({
-          id: connectionGrants.id,
-          status: connectionGrants.status,
-          credentialSecretRefs: connectionGrants.credentialSecretRefs,
-        }).from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
-        tx.select({
-          id: toolConnections.id,
-          credentialSecretRefs: toolConnections.credentialSecretRefs,
-        }).from(toolConnections).where(eq(toolConnections.companyId, companyId)),
-      ]);
+    if (ownedSecretIds.length > 0) {
       for (const grant of grantRefs) {
+        if (!ownedGrantIds.has(grant.id) && !affectedConnections.has(grant.connectionId)) continue;
         const credentialSecretRefs = grant.credentialSecretRefs.filter(
-          (ref) => !removedSecretIds.has(ref.secretId),
+          (ref) => !ownedSecretSet.has(ref.secretId),
         );
         if (credentialSecretRefs.length !== grant.credentialSecretRefs.length) {
           await tx.update(connectionGrants).set({
             credentialSecretRefs,
-            ...(grant.status === "revoked" ? {} : {
+            ...(ownedGrantIds.has(grant.id) || grant.status === "revoked" ? {
+              status: "revoked" as const,
+              isDefault: false,
+            } : {
               status: "needs_reauthorization" as const,
               isDefault: false,
             }),
@@ -116,11 +187,19 @@ export function accessService(db: Db) {
         }
       }
       for (const connection of connectionRefs) {
-        const credentialSecretRefs = connection.credentialSecretRefs.filter(
-          (ref) => !removedSecretIds.has(ref.secretId),
+        if (!affectedConnections.has(connection.id)) continue;
+        const credentialRefs = connection.credentialRefs.filter(
+          (ref) => !ownedSecretSet.has(ref.secretId),
         );
-        if (credentialSecretRefs.length !== connection.credentialSecretRefs.length) {
+        const credentialSecretRefs = connection.credentialSecretRefs.filter(
+          (ref) => !ownedSecretSet.has(ref.secretId),
+        );
+        if (
+          credentialRefs.length !== connection.credentialRefs.length ||
+          credentialSecretRefs.length !== connection.credentialSecretRefs.length
+        ) {
           await tx.update(toolConnections).set({
+            credentialRefs,
             credentialSecretRefs,
             status: "draft",
             enabled: false,
@@ -132,10 +211,20 @@ export function accessService(db: Db) {
             .where(eq(toolConnections.id, connection.id));
         }
       }
-      await tx.delete(companySecrets).where(and(
-        eq(companySecrets.companyId, companyId),
-        inArray(companySecrets.id, secretIds),
-      ));
+      if (affectedConnectionIds.length > 0) {
+        await tx.delete(companySecretBindings).where(and(
+          eq(companySecretBindings.companyId, companyId),
+          eq(companySecretBindings.targetType, "tool_connection"),
+          inArray(companySecretBindings.targetId, affectedConnectionIds),
+          inArray(companySecretBindings.secretId, ownedSecretIds),
+        ));
+      }
+      if (secretIdsToDelete.length > 0) {
+        await tx.delete(companySecrets).where(and(
+          eq(companySecrets.companyId, companyId),
+          inArray(companySecrets.id, secretIdsToDelete),
+        ));
+      }
     }
     await tx.delete(connectionGrantMembers).where(and(
       eq(connectionGrantMembers.companyId, companyId),

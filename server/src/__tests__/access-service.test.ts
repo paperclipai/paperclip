@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  companySecretBindings,
   companySecrets,
   companies,
   companyMemberships,
@@ -16,6 +17,7 @@ import {
   toolAccessAuditEvents,
   toolApplications,
   toolConnections,
+  userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
 import {
@@ -65,6 +67,8 @@ describeEmbeddedPostgres("access service", () => {
 
   afterEach(async () => {
     await db.delete(toolAccessAuditEvents);
+    await db.delete(userSecretDeclarations);
+    await db.delete(companySecretBindings);
     await db.delete(connectionGrantDelegations);
     await db.delete(connectionGrantMembers);
     await db.delete(connectionGrants);
@@ -476,6 +480,107 @@ describeEmbeddedPostgres("access service", () => {
     expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id))).toHaveLength(0);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))
       .toEqual([expect.objectContaining({ status: "revoked", credentialSecretRefs: [] })]);
+  });
+
+  it("preserves personal grant secrets used by surviving declarations and bindings", async () => {
+    const { company } = await createCompanyWithOwner(db);
+    const member = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: `member-${randomUUID()}`,
+      status: "active",
+      membershipRole: "member",
+    }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `app-${randomUUID()}`,
+      name: "Personal shared credentials",
+      type: "mcp",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const definitions = await db.insert(userSecretDefinitions).values([
+      { companyId: company.id, key: `declared-${randomUUID()}`, name: "Declared credential" },
+      { companyId: company.id, key: `bound-${randomUUID()}`, name: "Bound credential" },
+    ]).returning();
+    const secrets = await db.insert(companySecrets).values(definitions.map((definition, index) => ({
+      companyId: company.id,
+      scope: "user",
+      ownerUserId: member.principalId,
+      userSecretDefinitionId: definition.id,
+      key: `shared-${index}-${randomUUID()}`,
+      name: `Shared credential ${index}`,
+    }))).returning();
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Shared personal connection",
+      uid: `shared-${randomUUID()}`,
+      connectionKind: "managed",
+      ownership: "customer",
+      transport: "mcp_remote",
+      authKind: "api_key",
+      credentialPolicy: "per_user",
+      status: "active",
+      enabled: true,
+      credentialSecretRefs: secrets.map((secret, index) => ({
+        secretId: secret.id,
+        configPath: `credentials.shared_${index}`,
+      })),
+    }).returning().then((rows) => rows[0]!);
+    const grant = await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      kind: "user",
+      subjectUserId: member.principalId,
+      credentialSecretRefs: secrets.map((secret, index) => ({
+        secretId: secret.id,
+        configPath: `credentials.shared_${index}`,
+      })),
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(userSecretDeclarations).values({
+      companyId: company.id,
+      userSecretDefinitionId: definitions[0]!.id,
+      targetType: "agent",
+      targetId: `surviving-agent-${randomUUID()}`,
+      configPath: "env.DECLARED_TOKEN",
+      envKey: "DECLARED_TOKEN",
+    });
+    await db.insert(companySecretBindings).values([
+      ...secrets.map((secret, index) => ({
+        companyId: company.id,
+        secretId: secret.id,
+        targetType: "tool_connection",
+        targetId: connection.id,
+        configPath: `credentials.shared_${index}`,
+      })),
+      {
+        companyId: company.id,
+        secretId: secrets[1]!.id,
+        targetType: "environment",
+        targetId: `surviving-environment-${randomUUID()}`,
+        configPath: "env.BOUND_TOKEN",
+      },
+    ]);
+
+    await accessService(db).updateMember(company.id, member.id, { status: "suspended" });
+
+    expect(await db.select().from(companySecrets).where(inArray(companySecrets.id, secrets.map((secret) => secret.id))))
+      .toHaveLength(2);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))
+      .toEqual([expect.objectContaining({ status: "revoked", credentialSecretRefs: [] })]);
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
+      .toEqual([expect.objectContaining({
+        status: "draft",
+        enabled: false,
+        credentialSecretRefs: [],
+      })]);
+    expect(await db.select().from(companySecretBindings)).toEqual([
+      expect.objectContaining({
+        secretId: secrets[1]!.id,
+        targetType: "environment",
+      }),
+    ]);
+    expect(await db.select().from(userSecretDeclarations)).toHaveLength(1);
   });
 
   it("preserves unrelated user-scoped secrets when membership is suspended", async () => {
