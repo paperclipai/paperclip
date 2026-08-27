@@ -34,6 +34,7 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { RadioCardGroup } from "@/components/ui/radio-card";
 import { ApiError } from "@/api/client";
+import { connectionIntentsApi } from "@/api/connection-intents";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
@@ -178,6 +179,9 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
   const [searchParams] = useSearchParams();
   const appKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
   const sourceSlug = searchParams.get("source")?.trim() || null;
+  // The wizard rewrites its own URL while moving between steps, so retain the
+  // originating request for the full setup instead of rereading the query.
+  const [connectionIntentId] = useState(() => searchParams.get("intent")?.trim() || null);
   const createNewConnection = searchParams.get("new") === "1";
   const directOAuthSource = isMcpDirectOAuthConnectSlug(sourceSlug) ? sourceSlug : null;
   const requestedAppKey = appKey ?? directOAuthSource ?? undefined;
@@ -358,7 +362,10 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
   };
 
   const oauthStartMutation = useMutation({
-    mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
+    mutationFn: (connectionId: string) => toolsApi.startOAuth(
+      connectionId,
+      connectionIntentId ?? undefined,
+    ),
     onSuccess: ({ authorizationUrl }) => {
       // The endpoint chose this address, so it is checked here too — this is the
       // line where an unsafe scheme would actually run (PAP-17099).
@@ -417,6 +424,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
               ? configValues
               : undefined,
           applicationId: prefill.applicationId,
+          ...(connectionIntentId ? { interactionId: connectionIntentId } : {}),
           ...(grantKind === "user" ? { grantKind } : {}),
         });
       }
@@ -432,6 +440,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
           oauthClientSecret: linkOAuthClientSecret,
         }),
         applicationId: prefill.applicationId,
+        ...(connectionIntentId ? { interactionId: connectionIntentId } : {}),
         ...(grantKind === "user" ? { grantKind } : {}),
       });
     },
@@ -626,6 +635,9 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
         access: selection,
       });
       await applyAccessInstalls(connected.connectionId);
+      if (connectionIntentId) {
+        await connectionIntentsApi.complete(connectionIntentId, connected.connectionId);
+      }
       return finished;
     },
     onSuccess: () => setAppStep("success"),

@@ -164,7 +164,7 @@ export function ConnectionIntentInteractionBody({
             <Link to={connectHref}>Connect a new {current.payload.serviceName} identity</Link>
           </Button>
           <p className="text-xs text-muted-foreground">
-            After connecting a new identity, return to this card to grant it to the requesting agent.
+            Finishing setup will grant the new identity and resolve this request automatically.
           </p>
         </div>
       ) : null}

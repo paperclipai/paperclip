@@ -640,6 +640,7 @@ export function toolAccessRoutes(
             redirectUri: oauthRedirectUri(req),
             actor: getActorInfo(req),
             ...(personalSubjectUserId ? { subjectUserId: personalSubjectUserId } : {}),
+            ...(req.body.interactionId ? { interactionId: req.body.interactionId } : {}),
           });
           result.auth.startUrl = start.authorizationUrl;
           result.auth.issuer = start.issuer ?? result.auth.issuer ?? null;

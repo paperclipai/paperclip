@@ -6,6 +6,7 @@ import type {
 } from "@/pages/apps/composio-services";
 import type {
   ToolApplication,
+  ConnectToolApp,
   ToolConnection,
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
@@ -267,17 +268,13 @@ export const toolsApi = {
   // --- Applications ---
   listGallery: (companyId: string) =>
     api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
-  connectApp: (companyId: string, input: {
-    galleryKey?: string;
-    link?: string;
-    name?: string;
-    credentialValues?: Record<string, string>;
-    configValues?: Record<string, unknown>;
-    applicationId?: string;
-  }) =>
+  connectApp: (companyId: string, input: ConnectToolApp) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
-  startOAuth: (connectionId: string) =>
-    api.post<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`, {}),
+  startOAuth: (connectionId: string, interactionId?: string) =>
+    api.post<ToolOAuthStartResult>(
+      `/tools/oauth/${connectionId}/start`,
+      interactionId ? { interactionId } : {},
+    ),
   finishApp: (companyId: string, connectionId: string, input: {
     enabledCatalogEntryIds: string[];
     askFirstCatalogEntryIds: string[];

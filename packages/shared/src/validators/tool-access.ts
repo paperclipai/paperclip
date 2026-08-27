@@ -364,6 +364,8 @@ export const connectToolAppSchema = z.object({
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
   configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
   applicationId: z.string().guid().optional(),
+  /** Pending connection request this setup should resolve after authorization. */
+  interactionId: z.string().uuid().optional(),
   authMode: genericMcpAuthModeSchema.optional(),
   oauthClient: genericMcpOAuthClientSchema.optional(),
   /**

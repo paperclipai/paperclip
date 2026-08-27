@@ -72,6 +72,17 @@ describe("tool access validators", () => {
     }).success).toBe(false);
   });
 
+  it("accepts only UUID connection request links during app setup", () => {
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "posthog",
+      interactionId: "11111111-1111-4111-8111-111111111111",
+    }).success).toBe(true);
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "posthog",
+      interactionId: "not-an-interaction",
+    }).success).toBe(false);
+  });
+
   // PAP-17087: the guided generic flow and paste-config both reach the connect
   // endpoint, so unsafe header names/values are rejected once at this boundary.
   it("accepts generic advanced-authentication input for a pasted URL", () => {
