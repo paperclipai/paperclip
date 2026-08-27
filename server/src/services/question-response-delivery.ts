@@ -385,18 +385,19 @@ export function questionResponseDeliveryService(
     options: { bounded: boolean } = { bounded: true },
   ) {
     const at = now();
-    const exhausted = options.bounded && delivery.attemptCount >= MAX_DELIVERY_ATTEMPTS;
-    if (!exhausted) {
-      await db.update(issueQuestionResponseDeliveries).set({
-        status: "pending",
-        lastErrorCode: errorCode,
-        updatedAt: at,
-      }).where(and(
-        eq(issueQuestionResponseDeliveries.id, delivery.id),
-        eq(issueQuestionResponseDeliveries.status, "delivering"),
-        eq(issueQuestionResponseDeliveries.attemptCount, delivery.attemptCount),
-      ));
-    }
+    const nextErrorCount = delivery.errorCount + (options.bounded ? 1 : 0);
+    const exhausted = options.bounded && nextErrorCount >= MAX_DELIVERY_ATTEMPTS;
+    await db.update(issueQuestionResponseDeliveries).set({
+      // Keep an exhausted claim owned until recordTerminal commits its outcome.
+      status: exhausted ? "delivering" : "pending",
+      ...(options.bounded ? { errorCount: nextErrorCount } : {}),
+      lastErrorCode: errorCode,
+      updatedAt: at,
+    }).where(and(
+      eq(issueQuestionResponseDeliveries.id, delivery.id),
+      eq(issueQuestionResponseDeliveries.status, "delivering"),
+      eq(issueQuestionResponseDeliveries.attemptCount, delivery.attemptCount),
+    ));
     return exhausted;
   }
 
@@ -674,6 +675,7 @@ export function questionResponseDeliveryService(
         deliveryId: claimed.id,
         interactionId,
         attemptCount: claimed.attemptCount,
+        errorCount: claimed.errorCount + 1,
         exhausted,
       }, "question response delivery will retry after wake failure");
       if (!exhausted) return null;

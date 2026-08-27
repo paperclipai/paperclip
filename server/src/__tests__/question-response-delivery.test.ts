@@ -324,6 +324,56 @@ describeEmbeddedPostgres("question response delivery", () => {
     expect(delivery).toMatchObject({
       status: "fallback_queued",
       attemptCount: 6,
+      errorCount: 0,
+      targetRunId: fallbackRunId,
+    });
+  });
+
+  it("preserves the actual-error retry budget after prolonged wake suppression", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const fallbackRunId = randomUUID();
+    let wakeAttempts = 0;
+    const wakeup = vi.fn().mockImplementation(async () => {
+      wakeAttempts += 1;
+      if (wakeAttempts <= 5) return null;
+      if (wakeAttempts === 6) throw new Error("scheduler temporarily unavailable");
+      return db.insert(heartbeatRuns).values({
+        id: fallbackRunId,
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        invocationSource: "automation",
+        status: "queued",
+        runtimeMode: "legacy",
+        driverKind: "codex",
+        contextSnapshot: { issueId: seeded.issueId },
+      }).returning().then((rows) => rows[0]!);
+    });
+    const service = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer: vi.fn(),
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await expect(service.deliver(seeded.interaction.id)).resolves.toBeNull();
+    }
+    await expect(service.deliver(seeded.interaction.id)).resolves.toBeNull();
+    const [afterError] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(afterError).toMatchObject({
+      status: "pending",
+      attemptCount: 6,
+      errorCount: 1,
+      lastErrorCode: "scheduler temporarily unavailable",
+    });
+
+    await expect(service.deliver(seeded.interaction.id)).resolves.toMatchObject({
+      status: "fallback_queued",
+      targetRunId: fallbackRunId,
+    });
+    const [delivered] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivered).toMatchObject({
+      status: "fallback_queued",
+      attemptCount: 7,
+      errorCount: 1,
       targetRunId: fallbackRunId,
     });
   });

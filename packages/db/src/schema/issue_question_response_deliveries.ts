@@ -34,7 +34,10 @@ export const issueQuestionResponseDeliveries = pgTable(
     payloadSha256: text("payload_sha256").notNull(),
     status: text("status").notNull().default("pending"),
     deliveryMode: text("delivery_mode"),
+    /** Monotonic claim generation used to fence stale workers. */
     attemptCount: integer("attempt_count").notNull().default(0),
+    /** Actual side-effect failures; scheduling suppression does not consume this budget. */
+    errorCount: integer("error_count").notNull().default(0),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
     acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
     lastErrorCode: text("last_error_code"),

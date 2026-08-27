@@ -11,6 +11,7 @@ CREATE TABLE "issue_question_response_deliveries" (
 	"status" text DEFAULT 'pending' NOT NULL,
 	"delivery_mode" text,
 	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"error_count" integer DEFAULT 0 NOT NULL,
 	"last_attempt_at" timestamp with time zone,
 	"acknowledged_at" timestamp with time zone,
 	"last_error_code" text,
