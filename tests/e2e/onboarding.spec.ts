@@ -41,12 +41,12 @@ test.describe("Onboarding wizard", () => {
     // The wizard may open on a launcher card or directly on the capsule
     // wizard; the front door (step 0) requires a click into the create path.
     const startBtn = page.getByRole("button", {
-      name: /Start Onboarding|New Company|Add Agent/,
+      name: /Start Onboarding|New Organization|Add Agent/,
     });
     if (await startBtn.count()) {
       await startBtn.first().click();
     }
-    const createCard = page.getByRole("button", { name: /Build a new company/ });
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
     if (await createCard.count()) {
       await createCard.first().click();
     }

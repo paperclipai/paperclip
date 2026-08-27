@@ -33,6 +33,16 @@
 // The server relies on that crash today, so the initializer passes
 // `mode: "strict"`: Sentry still captures the event, then exits the process,
 // so the existing crash-and-restart behavior stays.
+//
+// Before it imports the package, the bootstrap checks the installed
+// `@sentry/node` version against the exact version this manifest's
+// `peerDependencies` declares — the same audited version documented in
+// `doc/observability.md`. A missing or a mismatched version logs one
+// diagnostic and leaves the server running without error monitoring; it
+// never throws. This gate mirrors the OpenTelemetry gate in
+// `instrumentation.ts`.
+
+import { checkExactPeerVersions } from "./peer-version-check.js";
 
 const dsn = process.env.SENTRY_DSN;
 
@@ -146,6 +156,24 @@ export function buildSentryInitOptions(
 }
 
 async function bootstrapSentry(dsn: string): Promise<void> {
+  // Gate on the exact peer version before touching the dynamic import: a
+  // package installed at the wrong version can still load and start, which
+  // would silently invalidate the privacy audit `doc/observability.md`
+  // records against one exact version. Checking first turns that into one
+  // precise, fail-open diagnostic.
+  const versionCheck = checkExactPeerVersions(["@sentry/node"]);
+  if (!versionCheck.ok) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[paperclip] SENTRY_DSN is set but the @sentry/node package is not " +
+        "installed, or is installed at an unsupported version. Install the " +
+        "declared version of @sentry/node to enable server error " +
+        "monitoring. Continuing without it.",
+      versionCheck.detail,
+    );
+    return;
+  }
+
   try {
     // Dynamic import so type-resolution doesn't require the package to be
     // installed unless the operator actually opts in.
@@ -159,14 +187,14 @@ async function bootstrapSentry(dsn: string): Promise<void> {
       close: (timeout) => Sentry.close(timeout),
     };
   } catch (err) {
-    // The package is not installed, or the dynamic import or init call
-    // failed. Fall through with a single diagnostic so the opt-in path is
-    // self-documenting. The gate fails open — the server keeps booting
-    // without error monitoring rather than crashing on an opt-in feature.
+    // The exact-version gate above already confirmed @sentry/node is
+    // installed at the declared version, so only a load or init failure
+    // after that point reaches this block.
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] SENTRY_DSN is set but the @sentry/node package is not " +
-        "installed. Install @sentry/node to enable server error monitoring.",
+      "[paperclip] SENTRY_DSN is set and @sentry/node passed the version " +
+        "check, but it failed to load or initialize. Continuing without " +
+        "error monitoring.",
       err,
     );
   }

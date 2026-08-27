@@ -115,9 +115,9 @@ describe("CloudAccessGate", () => {
     });
 
     const root = renderGate(container);
-    await waitForText(container, "No company access");
+    await waitForText(container, "No organization access");
 
-    expect(container.textContent).toContain("No company access");
+    expect(container.textContent).toContain("No organization access");
     expect(container.textContent).not.toContain("Outlet content");
 
     unmountRoot(root);
@@ -141,7 +141,7 @@ describe("CloudAccessGate", () => {
     await waitForText(container, "Outlet content");
 
     expect(container.textContent).toContain("Outlet content");
-    expect(container.textContent).not.toContain("No company access");
+    expect(container.textContent).not.toContain("No organization access");
 
     unmountRoot(root);
   });
