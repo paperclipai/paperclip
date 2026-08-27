@@ -88,6 +88,8 @@ Execution work is paused because the next move belongs to a reviewer or approver
 
 An external review service can also be a valid review path when the issue keeps an agent assignee and has an active one-shot monitor that will wake that assignee to check the service later.
 
+The current typed reviewer or approver may record an exact comment disposition. `APPROVE` atomically persists the comment, execution decision, and approved status transition. `HOLD` persists the comment and leaves the current review stage pending without creating a generic assignee wake. The tokens have disposition meaning only for the current participant; comments from other actors remain ordinary commentary.
+
 ### `done`
 
 The work is complete and terminal.
@@ -182,6 +184,8 @@ Use it for:
 - automatic wakeups when all blockers resolve
 
 Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
+
+A plain comment does not resume a `blocked` issue, even when it comes from a human or includes the legacy `reopen` flag. The caller must send the structured `resume: true` intent, and the normal blocker and subtree-hold gates must still pass. A queued wake that observes a later `blocked` state without that structured intent is stale: it is cancelled before execution, and checkout cannot restore the old status or assignee.
 
 `cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
 

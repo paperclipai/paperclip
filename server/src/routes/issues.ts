@@ -1684,23 +1684,31 @@ function actorMatchesExecutionParticipant(
 const APPROVAL_NEGATION_REGEX =
   /\b(?:NOT|REJECT(?:ED|ING|S)?|DENY|DENIED|DENYING|BLOCK(?:ED|ING|S)?|CHANGES?\s+REQUESTED)\b/i;
 
-function isApprovalReviewComment(body: string) {
+type ReviewCommentDisposition = "approve" | "hold";
+
+function parseReviewCommentDisposition(body: string): ReviewCommentDisposition | null {
   const normalized = body.replace(/\r\n?/g, "\n");
+  const exactDisposition = normalized.trim();
+  if (/^APPROVE$/i.test(exactDisposition)) return "approve";
+  if (/^HOLD$/i.test(exactDisposition)) return "hold";
   const headingMatch = normalized.match(/(?:^|\n)##\s*Review:\s*([^\n]*)/i);
   if (headingMatch) {
     const headingText = headingMatch[1];
     if (/\bAPPROVED\b/i.test(headingText) && !APPROVAL_NEGATION_REGEX.test(headingText)) {
-      return true;
+      return "approve";
     }
   }
   // Require the `kind: review` and `decision: approved` lines to appear on truly consecutive
   // lines (no blank-line separation) so prose like "the previous sprint decision: approved"
   // can't combine with an unrelated `kind: review` line elsewhere in the body to trigger
   // auto-approval. Use `[ \t]*` between the lines so `\s*` does not silently swallow a newline.
-  return (
+  if (
     /^[ \t]*kind[ \t]*:[ \t]*review[ \t]*\n[ \t]*decision[ \t]*:[ \t]*approved[ \t]*$/im.test(normalized)
     || /^[ \t]*decision[ \t]*:[ \t]*approved[ \t]*\n[ \t]*kind[ \t]*:[ \t]*review[ \t]*$/im.test(normalized)
-  );
+  ) {
+    return "approve";
+  }
+  return null;
 }
 
 function buildExecutionStageWakeContext(input: {
@@ -1878,10 +1886,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   ) {
     return false;
   }
-  // Only human comments should implicitly reopen finished work.
+  // Only human comments should implicitly reopen finished work. Blocked work
+  // requires the structured `resume: true` signal so an ordinary discussion
+  // comment cannot clear a durable blocked disposition.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -9414,6 +9424,18 @@ export function issueRoutes(
       onBehalfOfUserId: _requestedOnBehalfOfUserId,
       ...updateFields
     } = req.body;
+    const existingExecutionState = parseIssueExecutionState(existing.executionState);
+    const reviewCommentDisposition =
+      commentBody &&
+      updateFields.status === undefined &&
+      existing.status === "in_review" &&
+      existingExecutionState?.status === "pending" &&
+      actorMatchesExecutionParticipant(actor, existingExecutionState.currentParticipant ?? null)
+        ? parseReviewCommentDisposition(commentBody)
+        : null;
+    if (reviewCommentDisposition === "approve") {
+      updateFields.status = "done";
+    }
     const reviewPolicyChangeRequested =
       req.body.reviewPolicy !== undefined
       && req.body.reviewPolicy !== existing.reviewPolicy;
@@ -9464,7 +9486,8 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
-    const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    const explicitMoveToTodoRequested =
+      resumeRequested === true || (!isBlocked && reopenRequested === true);
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
       normalizedAssigneeAgentId !== undefined ||
@@ -10679,7 +10702,15 @@ export function issueRoutes(
         // Re-derive closed-ness from the post-update issue so a status change
         // like in_progress -> done with a closure comment does not enqueue a
         // stale issue_commented wake for an already-completed issue.
-        const skipAssigneeCommentWake = selfComment || isClosedIssueStatus(issue.status);
+        const inertBlockedComment =
+          existing.status === "blocked" &&
+          resumeRequested !== true &&
+          issue.status === "blocked";
+        const skipAssigneeCommentWake =
+          selfComment ||
+          isClosedIssueStatus(issue.status) ||
+          inertBlockedComment ||
+          reviewCommentDisposition === "hold";
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -12194,7 +12225,8 @@ export function issueRoutes(
     if (effectiveResumeRequested !== true && effectiveReopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
-    const explicitMoveToTodoRequested = effectiveReopenRequested || effectiveResumeRequested === true;
+    const explicitMoveToTodoRequested =
+      effectiveResumeRequested === true || (!isBlocked && effectiveReopenRequested === true);
     const scheduledRetryForHumanComment =
       shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: true,
@@ -12373,11 +12405,14 @@ export function issueRoutes(
 
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
     const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
-    const shouldAutoApproveReviewComment =
+    const reviewCommentDisposition =
       currentIssue.status === "in_review" &&
       currentExecutionState?.status === "pending" &&
-      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
-      isApprovalReviewComment(req.body.body);
+      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null)
+        ? parseReviewCommentDisposition(req.body.body)
+        : null;
+    const shouldAutoApproveReviewComment =
+      reviewCommentDisposition === "approve";
 
     // Persist the comment and the auto-approval state transition atomically when both apply.
     // Without a single transaction, a 422 (or any error) thrown by the status update after the
@@ -12691,7 +12726,12 @@ export function issueRoutes(
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const skipWake = selfComment || isClosedIssueStatus(wakeIssueSnapshot.status);
+      const inertBlockedComment = isBlocked && effectiveResumeRequested !== true;
+      const skipWake =
+        selfComment ||
+        isClosedIssueStatus(wakeIssueSnapshot.status) ||
+        inertBlockedComment ||
+        reviewCommentDisposition === "hold";
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           addWakeup(assigneeId, {
