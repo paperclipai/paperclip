@@ -12,7 +12,7 @@ Current implementation status:
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24.11+
 - pnpm 9+
 
 ## Dependency Lockfile Policy
@@ -42,6 +42,23 @@ This starts:
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
+
+To run against a separate local state root, pass `--data-dir`. The dev runner
+translates it to an isolated `PAPERCLIP_HOME` before migration checks or server
+startup, so embedded PostgreSQL and other default instance state live under that
+directory:
+
+```sh
+pnpm dev --data-dir ./tmp/paperclip-dev
+```
+
+Pass the same option to the service-management commands so they use the
+isolated runtime-service registry:
+
+```sh
+pnpm dev:list --data-dir ./tmp/paperclip-dev
+pnpm dev:stop --data-dir ./tmp/paperclip-dev
+```
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
@@ -327,6 +344,8 @@ Every local install keeps runtime state directly under the selected instance roo
     storage/                                     # local_disk uploads
     backups/                                     # automatic DB backups
   logs/
+  runtime-services/                             # managed local-service registry
+  runtime-service-logs/                         # append-only managed-service stdout/stderr
   secrets/master.key                             # local_encrypted master key
   workspaces/<agent-id>/                         # default agent workspaces
   projects/                                      # project execution workspaces
@@ -483,17 +502,17 @@ Seeding state is tracked in `.paperclip/seed-manifest.json`. The versioned manif
 
 The default `worktree init` still seeds eagerly. A lean worktree (created without an eager seed) has a `pending` manifest until something seeds it on demand:
 
-- `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: only a complete `verified` manifest short-circuits it, so it is safe to call repeatedly and from concurrent processes. Managed workspaces derive the source exclusively from the control-plane-provided base project workspace; manual worktrees must pass `--from-config`.
+- `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: only a complete `verified` manifest short-circuits it, so it is safe to call repeatedly and from concurrent processes. Managed workspaces derive the source from the control-plane-provided base project workspace when it carries its own `.paperclip/config.json`, and otherwise from the control plane's own registered instance config; either way the workspace's manifest never selects it. Manual worktrees must pass `--from-config`.
 - `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot. Managed runs transparently seed a lean worktree from their registered base workspace; an unmanaged lean worktree must first run `worktree ensure-seeded --from-config <source-config>`.
-- Managed git-worktree runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when a legacy workspace policy has no explicit runtime provision command and the manifest is not verified. An explicitly configured runtime provision command always takes precedence.
+- Managed Paperclip git worktrees default to the repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand`, so the isolated config and pending manifest cannot be silently skipped. Runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified. Explicitly configured provision commands still take precedence.
 - The built-in deferred seed is recorded as its own terminal `workspace_seed` operation. A zero exit code is not enough for success: the operation succeeds only when `.paperclip/seed-manifest.json` contains complete verified evidence; failed, missing, or malformed manifests produce a failed operation with the seed phase in metadata.
-- Worktrees created before lazy seeding shipped have neither marker; they are treated as already-seeded for backward compatibility (never re-cloned).
+- Worktrees created before lazy seeding shipped may have neither marker. Paperclip adopts them only after their configured database proves a compatible migration journal and the core Paperclip schema; otherwise managed startup creates a pending manifest and performs the normal verified seed. Manual markerless worktrees must provide `--from-config` so the source remains explicit.
 
-Both `minimal` and `full` modes use the same terminal data-validation contract. Source validation accepts a migration journal that is a prefix of the checkout's journal and records the source revision in seed diagnostics; it rejects a source that is ahead of the checkout because that would require a downgrade. After restore, Paperclip applies pending migrations and requires the target journal to be current. Both validations also read a credential-backed auth user, instance administrator role, active company membership, and representative cloned company/issue pair. Restore, migrations, execution quarantine, routine pausing, workspace rebinding, and post-restore validation all run under the seed lock. An interruption leaves the exact active phase in terminal `failed` state; it cannot produce readiness evidence.
+Both `minimal` and `full` modes use the same terminal data-validation contract. Source validation accepts a migration journal that is a prefix of the checkout's journal and records the source revision in seed diagnostics; it rejects a source that is ahead of the checkout because that would require a downgrade. After restore, Paperclip applies pending migrations and requires the target journal to be current. Both validations also read an auth user with an instance administrator role, active company membership, and representative cloned company/issue pair. Authenticated instances additionally require that administrator to have a non-empty credential account. `local_trusted` instances accept the implicit local Board user without an account row because that mode intentionally has no human login flow. Restore, migrations, execution quarantine, routine pausing, workspace rebinding, and post-restore validation all run under the seed lock. An interruption leaves the exact active phase in terminal `failed` state; it cannot produce readiness evidence.
 
 The seed process must own the target embedded PostgreSQL lifecycle for that entire sequence. It refuses to restore into a target postmaster that is already running, suppresses the embedded provider's process-global exit hooks, and stops its owned target only after validation or failure cleanup. A shutdown detected during restore is recorded as a target-database shutdown diagnostic rather than a generic restore failure.
 
-The seed manifest never grants source-path authority. Its source path and instance are diagnostic assertions that must exactly match the realpath-canonical registered source before any lock, backup, service stop, spawn, or database mutation. Missing registration, sibling or foreign paths, symlink aliases, source/target identity collisions, and company mismatches fail closed.
+The seed manifest never grants source-path authority. Its source path and instance are diagnostic assertions derived from the realpath-canonical registered source. Deferred seeding resolves registration independently before taking the seed lock; under that lock it replaces stale source diagnostics from the registered value and then revalidates the manifest before any backup, service stop, spawn, or database mutation. Missing registration, invalid registered paths, source/target identity collisions, target-instance mismatches, and company mismatches fail closed.
 
 **Unverified-seed guard.** `pnpm dev` (the dev-runner) refuses to boot a worktree whose manifest is pending, running, failed, malformed, or missing required verification evidence and points you at the fix:
 
@@ -691,9 +710,16 @@ eval "$(npx paperclipai worktree env)"
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
+An issue can pin its isolated worktree to an exact pre-existing branch instead of a template-derived one — the contract PR-preparation tasks use. Set the issue's `executionWorkspaceSettings` to `{ "mode": "isolated_workspace", "workspaceStrategy": { "type": "git_worktree", "existingBranch": "<branch>" } }`. The validator requires isolated mode plus a `git_worktree` strategy and rejects `branchTemplate` alongside `existingBranch`. At dispatch the runtime attaches (never creates, renames, fast-forwards, or resets) that branch: it reuses a registered worktree that already has the branch checked out (including legacy `.worktrees/` paths), otherwise it attaches the branch under the managed worktree parent. A missing branch, an occupied worktree path on another branch, or a non-worktree strategy fails closed with a `workspace_validation_failed` error instead of falling back to the shared checkout or a derived branch, and an inherited `reuse_existing` workspace binding on a different branch is ignored in favor of realizing the pinned branch.
+
 Heavier setup that is only needed by a managed runtime service can use `workspaceStrategy.runtimeProvisionCommand`. Paperclip runs this command lazily before spawning the first service in a start batch, serializes concurrent provisioning for the same workspace, and records the attempt as `workspace_runtime_provision`. The command receives the same workspace environment as `provisionCommand` and should be idempotent because later service-start batches invoke it again.
 
 Managed runtime control actions (`start`, `stop`, `restart`, and job `run`) are mutually exclusive per execution workspace. An overlapping control is rejected with `409 workspace_runtime_control_in_progress` instead of racing the active operation, and authorization is still checked first, so the conflict never widens who may control a workspace.
+
+Local managed runtime services write stdout and stderr directly to append-only
+files under the instance's `runtime-service-logs/` directory. The child inherits
+the file descriptors rather than supervisor-owned pipes, so request-logging
+servers remain responsive and adoptable when the control plane restarts.
 
 Every managed control reaches a terminal operation state. Each one stamps the owning server process and pid on its `workspace_operations` row and heartbeats while it runs, and each one carries a wall-clock ceiling (30 minutes for lifecycle controls, 4 hours for workspace jobs) so a hung provider or listener fails the operation rather than leaving it active. When a start fails part-way, Paperclip tears the workspace's runtime services down through the ordinary stop path and records a stopped desired state, so the lane is retryable and a startup reconcile will not resurrect a service that never came up.
 
@@ -729,6 +755,15 @@ packages/skills-catalog/
 Server and CLI import the generated manifest; they do not crawl repository
 paths at request time. Root `skills/` remains reserved for Paperclip runtime
 skills and is not part of the catalog.
+
+Skill-capable legacy local adapters always select the bundled
+`paperclipai/paperclip/paperclip` operational skill when it is present in the
+runtime inventory. This applies to existing agents without a stored skill
+preference and to explicit empty optional-skill selections. The operational
+skill supplies the control-plane workflow that those adapters need for
+heartbeats. Other runtime skills remain controlled by
+`paperclipSkillSync.desiredSkills`. The native `paperclip_runner` does not use
+this legacy default because its protocol supplies the control-plane contract.
 
 Validate the catalog without writing the manifest:
 

@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import {
+  IssueAssigneePausedNotice,
   IssueChatThread,
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
@@ -649,13 +650,13 @@ describe("IssueChatThread", () => {
       );
     });
 
-    // The mode chip is always present (mockup rev 5) — neutral "Agent mode" here.
+    // The mode chip is always present (mockup rev 5) — neutral "Auto mode" here.
     const chip = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-toggle"]',
     ) as HTMLButtonElement | null;
     expect(chip).not.toBeNull();
     expect(chip?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip?.textContent).toContain("Agent mode");
+    expect(chip?.textContent).toContain("Auto mode");
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
@@ -743,7 +744,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(chip?.textContent).toContain("Agent mode");
+    expect(chip?.textContent).toContain("Auto mode");
 
     act(() => {
       root.unmount();
@@ -3828,7 +3829,7 @@ describe("IssueChatThread", () => {
               agentId: "agent-1",
               agentName: "Agent 1",
               adapterType: "codex_local",
-              currentStatusMessage: "Syncing git worktree to sandbox",
+              currentStatusMessage: "Syncing git worktree to environment",
               currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
               currentToolName: "bash",
               lastEventAt: new Date(Date.now() - 2000).toISOString(),
@@ -3913,5 +3914,82 @@ describe("IssueChatThread", () => {
       authorName: "Alice",
       avatarUrl: "/avatars/alice.png",
     });
+  });
+});
+
+describe("IssueAssigneePausedNotice", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  function pausedAgent(pauseReason: string): Agent {
+    return {
+      id: "agent-1",
+      name: "CEO",
+      status: "paused",
+      pauseReason,
+    } as unknown as Agent;
+  }
+
+  it("explains an import pause and resumes the agent on click", () => {
+    const onResume = vi.fn();
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice agent={pausedAgent("import")} onResume={onResume} resuming={false} />,
+      );
+    });
+
+    expect(container.textContent).toContain("arrived paused from an organization import");
+    const resumeButton = container.querySelector(
+      '[data-testid="issue-assignee-paused-resume"]',
+    ) as HTMLButtonElement | null;
+    expect(resumeButton).not.toBeNull();
+
+    act(() => {
+      resumeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onResume).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("offers no resume action for budget pauses", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice agent={pausedAgent("budget")} onResume={vi.fn()} resuming={false} />,
+      );
+    });
+
+    expect(container.textContent).toContain("budget hard stop");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("renders nothing for an active agent", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice
+          agent={{ id: "agent-1", name: "CEO", status: "idle" } as unknown as Agent}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).toBeNull();
+
+    act(() => root.unmount());
   });
 });

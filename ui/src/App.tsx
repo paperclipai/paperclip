@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
@@ -8,6 +9,10 @@ import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGat
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
+import { CloudManagedPageGate } from "./components/CloudManagedPageGate";
+import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
+import { IsolatedWorkspacesRouteGate } from "./components/IsolatedWorkspacesRouteGate";
+import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
@@ -64,17 +69,13 @@ import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
-import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
-import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
-import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
-import { InstanceAccess } from "./pages/InstanceAccess";
-import { InstanceSettings } from "./pages/InstanceSettings";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
+import { InstanceAccess } from "./pages/InstanceAccess";
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
@@ -96,8 +97,14 @@ import {
   onboardingStepForCompany,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
-import { useCompanyMission } from "./hooks/useCompanyMission";
-import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { useCloudInstance } from "./hooks/useCloudInstance";
+import { cloudStackCreateUrl } from "./lib/cloudLinks";
+import { navigateTopLevel } from "@/lib/browserNavigation";
+
+const CompanyExport = lazy(() =>
+  import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
+);
 
 function boardRoutes() {
   return (
@@ -111,12 +118,36 @@ function boardRoutes() {
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
-      <Route path="company/settings/members" element={<CompanyAccess />} />
-      <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      <Route path="company/settings/invites" element={<CompanyInvites />} />
-      <Route path="company/export/*" element={<CompanyExport />} />
-      <Route path="company/import" element={<CompanyImport />} />
-      <Route path="company/settings/secrets" element={<Secrets />} />
+      <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
+        <Route path="company/settings/members" element={<CompanyAccess />} />
+        <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
+      </Route>
+      {/* Invites moved into the Members page; the old URL redirects (and stays
+          gated so a hidden Invites surface never round-trips through it). */}
+      <Route element={<HiddenSettingsPageGate pageKey="company.invites" />}>
+        <Route
+          path="company/settings/invites"
+          element={<Navigate to="/company/settings/members?tab=invites" replace />}
+        />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="company.export" />}>
+        <Route
+          path="company/export/*"
+          element={(
+            <Suspense fallback={<PaperclipLoading />}>
+              <CompanyExport />
+            </Suspense>
+          )}
+        />
+      </Route>
+      <Route element={<CloudManagedPageGate />}>
+        <Route element={<HiddenSettingsPageGate pageKey="company.import" />}>
+          <Route path="company/import" element={<CompanyImport />} />
+        </Route>
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="company.secrets" />}>
+        <Route path="company/settings/secrets" element={<Secrets />} />
+      </Route>
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
@@ -144,18 +175,30 @@ function boardRoutes() {
         <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
         <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       </Route>
-      <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
-      <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
-      <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
-      <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
-      <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
-      <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
-      <Route path="company/settings/instance/access" element={<InstanceAccess />} />
-      <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
-      <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
-      <Route path="company/settings/instance/plugins" element={<PluginManager />} />
-      <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
-      <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
+      <Route path="company/settings/instance" element={<Navigate to="/company/settings" replace />} />
+      <Route element={<HiddenSettingsPageGate pageKey="instance.profile" />}>
+        <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
+      </Route>
+      <Route path="company/settings/instance/general" element={<Navigate to="/company/settings" replace />} />
+      <Route path="company/settings/instance/heartbeats" element={<Navigate to="/company/settings" replace />} />
+      <Route element={<HiddenSettingsPageGate pageKey="instance.environments" />}>
+        <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
+        <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
+        <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
+        <Route path="company/settings/instance/access" element={<InstanceAccess />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
+        <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.plugins" />}>
+        <Route path="company/settings/instance/plugins" element={<PluginManager />} />
+        <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.adapters" />}>
+        <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
+      </Route>
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
       <Route path="skills/studio" element={<SkillStudio />} />
       <Route path="skills/studio/new" element={<SkillStudio />} />
@@ -179,11 +222,15 @@ function boardRoutes() {
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
+      <Route element={<IsolatedWorkspacesRouteGate />}>
+        <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
+      </Route>
       <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
       <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
-      <Route path="workspaces" element={<Workspaces />} />
+      <Route element={<IsolatedWorkspacesRouteGate />}>
+        <Route path="workspaces" element={<Workspaces />} />
+      </Route>
       <Route path="issues" element={<Issues />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
@@ -249,12 +296,14 @@ function boardRoutes() {
       />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
-      <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
-      <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
+      <Route element={<IsolatedWorkspacesRouteGate />}>
+        <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
+        <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
+      </Route>
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="artifacts" element={<Artifacts />} />
@@ -340,6 +389,7 @@ function LegacySettingsRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const { hidden: hiddenSettings } = useHiddenSettings();
 
   if (loading) {
     return <PaperclipLoading />;
@@ -365,8 +415,11 @@ function LegacySettingsRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  const normalizedPath = normalizeRememberedInstanceSettingsPath(
-    `${location.pathname}${location.search}${location.hash}`,
+  const normalizedPath = filterHiddenInstanceSettingsPath(
+    normalizeRememberedInstanceSettingsPath(
+      `${location.pathname}${location.search}${location.hash}`,
+    ),
+    hiddenSettings,
   );
 
   return (
@@ -398,16 +451,14 @@ function legacyToolsRedirectTarget(tab?: string) {
 export function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const { t } = useTranslation();
+  const cloudInstance = useCloudInstance();
+  const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const matchedCompany = companyPrefix
     ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
     : null;
-  // Which step this company belongs on, by the same rule the route resolver
-  // and the dashboard already use. Resolved above the early return below,
-  // because a hook cannot be called after it.
-  const { hasMission } = useCompanyMission(matchedCompany?.id ?? null);
-
   // The OnboardingWizard auto-opens on this route (and can also be opened
   // explicitly). While it is showing it covers the whole screen, so the
   // launcher card below must not stay interactive behind it — otherwise users
@@ -420,13 +471,13 @@ export function OnboardingRoutePage() {
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`
     : companies.length > 0
-      ? "Create another company"
-      : "Create your first company";
+      ? "Create another organization"
+      : "Create your first organization";
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this company."
+    ? "Run onboarding again to add an agent and a starter task for this organization."
     : companies.length > 0
-      ? "Run onboarding again to create another company and seed its first agent."
-      : "Get started by creating a company and your first agent.";
+      ? "Run onboarding again to create another organization and seed its first agent."
+      : "Get started by creating an organization and your first agent.";
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -434,24 +485,39 @@ export function OnboardingRoutePage() {
         <h1 className="text-xl font-semibold">{title}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-4">
-          <Button
-            onClick={() =>
-              matchedCompany
-                ? openOnboarding({
-                    // "Add another agent" to a company that already has its
-                    // mission must not stop to ask for the mission again. An
-                    // unsettled or failed lookup reads as "no mission" and
-                    // costs the step, which the customer can pass - and the
-                    // mission step now updates the existing goal rather than
-                    // adding a second one.
-                    initialStep: onboardingStepForCompany(hasMission),
-                    companyId: matchedCompany.id,
-                  })
-                : openOnboarding()
-            }
-          >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
-          </Button>
+          {/* On a managed stack whose Cloud origin is unknown there is nowhere
+              to send this click: creation lives on Cloud, and in-app creation
+              is a 403 floor. A button that does nothing is worse than none, so
+              say why instead of rendering an inert control. */}
+          {!matchedCompany && cloudInstance && !createStackUrl ? (
+            <p className="text-sm text-muted-foreground">
+              {t("app.cloudCreateUnavailable", {
+                defaultValue:
+                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+              })}
+            </p>
+          ) : (
+            <Button
+              onClick={() =>
+                matchedCompany
+                  ? openOnboarding({
+                      // "Add another agent" to a company that already has its
+                      // mission must not stop to ask for the mission again. An
+                      // unsettled or failed lookup reads as "no mission" and
+                      // costs the step, which the customer can pass - and the
+                      // mission step now updates the existing goal rather than
+                      // adding a second one.
+                      initialStep: onboardingStepForCompany(),
+                      companyId: matchedCompany.id,
+                    })
+                  : cloudInstance && createStackUrl
+                    ? navigateTopLevel(createStackUrl)
+                    : openOnboarding()
+              }
+            >
+              {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -521,20 +587,41 @@ function UnprefixedBoardRedirect() {
 function NoCompaniesStartPage() {
   const { openOnboarding } = useDialogActions();
   const { t } = useTranslation();
+  // A managed stack with no visible companies is a loading or error state, not
+  // an invitation to create one in-app — creation lives on Cloud (403 floor).
+  const cloudInstance = useCloudInstance();
+  const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
 
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {t("app.noCompanies.title", { defaultValue: "Create your first company" })}
+          {t("app.noCompanies.title", { defaultValue: "Create your first organization" })}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {t("app.noCompanies.description", { defaultValue: "Get started by creating a company." })}
+          {t("app.noCompanies.description", { defaultValue: "Get started by creating an organization." })}
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>
-            {t("app.noCompanies.newCompany", { defaultValue: "New Company" })}
-          </Button>
+          {/* Same as the onboarding route: no Cloud origin means nowhere to
+              send the click, and in-app creation is a 403 floor here. */}
+          {cloudInstance && !createStackUrl ? (
+            <p className="text-sm text-muted-foreground">
+              {t("app.cloudCreateUnavailable", {
+                defaultValue:
+                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+              })}
+            </p>
+          ) : (
+            <Button
+              onClick={() =>
+                cloudInstance && createStackUrl
+                  ? navigateTopLevel(createStackUrl)
+                  : openOnboarding()
+              }
+            >
+              {t("app.noCompanies.newCompany", { defaultValue: "New Organization" })}
+            </Button>
+          )}
         </div>
       </div>
     </div>

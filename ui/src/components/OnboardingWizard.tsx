@@ -1,6 +1,17 @@
 import { useEffect, useState, useMemo, useRef } from "react";
+import type { CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import { MotionConfig, motion } from "motion/react";
+import type {
+  AdapterEnvironmentTestResult,
+  AgentRole,
+  Environment,
+  InstanceSettings,
+} from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { Label } from "./ui/label";
+import { Input } from "./ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -11,6 +22,13 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { environmentsApi } from "../api/environments";
+import { instanceSettingsApi } from "../api/instanceSettings";
+import {
+  resolveAdapterTestEnvironmentId,
+  resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
+} from "../lib/adapter-test-environment";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -44,6 +62,7 @@ import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
   canGoBackFromOnboardingStep,
@@ -52,13 +71,20 @@ import {
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCompanyMission } from "../hooks/useCompanyMission";
+import { useCloudInstance } from "../hooks/useCloudInstance";
 import {
   isExistingCompanyMissionUnresolved,
   planMissionPersistence,
 } from "../lib/onboarding-mission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
-import { AgentCapsule } from "./AgentCapsule";
+import { PillGuy } from "./onboarding/PillGuy";
+import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
+import { AgentPreview } from "./onboarding/AgentPreview";
+import { FooterNav } from "./onboarding/FooterNav";
+import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
+import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
+import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -314,6 +340,9 @@ function OnboardingWizardInner({
   // kept first so a future move inside the route tree needs no change here.
   const companyPrefix =
     matchedCompanyPrefix ?? companyPrefixFromOnboardingPath(location.pathname);
+  // Managed stacks create organizations on Cloud, so the route below never
+  // resolves into the create wizard there — see resolveRouteOnboardingOptions.
+  const cloudInstance = useCloudInstance();
 
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
@@ -325,20 +354,19 @@ function OnboardingWizardInner({
           (company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
         )?.id ?? null
       : null;
-  const { hasMission: routeCompanyHasMission, settled: routeMissionSettled } =
-    useCompanyMission(routeMatchedCompanyId);
-
-  // Hold the options back until the mission lookup settles, exactly as they
-  // are already held back while companies load. The step below is applied once
-  // and not revised, so the wizard must not open before the answer is in.
+  // The mission lookup used to gate this: the step was applied once and not
+  // revised, so opening before the answer arrived left the customer on the
+  // wrong step. The step no longer depends on the answer, so the wait bought
+  // nothing but a slower open. Companies still gate it — the resolver needs
+  // them to match the prefix at all.
   const routeOnboardingOptions =
-    (companyPrefix && companiesLoading) || !routeMissionSettled
+    companyPrefix && companiesLoading
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,
           companyPrefix,
           companies,
-          companyHasMission: routeCompanyHasMission,
+          cloudManaged: Boolean(cloudInstance),
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
@@ -385,7 +413,24 @@ function OnboardingWizardInner({
   const [q4, setQ4] = useState((saved?.q4 as string) ?? ""); // What would success look like?
 
   // Step 2
-  const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "Chief of staff");
+  // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
+  // on the customer's behalf that they then have to notice and undo. It is the
+  // step's only question, and its CTA gates on it.
+  const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
+  // Defaults to `general` rather than empty. The arc stopped asking for a role
+  // — a customer naming their first agent is describing what it does, not
+  // filing it — but the hire still needs one, and the guard below returns
+  // silently when it is missing. An unset role there would mean Connect
+  // appearing to work and hiring nobody.
+  const [agentRole, setAgentRole] = useState<AgentRole>(
+    // `||`, not `??`: the empty string was this field's default before the arc
+    // stopped asking for a role, so every draft saved by an earlier build holds
+    // `agentRole: ""`. `??` passes that straight through, and an empty role
+    // reaches the silent return in the hire — the exact failure the default
+    // exists to prevent, arriving through a restored draft instead of a fresh
+    // one.
+    (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
+  );
   const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   const [model, setModel] = useState((saved?.model as string) ?? "");
@@ -427,6 +472,17 @@ function OnboardingWizardInner({
   // every company change, and the effect also calls setStep - it would drag
   // the user back to the route's initial step mid-flow.
   const createdCompanyIdRef = useRef<string | null>(null);
+  // In flight, synchronously. `loading` cannot answer this: it is state, so a
+  // second caller in the same tick — key repeat holding Enter down — reads the
+  // value the first has not written yet. `createdCompanyId` cannot answer it
+  // either, because it is not set until the request it guards has resolved. A
+  // ref is written before the request goes out, so the second caller sees it.
+  const creatingCompanyRef = useRef(false);
+  // Same shape for the hire. Greptile (round-3 PR): with "Test now" gone the
+  // Connect handler re-runs a cached failed probe — and two overlapping
+  // submissions could then both pass the fresh probe and both hire. `loading`
+  // cannot stop the second caller for the same reason as above.
+  const hiringAgentRef = useRef(false);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -618,7 +674,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName, companyGoal, missionPath, missionConfirmed,
-      q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
+      q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -626,7 +682,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
-    q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
+    q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -658,6 +714,7 @@ function OnboardingWizardInner({
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
+    adapterType === "kimi_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
@@ -717,6 +774,7 @@ function OnboardingWizardInner({
     claude_local: "claude",
     codex_local: "codex",
     gemini_local: "gemini",
+    kimi_local: "kimi",
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
@@ -796,7 +854,10 @@ function OnboardingWizardInner({
     setQ2("");
     setQ3("");
     setQ4("");
-    setAgentName("Chief of staff");
+    // Back to the mount defaults: an empty name (the step's only question, and
+    // what its CTA gates on) and the neutral role every onboarding hire uses.
+    setAgentName("");
+    setAgentRole(DEFAULT_AGENT_ROLE);
     setAdapterType("claude_local");
     setModel("");
     setCommand("");
@@ -929,6 +990,8 @@ function OnboardingWizardInner({
       model:
         adapterType === "gemini_local"
           ? model || DEFAULT_GEMINI_LOCAL_MODEL
+          : adapterType === "kimi_local"
+            ? model || DEFAULT_KIMI_LOCAL_MODEL
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
             : adapterType === "opencode_local"
@@ -962,18 +1025,68 @@ function OnboardingWizardInner({
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
-        "Create or select a company before testing adapter environment."
+        "Create or select an organization before testing adapter environment."
       );
       return null;
     }
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
     try {
+      // Probe the environment a real run would use, so the Test matches a real
+      // run. The wizard has no agent yet, so the agent-default tier is always
+      // null; resolve the instance default and the instance local default. A
+      // settings-resolution failure surfaces an error instead of a silent host
+      // probe, which would report a false result.
+      let environmentList: Environment[];
+      let settings: InstanceSettings;
+      let managedSandboxOnly: boolean;
+      try {
+        const [list, generalSettings, experimentalSettings] = await Promise.all([
+          queryClient.ensureQueryData({
+            queryKey: queryKeys.environments.list(createdCompanyId),
+            queryFn: () => environmentsApi.list(createdCompanyId),
+          }),
+          queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.settings,
+            queryFn: () => instanceSettingsApi.get(),
+          }),
+          queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.experimentalSettings,
+            queryFn: () => instanceSettingsApi.getExperimental(),
+          }),
+        ]);
+        environmentList = list;
+        settings = generalSettings;
+        managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+      } catch {
+        setAdapterEnvError(
+          "Could not load environment settings to determine which environment to test in. Retry the test.",
+        );
+        return null;
+      }
+      // Mirror the server run-time resolution, including the managed-sandbox-only
+      // redirect: when the resolution lands on the local environment and the
+      // policy is on, probe the managed sandbox the real run uses instead. The
+      // resolver throws when no managed sandbox is available, which the outer
+      // catch surfaces as a fail-closed error rather than a local host probe.
+      const environmentId = resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
+        managedSandboxOnly,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environmentList),
+        // The policy hides the local environment, so an instance default that
+        // still points at the hidden local row names no visible environment.
+        // Pass the visible ids so the resolver redirects that stale local
+        // default to the managed sandbox instead of sending the hidden local id.
+        visibleEnvironmentIds: environmentList.map((environment) => environment.id),
+      });
       const result = await agentsApi.testEnvironment(
         createdCompanyId,
         adapterType,
         {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig()
+          adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+          environmentId,
         }
       );
       setAdapterEnvResult(result);
@@ -1096,11 +1209,59 @@ function OnboardingWizardInner({
 
       setStep(3); // → Create your team lead
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(err instanceof Error ? err.message : "Failed to create organization");
     } finally {
       setLoading(false);
     }
   }
+
+  // Step 1 → 3 ("Name your company"): create the company, then go straight to
+  // the first agent.
+  //
+  // This work used to live at the end of `handleConfirmMission`, because step 1
+  // led to the mission step and the company was created when that step was
+  // confirmed. Onboarding no longer asks for the mission, so step 1 has to do
+  // its own creating — routing 1 → 3 without this left the wizard on the agent
+  // step with no company to hire into, and nothing said so.
+  //
+  // No goal is written here. That is the difference from the path this was
+  // taken from, and it is deliberate: the mission is collected later, in the
+  // tenant app, so writing an empty one now would only give the company a goal
+  // it did not choose.
+  async function handleCreateCompany() {
+    if (createdCompanyId) {
+      setStep(3);
+      return;
+    }
+    if (creatingCompanyRef.current) return;
+    creatingCompanyRef.current = true;
+    setLoading(true);
+    setError(null);
+    try {
+      const company = await companiesApi.create({ name: companyName.trim() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      // Nothing was in hand when this started, so "unchanged" means still
+      // nothing. A route that supplied a company while the request was open has
+      // taken over the wizard, and adopting the company just created would
+      // fight it — and would leave the customer on a company they never
+      // navigated to.
+      if (!stillTheSameCompany(null)) return;
+      setCreatedCompanyId(company.id);
+      // Keep the mirror current rather than waiting for the next render, for
+      // the same reason the mission path does: anything downstream that asks
+      // `stillTheSameCompany` in this tick would otherwise be told no.
+      createdCompanyIdRef.current = company.id;
+      setCreatedCompanyPrefix(company.issuePrefix);
+      setSelectedCompanyId(company.id);
+      setStep(3);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create organization");
+    } finally {
+      creatingCompanyRef.current = false;
+      setLoading(false);
+    }
+  }
+
 
   // Step 4 → 5 ("Give it a heartbeat"): hire the lead agent + seed its
   // instructions, then advance to Review. Guarded so revisiting step 4
@@ -1116,6 +1277,8 @@ function OnboardingWizardInner({
       setStep(5);
       return;
     }
+    if (hiringAgentRef.current) return;
+    hiringAgentRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -1153,13 +1316,33 @@ function OnboardingWizardInner({
       }
 
       if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+        // A cached pass or warn is still good; a cached fail is retried. With
+        // the "Test now" card gone, this button is the only way to re-probe,
+        // and reusing a stale fail would lock a customer out of a machine
+        // they have since fixed.
+        const cachedUsable =
+          adapterEnvResult && adapterEnvResult.status !== "fail" ? adapterEnvResult : null;
+        const result = cachedUsable ?? (await runAdapterEnvironmentTest());
         if (!result) return;
+        // Block the hire on a failed environment test. A pass or a warn may
+        // proceed; a fail means the agent cannot run as configured.
+        if (result.status === "fail") {
+          setError(
+            "The environment test failed. Fix the reported checks before you hire this agent.",
+          );
+          return;
+        }
       }
 
+      // `agentRole` always holds a value now (see its default), so this is a
+      // type narrowing rather than a gate — but it stays, because a future
+      // path that clears the role must not reach a hire that silently no-ops.
+      if (!agentRole) return;
       const hire = await agentsApi.hire(createdCompanyId, {
-        name: agentName.trim(),
-        role: "ceo",
+        // The name is optional; an agent that reaches here without one is
+        // named for the job it was hired to do rather than left blank.
+        name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
+        role: agentRole,
         adapterType,
         adapterConfig: buildAdapterConfig(),
         runtimeConfig: buildNewAgentRuntimeConfig()
@@ -1215,6 +1398,7 @@ function OnboardingWizardInner({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
+      hiringAgentRef.current = false;
       setLoading(false);
     }
   }
@@ -1269,6 +1453,14 @@ function OnboardingWizardInner({
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    // Something nearer the key already dealt with it. The company-name field
+    // handles Enter itself and does not check for a modifier, so Cmd+Enter in
+    // that field reaches both handlers — and both would start creating a
+    // company. The `loading` guard below cannot catch that: `setLoading(true)`
+    // has not landed while the same event is still bubbling, so the second
+    // caller reads the value the first one has not written yet. Two companies,
+    // one keystroke.
+    if (e.defaultPrevented) return;
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       // Every button below is disabled while a request is in flight. The
@@ -1277,7 +1469,10 @@ function OnboardingWizardInner({
       // yet — two goals for one mission, two agents for one hire.
       if (loading) return;
       if (step === 0) return; // front door requires click
-      if (step === 1 && companyName.trim()) setStep(2);
+      if (step === 1 && companyName.trim()) {
+        if (skipsMissionStep) void handleCreateCompany();
+        else setStep(2);
+      }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
       else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
@@ -1287,6 +1482,30 @@ function OnboardingWizardInner({
   }
 
   if (!effectiveOnboardingOpen) return null;
+
+  // The arc strip stands in for the full-length bar only when the run began on
+  // the arc — the Cloud-first path, where the company already exists and steps
+  // 1-2 never happen. A run that started at step 1 keeps one continuous count.
+  // Step 2 is two different screens wearing one number: the grow path's "tell us
+  // about your team" questionnaire, and the create path's mission step.
+  // Onboarding stopped asking for the mission, but the questionnaire is still
+  // how a grow run describes the team it is levelling up — its answers seed the
+  // lead agent — so only the create path skips ahead.
+  const skipsMissionStep = onboardingPath !== "grow";
+
+  // Back lands on whatever came before this step *for this run*, which is not
+  // always `step - 1`. A create run went 1 → 3, so stepping blindly would walk
+  // it into the mission screen it never saw. Two runs still belong on step 2
+  // going back: a grow run, whose step 2 is the questionnaire rather than the
+  // mission, and a run that *entered* on the mission step because something
+  // opened it there — it has seen that screen, so Back owes it the way back.
+  function backStepFrom(current: Step): Step {
+    if (current === 3 && skipsMissionStep && entryStep !== 2) return 1;
+    return (current - 1) as Step;
+  }
+
+  const isAgentArcStep = agentArcStepFor(step) !== null;
+  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
@@ -1330,14 +1549,34 @@ function OnboardingWizardInner({
           <div
             className={cn(
               "w-full flex flex-col overflow-y-auto transition-(--tp-width) duration-500 ease-in-out",
-              step === 1 || step === 2 ? "md:w-1/2" : "md:w-full"
+              step === 2 ? "md:w-1/2" : "md:w-full"
             )}
           >
-            <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
-              {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
-                  filled once step ≥ N. Completed segments jump back. */}
+            <div
+              className={cn(
+                "mx-auto my-auto shrink-0",
+                // The arc sits in the prototype's card frame; the earlier steps
+                // keep the split-panel layout they were designed for. One
+                // element styled two ways, not two wrappers, so the step
+                // content below renders exactly once.
+                isAgentArcStep
+                  ? "w-(--sz-560px) max-w-full rounded-xl border border-border bg-card px-8 py-10 sm:px-10 sm:py-11"
+                  : "w-full max-w-md px-8 py-12",
+              )}
+            >
+              {/* Full-length progress bar (brand .wsteps/.wstep) — segment N
+                  filled once step ≥ N. Completed segments jump back.
+                  Hidden for a run that entered on the agent arc: the arc strip
+                  below counts that run's three steps, and showing both put two
+                  progress bars on the same screen. A run that started at step 1
+                  keeps this one throughout, so its count never restarts.
+
+                  Step 2 is absent: onboarding no longer asks for the mission, so
+                  a segment for it would be one the run can never fill, and the
+                  count would visibly skip from 1 to 3. */}
+              {!showsAgentArcStepper && (
               <div className="flex items-center gap-1.5 mb-8">
-                {([1, 2, 3, 4, 5] as const).map((s) => {
+                {([1, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
                   const canJump = canJumpToOnboardingStep({
                     targetStep: s,
@@ -1361,75 +1600,76 @@ function OnboardingWizardInner({
                   );
                 })}
               </div>
+              )}
 
-              {/* Persistent evolving capsule (steps 3–5): a single AgentCapsule
-                  held in the same tree slot so React reuses the DOM node and the
-                  morph reads as one capsule coming to life — dashed slot →
-                  solid (configured) → liquid fill + blue glow (online). */}
+              {/* The agent arc's progress strip. Numbered 1–3 over the wizard's
+                  steps 3–5, because company creation already happened in Cloud
+                  and the mission step is skipped when it did. */}
+              {showsAgentArcStepper && (
+                <Stepper
+                  step={agentArcStepFor(step)!}
+                  canJumpToStep={(target) =>
+                    canJumpToOnboardingStep({
+                      targetStep: AGENT_ARC_WIZARD_STEPS[target - 1]!,
+                      currentStep: step,
+                      entryStep,
+                    })
+                  }
+                  onJumpToStep={(target) => setStep(AGENT_ARC_WIZARD_STEPS[target - 1]! as Step)}
+                />
+              )}
+
+              {/* The hero, above the heading: one PillGuy held in the same tree
+                  slot across steps 3–5, so React reuses the DOM node and moving
+                  between steps never replays the entrance. It is dormant while
+                  the agent is being specified and wakes on Review. */}
               {step >= 3 && step <= 5 && (
-                <div className="mb-6 space-y-4">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      {step === 5 ? (
-                        <Check className="h-5 w-5 text-muted-foreground" />
-                      ) : (
-                        <Bot className="h-5 w-5 text-muted-foreground" />
-                      )}
-                    </div>
-                    <div>
-                      <h3 className="font-medium">
-                        {step === 3
+                // reducedMotion="user" defers to the OS setting, so the hero
+                // arrives in place for anyone who asked for less movement. The
+                // token layer zeroes the CSS durations; this covers the JS half.
+                <MotionConfig reducedMotion="user">
+                  {/* mb-6 continues the prototype's single rhythm past this
+                      block: it groups the hero and heading, and the step's own
+                      controls sit a step below on the same spacing. */}
+                  <div className="mb-6 space-y-6">
+                    <motion.div
+                      initial={capsuleHeroMotion.initial}
+                      animate={capsuleHeroMotion.animate}
+                      transition={capsuleHeroMotion.transition}
+                      className="flex flex-col items-center gap-2"
+                    >
+                      {/* Dormant until the agent is actually hired. Review is
+                          the first step where one exists, so that is where it
+                          wakes — the arc's payoff, not a flourish along it. */}
+                      <PillGuy
+                        state={step === 5 ? "alive" : "dormant"}
+                        className="size-(--sz-72px)"
+                      />
+                      <AgentPreview agentName={agentName} agentRole="" />
+                    </motion.div>
+
+                    <OnboardingHeading
+                      center
+                      title={
+                        step === 3
                           ? "Create your first agent"
                           : step === 4
                             ? "Connect a model"
-                            : "Review"}
-                      </h3>
-                      <p className="text-xs text-muted-foreground">
-                        {step === 3 ? (
-                          <>
-                            They'll help drive{" "}
-                            <span className="font-medium text-foreground">{companyName}</span>{" "}
-                            toward its mission. We default to{" "}
-                            <span className="font-medium text-foreground">Chief of staff</span>.
-                            Rename it to anything you like.
-                          </>
-                        ) : step === 4 ? (
-                          <>Pick the adapter and model your lead will run on, then check the environment.</>
+                            : "Let's get started..."
+                      }
+                      // The agent step carries no lede, as the prototype has it:
+                      // the capsule and the heading say what this is, and a
+                      // sentence restating it only pushes the fields down.
+                      lede={
+                        step === 3 ? undefined : step === 4 ? (
+                          <>Paperclip works with your existing subscription or API keys.</>
                         ) : (
-                          <>Your first agent is online and ready to work.</>
-                        )}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div
-                    className={cn(
-                      "flex flex-col items-center py-1 text-center",
-                      step === 5 ? "mt-8 gap-2.5" : "gap-1.5"
-                    )}
-                  >
-                    <AgentCapsule
-                      state={step === 3 ? "slot" : step === 4 ? "configured" : "online"}
-                      gradient={5}
-                      glow="blue"
-                      size="md"
+                          <>{agentName.trim() || "Your first agent"} is ready to work!</>
+                        )
+                      }
                     />
-                    {step !== 3 && (
-                      <p
-                        className={cn(
-                          "text-muted-foreground",
-                          step === 5 ? "text-sm" : "text-(length:--text-micro)"
-                        )}
-                      >
-                        {step === 4 ? (
-                          "your team lead, taking shape"
-                        ) : (
-                          <span className="font-medium text-foreground">{agentName}</span>
-                        )}
-                      </p>
-                    )}
                   </div>
-                </div>
+                </MotionConfig>
               )}
 
               {/* Step content */}
@@ -1519,21 +1759,18 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 1: Name your company (both paths) */}
+              {/* Step 1: name the organization (both paths). One question, one
+                  design: this mirrors the funnel's naming screen — same
+                  question, same sub, same left-aligned heading in a centered
+                  column — so a customer creating their second organization
+                  in-app is asked exactly what their first one asked them. */}
               {step === 1 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Building2 className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Name your organization</h3>
-                      <p className="text-xs text-muted-foreground">
-                        What should we call your team or company?
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 group">
+                <div className="mx-auto w-full max-w-md space-y-6">
+                  <OnboardingHeading
+                    title="What is the name of your organization?"
+                    lede="This will be the name of your Paperclip organization — choose something your team will recognize."
+                  />
+                  <div className="group">
                     <label
                       className={cn(
                         "text-xs mb-1 block transition-colors",
@@ -1546,14 +1783,14 @@ function OnboardingWizardInner({
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder="e.g. Northwind Labs"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && companyName.trim()) {
                           e.preventDefault();
-                          if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
-                          setStep(2);
+                          if (skipsMissionStep) void handleCreateCompany();
+                          else setStep(2);
                         }
                       }}
                       autoFocus
@@ -1759,24 +1996,21 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 3: Create your team lead — name only (capsule above) */}
+              {/* Step 3: the name, and only the name. The role picker went with
+                  the question it was asking — a customer naming their first
+                  agent is describing what it does, and the placeholder carries
+                  the range of answers that fit. Hiring uses the neutral
+                  `general` role; a specific one can be set later, where there
+                  is context to choose it in. */}
               {step === 3 && (
-                <div className="space-y-5">
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Chief of staff"
+                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-6">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="onboarding-agent-name">Name</Label>
+                    <Input
+                      id="onboarding-agent-name"
+                      placeholder="e.g. Chief of staff, Designer, Ron, Clippy..."
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && agentName.trim()) {
-                          e.preventDefault();
-                          setStep(4);
-                        }
-                      }}
                       autoFocus
                     />
                   </div>
@@ -1786,11 +2020,10 @@ function OnboardingWizardInner({
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
-                  {/* Adapter type radio cards */}
+                  {/* The two cards are self-describing; an "Adapter type"
+                      eyebrow above them named the mechanism rather than the
+                      choice. */}
                   <div>
-                    <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
-                    </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
                         <button
@@ -1814,11 +2047,9 @@ function OnboardingWizardInner({
                             setModel("");
                           }}
                         >
-                          {opt.recommended && (
-                            <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
-                              Recommended
-                            </Badge>
-                          )}
+                          {/* No "Recommended" badge: it sat on both options,
+                              so it recommended nothing and only added the one
+                              saturated colour on the screen. */}
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
                           <span className="text-muted-foreground text-(length:--text-nano)">
@@ -1838,7 +2069,7 @@ function OnboardingWizardInner({
                           showMoreAdapters ? "rotate-0" : "-rotate-90"
                         )}
                       />
-                      More Agent Adapter Types
+                      Advanced settings
                     </button>
 
                     {showMoreAdapters && (
@@ -1861,6 +2092,10 @@ function OnboardingWizardInner({
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "kimi_local" && !model) {
+                                setModel(DEFAULT_KIMI_LOCAL_MODEL);
                                 return;
                               }
                               if (nextType === "cursor" && !model) {
@@ -1888,131 +2123,21 @@ function OnboardingWizardInner({
                   </div>
 
                   {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
-                        </label>
-                        <Popover
-                          open={modelOpen}
-                          onOpenChange={(next) => {
-                            setModelOpen(next);
-                            if (!next) setModelSearch("");
-                          }}
-                        >
-                          <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-                              <span
-                                className={cn(
-                                  !model && "text-muted-foreground"
-                                )}
-                              >
-                                {selectedModel
-                                  ? selectedModel.label
-                                  : model ||
-                                    (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
-                              </span>
-                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="w-(--radix-popover-trigger-width) p-1"
-                            align="start"
-                          >
-                            <input
-                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
-                              value={modelSearch}
-                              onChange={(e) => setModelSearch(e.target.value)}
-                              autoFocus
-                            />
-                            {adapterType !== "opencode_local" && (
-                              <button
-                                className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  !model && "bg-accent"
-                                )}
-                                onClick={() => {
-                                  setModel("");
-                                  setModelOpen(false);
-                                }}
-                              >
-                                Default
-                              </button>
-                            )}
-                            <div className="max-h-(--sz-240px) overflow-y-auto">
-                              {groupedModels.map((group) => (
-                                <div
-                                  key={group.provider}
-                                  className="mb-1 last:mb-0"
-                                >
-                                  {adapterType === "opencode_local" && (
-                                    <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                                      {group.provider} ({group.entries.length})
-                                    </div>
-                                  )}
-                                  {group.entries.map((m) => (
-                                    <button
-                                      key={m.id}
-                                      className={cn(
-                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                        m.id === model && "bg-accent"
-                                      )}
-                                      onClick={() => {
-                                        setModel(m.id);
-                                        setModelOpen(false);
-                                      }}
-                                    >
-                                      <span
-                                        className="block w-full text-left truncate"
-                                        title={m.id}
-                                      >
-                                        {adapterType === "opencode_local"
-                                          ? extractModelName(m.id)
-                                          : m.label}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                            {filteredModels.length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
-                              </p>
-                            )}
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-                    </div>
-                  )}
+                  {/* No model picker. Every adapter this step offers resolves
+                      its own default (see buildAdapterConfig), so the picker
+                      asked the customer to choose a model before they had any
+                      way to judge one — and the agent's model is changeable
+                      later, where its work gives the choice meaning. */}
 
-                  {isLocalAdapter && (
+                  {/* The environment check runs without being shown: Connect
+                      probes the adapter before hiring (see handleGiveHeartbeat)
+                      and blocks the hire on a fail. The idle card — probe
+                      explainer plus a "Test now" button — is gone from this
+                      step, so this block renders only when a probe has actually
+                      found something: the checks the blocking error tells the
+                      customer to fix have to be visible somewhere. */}
+                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-xs font-medium">
-                            Adapter environment check
-                          </p>
-                          <p className="text-(length:--text-micro) text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
-                          </p>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 px-2.5 text-xs"
-                          disabled={adapterEnvLoading}
-                          onClick={() => void runAdapterEnvironmentTest()}
-                        >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
-                        </Button>
-                      </div>
-
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
                           {adapterEnvError}
@@ -2021,9 +2146,21 @@ function OnboardingWizardInner({
 
                       {adapterEnvResult &&
                       adapterEnvResult.status === "pass" ? (
-                        <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
-                          <Check className="h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">Passed</span>
+                        <div className="space-y-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                          {/* Use the shared status-chip helper with the done
+                              status hue, so the pass banner derives its fill,
+                              text, and border from the design tokens in both
+                              modes instead of raw color values. */}
+                          <div
+                            className="status-chip flex items-center gap-2 rounded-md border px-2.5 py-2 text-(length:--text-micro)"
+                            style={{ "--sc": "var(--status-task-done)" } as CSSProperties}
+                          >
+                            <Check className="size-3.5 shrink-0" />
+                            <span className="font-medium">Passed</span>
+                          </div>
+                          {/* Show the checks on a pass too, so the target and the
+                              auth signals stay visible before the hire. */}
+                          <AdapterEnvironmentResult result={adapterEnvResult} />
                         </div>
                       ) : adapterEnvResult ? (
                         <AdapterEnvironmentResult result={adapterEnvResult} />
@@ -2063,6 +2200,8 @@ function OnboardingWizardInner({
                               ? `${effectiveAdapterCommand} exec --json -`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
+                              : adapterType === "kimi_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
@@ -2074,6 +2213,7 @@ function OnboardingWizardInner({
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
                           adapterType === "gemini_local" ||
+                          adapterType === "kimi_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
                               If auth fails, set{" "}
@@ -2082,6 +2222,8 @@ function OnboardingWizardInner({
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
+                                    : adapterType === "kimi_local"
+                                      ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
                                     : "OPENAI_API_KEY"}
                               </span>{" "}
                               in env or run{" "}
@@ -2092,6 +2234,8 @@ function OnboardingWizardInner({
                                     ? "codex login"
                                     : adapterType === "gemini_local"
                                       ? "gemini auth"
+                                      : adapterType === "kimi_local"
+                                        ? "kimi login"
                                       : "opencode auth login"}
                               </span>
                               .
@@ -2132,35 +2276,10 @@ function OnboardingWizardInner({
               )}
 
               {/* Step 5: Review — lead is online (shared capsule above) */}
-              {step === 5 && (
-                <div className="space-y-5 py-1">
-                  {/* Review checklist — everything that's now set up */}
-                  <div className="space-y-1.5">
-                    {[
-                      { label: "Organization name", done: Boolean(companyName.trim()) },
-                      { label: "Mission", done: Boolean(companyGoal.trim()) },
-                      { label: "Agent created", done: Boolean(createdAgentId) },
-                      { label: "Model connected", done: Boolean(createdAgentId) },
-                    ].map(({ label, done }) => (
-                      <div key={label} className="flex items-center gap-2 text-sm">
-                        <span
-                          className={cn(
-                            "flex h-4 w-4 items-center justify-center rounded-full shrink-0",
-                            done
-                              ? "bg-green-500/15 text-green-600 dark:text-green-400"
-                              : "bg-muted text-muted-foreground"
-                          )}
-                        >
-                          <Check className="h-2.5 w-2.5" />
-                        </span>
-                        <span className={done ? "text-foreground" : "text-muted-foreground"}>
-                          {label}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Step 5: nothing. The heading names the agent and says it is
+                  ready, and the pill above has just woken to show it — a
+                  checklist restating those in three rows only asked the
+                  customer to audit work they watched happen. */}
 
               {/* Error */}
               {visibleError && (
@@ -2169,14 +2288,44 @@ function OnboardingWizardInner({
                 </div>
               )}
 
+              {isAgentArcStep && (
+                <FooterNav
+                  onBack={
+                    canGoBackFromOnboardingStep({ currentStep: step, entryStep })
+                      ? () => setStep(backStepFrom(step))
+                      : undefined
+                  }
+                  // The prototype's cloud flow hires on this step and calls the
+                  // action "Create". Here the model step sits between, so this
+                  // one advances — which is exactly the distinction the
+                  // prototype's own local flow draws with "Next".
+                  primaryLabel={step === 3 ? "Next" : step === 4 ? "Connect" : "Get started"}
+                  loadingLabel={step === 4 ? "Connecting..." : "Launching..."}
+                  loading={step === 3 ? false : loading}
+                  primaryDisabled={
+                    step === 3
+                      ? !agentName.trim()
+                      : step === 4
+                        ? loading || adapterEnvLoading || missionUnresolvedForHire
+                        : loading || launchStateIncomplete
+                  }
+                  onPrimary={() => {
+                    if (step === 3) setStep(4);
+                    else if (step === 4) handleGiveHeartbeat();
+                    else handleLaunchToDashboard();
+                  }}
+                />
+              )}
+
               {/* Footer navigation */}
+              {!isAgentArcStep && (
               <div className="flex items-center justify-between mt-8">
                 <div>
                   {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setStep((step - 1) as Step)}
+                      onClick={() => setStep(backStepFrom(step))}
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
@@ -2188,13 +2337,16 @@ function OnboardingWizardInner({
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim()}
+                      disabled={!companyName.trim() || loading}
                       onClick={() => {
-                        if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
-                        setStep(2);
+                        if (skipsMissionStep) void handleCreateCompany();
+                        else setStep(2);
                       }}
                     >
-                      Next
+                      {loading ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                      ) : null}
+                      Continue
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
                   )}
@@ -2257,6 +2409,7 @@ function OnboardingWizardInner({
                   )}
                 </div>
               </div>
+              )}
             </div>
           </div>
           )}
@@ -2266,7 +2419,7 @@ function OnboardingWizardInner({
           <div
             className={cn(
               "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-(--tp-width-opacity) duration-500 ease-in-out",
-              step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
+              step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >
             <AsciiArtAnimation />

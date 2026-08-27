@@ -47,6 +47,11 @@ export interface InstanceGeneralSettings {
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
   /**
+   * Exposes the experimental Paperclip Runner adapter for new selections.
+   * Existing native runs ignore later flag changes so they remain recoverable.
+   */
+  enableNativeRunner: boolean;
+  /**
    * Hide the local environment and run all agents in the platform-managed
    * sandbox environment. Run selection refuses local while this is on.
    */
@@ -89,6 +94,13 @@ export interface InstanceExperimentalSettings {
    * instances, which have no trusted cloud tenant path.
    */
   enableOwnerInstanceAdmin: boolean;
+  /**
+   * Kill switch for the sandbox duplex command-stream bridge. Default off. The
+   * host reads this per run before it selects the callback bridge transport.
+   * Off forces the file bridge for every run with no manifest change and no
+   * redeploy.
+   */
+  enableSandboxDuplexBridge: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When

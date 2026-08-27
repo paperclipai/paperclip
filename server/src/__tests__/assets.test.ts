@@ -174,6 +174,68 @@ describe("POST /api/companies/:companyId/assets/images", () => {
     });
   });
 
+  it("accepts namespaces that hold identity-provider user ids", async () => {
+    const png = createStorageService("image/png");
+    const app = await createApp(png);
+
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const namespace = "profiles/oidc:example|jane.example@example.com";
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", namespace)
+        .attach("file", Buffer.from("png"), "avatar.png"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(png.__calls.putFileInputs[0]).toMatchObject({
+      companyId: "company-1",
+      namespace: `assets/${namespace}`,
+      originalFilename: "avatar.png",
+      contentType: "image/png",
+    });
+  });
+
+  it("rejects namespaces with characters outside the accepted set", async () => {
+    const png = createStorageService("image/png");
+    const app = await createApp(png);
+
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", "profiles/bad name!")
+        .attach("file", Buffer.from("png"), "avatar.png"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("namespace");
+    expect(res.body.details?.[0]?.path).toEqual(["namespace"]);
+    expect(png.__calls.putFileInputs).toHaveLength(0);
+    expect(createAssetMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects namespaces that hold a dot path segment", async () => {
+    const png = createStorageService("image/png");
+    const app = await createApp(png);
+
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .field("namespace", "profiles/../secrets")
+        .attach("file", Buffer.from("png"), "avatar.png"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("namespace");
+    expect(png.__calls.putFileInputs).toHaveLength(0);
+    expect(createAssetMock).not.toHaveBeenCalled();
+  });
+
   it("allows supported non-image attachments outside the company logo flow", async () => {
     const text = createStorageService("text/plain");
     const app = await createApp(text);

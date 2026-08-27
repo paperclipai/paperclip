@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/usage.schema.json",
+  "title": "PRP provider usage receipt",
+  "type": "object",
+  "required": ["provider", "model", "cumulative", "runDelta"],
+  "properties": {
+    "provider": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "model": { "type": ["string", "null"], "maxLength": 240 },
+    "providerSessionId": { "type": ["string", "null"], "maxLength": 240 },
+    "providerRequestId": { "type": ["string", "null"], "maxLength": 240 },
+    "cumulative": { "$ref": "#/$defs/measurement" },
+    "runDelta": { "$ref": "#/$defs/measurement" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "measurement": {
+      "type": "object",
+      "required": ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "activeSeconds", "requests", "providerCostUsd"],
+      "properties": {
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "cacheReadTokens": { "type": "integer", "minimum": 0 },
+        "cacheWriteTokens": { "type": "integer", "minimum": 0 },
+        "activeSeconds": { "type": "number", "minimum": 0 },
+        "requests": { "type": "integer", "minimum": 0 },
+        "providerCostUsd": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

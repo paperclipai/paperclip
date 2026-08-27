@@ -545,6 +545,7 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.packWallMs,
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
+  SPAN_ATTRS.transferDirection,
 ]);
 
 /** The subset of allowed keys that carry a finite number. */
@@ -557,11 +558,15 @@ const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
 /** The closed value set for the `outcome` attribute. */
 const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "failed"]);
 
+/** The closed value set for the `transfer.direction` attribute. */
+const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
+
 /**
  * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
  * is not on the allowlist. Re-map `provider` through `normalizeProviderFamily`,
- * bound `outcome` to its closed set, and keep a numeric attribute only when it
- * is a finite number. The result holds only bounded, low-cardinality values.
+ * bound `outcome` and `transfer.direction` each to its closed set, and keep a
+ * numeric attribute only when it is a finite number. The result holds only
+ * bounded, low-cardinality values.
  */
 export function clampProviderSpanAttributes(
   raw: Record<string, unknown> | undefined,
@@ -576,6 +581,10 @@ export function clampProviderSpanAttributes(
     }
     if (key === SPAN_ATTRS.outcome) {
       if (typeof value === "string" && KNOWN_SPAN_OUTCOMES.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === SPAN_ATTRS.transferDirection) {
+      if (typeof value === "string" && KNOWN_TRANSFER_DIRECTIONS.has(value)) clamped[key] = value;
       continue;
     }
     if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {

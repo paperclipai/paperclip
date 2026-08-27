@@ -64,6 +64,7 @@ const mockApprovalService = vi.hoisted(() => ({
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+  getExperimental: vi.fn(async () => ({ enableNativeRunner: false })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -234,6 +235,7 @@ describe("agent routes adapter validation", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(async (agent: { adapterConfig: unknown }) => ({
       adapterConfig: agent.adapterConfig,
     }));
@@ -564,5 +566,53 @@ describe("agent routes adapter validation", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
+  });
+
+  it("rejects a new paperclip_runner selection while the rollout flag is off", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({ name: "Native Codex", adapterType: "paperclip_runner" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows a new paperclip_runner selection while the rollout flag is on", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Native Codex",
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "codex" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an existing paperclip_runner agent editable after the flag is disabled", async () => {
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" },
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ name: "Native Codex (recorded)" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledOnce();
   });
 });

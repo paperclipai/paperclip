@@ -78,7 +78,11 @@ function makeSite(overrides: Partial<SandboxRunSiteOptions> = {}) {
       const stagedRuntime = await stage([]);
       // Repoint a managed-home env var, so the site captures the delta.
       env.CODEX_HOME = "/remote/home";
-      return { stagedRuntime, teardown: async () => {}, dispose: async () => {} } satisfies ManagedHomeSeamResult;
+      return {
+        stagedRuntime,
+        teardown: async () => ({ ok: true }),
+        dispose: async () => {},
+      } satisfies ManagedHomeSeamResult;
     },
     disposeFreshStagedRuntime: async () => {},
     measureStageStep: (run) => run(),
@@ -140,6 +144,23 @@ describe("sandbox run site", () => {
     expect(scopeOf("agent_bridge")).toBe("per_run");
   });
 
+  it("test_sandbox_site_place_workspace_carries_referenced_project_failure_reason", async () => {
+    // A referenced project that fails to stage carries its failure reason back on
+    // the placed-workspace result, so a reader of the run learns why it dropped.
+    const failedStaged = {
+      runtimeRootDir: "/remote/fail/.paperclip-runtime/acpx",
+      additionalSourceDirs: {},
+      additionalSourceFailures: [{ projectId: "proj-x", error: "extract failed: boom" }],
+    } as unknown as PreparedAdapterExecutionTargetRuntime;
+    const { site } = makeSite({ stage: async () => failedStaged });
+
+    const placed = await site.placeWorkspace(makeContext("s"));
+
+    expect(placed).toEqual({
+      referencedProjectStagingFailures: [{ projectId: "proj-x", error: "extract failed: boom" }],
+    });
+  });
+
   it("test_sandbox_site_preserves_bridge_overlap_and_callback_sequencing", async () => {
     const events: string[] = [];
     let releasePaperclip!: () => void;
@@ -181,6 +202,46 @@ describe("sandbox run site", () => {
     expect(transport.launchEnv).toEqual(processLaunchEnv);
   });
 
+  it("test_sandbox_site_session_new_starts_only_after_the_sync_barrier_settles", async () => {
+    // The staging step wraps the inbound sync coordinator. Hold it open with a
+    // gate, so the sync barrier stays unsettled. `placeWorkspace` awaits staging,
+    // so it stays pending while the gate is held.
+    let releaseStaging!: () => void;
+    const stagingGate = new Promise<void>((resolve) => {
+      releaseStaging = resolve;
+    });
+    const freshStaged = makeStagedRuntime("fresh");
+    const { site, bridgeCalls } = makeSite({
+      stage: async () => {
+        await stagingGate;
+        return freshStaged;
+      },
+    });
+
+    // Drive the real run order: the engine awaits `placeWorkspace`, then starts the
+    // transport. `startProcessSessionBridge` models the ACP `session/new` startup.
+    let placed = false;
+    const run = (async () => {
+      await site.placeWorkspace(makeContext("s"));
+      placed = true;
+      await site.startTransport(makeContext("s"));
+    })();
+    run.catch(() => undefined);
+
+    // The sync barrier is still open, so `placeWorkspace` has not resolved and the
+    // process-session bridge that starts `session/new` has not started.
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(placed).toBe(false);
+    expect(bridgeCalls).not.toContain("process-session:start");
+
+    // Settle the sync barrier. `placeWorkspace` resolves, then the transport starts
+    // `session/new`.
+    releaseStaging();
+    await run;
+    expect(placed).toBe(true);
+    expect(bridgeCalls).toContain("process-session:start");
+  });
+
   it("test_sandbox_site_borrow_yields_files_and_runtime_is_still_created", async () => {
     const cachedRuntime = makeStagedRuntime("cached");
     const stagedRuntimes = new Map<string, StagedRuntimeStoreEntry>([
@@ -189,7 +250,7 @@ describe("sandbox run site", () => {
         {
           stagedRuntime: cachedRuntime,
           envDelta: { CODEX_HOME: "/remote/home" },
-          teardown: async () => {},
+          teardown: async () => ({ ok: true }),
           dispose: async () => {},
           lastUsedAt: 500,
         },

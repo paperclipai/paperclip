@@ -15,11 +15,14 @@ import type {
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
+  adapterExecutionTargetDuplexObservabilityRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
+  resolveReferencedSourceIgnore,
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
@@ -29,8 +32,16 @@ import {
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
+  type ReferencedSourceIgnoreResolution,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { DuplexLossReason } from "../duplex-observability.js";
+import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
+import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import {
+  classifyWorkspaceRestoreFailure,
+  describeWorkspaceRestoreFailure,
+} from "../workspace-restore-merge.js";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -46,13 +57,14 @@ import {
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
+  isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
   selectPaperclipTaskMarkdown,
-  resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
@@ -211,7 +223,7 @@ export interface StagedRuntimeCacheEntry {
    * in-sandbox credential, not a stale snapshot. It never removes the staged
    * in-sandbox home, so re-running it on each reuse can't invalidate this entry.
    */
-  teardown: (() => Promise<void>) | null;
+  teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   /**
    * The seam's one-time host-side staged-resource cleanup (e.g. remove the
    * staged home temp dir), or null. Fired ONLY when this entry is dropped —
@@ -308,7 +320,7 @@ export interface AcpxRemoteManagedHomeResult {
    * cached staged runtime across resumes never destroys resources a later run
    * still needs.
    */
-  teardown?: () => Promise<void>;
+  teardown?: () => Promise<WorkspaceRestoreOutcome>;
   /**
    * One-time cleanup of host-side staged resources (e.g. the curated staged
    * home temp dir). Split out from {@link teardown} so it fires ONLY when the
@@ -373,6 +385,7 @@ export interface AcpxEngineExecutorOptions {
 
 interface AcpxPreparedRuntime {
   acpxAgent: string;
+  coalescePlaceholderToolUpdates: boolean;
   mode: "persistent" | "oneshot";
   cwd: string;
   // Host-only spawn cwd for the acpx runtime's host `spawn()` of the relay
@@ -412,7 +425,7 @@ interface AcpxPreparedRuntime {
   // exit path by the settlement `syncBack` step; it never removes staged temp, so
   // it is safe on every compatible resume. Null for local runs, the runner-less
   // fallback, and adapters with no seam.
-  remoteManagedHomeTeardown: (() => Promise<void>) | null;
+  remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   // One-time host-side staged-resource cleanup from the seam (remove staged temp
   // dirs). Fired ONLY when the staged runtime is dropped (failed/cancelled/timed
   // -out turn, incompatible re-stage, idle eviction), not on a clean turn that
@@ -513,9 +526,14 @@ export function finalizeLaunchEnvironment(
 }
 
 // Directory names the staging path never ships for a referenced project (heavy
-// build/cache output and git history). The content signature skips them so it
-// reflects only the staged tree and never reads their bytes. Keep this set equal
-// to the staging excludes in the sandbox and remote runtimes.
+// build/cache output and git history), applied regardless of the project's
+// ignore resolution. The content signature skips them so it reflects only the
+// staged tree and never reads their bytes. Keep this set equal to the fixed
+// excludes the sandbox and SSH runtimes always apply. A project's OWN resolved
+// Git-ignored paths (see `resolveReferencedSourceIgnore`) are matched
+// separately, by relative path, inside `referencedSourceContentSignature` — that
+// is the real invariant now: the signature and both staging lanes must consume
+// the SAME one resolution per project, not just this fixed name list.
 const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
   "node_modules",
   "vendor",
@@ -545,12 +563,30 @@ const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
  * re-checkout that restores the same size and timestamp. The byte hash busts on any
  * content change, so the fingerprint busts and the next launch stages the current
  * tree. The walk skips the heavy build, cache, and git directories the staging path
- * never ships, and records a symlink by its target text without following it. On a
- * read error the function returns a stable marker, so the fingerprint does not churn
- * while staging surfaces the real error. The walk runs only when the run carries
- * referenced projects (the multi-project sync path).
+ * never ships, plus the project's own resolved Git-ignored paths, and records a
+ * symlink by its target text without following it. On a read error the function
+ * returns a stable marker, so the fingerprint does not churn while staging
+ * surfaces the real error. The walk runs only when the run carries referenced
+ * projects (the multi-project sync path).
+ *
+ * `ignoreResolution` is the ONE resolution `resolveReferencedSourceIgnore`
+ * computed for this project — the same one the sandbox lane and the SSH lane
+ * consume. A `failed` resolution skips the walk entirely and returns a stable
+ * marker instead, because a failed project is not staged and its bytes are not
+ * read anywhere.
  */
-async function referencedSourceContentSignature(localPath: string): Promise<string> {
+export async function referencedSourceContentSignature(
+  localPath: string,
+  ignoreResolution: ReferencedSourceIgnoreResolution,
+): Promise<string> {
+  if (ignoreResolution.kind === "failed") {
+    return `unreadable:${ignoreResolution.reason}`;
+  }
+  const isIgnoredByGitResolution = (relativePath: string): boolean =>
+    ignoreResolution.kind === "git" &&
+    ignoreResolution.ignoredPaths.some(
+      (entry) => relativePath === entry || relativePath.startsWith(`${entry}/`),
+    );
   const hash = createHash("sha256");
   const walk = async (relative: string): Promise<void> => {
     const current = relative ? path.join(localPath, relative) : localPath;
@@ -558,6 +594,9 @@ async function referencedSourceContentSignature(localPath: string): Promise<stri
     dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
     for (const dirent of dirents) {
       const next = relative ? path.posix.join(relative, dirent.name) : dirent.name;
+      if (isIgnoredByGitResolution(next)) {
+        continue;
+      }
       if (dirent.isDirectory()) {
         if (REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS.has(dirent.name)) {
           continue;
@@ -637,6 +676,11 @@ async function resolveBuiltInAgentCommand(input: {
   const { agent, packageRootDir, executionTargetIsRemote } = input;
   if (agent === "gemini") {
     return { command: "gemini --acp", shellCommand: "gemini --acp" };
+  }
+  if (agent === "kimi") {
+    // Kimi Code exposes its ACP server via the `kimi acp` subcommand (stdio),
+    // rather than a flag (gemini) or a dedicated bin (claude/codex).
+    return { command: "kimi acp", shellCommand: "kimi acp" };
   }
   const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
   if (!binName) return null;
@@ -866,11 +910,16 @@ async function resolveSelectedRuntimeSkills(
   moduleDir: string,
 ): Promise<{ allSkills: PaperclipSkillEntry[]; selectedSkills: PaperclipSkillEntry[]; desiredSkillNames: string[] }> {
   const allSkills = await readPaperclipRuntimeSkillEntries(config, moduleDir);
-  const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, allSkills);
+  const desiredSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, allSkills);
   const desiredSet = new Set(desiredSkillNames);
   return {
     allSkills,
-    selectedSkills: allSkills.filter((entry) => desiredSet.has(entry.key)),
+    // Missing-source entries never mount: buildSkillSetKey hashes each
+    // selected entry's path contents, and a nonexistent source would abort
+    // runtime construction over one broken skill.
+    selectedSkills: allSkills.filter(
+      (entry) => desiredSet.has(entry.key) && !isPaperclipSkillSourceMissing(entry),
+    ),
     desiredSkillNames,
   };
 }
@@ -1529,32 +1578,56 @@ async function buildRuntime(input: {
   const additionalSourceRecords = (
     Array.isArray(realizationContext.additional) ? realizationContext.additional : []
   ).map((entry) => parseObject(entry));
-  const additionalSources: SandboxAdditionalSource[] = additionalSourceRecords
-    .map((entry) => ({ localPath: asString(entry.path, ""), projectId: asString(entry.projectId, "") }))
+  const additionalSourceCandidates = additionalSourceRecords
+    .map((entry) => ({
+      localPath: asString(entry.path, ""),
+      projectId: asString(entry.projectId, ""),
+      projectWorkspaceId: asString(entry.projectWorkspaceId, ""),
+      repoUrl: asString(entry.repoUrl, ""),
+      repoRef: asString(entry.repoRef, ""),
+    }))
     .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0);
+  // Resolve each referenced project's Git-ignored paths ONCE, here, before any
+  // staging site runs. The sandbox lane, the SSH lane, and the content signature
+  // below all consume this SAME resolution per project, so they can never apply
+  // a different exclusion set to the same project. See
+  // `resolveReferencedSourceIgnore` for the fail-closed rules.
+  const additionalSourcesWithIgnore = await Promise.all(
+    additionalSourceCandidates.map(async (entry) => ({
+      ...entry,
+      ignoreResolution: await resolveReferencedSourceIgnore(entry.localPath),
+    })),
+  );
+  const additionalSources: SandboxAdditionalSource[] = additionalSourcesWithIgnore.map((entry) => ({
+    localPath: entry.localPath,
+    projectId: entry.projectId,
+    ignoreResolution: entry.ignoreResolution,
+  }));
   // Stable identity of the referenced-project set for the session fingerprint.
   // The staged-runtime cache reuses already-staged referenced-project trees on a
   // compatible resume, so the fingerprint must change when the set OR a project's
   // pinned checkout changes. Without this, a resume reuses a stale staged tree.
   // Fold in each project's id, host path, workspace id, and pinned ref; sort by
   // projectId so the identity depends on the set, not the record order.
-  const additionalSourcesIdentityBase = additionalSourceRecords
+  const additionalSourcesIdentityBase = additionalSourcesWithIgnore
     .map((entry) => ({
-      projectId: asString(entry.projectId, ""),
-      localPath: asString(entry.path, ""),
-      projectWorkspaceId: asString(entry.projectWorkspaceId, ""),
-      repoUrl: asString(entry.repoUrl, ""),
-      repoRef: asString(entry.repoRef, ""),
+      projectId: entry.projectId,
+      localPath: entry.localPath,
+      projectWorkspaceId: entry.projectWorkspaceId,
+      repoUrl: entry.repoUrl,
+      repoRef: entry.repoRef,
+      ignoreResolution: entry.ignoreResolution,
     }))
-    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0)
     .sort((a, b) => (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0));
   // Metadata alone does not change on a content-only checkout change (same host
   // path and pinned ref, new file bytes). Fold in each tree's content signature so
   // a file add, remove, or edit busts the fingerprint and the resume re-stages.
+  // The signature reads the same `ignoreResolution` the staging sites above use,
+  // so it never disagrees with what was actually shipped.
   const additionalSourcesIdentity = await Promise.all(
-    additionalSourcesIdentityBase.map(async (entry) => ({
+    additionalSourcesIdentityBase.map(async ({ ignoreResolution, ...entry }) => ({
       ...entry,
-      contentSignature: await referencedSourceContentSignature(entry.localPath),
+      contentSignature: await referencedSourceContentSignature(entry.localPath, ignoreResolution),
     })),
   );
   // Referenced-project workspace hints exposed to the agent through PAPERCLIP_WORKSPACES_JSON. The
@@ -1604,6 +1677,9 @@ async function buildRuntime(input: {
   );
 
   const acpxAgent = normalizeAgent(config);
+  // Run summaries always fail closed to the final output segment so internal
+  // thought text and intermediate narration cannot become issue comments.
+  const coalescePlaceholderToolUpdates = config.coalescePlaceholderToolUpdates === true;
   const mode = normalizeMode(config);
   const permissionMode = normalizePermissionMode(config);
   const nonInteractivePermissions = normalizeNonInteractivePermissions(config);
@@ -1776,7 +1852,7 @@ async function buildRuntime(input: {
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else {
-    const desired = resolvePaperclipDesiredSkillNames(
+    const desired = resolveLegacyPaperclipDesiredSkillNames(
       config,
       await readPaperclipRuntimeSkillEntries(config, input.engine.moduleDir),
     );
@@ -1942,7 +2018,7 @@ async function buildRuntime(input: {
     remoteExecutionIdentity,
   });
   let stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
-  let remoteManagedHomeTeardown: (() => Promise<void>) | null = null;
+  let remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null = null;
   let remoteStagingDispose: (() => Promise<void>) | null = null;
   let remoteStagingEnvDelta: Record<string, string> | null = null;
   let sessionStagingLeaseRelease: (() => void) | null = null;
@@ -2038,6 +2114,8 @@ async function buildRuntime(input: {
           adapterKey: input.engine.adapterType,
           timeoutSec,
           hostApiToken: env.PAPERCLIP_API_KEY,
+          enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
+          duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(remoteTarget),
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
           runtimeSpan: input.runtimeSpan,
@@ -2158,6 +2236,7 @@ async function buildRuntime(input: {
 
   return {
     acpxAgent,
+    coalescePlaceholderToolUpdates,
     mode,
     // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
@@ -2290,14 +2369,22 @@ async function stopRunTransport(prepared: AcpxPreparedRuntime): Promise<void> {
 // dirs. The seam logs and swallows its own failures — an unclean-teardown
 // copy-back miss is the accepted, loud `refresh_token_reused` residual on the
 // next host Codex use, never silent HOST-credential corruption — so a teardown
-// fault never masks or fails the run result here.
-async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<void> {
-  if (prepared.remoteManagedHomeTeardown) {
-    await prepared.remoteManagedHomeTeardown().catch(() => {});
+// fault never masks or fails the run result here. It still returns the restore
+// outcome, so the caller can record a failure on the run record; the run's exit
+// code and status stay exactly what the turn produced.
+// The per-session staging lease does NOT release here. The settlement releases
+// it last, in its own `finally`, so a same-session second run cannot re-stage
+// until this run fully settles and the caller observes the result.
+async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<WorkspaceRestoreOutcome> {
+  if (!prepared.remoteManagedHomeTeardown) {
+    return { ok: true };
   }
-  // The per-session staging lease does NOT release here. The settlement releases
-  // it last, in its own `finally`, so a same-session second run cannot re-stage
-  // until this run fully settles and the caller observes the result.
+  // The teardown closure already catches and logs its own error (fail-soft);
+  // this `.catch` is defense in depth for the case where it rejects anyway, so
+  // a teardown fault can never propagate out of settlement.
+  return await prepared
+    .remoteManagedHomeTeardown()
+    .catch((): WorkspaceRestoreOutcome => ({ ok: false, code: "restore_failed" }));
 }
 
 /** How the settlement `endSession` step releases the runtime a run acquired. */
@@ -2443,16 +2530,40 @@ async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string,
   await ctx.onLog("stdout", `${JSON.stringify(payload)}\n`);
 }
 
+/**
+ * Build the short run summary that Paperclip may auto-post as an issue comment
+ * when the agent leaves no comment of its own.
+ *
+ * Prefer the last non-empty *output* segment after a tool call. Intermediate
+ * "let me check…" narration between tools must not become a 50k-char dump.
+ * Thought-stream text is never included (callers must not push it into segments).
+ */
+export function buildAcpxRunSummary(input: {
+  outputSegments: string[];
+  fallback?: string | null;
+}): string {
+  for (let i = input.outputSegments.length - 1; i >= 0; i -= 1) {
+    const text = (input.outputSegments[i] ?? "").trim();
+    if (text) return text;
+  }
+  const fallback = (input.fallback ?? "").trim();
+  return fallback;
+}
+
 // acpx substitutes a literal "tool call" title when an ACP tool_call_update
 // omits one, which would persist a generic name over the real one ("Terminal",
 // "Read", …) in the stored run log. Remember each call's real title so update
-// lines keep the name durably.
+// lines keep the name durably. Some ACP backends also stream partial tool
+// arguments as one in-progress update per token under this placeholder;
+// adapters that opt into coalescePlaceholderToolUpdates in their acpx config
+// have those updates coalesced until a real title is available.
 const GENERIC_ACP_TOOL_TITLE = "tool call";
 
 async function emitRuntimeEvent(
   ctx: AdapterExecutionContext,
   event: AcpRuntimeEvent,
   toolTitles?: Map<string, string>,
+  coalescePlaceholderToolUpdates?: boolean,
 ) {
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
@@ -2464,6 +2575,22 @@ async function emitRuntimeEvent(
     return;
   }
   if (event.type === "tool_call") {
+    // Coalesce token-by-token argument streaming for adapters that opt in via
+    // their acpx config: skip in-progress updates that still carry only the
+    // unresolved placeholder title. Backends that stream tool arguments
+    // otherwise emit tens of thousands of these per run, flooding the
+    // transcript and pinning the live activity indicator to a generic
+    // "tool call" instead of the real tool. The initial pending event, the
+    // resolved-title in-progress update, and the terminal
+    // completed/failed/cancelled update all still flow through. Adapters that
+    // do not opt in never have an event dropped.
+    if (
+      coalescePlaceholderToolUpdates &&
+      event.status === "in_progress" &&
+      (event.title ?? "").trim() === GENERIC_ACP_TOOL_TITLE
+    ) {
+      return;
+    }
     const eventRecord = event as Record<string, unknown>;
     const toolInput = eventRecord.input;
     let name = event.title ?? "acp_tool";
@@ -3326,18 +3453,40 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let resumedSession = false;
       let clearSession = false;
       let referencedProjectStagingFailuresField:
-        | { referencedProjectStagingFailures: Array<{ projectId: string }> }
+        | { referencedProjectStagingFailures: Array<{ projectId: string; error: string }> }
         | Record<string, never> = {};
+      // Set only when the settlement sync-back reports a failed workspace
+      // restore. `reproduceResult` merges this into the returned result's
+      // `resultJson`, so a clean run adds no new key. The run's exit code and
+      // status stay exactly what the turn produced — this is a signal, not an
+      // outcome change.
+      let workspaceRestoreFailureField:
+        | { workspaceRestoreFailure: WorkspaceRestoreFailureCode }
+        | Record<string, never> = {};
+      // The one settlement step name whose error can be the same workspace-
+      // restore failure the adapter teardown closure already classifies (a
+      // caught error from `syncBackManagedHome`). The closure already
+      // sanitizes its own `onLog` line; this is a second, independent layer,
+      // so a defect in that closure (or a future call site that forgets to
+      // sanitize) still cannot put a raw `Error.message` — and the host path
+      // or process id it can carry — on the run log.
+      const SYNC_BACK_SETTLEMENT_STEP = "settlement-sync_back";
       const recordTeardownError = async (step: string, teardownErr: unknown) => {
-        const reason = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        const reason =
+          step === SYNC_BACK_SETTLEMENT_STEP
+            ? describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(teardownErr))
+            : teardownErr instanceof Error
+              ? teardownErr.message
+              : String(teardownErr);
         await ctx
           .onLog("stderr", `[paperclip] ACPX teardown step "${step}" failed: ${reason}\n`)
           .catch(() => {});
       };
-      // Emit one per-phase timing telemetry event. It is observability-only: it
-      // carries the phase name (from the closed allowlist), the wall time, and the
-      // outcome, and never a command, a path, an environment value, or an
-      // identifier. Telemetry failure never fails the run.
+      // Emit one per-phase timing run-log event. It is not an OpenTelemetry
+      // export and it is not a Telemetry event: it carries the phase name
+      // (from the closed allowlist), the wall time, and the outcome, and
+      // never a command, a path, an environment value, or an identifier. A
+      // failure to emit this event never fails the run.
       const emitPhase = (phase: string, startMs: number, outcome: "ok" | "failed"): Promise<void> =>
         emitRunPhaseTiming(ctx, phase, now() - startMs, outcome);
       // Time a settlement step and emit its phase timing on every path. A step
@@ -3432,9 +3581,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // is a failure to report.
         const referencedProjectStagingFailures = (
           prepared.stagedRuntime?.additionalSourceFailures ?? []
-        ).map((failure) => ({ projectId: failure.projectId }));
+        ).map((failure) => ({ projectId: failure.projectId, error: failure.error }));
         referencedProjectStagingFailuresField =
           referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
+        // Write one run-log line per failure, so a reader of the run log alone sees
+        // each dropped referenced project and its reason. The run continues without
+        // the failed project (per-project failure isolation). Goes to stderr: the
+        // acpx stdout log stream carries machine-parseable JSON event payloads.
+        for (const failure of referencedProjectStagingFailures) {
+          await ctx.onLog(
+            "stderr",
+            `[paperclip] Referenced project ${failure.projectId} failed to stage; the run continues without it: ${failure.error}\n`,
+          );
+        }
         // State the effective wall-clock timeout and its source up front so a
         // later timeout is diagnosable from the run log alone. Goes to stderr:
         // the acpx stdout log stream carries JSON acpx.* event payloads and must
@@ -3807,7 +3966,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // controller and never rejects; it returns a `TurnCompletion`. The step
       // bodies below record the external result for the coordinator to reproduce.
       const runTurn = async (_ready: StartupReady): Promise<TurnCompletion> => {
-      const textParts: string[] = [];
+      // Summary accumulation collects output text only (never thought stream),
+      // segmented on tool starts so multi-step narration is not glued into one
+      // automatic comment dump.
+      const outputSegments: string[] = [];
+      let currentOutputChunk: string[] = [];
+      const flushOutputSegment = () => {
+        if (currentOutputChunk.length === 0) return;
+        outputSegments.push(currentOutputChunk.join(""));
+        currentOutputChunk = [];
+      };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
       // The turn-local state the sequence steps share. `promptBuild` sets the
@@ -3910,13 +4078,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
         for await (const event of turn.events) {
-          if (event.type === "text_delta") textParts.push(event.text);
+          if (event.type === "text_delta" && event.stream !== "thought") {
+            currentOutputChunk.push(event.text);
+          } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
+            // ACP makes tool-call status optional. The normalized event tag is
+            // the reliable boundary between an initial call and its updates,
+            // so a statusless initial call must still end the preceding output
+            // segment while updates must not create extra boundaries.
+            flushOutputSegment();
+          }
           if (event.type === "status" && event.tag === "usage_update") {
             eventBreakdown = event.breakdown ?? eventBreakdown;
             eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
           }
-          await emitRuntimeEvent(ctx, event, toolTitles);
+          await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
         }
+        flushOutputSegment();
         return await turn.result;
       };
       const stepTurnFinalize = async (
@@ -3925,6 +4102,47 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (input.kind === "terminal") {
         const terminal = input.terminal;
         const timedOut = input.timedOut;
+        // Read the sandbox duplex control-channel disposition at the ACP
+        // terminal-finalization boundary, before the bridge teardown. A control
+        // channel that died mid-turn latches a failure with a typed loss reason;
+        // a healthy channel or a normal-teardown loss reports a success. Only a
+        // nominally completed, non-timed-out terminal is success-eligible, so the
+        // seam reads the disposition only there. For that success-eligible
+        // terminal the seam marks the host-observed orderly completion, so a later
+        // teardown loss cannot flip the run to a failure. The file bridge path
+        // never sets these methods, so the optional calls no-op there.
+        let duplexLossReason: DuplexLossReason | null = null;
+        if (terminal.status === "completed" && !timedOut) {
+          // Success-eligible terminal. Atomically read the disposition and mark
+          // the orderly completion in one broker step. No `await` separates the
+          // read from the mark, so a teardown loss cannot slip in between them. A
+          // latched loss fails the run closed; a healthy channel marks its
+          // orderly completion, so a later teardown loss stays a normal teardown.
+          const disposition = prepared.paperclipBridge?.settleRunDisposition?.() ?? null;
+          if (disposition?.failed) {
+            duplexLossReason = disposition.lossReason ?? "other";
+          }
+        } else {
+          // Non-success-eligible terminal (failed, cancelled, or timed out). A
+          // deliberate host teardown follows, so mark the orderly completion now.
+          // This stops the teardown `channel_exit` from latching `lossSeq`, from
+          // emitting a false loss event, and from incrementing the loss counters.
+          // The mark no-ops once a loss latched, so a real mid-run loss still
+          // fails the run.
+          prepared.paperclipBridge?.markOrderlyCompletion?.();
+        }
+        // A terminal that reports "completed" but whose duplex control channel
+        // died before the completion is not a success. The seam fails it closed.
+        const channelLost = duplexLossReason !== null;
+        // Build the boundary failure message only from the closed loss-reason
+        // enum, so no raw provider text rides the message.
+        const channelLostMessage = duplexLossReason
+          ? `The sandbox duplex control channel was lost (${duplexLossReason}) before the run completed.`
+          : null;
+        // A completed, non-timed-out turn whose channel stayed live is the one
+        // success path. Every other outcome — a failed, cancelled, or timed-out
+        // terminal, or a completed terminal with a lost channel — is a failure.
+        const turnSucceeded = terminal.status === "completed" && !timedOut && !channelLost;
         // Read usage before the settlement can discard runtime state.
         const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
         const turnUsage = summarizeAcpxTurnUsage({
@@ -3948,10 +4166,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           handle: sessionHandle,
           reason: timedOut
             ? "paperclip timeout cleanup"
-            : failedTurn
-              ? `paperclip turn ${terminal.status}`
-              : "paperclip completed turn cleanup",
-          discardPersistentState: terminal.status === "cancelled" || timedOut,
+            : channelLost
+              ? "paperclip duplex channel lost cleanup"
+              : failedTurn
+                ? `paperclip turn ${terminal.status}`
+                : "paperclip completed turn cleanup",
+          discardPersistentState: terminal.status === "cancelled" || timedOut || channelLost,
           dropWarmEntry: false,
           recordCloseError: false,
           cancelTurnReason: null,
@@ -3959,23 +4179,32 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-          : resultErrorMessage(terminal);
+          : channelLost
+            ? channelLostMessage
+            : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         await emitAcpxLog(ctx, {
-          type: terminal.status === "completed" ? "acpx.result" : "acpx.error",
-          summary: terminal.status,
+          type: turnSucceeded ? "acpx.result" : "acpx.error",
+          summary: channelLost ? "duplex_channel_lost" : terminal.status,
           stopReason: terminalStopReason,
           message: errorMessage,
         });
         // The one clean-completion path clears the run failure flag; every other
-        // path keeps it set, so the run root span closes with error status.
-        runFailed = terminal.status === "completed" && !timedOut ? false : true;
+        // path keeps it set, so the run root span closes with error status. A
+        // completed terminal with a lost duplex channel keeps the flag set.
+        runFailed = turnSucceeded ? false : true;
         capturedResult = {
-          exitCode: terminal.status === "completed" ? 0 : 1,
+          exitCode: turnSucceeded ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed" ? "acpx_turn_failed" : timedOut ? "acpx_timeout" : null,
+          errorCode: terminal.status === "failed"
+            ? "acpx_turn_failed"
+            : timedOut
+              ? "acpx_timeout"
+              : channelLost
+                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+                : null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -3985,7 +4214,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
           resultJson: {
-            status: terminal.status,
+            status: channelLost ? "failed" : terminal.status,
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,
@@ -3997,15 +4226,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
               : {}),
           },
-          summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+          summary: buildAcpxRunSummary({
+            outputSegments,
+            fallback: terminalStopReason || terminal.status,
+          }),
           clearSession,
         };
-        // The turn phase finished. A completed, non-timed-out turn is `ok`; every
-        // other terminal outcome is `failed`.
+        // The turn phase finished. A completed, non-timed-out turn with a live
+        // duplex channel is `ok`; every other terminal outcome is `failed`.
         await emitPhase(
           "turn",
           turnPhaseStart,
-          terminal.status === "completed" && !timedOut ? "ok" : "failed",
+          turnSucceeded ? "ok" : "failed",
         );
         // Return the typed turn completion so the coordinator settles for the right
         // cause. The completion carries no live resources; the settlement claims the
@@ -4033,6 +4265,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           return {
             kind: "cancelled",
             cause: { kind: "turn_cancelled", reason: terminal.stopReason ?? "cancelled" },
+            resources: emptyConsumed,
+          };
+        }
+        // A completed terminal whose duplex control channel died mid-turn returns
+        // a failed completion, so the coordinator settles for a failure and the
+        // reuse decision forbids a save. The message carries only the typed loss
+        // reason, so no raw provider text rides the cause.
+        if (channelLost) {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: new Error(channelLostMessage ?? "The sandbox duplex control channel was lost."),
+            },
             resources: emptyConsumed,
           };
         }
@@ -4226,9 +4472,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         stopTransport: () => timedPhase("stop_transport", async () => {
           await stopRunTransport(prepared);
         }),
-        // The site sync-back (the managed-home copy-back).
+        // The site sync-back (the managed-home copy-back). The run-parented span
+        // runner wraps the restore in a `sandbox.syncBack` span. The runner also
+        // publishes the run parent into the runtime-parent store while the restore
+        // runs, so the host mints a `traceparent` for the provider spans, and the
+        // per-task restore spans parent to `sandbox.syncBack`.
         syncBack: () => timedPhase("sync_back", async () => {
-          await syncBackManagedHome(prepared);
+          await runRuntimeSpan("sandbox.syncBack", async () => {
+            const restoreOutcome = await syncBackManagedHome(prepared);
+            if (!restoreOutcome.ok) {
+              workspaceRestoreFailureField = { workspaceRestoreFailure: restoreOutcome.code };
+            }
+          });
         }),
         // The staging lease releases as the run's final act, AFTER the coordinator
         // reproduces the result, in the run root `finally` below. This step stays a
@@ -4272,7 +4527,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           if (!capturedResult) {
             throw new Error("run coordinator reproduced a result before the run recorded one");
           }
-          return capturedResult;
+          // The sync-back settlement step runs before this reproduces the result
+          // (settlement precedes reproduction), so a failed workspace restore is
+          // already recorded by the time we get here. Merge it into `resultJson`
+          // only on a failure — a clean restore adds no new key.
+          if (!("workspaceRestoreFailure" in workspaceRestoreFailureField)) {
+            return capturedResult;
+          }
+          return {
+            ...capturedResult,
+            resultJson: {
+              ...(capturedResult.resultJson ?? {}),
+              ...workspaceRestoreFailureField,
+            },
+          };
         },
       };
       return await runAttempt(plan);

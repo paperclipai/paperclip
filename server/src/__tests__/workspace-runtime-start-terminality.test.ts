@@ -129,6 +129,23 @@ describe("managed runtime start terminality", () => {
     ).resolves.toBe(49881);
   });
 
+  it("skips a candidate port inside the runtime exposure app-port range", async () => {
+    // The kernel can hand an ephemeral port inside the exposure app-port range
+    // (42000-42999). The reconciler classifies a persisted row by its port: a
+    // port in that range marks the row as an exposure reservation, not a managed
+    // auto port. So the allocator must never return an in-range port; it drops
+    // the in-range candidate and takes the next out-of-range one.
+    const candidates = [42500, 49883];
+    let index = 0;
+    const probe = async () => candidates[Math.min(index++, candidates.length - 1)]!;
+    const portOwnerLookup = async () => null;
+
+    await expect(allocateRuntimeServicePort({ probe, portOwnerLookup })).resolves.toBe(49883);
+    // The allocator skipped 42500 before it reserved a candidate, so the in-range
+    // port stays free. A later start can still claim it through the exposure path.
+    expect(claimRuntimeServiceBindPort(42500, null)).toBe(true);
+  });
+
   it("refuses a configured port a sibling start is already claiming", () => {
     // The reported collision was on a *configured* app/HMR pair, not an auto-allocated one:
     // both lanes read the pair as free because neither had bound or persisted a row yet.

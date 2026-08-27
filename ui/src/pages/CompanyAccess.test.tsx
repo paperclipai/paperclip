@@ -14,6 +14,8 @@ const listAgentsMock = vi.hoisted(() => vi.fn());
 const listIssuesMock = vi.hoisted(() => vi.fn());
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const listInvitesMock = vi.hoisted(() => vi.fn());
+const mockSearchParamsState = vi.hoisted(() => ({ current: new URLSearchParams() }));
 
 vi.mock("@/api/access", () => ({
   accessApi: {
@@ -27,6 +29,9 @@ vi.mock("@/api/access", () => ({
       archiveMemberMock(companyId, memberId, input),
     approveJoinRequest: vi.fn(),
     rejectJoinRequest: vi.fn(),
+    listInvites: (companyId: string, options: unknown) => listInvitesMock(companyId, options),
+    createCompanyInvite: vi.fn(),
+    revokeInvite: vi.fn(),
   },
 }));
 
@@ -48,10 +53,29 @@ vi.mock("@/lib/router", () => ({
     mockNavigate(to, replace);
     return <div data-testid="navigate">{to}</div>;
   },
+  useSearchParams: () => [
+    mockSearchParamsState.current,
+    (
+      updater:
+        | URLSearchParams
+        | ((prev: URLSearchParams) => URLSearchParams),
+    ) => {
+      mockSearchParamsState.current =
+        typeof updater === "function"
+          ? updater(mockSearchParamsState.current)
+          : new URLSearchParams(updater);
+    },
+  ],
 }));
 
 vi.mock("@/plugins/slots", () => ({
   usePluginSlots: mockUsePluginSlots,
+}));
+
+vi.mock("@/context/SidebarContext", () => ({
+  useSidebar: () => ({
+    isMobile: false,
+  }),
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -85,6 +109,8 @@ describe("CompanyAccess", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockSearchParamsState.current = new URLSearchParams();
+    listInvitesMock.mockResolvedValue({ invites: [], nextOffset: null });
     listMembersMock.mockResolvedValue({
       members: [
         {
@@ -100,7 +126,7 @@ describe("CompanyAccess", () => {
             id: "user-1",
             email: "codexcoder@paperclip.local",
             name: "Codex Coder",
-            image: null,
+            image: "/api/assets/avatar-1/content",
           },
           grants: [],
         },
@@ -191,7 +217,7 @@ describe("CompanyAccess", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps the page human-focused and hides advanced permission controls", async () => {
+  it("renders a compact member table without redundant explanatory copy", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -207,12 +233,14 @@ describe("CompanyAccess", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Manage the people who can work in Paperclip");
-    expect(container.textContent).toContain("Members can collaborate across the company by default");
-    expect(container.textContent).toContain("Core keeps this page focused on membership");
-    expect(container.textContent).toContain("Humans");
+    expect(container.textContent).not.toContain("Manage the people who can work in Paperclip");
+    expect(container.textContent).not.toContain("Members can collaborate across the company by default");
+    expect(container.textContent).not.toContain("Core keeps this page focused on membership");
+    expect(container.textContent).not.toContain("Manage human company memberships and status here");
     expect(container.textContent).toContain("Pending human joins");
-    expect(container.textContent).toContain("User account");
+    expect(container.textContent).toContain("Name");
+    expect(container.textContent).toContain("Email");
+    expect(container.querySelector('[data-slot="avatar"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Grants");
     expect(container.textContent).not.toContain("explicit grants");
     expect(container.textContent).not.toContain("Assign scoped tasks");
@@ -234,7 +262,7 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Update company role and membership status");
+    expect(document.body.textContent).toContain("Update organization role and membership status");
     expect(document.body.textContent).not.toContain("Implicit grants from role");
     expect(document.body.textContent).not.toContain("permissionKey");
 
@@ -392,12 +420,13 @@ describe("CompanyAccess", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Company admins cannot be removed from company access.");
+    expect(container.textContent).not.toContain("Company admins cannot be removed from company access.");
     const removeButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Remove"),
     );
     expect(removeButton).toBeTruthy();
     expect(removeButton).toHaveProperty("disabled", true);
+    expect(removeButton?.getAttribute("title")).toBe("Company admins cannot be removed from company access.");
 
     await act(async () => {
       root.unmount();
@@ -459,6 +488,87 @@ describe("CompanyAccess", () => {
     expect(container.textContent).toContain("Advanced permissions unavailable");
     expect(container.textContent).toContain("Open Members");
     expect(container.textContent).toContain("Open Invites");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});
+
+describe("CompanyAccess invites tab", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockSearchParamsState.current = new URLSearchParams();
+    listInvitesMock.mockResolvedValue({ invites: [], nextOffset: null });
+    listMembersMock.mockResolvedValue({
+      members: [],
+      access: { currentUserRole: "owner", canApproveJoinRequests: false },
+    });
+    listAgentsMock.mockResolvedValue([]);
+    listJoinRequestsMock.mockResolvedValue([]);
+    mockUsePluginSlots.mockReturnValue([]);
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(queryClient?: QueryClient) {
+    const root = createRoot(container);
+    const client =
+      queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  it("shows Members and Invites tabs with Members active by default", async () => {
+    const root = await renderPage();
+
+    const tabLabels = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
+    expect(tabLabels).toEqual(["Members", "Invites"]);
+    expect(container.textContent).toContain("Organization Members");
+    expect(container.textContent).not.toContain("Invite a person");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("opens the Invites tab from a ?tab=invites deep link", async () => {
+    mockSearchParamsState.current = new URLSearchParams("tab=invites");
+    const root = await renderPage();
+
+    expect(container.textContent).toContain("Invite a person");
+    expect(container.textContent).toContain("Invite history");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Invites tab when the operator hides company.invites", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["health"], { hiddenSettings: ["company.invites"] } as never);
+    mockSearchParamsState.current = new URLSearchParams("tab=invites");
+    const root = await renderPage(client);
+
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0);
+    expect(container.textContent).not.toContain("Invite a person");
+    expect(container.textContent).toContain("Organization Members");
+    expect(listInvitesMock).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

@@ -23,7 +23,7 @@ bash install.sh
 The bootstrap script:
 
 1. verifies that the platform is supported;
-2. ensures Node.js 20 or newer is available;
+2. ensures Node.js 24.11 or newer is available;
 3. delegates installation to `paperclipai install`;
 4. starts interactive onboarding when stdin and stdout are terminals.
 
@@ -138,6 +138,11 @@ paperclipai onboard --yes --install-service  # explicit automation opt-in
 paperclipai onboard --yes --no-install-service
 ```
 
+After onboarding installs and starts the service, it waits for the service to
+report its selected runtime port and then prints the dashboard URL. Interactive
+terminals open that URL in the default browser; headless and non-interactive
+runs print the URL without trying to launch a browser.
+
 Service commands are namespaced:
 
 ```sh
@@ -240,6 +245,12 @@ paperclipai service status
 `PATH`, Node.js version, and service state. Service diagnostics cover unit-file
 presence and drift, running state, configured port ownership, and the running
 server version.
+
+The CLI and server also print a non-blocking startup warning when Node.js is
+below the supported minimum. Upgrade Node.js with a version manager or follow
+the downloaded `install.sh` workflow under **Recommended Install**. Do not use
+the piped form for this repair because it requires a supported Node.js runtime
+before it starts.
 
 ## Uninstall
 

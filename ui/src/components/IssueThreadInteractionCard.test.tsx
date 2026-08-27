@@ -1276,7 +1276,7 @@ describe("IssueThreadInteractionCard resolver audience", () => {
     expect(audience?.getAttribute("data-audience-policy")).toBe("human_only");
     expect(
       host.querySelector('[data-testid="interaction-audience-note"]')?.textContent,
-    ).toBe("Company interaction governance narrowed this from Anyone to Human only.");
+    ).toBe("Organization interaction governance narrowed this from Anyone to Human only.");
   });
 
   it("explains a legacy card that predates the open default", () => {

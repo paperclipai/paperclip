@@ -41,14 +41,26 @@ if [[ ! -d "$worktree_cwd" ]]; then
 fi
 
 canonical_base_cwd="$(cd "$base_cwd" && pwd -P)"
+if [[ -L "$canonical_base_cwd/.paperclip" && ! -d "$canonical_base_cwd/.paperclip" ]]; then
+  # A broken link hides whatever it points at, so the config below would read as absent
+  # on a workspace that is malformed rather than plain. Refuse instead of falling back.
+  echo "Registered base project workspace .paperclip is a broken symlink: $canonical_base_cwd/.paperclip" >&2
+  exit 1
+fi
 source_config_path="$canonical_base_cwd/.paperclip/config.json"
+if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+  # A base workspace that is a plain checkout carries no instance config of its own.
+  # Fall back to the control plane's own registered instance config, which is process
+  # state this workspace cannot rewrite.
+  source_config_path="${PAPERCLIP_CONFIG:-$paperclip_home/instances/$paperclip_instance_id/config.json}"
+fi
 if [[ ! -f "$source_config_path" || -L "$source_config_path" ]]; then
-  echo "Registered base project workspace has no canonical Paperclip config: $source_config_path" >&2
+  echo "Registered Paperclip seed source config is missing or is not a canonical file: $source_config_path" >&2
   exit 1
 fi
 canonical_source_dir="$(cd "$(dirname "$source_config_path")" && pwd -P)"
 if [[ "$canonical_source_dir/config.json" != "$source_config_path" ]]; then
-  echo "Registered base project workspace Paperclip config uses a symlink alias: $source_config_path" >&2
+  echo "Registered Paperclip seed source config uses a symlink alias: $source_config_path" >&2
   exit 1
 fi
 source_env_path="$(dirname "$source_config_path")/.env"
@@ -79,6 +91,10 @@ repair_base_workspace_install() {
   # otherwise skip the dangling symlinks; --frozen-lockfile keeps the repair
   # from mutating the shared base workspace's lockfile.
   local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
+  # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+  # install. Node 24 reports that call as DEP0169. Remove this flag when the
+  # pinned pnpm no longer calls url.parse() in that path.
+  local repair_node_options="${NODE_OPTIONS:-} --disable-warning=DEP0169"
   # Resolve the real git dir so locking also covers base workspaces that are
   # linked worktrees, where "$base_cwd/.git" is a file rather than a directory.
   local repair_lock_dir=""
@@ -101,11 +117,11 @@ repair_base_workspace_install() {
         echo "Base workspace CLI became healthy while waiting for the repair lock; skipping reinstall." >&2
         exit 0
       fi
-      env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 || exit 1
+      env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 || exit 1
       base_cli_healthy
     )
   else
-    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 && base_cli_healthy)
+    (cd "$base_cwd" && env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 && base_cli_healthy)
   fi
 }
 
@@ -239,6 +255,51 @@ for (const rawValue of runtimePaths) {
     fail(`existing worktree config path is outside ${instanceRoot}: ${resolved}`);
   }
 }
+EOF
+}
+
+reconcile_worktree_deployment_mode() {
+  SOURCE_CONFIG_PATH="$source_config_path" \
+  WORKTREE_CONFIG_PATH="$worktree_config_path" \
+  node <<'EOF'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const sourceConfigPath = path.resolve(process.env.SOURCE_CONFIG_PATH);
+const worktreeConfigPath = path.resolve(process.env.WORKTREE_CONFIG_PATH);
+const sourceConfig = JSON.parse(fs.readFileSync(sourceConfigPath, "utf8"));
+const worktreeConfig = JSON.parse(fs.readFileSync(worktreeConfigPath, "utf8"));
+const deploymentMode = sourceConfig?.server?.deploymentMode ?? "local_trusted";
+if (deploymentMode !== "local_trusted" && deploymentMode !== "authenticated") {
+  throw new Error(`Registered source has unsupported server.deploymentMode: ${deploymentMode}`);
+}
+const exposure = deploymentMode === "local_trusted"
+  ? "private"
+  : (sourceConfig?.server?.exposure ?? "private");
+const currentServer = worktreeConfig?.server && typeof worktreeConfig.server === "object"
+  ? worktreeConfig.server
+  : {};
+if (currentServer.deploymentMode === deploymentMode && currentServer.exposure === exposure) {
+  process.exit(0);
+}
+
+worktreeConfig.server = {
+  ...currentServer,
+  deploymentMode,
+  exposure,
+};
+if (worktreeConfig.$meta && typeof worktreeConfig.$meta === "object") {
+  worktreeConfig.$meta.updatedAt = new Date().toISOString();
+}
+
+const temporaryPath = `${worktreeConfigPath}.deployment-mode-${process.pid}`;
+try {
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(worktreeConfig, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryPath, worktreeConfigPath);
+} finally {
+  fs.rmSync(temporaryPath, { force: true });
+}
+console.error(`Reconciled isolated Paperclip worktree deployment mode from ${sourceConfigPath}: ${deploymentMode}/${exposure}`);
 EOF
 }
 
@@ -579,6 +640,12 @@ else
   created_worktree_config=1
 fi
 
+# The target config can predate a deployment-mode change on the registered
+# source, and older/fallback CLI writers may default this field independently.
+# Reconcile it after either create or reuse so the final guest config always
+# carries the source's deployment/auth contract without replacing its database.
+reconcile_worktree_deployment_mode
+
 if [[ "$created_worktree_config" -eq 1 && ! -e "$seed_manifest_path" && ! -e "$seed_pending_marker_path" && ! -e "$seed_complete_marker_path" ]]; then
   write_seed_pending_manifest
 fi
@@ -707,7 +774,10 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
-        pnpm install --prod=false "$@"
+        # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+        # install. Node 24 reports that call as DEP0169. Remove this flag
+        # when the pinned pnpm no longer calls url.parse() in that path.
+        NODE_OPTIONS="${NODE_OPTIONS:-} --disable-warning=DEP0169" pnpm install --prod=false "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
         cat "$stderr_path" >&2

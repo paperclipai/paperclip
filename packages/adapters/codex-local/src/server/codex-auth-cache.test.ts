@@ -204,7 +204,7 @@ describe("codex auth cache store", () => {
           "acct-x": subscriptionAuth({ accountId: "acct-x", lastRefresh: NEWER, marker: "cache" }),
         },
       });
-      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined);
+      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined, env);
       expect(outcome).toBe("vended");
       const finalHost = await readFile(sharedHomeAuthPath, "utf8");
       expect(finalHost).toContain("acct-x");
@@ -221,7 +221,7 @@ describe("codex auth cache store", () => {
           },
         });
         const before = await readFile(sharedHomeAuthPath, "utf8");
-        const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined);
+        const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined, env);
         expect(outcome).toBe("kept-host");
         expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(before);
       }
@@ -235,7 +235,7 @@ describe("codex auth cache store", () => {
         },
       });
       const before = await readFile(sharedHomeAuthPath, "utf8");
-      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined);
+      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined, env);
       expect(outcome).toBe("kept-host");
       expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(before);
     });
@@ -246,7 +246,7 @@ describe("codex auth cache store", () => {
           "acct-y": subscriptionAuth({ accountId: "acct-y", lastRefresh: NEWER, marker: "other" }),
         },
       });
-      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined);
+      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined, env);
       expect(outcome).toBe("no-host-identity");
       await expect(lstat(sharedHomeAuthPath)).rejects.toThrow();
     });
@@ -259,7 +259,7 @@ describe("codex auth cache store", () => {
         },
       });
       const before = await readFile(sharedHomeAuthPath, "utf8");
-      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined);
+      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => undefined, env);
       expect(outcome).toBe("no-host-identity");
       expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(before);
     });
@@ -272,9 +272,14 @@ describe("codex auth cache store", () => {
         },
       });
       const logs: string[] = [];
-      await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), (line) => {
-        logs.push(line);
-      });
+      await selectVendCredential(
+        sharedHomeAuthPath,
+        resolveEntry(env),
+        (line) => {
+          logs.push(line);
+        },
+        env,
+      );
       const combined = logs.join("\n");
       expect(combined).not.toContain("SENTINEL");
       expect(combined).not.toContain("SECRET-ACCT");

@@ -163,6 +163,29 @@ export interface SandboxProviderCapabilities {
    * the output-file poll path.
    */
   incrementalSessionOutput?: boolean;
+  /**
+   * Provider can run file transfers into and out of the sandbox in parallel, in
+   * both directions. This is an opt-in behavioral guarantee. An omitted key
+   * denies the capability, so the host keeps the serial transfer path. The host
+   * resolves the capability `true` only when the provider declares this key
+   * `true` and the live worker verifies both sync verbs (`environmentSyncIn` and
+   * `environmentSyncOut`). A provider that verifies only one verb resolves
+   * `false`.
+   */
+  concurrentSyncOperations?: boolean;
+  /**
+   * Provider opens one persistent, bidirectional duplex channel that carries the
+   * command stream, in place of the file transport of the callback bridge. This
+   * is an opt-in behavioral guarantee, not a worker-method property: a provider
+   * that keeps persistent sessions and runs independent control commands still
+   * does not carry a framed duplex stream unless it declares this key. An omitted
+   * key denies the capability, so the provider keeps the file bridge. Only a
+   * provider that declares this key `true` and whose worker verifies the duplex
+   * open method selects the duplex channel path.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+   */
+  duplexCommandStream?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {

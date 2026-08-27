@@ -60,7 +60,10 @@ function registerModuleMocks() {
   vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
 }
 
-function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
+function createApp(
+  actorOverrides: Partial<Express.Request["actor"]> = {},
+  options: Parameters<typeof adapterRoutes>[0] = {},
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -74,7 +77,7 @@ function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
     };
     next();
   });
-  app.use("/api", adapterRoutes());
+  app.use("/api", adapterRoutes(options));
   app.use(errorHandler);
   return app;
 }
@@ -146,6 +149,26 @@ describe("adapter routes", () => {
     }
   });
 
+  it("keeps paperclip_runner hidden from selection unless the rollout flag is enabled", async () => {
+    const disabledResponse = await request(createApp()).get("/api/adapters");
+    expect(disabledResponse.status).toBe(200);
+    expect(disabledResponse.body.find((adapter: any) => adapter.type === "paperclip_runner"))
+      .toMatchObject({ disabled: true });
+
+    const enabledResponse = await request(createApp({}, {
+      getNativeRunnerEnabled: async () => true,
+    })).get("/api/adapters");
+    expect(enabledResponse.status).toBe(200);
+    expect(enabledResponse.body.find((adapter: any) => adapter.type === "paperclip_runner"))
+      .toMatchObject({
+        disabled: false,
+        capabilities: {
+          supportsInstructionsBundle: false,
+          supportsModelProfiles: false,
+        },
+      });
+  });
+
   it("GET /api/adapters returns correct capabilities for built-in adapters", async () => {
     const app = createApp();
 
@@ -167,7 +190,7 @@ describe("adapter routes", () => {
       agentId: "codex",
       skillsMode: "ephemeral",
       prerequisites: {
-        nodeRange: ">=22.13.0",
+        nodeRange: ">=24.11.0",
         packages: ["@agentclientprotocol/codex-acp"],
       },
     });
@@ -203,7 +226,7 @@ describe("adapter routes", () => {
       agentId: "gemini",
       skillsMode: "ephemeral",
       prerequisites: {
-        nodeRange: ">=20.0.0",
+        nodeRange: ">=24.11.0",
         packages: ["@google/gemini-cli"],
       },
     });
@@ -216,6 +239,24 @@ describe("adapter routes", () => {
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
       supportsAcp: false,
+    });
+
+    const kimiAdapter = res.body.find((a: any) => a.type === "kimi_local");
+    expect(kimiAdapter).toBeDefined();
+    expect(kimiAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+      supportsAcp: true,
+    });
+    expect(kimiAdapter.acp).toMatchObject({
+      agentId: "kimi",
+      skillsMode: "ephemeral",
+      prerequisites: {
+        nodeRange: ">=20.0.0",
+        packages: ["@moonshot-ai/kimi-code"],
+      },
     });
 
     const hermesLocal = res.body.find((a: any) => a.type === "hermes_local");

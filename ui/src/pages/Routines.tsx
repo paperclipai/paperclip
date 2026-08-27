@@ -796,7 +796,7 @@ export function Routines() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message="Select an organization to view routines." />;
   }
 
   if (isLoading) {

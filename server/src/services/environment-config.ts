@@ -33,16 +33,16 @@ import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environ
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
-  host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
+  host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
   remoteWorkspacePath: z
-    .string({ required_error: "SSH environments require a remote workspace path." })
+    .string({ error: "SSH environments require a remote workspace path." })
     .trim()
     .min(1, "SSH environments require a remote workspace path.")
     .refine((value) => value.startsWith("/"), "SSH remote workspace path must be absolute."),
@@ -102,7 +102,7 @@ const pluginEnvironmentConfigSchema = z.object({
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
   ),
-  driverConfig: z.record(z.unknown()).optional().default({}),
+  driverConfig: z.record(z.string(), z.unknown()).optional().default({}),
 }).strict();
 
 export type ParsedEnvironmentConfig =

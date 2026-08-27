@@ -71,10 +71,11 @@ describe("grok_local execute", () => {
           "--output-format",
           "streaming-json",
           "--always-approve",
-          "--permission-mode",
-          "dontAsk",
         ]),
       );
+      // Grok >= 1.0 enforces `dontAsk` as deny-by-default over --always-approve,
+      // so no permission mode may be passed unless explicitly configured.
+      expect(args).not.toContain("--permission-mode");
       expect(await fs.readFile(path.join(root, "Agents.md"), "utf8")).toContain("You are Grok.");
       expect(await pathExists(path.join(root, ".claude", "skills", "paperclip", "SKILL.md"))).toBe(true);
       await options.onLog?.("stdout", '{"type":"text","data":"done"}\n');
@@ -201,6 +202,42 @@ describe("grok_local execute", () => {
       if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
       else process.env.XAI_API_KEY = previousApiKey;
     }
+  });
+
+  it("passes an explicitly configured permissionMode through to the CLI", async () => {
+    let seenArgs: string[] = [];
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      seenArgs = args;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1", requestId: "req-1" }),
+        stderr: "",
+      };
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-permission-mode",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: await makeTempRoot(), permissionMode: "bypassPermissions" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    await execute(ctx);
+
+    const flagIndex = seenArgs.indexOf("--permission-mode");
+    expect(flagIndex).toBeGreaterThan(-1);
+    expect(seenArgs[flagIndex + 1]).toBe("bypassPermissions");
   });
 
   it("cleans up staged assets when setup fails before the Grok process starts", async () => {

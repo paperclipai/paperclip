@@ -3,7 +3,7 @@ import multer from "multer";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
-import { createAssetImageMetadataSchema } from "@paperclipai/shared";
+import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
@@ -133,7 +133,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const parsedMeta = createAssetImageMetadataSchema.safeParse(req.body ?? {});
     if (!parsedMeta.success) {
-      res.status(400).json({ error: "Invalid image metadata", details: parsedMeta.error.issues });
+      res.status(400).json({
+        error: `Invalid image metadata: ${ASSET_NAMESPACE_RULE}`,
+        details: parsedMeta.error.issues,
+      });
       return;
     }
 

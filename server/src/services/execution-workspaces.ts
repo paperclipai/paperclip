@@ -55,6 +55,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -789,7 +790,9 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 }> {
   const warnings: string[] = [];
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
-  const createdByRuntime = workspace.metadata?.createdByRuntime === true;
+  const createdByRuntime = workspace.providerType === "git_worktree"
+    ? isRuntimeOwnedGitBranch(workspace.metadata)
+    : workspace.metadata?.createdByRuntime === true;
   const expectsGitInspection =
     workspace.providerType === "git_worktree" ||
     Boolean(workspace.repoUrl || workspace.baseRef || workspace.branchName || workspacePath);

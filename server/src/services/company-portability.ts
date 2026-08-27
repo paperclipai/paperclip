@@ -85,6 +85,7 @@ import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
@@ -104,6 +105,31 @@ import type {
   ImportIssueWorkProductRow,
   ImportIssueAttachmentRow,
 } from "./import-write-types.js";
+
+const EXPORT_READ_CONCURRENCY = 8;
+const EXPORT_ISSUE_READ_CONCURRENCY = 2;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]!);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker()),
+  );
+  return results;
+}
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -202,6 +228,25 @@ function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) 
       { code: "import_payload_incomplete", expectedFileCount: expected, receivedFileCount: received },
     );
   }
+}
+
+/**
+ * Suffix a manifest-derived company name with " (2)", " (3)", … when it
+ * collides case-insensitively with an existing company, so repeat imports of
+ * the same package do not produce several identically named companies that
+ * only differ by issue prefix. Explicit user-typed names bypass this — they
+ * are the caller's deliberate choice.
+ */
+export function dedupeImportedCompanyName(baseName: string, existingNames: string[]): string {
+  const normalized = new Set(existingNames.map((name) => name.trim().toLowerCase()));
+  if (!normalized.has(baseName.trim().toLowerCase())) return baseName;
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const candidate = `${baseName} (${suffix})`;
+    if (!normalized.has(candidate.toLowerCase())) return candidate;
+  }
+  // Pathological: thousands of identically named companies. Give up on the
+  // suffix rather than fail the import — names carry no uniqueness invariant.
+  return baseName;
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
@@ -742,6 +787,10 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["graceSec"], value: 15 },
   ],
   gemini_local: [
+    { path: ["timeoutSec"], value: 0 },
+    { path: ["graceSec"], value: 15 },
+  ],
+  kimi_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
@@ -3738,6 +3787,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
+    options: { preview?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -3783,7 +3833,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const liveAgentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
     const builtInAgentRows = liveAgentRows.filter((agent) => readBuiltInAgentMarker(agent.metadata));
     const portableAgentRows = liveAgentRows.filter((agent) => !readBuiltInAgentMarker(agent.metadata));
-    const companySkillRowsRaw = include.skills || include.agents ? await companySkills.listFull(companyId) : [];
+    const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
     if (include.agents) {
@@ -4094,27 +4144,50 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       .sort((left, right) => left.key.localeCompare(right.key));
 
     const skillExportDirs = buildSkillExportDirMap(selectedSkillRows, company.issuePrefix);
+    const skillFileJobs: Array<{ filePath: string; load: () => Promise<string | null> }> = [];
     for (const skill of selectedSkillRows) {
       const packageDir = skillExportDirs.get(skill.key) ?? `skills/${normalizeSkillSlug(skill.slug) ?? "skill"}`;
       if (shouldReferenceSkillOnExport(skill, Boolean(input.expandReferencedSkills))) {
-        files[`${packageDir}/SKILL.md`] = await buildReferencedSkillMarkdown(skill);
+        skillFileJobs.push({
+          filePath: `${packageDir}/SKILL.md`,
+          load: () => buildReferencedSkillMarkdown(skill),
+        });
         continue;
       }
 
       for (const inventoryEntry of skill.fileInventory) {
-        const fileDetail = await companySkills.readFile(companyId, skill.id, inventoryEntry.path).catch(() => null);
-        if (!fileDetail) continue;
-        const filePath = `${packageDir}/${inventoryEntry.path}`;
-        files[filePath] = inventoryEntry.path === "SKILL.md"
-          ? await withSkillSourceMetadata(skill, fileDetail.content)
-          : fileDetail.content;
+        skillFileJobs.push({
+          filePath: `${packageDir}/${inventoryEntry.path}`,
+          load: async () => {
+            const fileDetail = await companySkills
+              .readFile(companyId, skill.id, inventoryEntry.path)
+              .catch(() => null);
+            if (!fileDetail) return null;
+            return inventoryEntry.path === "SKILL.md"
+              ? withSkillSourceMetadata(skill, fileDetail.content)
+              : fileDetail.content;
+          },
+        });
       }
+    }
+    const skillFileResults = await mapWithConcurrency(
+      skillFileJobs,
+      EXPORT_READ_CONCURRENCY,
+      async (job) => ({ filePath: job.filePath, content: await job.load() }),
+    );
+    for (const result of skillFileResults) {
+      if (result.content !== null) files[result.filePath] = result.content;
     }
 
     if (include.agents) {
+      const agentInstructionsById = new Map(
+        await mapWithConcurrency(agentRows, EXPORT_READ_CONCURRENCY, async (agent) => (
+          [agent.id, await instructions.exportFiles(agent)] as const
+        )),
+      );
       for (const agent of agentRows) {
         const slug = idToSlug.get(agent.id)!;
-        const exportedInstructions = await instructions.exportFiles(agent);
+        const exportedInstructions = agentInstructionsById.get(agent.id)!;
         warnings.push(...exportedInstructions.warnings);
 
         const envInputsStart = envInputs.length;
@@ -4262,7 +4335,36 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     let unexportedParentEdgeCount = 0;
     let unportableWorkProductRefCount = 0;
     const exportedBlobs = new Map<string, CompanyPortabilityBlobManifestEntry>();
+    // A task export needs several independent relations per task. Load a
+    // bounded number of task groups in parallel so large companies do not pay
+    // thousands of serialized database round trips, while still respecting
+    // the default database pool size.
+    const issueExportDetails = new Map(
+      await mapWithConcurrency(
+        selectedIssueRows,
+        EXPORT_ISSUE_READ_CONCURRENCY,
+        async (issue) => {
+          const [comments, relationSummaries, issueDocumentRows, workProductRows, attachmentRows] = await Promise.all([
+            issuesSvc.listComments(issue.id, { order: "asc" }),
+            issuesSvc.getRelationSummaries(issue.id),
+            documentsSvc.listIssueDocuments(issue.id, { includeSystem: true }),
+            workProductsSvc.listForIssue(issue.id),
+            issuesSvc.listAttachments(issue.id),
+          ]);
+          return [issue.id, {
+            comments,
+            relationSummaries,
+            issueDocumentRows,
+            workProductRows,
+            attachmentRows: attachmentRows
+              .slice()
+              .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()),
+          }] as const;
+        },
+      ),
+    );
     for (const issue of selectedIssueRows) {
+      const details = issueExportDetails.get(issue.id)!;
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
       // All tasks go in top-level tasks/ folder, never nested under projects/
@@ -4283,10 +4385,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           });
         }
       }
-      const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
+      const comments = details.comments;
       // Blocker edges travel by task slug; only edges with both endpoints in
       // the export can be carried.
-      const relationSummaries = await issuesSvc.getRelationSummaries(issue.id);
+      const relationSummaries = details.relationSummaries;
       const blockedBySlugs: string[] = [];
       for (const blocker of relationSummaries.blockedBy) {
         const blockerSlug = taskSlugByIssueId.get(blocker.id);
@@ -4307,7 +4409,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         parentTaskSlug = taskSlugByIssueId.get(issue.parentId) ?? null;
         if (!parentTaskSlug) unexportedParentEdgeCount += 1;
       }
-      const issueDocumentRows = await documentsSvc.listIssueDocuments(issue.id, { includeSystem: true });
+      const issueDocumentRows = details.issueDocumentRows;
       const documentEntries = issueDocumentRows.map((document) => {
         const documentPath = `tasks/${taskSlug}/documents/${document.key}.md`;
         files[documentPath] = document.body ?? "";
@@ -4318,7 +4420,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           path: documentPath,
         };
       });
-      const workProductRows = await workProductsSvc.listForIssue(issue.id);
+      const workProductRows = details.workProductRows;
       const workProductEntries = workProductRows.map((workProduct) => {
         if (workProduct.executionWorkspaceId || workProduct.runtimeServiceId || workProduct.createdByRunId) {
           unportableWorkProductRefCount += 1;
@@ -4340,9 +4442,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       // Attachment bytes travel as content-addressed blobs/<sha256> entries,
       // deduped across the bundle; each per-task entry references its blob by
       // hash and its comment by index into the exported comments array.
-      const attachmentRows = (await issuesSvc.listAttachments(issue.id))
-        .slice()
-        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      const attachmentRows = details.attachmentRows;
       const commentIndexById = new Map(comments.map((comment, index) => [comment.id, index] as const));
       const attachmentEntries: Array<Record<string, unknown>> = [];
       if (attachmentRows.length > 0 && !storage) {
@@ -4627,7 +4727,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     resolved.warnings.unshift(...warnings);
 
     // Generate org chart PNG from manifest agents
-    if (resolved.manifest.agents.length > 0) {
+    if (!options.preview && resolved.manifest.agents.length > 0) {
       try {
         const orgNodes = buildOrgTreeFromManifest(resolved.manifest.agents);
         const pngBuffer = await renderOrgChartPng(orgNodes);
@@ -4686,7 +4786,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (previewInput.include && previewInput.include.issues === undefined) {
       previewInput.include.issues = false;
     }
-    const exported = await exportBundle(companyId, previewInput);
+    const exported = await exportBundle(companyId, previewInput, { preview: true });
     return {
       ...exported,
       fileInventory: Object.keys(exported.files)
@@ -5131,6 +5231,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
 
+    if (include.agents) {
+      const importedAgentSlugs = new Set(
+        plan.preview.plan.agentPlans
+          .filter((entry) => entry.action !== "skip")
+          .map((entry) => entry.slug),
+      );
+      const selectsNativeRunner = sourceManifest.agents.some((agent) =>
+        importedAgentSlugs.has(agent.slug)
+        && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
+          === "paperclip_runner",
+      );
+      if (
+        selectsNativeRunner
+        && (await instanceSettingsService(db).getExperimental()).enableNativeRunner !== true
+      ) {
+        throw unprocessable(
+          "Paperclip Runner is experimental and disabled on this instance.",
+          { code: "paperclip_runner_rollout_disabled" },
+        );
+      }
+    }
+
     // Content-addressed blobs double as the bundle's tamper seal. Verify every
     // blob before any row is written so a corrupted package cannot leave a
     // partially imported company behind.
@@ -5161,11 +5283,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           throw unprocessable("Safe new-company import requires at least one active user membership on the source company.");
         }
       }
+      const requestedCompanyName = asString(input.target.newCompanyName);
+      const manifestCompanyName =
+        sourceManifest.company?.name ?? sourceManifest.source?.companyName ?? "Imported Company";
+      // De-duplicate only for board-driven imports. The lookup reads every
+      // company name in the instance, and reflecting a collision back through
+      // the numeric suffix would let a company-scoped agent (agent_safe mode)
+      // probe for the existence of company names outside its own company.
       const companyName =
-        asString(input.target.newCompanyName) ??
-        sourceManifest.company?.name ??
-        sourceManifest.source?.companyName ??
-        "Imported Company";
+        requestedCompanyName ??
+        (mode === "agent_safe"
+          ? manifestCompanyName
+          : dedupeImportedCompanyName(
+              manifestCompanyName,
+              (await companies.list()).map((company) => company.name),
+            ));
       const created = await companies.create({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
@@ -5469,10 +5601,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
           };
+          // "import", not "system": the UI reads this to explain that the
+          // agent was parked by the import safety default and to offer a
+          // scoped resume; "system" stays reserved for platform-managed
+          // pauses (plugins, built-ins).
           const automationPausePatch = pauseAutomations
             ? {
                 status: "paused",
-                pauseReason: "system",
+                pauseReason: "import",
                 pausedAt: importedAutomationPausedAt,
               }
             : {};

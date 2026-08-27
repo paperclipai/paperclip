@@ -313,18 +313,29 @@ describe("sandbox provider capability declaration validators", () => {
     expect(rejected.success).toBe(false);
   });
 
-  it("test_removed_concurrency_capabilities_are_rejected_as_unknown_keys", () => {
-    // The concurrency flags left the public contract because no runtime path
-    // enforced them. The strict schema now rejects them, so a manifest cannot
-    // declare a capability the host does not honor.
-    for (const key of ["concurrentSyncAndExec", "concurrentSyncOperations"]) {
-      const rejected = pluginManifestV1Schema.safeParse(
-        buildSandboxProviderManifest({
-          sandboxCapabilities: { [key]: true },
-        }),
-      );
-      expect(rejected.success).toBe(false);
-    }
+  it("test_manifest_accepts_concurrent_sync_operations_capability", () => {
+    // A provider opts in to parallel bidirectional file sync with this key. The
+    // strict schema accepts it and keeps the declared value.
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: { concurrentSyncOperations: true },
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.sandboxCapabilities).toEqual({
+      concurrentSyncOperations: true,
+    });
+  });
+
+  it("test_manifest_rejects_unknown_sync_concurrency_capability_key", () => {
+    // A neighboring but unknown concurrency key must fail validation, not drop
+    // silently. The strict schema rejects a capability the host does not honor.
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: { concurrentSyncAndExec: true },
+      }),
+    );
+    expect(rejected.success).toBe(false);
   });
 
   it("test_supports_reusable_leases_compat_maps_to_reusable_leases", () => {
