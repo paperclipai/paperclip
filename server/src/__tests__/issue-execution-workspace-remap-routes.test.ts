@@ -359,6 +359,66 @@ describeEmbeddedPostgres("issue execution workspace remap routes", () => {
     });
   });
 
+  it("rejects a stale workspace patch after a concurrent project remap", async () => {
+    const fixture = await seedFixture();
+    const originalTransaction = db.transaction.bind(db);
+    let pauseFirstTransaction = true;
+    let signalFirstTransaction!: () => void;
+    let releaseFirstTransaction!: () => void;
+    const firstTransactionReached = new Promise<void>((resolve) => {
+      signalFirstTransaction = resolve;
+    });
+    const firstTransactionReleased = new Promise<void>((resolve) => {
+      releaseFirstTransaction = resolve;
+    });
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(
+      (async (...args: Parameters<typeof db.transaction>) => {
+        if (pauseFirstTransaction) {
+          pauseFirstTransaction = false;
+          signalFirstTransaction();
+          await firstTransactionReleased;
+        }
+        return originalTransaction(...args);
+      }) as typeof db.transaction,
+    );
+    let stalePatch: Promise<request.Response> | null = null;
+
+    try {
+      stalePatch = request(fixture.app)
+        .patch(`/api/issues/${fixture.issueId}`)
+        .send({ executionWorkspaceId: fixture.sourceExecutionWorkspaceId })
+        .then((response) => response);
+      await firstTransactionReached;
+
+      const concurrentRemap = await request(fixture.app)
+        .patch(`/api/issues/${fixture.issueId}`)
+        .send({
+          projectId: fixture.destinationProjectId,
+          executionWorkspaceId: fixture.destinationExecutionWorkspaceId,
+        });
+      expect(concurrentRemap.status, JSON.stringify(concurrentRemap.body)).toBe(200);
+
+      releaseFirstTransaction();
+      const staleResult = await stalePatch;
+      expect(staleResult.status, JSON.stringify(staleResult.body)).toBe(422);
+      expect(staleResult.body.error).toBe("Execution workspace must belong to the selected project");
+    } finally {
+      releaseFirstTransaction();
+      await stalePatch?.catch(() => undefined);
+      transactionSpy.mockRestore();
+    }
+
+    const storedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId))
+      .then((rows) => rows[0]);
+    expect(storedIssue).toMatchObject({
+      projectId: fixture.destinationProjectId,
+      executionWorkspaceId: fixture.destinationExecutionWorkspaceId,
+    });
+  });
+
   it("preserves an omitted pointer and rejects an incompatible project move without a partial update", async () => {
     const fixture = await seedFixture();
 

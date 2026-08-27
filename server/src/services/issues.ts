@@ -7803,6 +7803,11 @@ export function issueService(db: Db) {
         patch.executionLockedAt = null;
       }
 
+      const workspaceBindingChanged =
+        issueData.projectId !== undefined ||
+        issueData.projectWorkspaceId !== undefined ||
+        issueData.executionWorkspaceId !== undefined;
+
       const runUpdate = async (tx: any) => {
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
@@ -7814,6 +7819,59 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (workspaceBindingChanged) {
+          let lockedNextProjectId =
+            issueData.projectId !== undefined ? issueData.projectId : receiptExisting.projectId;
+          const lockedNextProjectWorkspaceId =
+            issueData.projectWorkspaceId !== undefined
+              ? issueData.projectWorkspaceId
+              : receiptExisting.projectWorkspaceId;
+          const lockedNextExecutionWorkspaceId =
+            issueData.executionWorkspaceId !== undefined
+              ? issueData.executionWorkspaceId
+              : receiptExisting.executionWorkspaceId;
+          let lockedValidatedProjectWorkspace: { projectId: string } | null = null;
+          let lockedValidatedExecutionWorkspace: { projectId: string } | null = null;
+
+          if (!lockedNextProjectId && lockedNextProjectWorkspaceId) {
+            const workspace = await assertValidProjectWorkspace(
+              receiptExisting.companyId,
+              null,
+              lockedNextProjectWorkspaceId,
+              tx,
+            );
+            lockedValidatedProjectWorkspace = workspace;
+            lockedNextProjectId = workspace.projectId;
+            patch.projectId = workspace.projectId;
+          }
+          if (!lockedNextProjectId && lockedNextExecutionWorkspaceId) {
+            const workspace = await assertValidExecutionWorkspace(
+              receiptExisting.companyId,
+              null,
+              lockedNextExecutionWorkspaceId,
+              tx,
+            );
+            lockedValidatedExecutionWorkspace = workspace;
+            lockedNextProjectId = workspace.projectId;
+            patch.projectId = workspace.projectId;
+          }
+          if (lockedNextProjectWorkspaceId && !lockedValidatedProjectWorkspace) {
+            await assertValidProjectWorkspace(
+              receiptExisting.companyId,
+              lockedNextProjectId,
+              lockedNextProjectWorkspaceId,
+              tx,
+            );
+          }
+          if (lockedNextExecutionWorkspaceId && !lockedValidatedExecutionWorkspace) {
+            await assertValidExecutionWorkspace(
+              receiptExisting.companyId,
+              lockedNextProjectId,
+              lockedNextExecutionWorkspaceId,
+              tx,
+            );
+          }
+        }
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
