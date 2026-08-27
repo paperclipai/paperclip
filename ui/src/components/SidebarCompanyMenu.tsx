@@ -238,9 +238,11 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   const cloud = useCloudInstance();
   const isCloud = Boolean(cloud);
   // Invites now live on the Members page; hide the shortcut when the hosting
-  // operator hides either surface.
-  const { hidden: hiddenSettings } = useHiddenSettings();
+  // operator hides either surface. Until the health response resolves, the
+  // hidden set is unknown — keep the shortcut out rather than flash it.
+  const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
   const showInvitePeople =
+    hiddenSettingsLoaded &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
   const cloudBaseUrl = cloud?.cloudBaseUrl ?? null;
