@@ -25,6 +25,13 @@ const DELIVERY_CLAIM_STALE_MS = 30_000;
 const DELIVERY_CLAIM_REFRESH_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const DELIVERY_CORRELATION_PREFIX = "question-response:";
+
+class DeliveryClaimUnavailableError extends Error {
+  constructor() {
+    super("question_response_delivery_claim_unavailable");
+    this.name = "DeliveryClaimUnavailableError";
+  }
+}
 const DURABLE_WAKE_REQUEST_STATUSES = [
   "queued",
   "running",
@@ -320,6 +327,7 @@ export function questionResponseDeliveryService(
       }).where(and(
         eq(issueQuestionResponseDeliveries.id, input.delivery.id),
         eq(issueQuestionResponseDeliveries.status, "delivering"),
+        eq(issueQuestionResponseDeliveries.attemptCount, input.delivery.attemptCount),
       )).returning().then((rows) => rows[0] ?? null);
       if (!row) return null;
       await logActivity(tx as unknown as Db, {
@@ -382,6 +390,7 @@ export function questionResponseDeliveryService(
       }).where(and(
         eq(issueQuestionResponseDeliveries.id, delivery.id),
         eq(issueQuestionResponseDeliveries.status, "delivering"),
+        eq(issueQuestionResponseDeliveries.attemptCount, delivery.attemptCount),
       ));
     }
     return exhausted;
@@ -400,6 +409,7 @@ export function questionResponseDeliveryService(
         }).where(and(
           eq(issueQuestionResponseDeliveries.id, delivery.id),
           eq(issueQuestionResponseDeliveries.status, "delivering"),
+          eq(issueQuestionResponseDeliveries.attemptCount, delivery.attemptCount),
         )).returning({ id: issueQuestionResponseDeliveries.id });
         if (renewed.length === 0) stopped = true;
       }).catch((error) => {
@@ -407,13 +417,41 @@ export function questionResponseDeliveryService(
       });
     }, claimRefreshMs);
     timer.unref?.();
+    let result: T | undefined;
+    let operationError: unknown;
     try {
-      return await operation();
+      result = await operation();
+    } catch (error) {
+      operationError = error;
     } finally {
       stopped = true;
       clearInterval(timer);
       await renewal;
     }
+
+    // `attemptCount` is the claim generation. A stale worker must not continue
+    // after a sweep has reclaimed the row for a newer attempt, even if its
+    // external side effect eventually resolves. Confirm ownership after the
+    // side effect so a rejected native steer cannot fall through to a second
+    // wake after losing its claim.
+    let ownsClaim = false;
+    try {
+      ownsClaim = await db.select({ id: issueQuestionResponseDeliveries.id })
+        .from(issueQuestionResponseDeliveries)
+        .where(and(
+          eq(issueQuestionResponseDeliveries.id, delivery.id),
+          eq(issueQuestionResponseDeliveries.status, "delivering"),
+          eq(issueQuestionResponseDeliveries.attemptCount, delivery.attemptCount),
+        ))
+        .limit(1)
+        .then((rows) => rows.length === 1);
+    } catch (error) {
+      logger.warn({ err: error, deliveryId: delivery.id }, "question response claim ownership check failed");
+      throw new DeliveryClaimUnavailableError();
+    }
+    if (!ownsClaim) throw new DeliveryClaimUnavailableError();
+    if (operationError !== undefined) throw operationError;
+    return result as T;
   }
 
   async function findDurableWakeRequest(input: {
@@ -551,6 +589,7 @@ export function questionResponseDeliveryService(
           adapter: successorRunning.driverKind ?? adapter,
         });
       } catch (error) {
+        if (error instanceof DeliveryClaimUnavailableError) return terminalOutcome(interactionId);
         steeringErrorCode = readSteeringErrorCode(error);
       }
     } else if (successorRunning) {
@@ -627,6 +666,7 @@ export function questionResponseDeliveryService(
         errorCode: steeringErrorCode,
       });
     } catch (error) {
+      if (error instanceof DeliveryClaimUnavailableError) return terminalOutcome(interactionId);
       const errorCode = error instanceof Error && compactLine(error.message)
         ? compactLine(error.message)!.slice(0, 160)
         : "question_response_wake_failed";

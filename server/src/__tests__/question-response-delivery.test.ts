@@ -345,6 +345,68 @@ describeEmbeddedPostgres("question response delivery", () => {
     await expect(deliveryPromise).resolves.toBeNull();
   });
 
+  it("fences a stale worker after a newer claim generation takes ownership", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    let releaseFirstWake!: (value: { id: string; driverKind: string }) => void;
+    const firstWakeup = vi.fn(() => new Promise<{ id: string; driverKind: string }>((resolve) => {
+      releaseFirstWake = resolve;
+    }));
+    const firstService = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup: firstWakeup } as never,
+      steer: vi.fn(),
+      claimStaleMs: 40,
+      claimRefreshMs: 5,
+    });
+
+    const firstDelivery = firstService.deliver(seeded.interaction.id);
+    await vi.waitFor(() => expect(firstWakeup).toHaveBeenCalledTimes(1));
+
+    // Simulate recovery after the first worker stopped renewing. The next
+    // claim increments attemptCount, which is the fencing generation.
+    await db.update(issueQuestionResponseDeliveries).set({
+      status: "pending",
+      lastAttemptAt: new Date(0),
+    }).where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+
+    const secondRunId = randomUUID();
+    const secondWakeup = vi.fn().mockImplementation(async () => db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "automation",
+      status: "queued",
+      runtimeMode: "legacy",
+      driverKind: "codex",
+      contextSnapshot: { issueId: seeded.issueId },
+    }).returning().then((rows) => rows[0]!));
+    const secondOutcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup: secondWakeup } as never,
+      steer: vi.fn(),
+    }).deliver(seeded.interaction.id);
+
+    expect(secondOutcome).toMatchObject({
+      status: "fallback_queued",
+      targetRunId: secondRunId,
+      duplicate: false,
+    });
+    releaseFirstWake({ id: randomUUID(), driverKind: "codex" });
+    await expect(firstDelivery).resolves.toMatchObject({
+      status: "fallback_queued",
+      targetRunId: secondRunId,
+      duplicate: true,
+    });
+
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "fallback_queued",
+      targetRunId: secondRunId,
+      attemptCount: 2,
+    });
+    const deliveryEvents = await db.select().from(activityLog)
+      .where(eq(activityLog.action, "issue.question_response_delivered"));
+    expect(deliveryEvents).toHaveLength(1);
+  });
+
   it.each(DIRECT_ADAPTER_TYPES)(
     "keeps %s on the existing wake path without invoking native steering",
     async (adapterType) => {
