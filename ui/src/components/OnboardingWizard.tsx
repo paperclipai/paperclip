@@ -5,16 +5,18 @@ import { MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
   AgentRole,
+  ClaudeOAuthTokenStatusResponse,
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
-import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { ApiError } from "../api/client";
 import { companiesApi } from "../api/companies";
 import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
@@ -48,6 +50,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync, useAdapterRegistryLoaded } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import { restoreOnboardingState } from "../lib/onboarding-state";
@@ -117,6 +120,44 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   if (q3.trim()) parts.push(`Our biggest challenge is ${q3.trim().toLowerCase()}.`);
   if (q4.trim()) parts.push(`Success looks like ${q4.trim().toLowerCase()}.`);
   return parts.join(" ");
+}
+
+/**
+ * True when an adapter-test result blocks a hire. A `fail` status always
+ * blocks. A `warn` or a `pass` status blocks too when a check reports
+ * `ADAPTER_AUTH_MISSING_CHECK_CODE`. That check means the agent has no
+ * working authentication, so it cannot run. A `warn` with no such check
+ * still lets the hire proceed. The wizard widened the gate for missing
+ * authentication only, not for every other warning.
+ */
+function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
+  if (result.status === "fail") return true;
+  return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+}
+
+/** True when `value` is a plain object, so callers can spread it as env config. */
+function isEnvRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const ANTHROPIC_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY";
+
+/**
+ * True when the adapter configuration carries a non-empty ANTHROPIC_API_KEY.
+ * The server rejects that key together with the fixed Claude login binding
+ * (see `assertClaudeOAuthBindingInvariant` in `server/src/services/secrets.ts`).
+ * This checks the built configuration first, so onboarding never sends a
+ * hire the server would reject.
+ */
+function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boolean {
+  if (!isEnvRecord(config.env)) return false;
+  const binding = config.env[ANTHROPIC_API_KEY_ENV_KEY];
+  if (typeof binding === "string") return binding.trim().length > 0;
+  if (!isEnvRecord(binding)) return false;
+  if (binding.type === "plain") {
+    return typeof binding.value === "string" && binding.value.trim().length > 0;
+  }
+  return binding.type === "secret_ref" || binding.type === "user_secret_ref";
 }
 
 // Exported so tests write/read the exact key the component uses, instead of
@@ -445,6 +486,11 @@ function OnboardingWizardInner({
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  // The owner's stored Claude subscription login, read right before the hire
+  // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
+  // so nothing else reads this state yet.
+  const [claudeOAuthStatus, setClaudeOAuthStatus] =
+    useState<ClaudeOAuthTokenStatusResponse | null>(null);
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -868,6 +914,7 @@ function OnboardingWizardInner({
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
+    setClaudeOAuthStatus(null);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
@@ -1316,19 +1363,22 @@ function OnboardingWizardInner({
       }
 
       if (isLocalAdapter) {
-        // A cached pass or warn is still good; a cached fail is retried. With
-        // the "Test now" card gone, this button is the only way to re-probe,
-        // and reusing a stale fail would lock a customer out of a machine
-        // they have since fixed.
+        // A cached result is reusable only when it does not block the hire —
+        // see blocksAgentCreate. With the "Test now" card gone, this button
+        // is the only way to re-probe. Reusing a stale blocking result would
+        // lock out a customer who has since fixed the problem.
         const cachedUsable =
-          adapterEnvResult && adapterEnvResult.status !== "fail" ? adapterEnvResult : null;
+          adapterEnvResult && !blocksAgentCreate(adapterEnvResult) ? adapterEnvResult : null;
         const result = cachedUsable ?? (await runAdapterEnvironmentTest());
         if (!result) return;
-        // Block the hire on a failed environment test. A pass or a warn may
-        // proceed; a fail means the agent cannot run as configured.
-        if (result.status === "fail") {
+        // Block the hire on a failed environment test. Also block it on a
+        // pass or a warn result that reports missing authentication — the
+        // agent cannot run without one of those.
+        if (blocksAgentCreate(result)) {
           setError(
-            "The environment test failed. Fix the reported checks before you hire this agent.",
+            result.status === "fail"
+              ? "The environment test failed. Fix the reported checks before you hire this agent."
+              : "No working authentication was found. Fix the reported checks before you hire this agent.",
           );
           return;
         }
@@ -1338,13 +1388,50 @@ function OnboardingWizardInner({
       // type narrowing rather than a gate — but it stays, because a future
       // path that clears the role must not reach a hire that silently no-ops.
       if (!agentRole) return;
+
+      // Onboarding applies a stored Claude subscription login automatically,
+      // with no extra control. A new user who signs in, leaves, and returns
+      // should not sign in a second time — that is the board's direction.
+      // The binding is a reference to the owner's stored value, never the
+      // value itself (see buildFixedClaudeOAuthBinding). The server rejects
+      // that binding together with a configured ANTHROPIC_API_KEY, so this
+      // checks the built configuration first and asks the status route only
+      // when there is no such conflict.
+      const baseAdapterConfig = buildAdapterConfig();
+      let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
+      if (
+        adapterType === "claude_local" &&
+        !adapterConfigHasAnthropicApiKey(baseAdapterConfig)
+      ) {
+        try {
+          storedClaudeLogin = await agentsApi.getClaudeOAuthTokenStatus(createdCompanyId);
+        } catch (err) {
+          // A fixed 404 means the owner has no stored value. It is not a
+          // failure.
+          if (!(err instanceof ApiError) || err.status !== 404) throw err;
+          storedClaudeLogin = null;
+        }
+        if (stillTheSameCompany(createdCompanyId)) setClaudeOAuthStatus(storedClaudeLogin);
+      }
+      const shouldApplyStoredClaudeLogin = storedClaudeLogin !== null;
+      const hireAdapterConfig = shouldApplyStoredClaudeLogin
+        ? {
+            ...baseAdapterConfig,
+            env: {
+              ...(isEnvRecord(baseAdapterConfig.env) ? baseAdapterConfig.env : {}),
+              ...buildFixedClaudeOAuthBinding(),
+            },
+          }
+        : baseAdapterConfig;
+
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
         name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
         role: agentRole,
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig: hireAdapterConfig,
+        ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
