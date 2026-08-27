@@ -1976,6 +1976,13 @@ export function isConfigurationIncompleteFailedRun(
   return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run?.errorCode === "model_not_found";
 }
 
+function readConfigurationIncompleteReasonFromRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson"> | null | undefined,
+) {
+  const resultJson = parseObject(run?.resultJson);
+  return readNonEmptyString(parseObject(resultJson.configurationIncomplete).reason);
+}
+
 async function hasGitMetadata(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
@@ -4373,13 +4380,29 @@ const SESSION_CONFIG_FINGERPRINT_KEY = "__paperclipConfigFingerprint";
 const SESSION_CONFIG_FINGERPRINT_VERSION_KEY = "__paperclipConfigFingerprintVersion";
 const SESSION_CONFIG_CATEGORIES_KEY = "__paperclipConfigCategories";
 const SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY = "__paperclipConfigCategoryFingerprints";
+const SESSION_CONFIG_FINGERPRINT_MISSING_STREAK_KEY = "__paperclipConfigFingerprintMissingStreak";
 const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
   SESSION_CONFIGURED_MODEL_KEY,
   SESSION_CONFIG_FINGERPRINT_KEY,
   SESSION_CONFIG_FINGERPRINT_VERSION_KEY,
   SESSION_CONFIG_CATEGORIES_KEY,
   SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY,
+  SESSION_CONFIG_FINGERPRINT_MISSING_STREAK_KEY,
 ]);
+// SPC-35033: adapters whose session/config continuity is fingerprint-backed but that
+// have shown they can get stuck permanently re-triggering the "fingerprint metadata is
+// missing" reset (grok-4.5 on grok_local never converges — see SPC-31006). A pre-dispatch
+// gate below counts consecutive same-reason resets per task session and, once the streak
+// is durably unresolvable, surfaces a configuration-incomplete blocker instead of
+// dispatching another doomed 0-token run.
+const FINGERPRINT_CONTINUITY_GATED_ADAPTER_TYPE_RE = /^grok/i;
+const FINGERPRINT_CONTINUITY_GATE_MAX_CONSECUTIVE_RESETS = 2;
+const EFFECTIVE_RUN_CONFIG_FINGERPRINT_MISSING_RESET_REASON =
+  "effective run configuration fingerprint metadata is missing";
+
+function isFingerprintContinuityGatedAdapterType(adapterType: string) {
+  return FINGERPRINT_CONTINUITY_GATED_ADAPTER_TYPE_RE.test(adapterType);
+}
 const WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY = "configFingerprint";
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
   "adapter",
@@ -4422,6 +4445,12 @@ type TaskSessionConfigFreshnessDecision = {
   changedCategories: EffectiveRunSessionConfigCategory[];
   storedFingerprint: string | null;
   nextFingerprint: string | null;
+};
+
+export type FingerprintContinuityGateDecision = {
+  blocked: boolean;
+  consecutiveFingerprintMissingResets: number;
+  reason: string | null;
 };
 
 export type EffectiveRunWorkspaceConfigMetadata = {
@@ -5244,8 +5273,9 @@ function attachPaperclipSessionMetadataToSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
   configuredModel: string | null,
   configMetadata?: EffectiveRunSessionConfigMetadata | null,
+  fingerprintMissingResetStreak?: number | null,
 ) {
-  if (!configuredModel && !configMetadata) return sessionParams ?? null;
+  if (!configuredModel && !configMetadata && !fingerprintMissingResetStreak) return sessionParams ?? null;
   const next = { ...(sessionParams ?? {}) };
   if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
   if (configMetadata) {
@@ -5253,6 +5283,11 @@ function attachPaperclipSessionMetadataToSessionParams(
     next[SESSION_CONFIG_FINGERPRINT_VERSION_KEY] = configMetadata.version;
     next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
     next[SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY] = configMetadata.categoryFingerprints;
+  }
+  if (fingerprintMissingResetStreak && fingerprintMissingResetStreak > 0) {
+    next[SESSION_CONFIG_FINGERPRINT_MISSING_STREAK_KEY] = fingerprintMissingResetStreak;
+  } else {
+    delete next[SESSION_CONFIG_FINGERPRINT_MISSING_STREAK_KEY];
   }
   return next;
 }
@@ -5326,7 +5361,7 @@ export function resolveTaskSessionConfigFreshness(input: {
   if (input.configMetadata) {
     if (!storedConfig && !input.preserveLegacySessionWithoutConfigMetadata) {
       changedCategories = [...input.configMetadata.categories];
-      reasons.push("effective run configuration fingerprint metadata is missing");
+      reasons.push(EFFECTIVE_RUN_CONFIG_FINGERPRINT_MISSING_RESET_REASON);
     } else if (storedConfig && storedConfig.version !== input.configMetadata.version) {
       changedCategories = [...input.configMetadata.categories];
       reasons.push(
@@ -5351,6 +5386,44 @@ export function resolveTaskSessionConfigFreshness(input: {
     changedCategories,
     storedFingerprint: storedConfig?.fingerprint ?? null,
     nextFingerprint: input.configMetadata?.fingerprint ?? null,
+  };
+}
+
+// SPC-35033 pre-dispatch gate: grok-* dispatches whose task session keeps resetting for
+// the exact same "fingerprint metadata is missing" reason are not converging — each
+// dispatch tears the session down again instead of persisting the fingerprint it just
+// computed. Dispatching another run only buys another 0-token reset. Once the streak of
+// consecutive same-reason resets exceeds the bound, this is a durable pre-dispatch
+// configuration gap, not a runtime failure, so the caller must surface a
+// configuration-incomplete blocker instead of dispatching.
+export function resolveFingerprintContinuityGateDecision(input: {
+  adapterType: string;
+  taskSessionParams: Record<string, unknown> | null | undefined;
+  sessionConfigFreshness: Pick<TaskSessionConfigFreshnessDecision, "reset" | "reasons">;
+  maxConsecutiveResets?: number;
+}): FingerprintContinuityGateDecision {
+  if (!isFingerprintContinuityGatedAdapterType(input.adapterType)) {
+    return { blocked: false, consecutiveFingerprintMissingResets: 0, reason: null };
+  }
+
+  const isFingerprintMissingReset =
+    input.sessionConfigFreshness.reset &&
+    input.sessionConfigFreshness.reasons.includes(EFFECTIVE_RUN_CONFIG_FINGERPRINT_MISSING_RESET_REASON);
+  if (!isFingerprintMissingReset) {
+    return { blocked: false, consecutiveFingerprintMissingResets: 0, reason: null };
+  }
+
+  const previousStreak = asNumber(
+    input.taskSessionParams?.[SESSION_CONFIG_FINGERPRINT_MISSING_STREAK_KEY],
+    0,
+  );
+  const consecutiveFingerprintMissingResets = previousStreak + 1;
+  const maxConsecutiveResets = input.maxConsecutiveResets ?? FINGERPRINT_CONTINUITY_GATE_MAX_CONSECUTIVE_RESETS;
+  const blocked = previousStreak >= maxConsecutiveResets;
+  return {
+    blocked,
+    consecutiveFingerprintMissingResets,
+    reason: blocked ? EFFECTIVE_RUN_CONFIG_FINGERPRINT_MISSING_RESET_REASON : null,
   };
 }
 
@@ -14886,6 +14959,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeResetReason: wakeSessionResetReason,
       preserveLegacySessionWithoutConfigMetadata: acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
     });
+    // SPC-35033 pre-dispatch gate: grok-* (or equivalent adapter-backed) dispatches must
+    // not keep re-dispatching once the effective run configuration fingerprint has proven
+    // durably unresolvable. Surface configuration-incomplete instead of another 0-token run.
+    const fingerprintContinuityGate = resolveFingerprintContinuityGateDecision({
+      adapterType: agent.adapterType,
+      taskSessionParams: taskSession?.sessionParamsJson ?? taskSessionDecodedParams,
+      sessionConfigFreshness,
+    });
+    if (fingerprintContinuityGate.blocked) {
+      throw new ConfigurationIncompleteFailure(
+        `configuration incomplete: adapter "${agent.adapterType}" run configuration fingerprint metadata has not ` +
+          `become durable after ${fingerprintContinuityGate.consecutiveFingerprintMissingResets} consecutive resets`,
+        {
+          configurationIncomplete: {
+            reason: "adapter_fingerprint_continuity_unresolvable",
+            companyId: agent.companyId,
+            agentId: agent.id,
+            issueId: issueRef?.id ?? null,
+            adapterType: agent.adapterType,
+            consecutiveFingerprintMissingResets: fingerprintContinuityGate.consecutiveFingerprintMissingResets,
+            missingBindings: [],
+          },
+        },
+      );
+    }
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
@@ -16747,6 +16845,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 nextSessionState.params,
                 configuredModel,
                 sessionConfigMetadata,
+                fingerprintContinuityGate.consecutiveFingerprintMissingResets,
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
@@ -16892,6 +16991,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               previousSessionParams,
               configuredModel,
               sessionConfigMetadata,
+              fingerprintContinuityGate.consecutiveFingerprintMissingResets,
             ),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
@@ -17251,7 +17351,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issue,
           previousStatus: issue.status,
           notice: configurationIncomplete
-            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            ? buildConfigurationIncompleteRecoveryNoticeSeed({
+                reason: readConfigurationIncompleteReasonFromRun(run),
+              })
             : buildWorkspaceValidationRecoveryNoticeSeed(),
           recoveryCause: configurationIncomplete
             ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
@@ -17726,7 +17828,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const notice = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryNoticeSeed()
           : configurationIncompleteFailure
-            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            ? buildConfigurationIncompleteRecoveryNoticeSeed({
+                reason: readConfigurationIncompleteReasonFromRun(run),
+              })
             : buildImmediateExecutionPathRecoveryNoticeSeed({
                 status: issue.status as "todo" | "in_progress",
               });

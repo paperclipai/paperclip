@@ -30,6 +30,7 @@ import {
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
   resolveExecutionWorkspaceReuseProvisioningPolicy,
+  resolveFingerprintContinuityGateDecision,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
   isWorkspaceSyncConflictFailure,
@@ -2474,6 +2475,111 @@ describe("effective run session config freshness", () => {
     expect(canonical).not.toContain("plain-value");
     expect(canonical).not.toContain("enabled");
     expect(canonical).not.toContain("openai-api-key");
+  });
+});
+
+describe("resolveFingerprintContinuityGateDecision", () => {
+  const FINGERPRINT_MISSING_RESET = {
+    reset: true,
+    reasons: ["effective run configuration fingerprint metadata is missing"],
+  };
+
+  it("never gates adapters outside the grok family", () => {
+    const decision = resolveFingerprintContinuityGateDecision({
+      adapterType: "codex_local",
+      taskSessionParams: { __paperclipConfigFingerprintMissingStreak: 10 },
+      sessionConfigFreshness: FINGERPRINT_MISSING_RESET,
+    });
+
+    expect(decision).toEqual({
+      blocked: false,
+      consecutiveFingerprintMissingResets: 0,
+      reason: null,
+    });
+  });
+
+  it("does not gate a grok dispatch whose reset is for an unrelated reason", () => {
+    const decision = resolveFingerprintContinuityGateDecision({
+      adapterType: "grok_local",
+      taskSessionParams: { __paperclipConfigFingerprintMissingStreak: 5 },
+      sessionConfigFreshness: {
+        reset: true,
+        reasons: ['configured model changed from "grok-4" to "grok-4.5"'],
+      },
+    });
+
+    expect(decision).toEqual({
+      blocked: false,
+      consecutiveFingerprintMissingResets: 0,
+      reason: null,
+    });
+  });
+
+  it("does not gate the first fingerprint-missing reset for a fresh grok task session", () => {
+    const decision = resolveFingerprintContinuityGateDecision({
+      adapterType: "grok_local",
+      taskSessionParams: null,
+      sessionConfigFreshness: FINGERPRINT_MISSING_RESET,
+    });
+
+    expect(decision).toEqual({
+      blocked: false,
+      consecutiveFingerprintMissingResets: 1,
+      reason: null,
+    });
+  });
+
+  it("tolerates the bounded number of consecutive resets before gating", () => {
+    const decision = resolveFingerprintContinuityGateDecision({
+      adapterType: "grok_local",
+      taskSessionParams: { __paperclipConfigFingerprintMissingStreak: 1 },
+      sessionConfigFreshness: FINGERPRINT_MISSING_RESET,
+    });
+
+    expect(decision).toEqual({
+      blocked: false,
+      consecutiveFingerprintMissingResets: 2,
+      reason: null,
+    });
+  });
+
+  it("blocks dispatch once the same-reason streak exceeds the bound", () => {
+    const decision = resolveFingerprintContinuityGateDecision({
+      adapterType: "grok_local",
+      taskSessionParams: { __paperclipConfigFingerprintMissingStreak: 2 },
+      sessionConfigFreshness: FINGERPRINT_MISSING_RESET,
+    });
+
+    expect(decision).toEqual({
+      blocked: true,
+      consecutiveFingerprintMissingResets: 3,
+      reason: "effective run configuration fingerprint metadata is missing",
+    });
+  });
+
+  it("honors a caller-supplied bound", () => {
+    const decision = resolveFingerprintContinuityGateDecision({
+      adapterType: "grok_local",
+      taskSessionParams: { __paperclipConfigFingerprintMissingStreak: 0 },
+      sessionConfigFreshness: FINGERPRINT_MISSING_RESET,
+      maxConsecutiveResets: 0,
+    });
+
+    expect(decision).toEqual({
+      blocked: true,
+      consecutiveFingerprintMissingResets: 1,
+      reason: "effective run configuration fingerprint metadata is missing",
+    });
+  });
+
+  it("matches other grok-* adapter type variants by prefix", () => {
+    const decision = resolveFingerprintContinuityGateDecision({
+      adapterType: "grok_cloud",
+      taskSessionParams: { __paperclipConfigFingerprintMissingStreak: 2 },
+      sessionConfigFreshness: FINGERPRINT_MISSING_RESET,
+    });
+
+    expect(decision.blocked).toBe(true);
   });
 });
 
