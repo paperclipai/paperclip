@@ -240,10 +240,10 @@ describe("SidebarCompanyMenu", () => {
 
     const { root } = renderMenu();
     await flushReact();
-    await openMenu("Open Acme Labs company switcher");
+    await openMenu("Open Acme Labs organization switcher");
 
-    expect(document.body.textContent).toContain("Couldn't load companies");
-    expect(document.body.textContent).not.toContain("No companies");
+    expect(document.body.textContent).toContain("Couldn't load organizations");
+    expect(document.body.textContent).not.toContain("No organizations");
 
     const retryItem = Array.from(document.body.querySelectorAll('[role="menuitem"]')).find(
       (item) => item.textContent?.includes("Try again"),
@@ -269,10 +269,10 @@ describe("SidebarCompanyMenu", () => {
 
     const { root } = renderMenu();
     await flushReact();
-    await openMenu("Open Acme Labs company switcher");
+    await openMenu("Open Acme Labs organization switcher");
 
-    expect(document.body.textContent).toContain("No companies");
-    expect(document.body.textContent).not.toContain("Couldn't load companies");
+    expect(document.body.textContent).toContain("No organizations");
+    expect(document.body.textContent).not.toContain("Couldn't load organizations");
 
     act(() => {
       root.unmount();
@@ -295,7 +295,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs organization switcher"]');
     expect(trigger).not.toBeNull();
     act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
@@ -329,7 +329,7 @@ describe("SidebarCompanyMenu", () => {
 
     expect(container.textContent).toContain("Acme Labs");
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs organization switcher"]');
     expect(trigger).not.toBeNull();
 
     act(() => {
@@ -338,7 +338,7 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Switch company");
+    expect(document.body.textContent).toContain("Switch organization");
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
@@ -359,7 +359,7 @@ describe("SidebarCompanyMenu", () => {
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
     expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
-    expect(document.body.textContent).not.toContain("Switch company");
+    expect(document.body.textContent).not.toContain("Switch organization");
 
     act(() => {
       root.unmount();
@@ -382,7 +382,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs organization switcher"]');
     expect(trigger).not.toBeNull();
 
     act(() => {
@@ -439,7 +439,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs organization switcher"]');
     expect(trigger).not.toBeNull();
 
     act(() => {
@@ -470,7 +470,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    await openMenu("Open Acme Labs company switcher");
+    await openMenu("Open Acme Labs organization switcher");
 
     const createItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
       .find((element) => element.textContent?.includes("Create new organization..."));
@@ -500,7 +500,7 @@ describe("SidebarCompanyMenu", () => {
     const { root } = renderMenu();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs organization switcher"]');
     expect(trigger).not.toBeNull();
     expect(trigger?.className).toContain("min-w-0");
 

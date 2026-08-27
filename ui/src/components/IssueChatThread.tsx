@@ -644,7 +644,7 @@ export function IssueAssigneePausedNotice({
     agent.pauseReason === "budget"
       ? "It was paused by a budget hard stop."
       : agent.pauseReason === "import"
-        ? "It arrived paused from a company import — imported agents stay parked until you resume them."
+        ? "It arrived paused from an organization import — imported agents stay parked until you resume them."
         : agent.pauseReason === "system"
           ? "It was paused by the system."
           : "It was paused manually.";

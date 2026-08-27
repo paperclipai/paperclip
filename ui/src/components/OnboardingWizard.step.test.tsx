@@ -961,7 +961,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(segments.every((segment) => segment.disabled)).toBe(true);
 
       // And company creation is genuinely unreachable, not merely unlinked.
-      expect(document.body.textContent).not.toContain("Name your company");
+      expect(document.body.textContent).not.toContain("Name your organization");
     });
   });
 });

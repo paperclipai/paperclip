@@ -32,6 +32,12 @@ async function importFreshSentry() {
  * Register a fake `@sentry/node` module for the next dynamic import. Each
  * mock function is returned so a test can assert on the call it received.
  * The mock stays in place until `vi.doUnmock` runs, so `afterEach` clears it.
+ *
+ * `@sentry/node` is not installed on disk in this test environment, so the
+ * exact-version gate would report it missing before the dynamic import ever
+ * runs. This helper also mocks the gate module itself to report success, so
+ * a test can exercise the "package present and at the right version" path
+ * without installing the real package.
  */
 function mockSentryPackage() {
   const init = vi.fn();
@@ -49,6 +55,9 @@ function mockSentryPackage() {
     close,
     httpIntegration,
     onUnhandledRejectionIntegration,
+  }));
+  vi.doMock("../peer-version-check.js", () => ({
+    checkExactPeerVersions: () => ({ ok: true }),
   }));
 
   return { init, captureException, close, httpIntegration, onUnhandledRejectionIntegration };
@@ -88,6 +97,7 @@ afterEach(() => {
   else process.env[DSN_ENV] = originalDsn;
   vi.restoreAllMocks();
   vi.doUnmock("@sentry/node");
+  vi.doUnmock("../peer-version-check.js");
 });
 
 describe("sentryReady", () => {
@@ -259,6 +269,37 @@ describe("missing @sentry/node package", () => {
       expect.stringContaining("@sentry/node package is not installed"),
       expect.anything(),
     );
+  });
+});
+
+describe("@sentry/node installed at an unsupported version", () => {
+  it("logs one diagnostic and resolves without importing the package", async () => {
+    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.doMock("../peer-version-check.js", () => ({
+      checkExactPeerVersions: () => ({
+        ok: false,
+        diagnostic: "unused by the Sentry gate; see server/src/sentry.ts",
+        detail: {
+          missing: [],
+          mismatched: [{ name: "@sentry/node", installed: "9.0.0", expected: "10.71.0" }],
+        },
+      }),
+    }));
+
+    const { sentryReady } = await importFreshSentry();
+
+    // Bootstrap must absorb the reported mismatch — the server keeps
+    // booting without error monitoring rather than crashing on an opt-in
+    // feature.
+    await expect(sentryReady).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("@sentry/node package is not installed"),
+      expect.anything(),
+    );
+
+    vi.doUnmock("../peer-version-check.js");
   });
 });
 

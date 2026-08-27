@@ -96,7 +96,7 @@ export function NewProjectDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(selectedCompanyId, file, "projects/drafts");
     },
   });

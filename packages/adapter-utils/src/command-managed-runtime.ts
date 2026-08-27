@@ -208,10 +208,6 @@ function buildSyncInExtractDirectoryCommand(input: { remoteTarPath: string; targ
 function buildSyncInChmodCommand(input: { mode: number; targetPath: string }): string {
   return `chmod ${(input.mode & 0o7777).toString(8)} ${shellQuote(input.targetPath)}`;
 }
-function buildSyncInRenameCommand(input: { sourcePath: string; targetPath: string }): string {
-  return "mv -f " + shellQuote(input.sourcePath) + " " + shellQuote(input.targetPath);
-}
-
 function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): string {
   return `${input.targetPath}${input.suffix}.${randomUUID()}`;
 }
@@ -444,18 +440,10 @@ export function createCommandManagedRuntimeClient(input: {
               bytesTransferred += tarBytes.byteLength;
             } else {
               const fileBytes = await fs.readFile(mapping.sourcePath);
-              const targetPathForWrite = mapping.mode != null
-                ? buildUniqueStagingPath({ targetPath: mapping.targetPath, suffix: ".paperclip-syncin" })
-                : mapping.targetPath;
-              if (mapping.mode != null) cleanupPaths.push(targetPathForWrite);
-              await client.writeFile(targetPathForWrite, bufferToArrayBuffer(fileBytes));
+              await client.writeFile(mapping.targetPath, bufferToArrayBuffer(fileBytes));
               if (mapping.mode != null) {
                 await client.run(
-                  buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
-                  { timeoutMs: input.timeoutMs },
-                );
-                await client.run(
-                  buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
+                  buildSyncInChmodCommand({ mode: mapping.mode, targetPath: mapping.targetPath }),
                   { timeoutMs: input.timeoutMs },
                 );
               }
@@ -468,9 +456,9 @@ export function createCommandManagedRuntimeClient(input: {
           }
           filesTransferred += 1;
         }
-        // Ordered, fail-fast post-upload commands (C1 opaque / C4 fail-loud). Each
-        // command string is executed VERBATIM — never rewritten, concatenated, or
-        // appended to. First non-zero exit or timeout throws and stops the rest.
+        // Ordered, fail-fast post-upload commands. Each command string is
+        // executed VERBATIM — never rewritten, concatenated, or appended to.
+        // The first non-zero exit or timeout throws and stops the rest.
         for (const command of operation.postUploadCommands ?? []) {
           const result = await input.runner.execute({
             command: shellCommand,

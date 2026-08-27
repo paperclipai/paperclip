@@ -94,7 +94,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
   return (
     <div className="space-y-6">
       <p className="max-w-2xl text-sm text-muted-foreground">
-        For a tool that runs from a command. Paperclip runs it in your company's own isolated workspace.
+        For a tool that runs from a command. Paperclip runs it in your organization's own isolated workspace.
         Administrators only.
       </p>
 

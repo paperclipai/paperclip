@@ -43,7 +43,7 @@ export function CompanyAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
       { label: "Members" },
     ]);
@@ -202,20 +202,20 @@ export function CompanyAccess() {
   }, [removingMember]);
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage access.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to manage access.</div>;
   }
 
   if (membersQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading company access…</div>;
+    return <div className="text-sm text-muted-foreground">Loading organization access…</div>;
   }
 
   if (membersQuery.error) {
     const message =
       membersQuery.error instanceof ApiError && membersQuery.error.status === 403
-        ? "You do not have permission to manage company members."
+        ? "You do not have permission to manage organization members."
         : membersQuery.error instanceof Error
           ? membersQuery.error.message
-          : "Failed to load company members.";
+          : "Failed to load organization members.";
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
@@ -238,12 +238,12 @@ export function CompanyAccess() {
     <div className="max-w-6xl space-y-8">
       <div className="flex items-center gap-2">
         <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Members</h1>
+        <h1 className="text-lg font-semibold">Organization Members</h1>
       </div>
 
       {access && !access.currentUserRole && (
         <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-          This account can manage access here through instance-admin privileges, but it does not currently hold an active company membership.
+          This account can manage access here through instance-admin privileges, but it does not currently hold an active organization membership.
         </div>
       )}
 
@@ -254,7 +254,7 @@ export function CompanyAccess() {
               <div>
                 <h3 className="text-sm font-semibold">Pending human joins</h3>
                 <p className="text-sm text-muted-foreground">
-                  Review pending join requests before they become active company members.
+                  Review pending join requests before they become active organization members.
                 </p>
               </div>
               <Badge variant="outline">{pendingHumanJoinRequests.length} pending</Badge>
@@ -307,7 +307,7 @@ export function CompanyAccess() {
               {members.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-3 py-8 text-muted-foreground">
-                    No user memberships found for this company yet.
+                    No user memberships found for this organization yet.
                   </td>
                 </tr>
               ) : members.map((member) => {
@@ -373,14 +373,14 @@ export function CompanyAccess() {
           <DialogHeader>
             <DialogTitle>Edit member</DialogTitle>
             <DialogDescription>
-              Update company role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
+              Update organization role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
             </DialogDescription>
           </DialogHeader>
           {editingMember && (
             <div className="space-y-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium">Company role</span>
+                  <span className="font-medium">Organization role</span>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftRole ?? ""}
@@ -556,7 +556,7 @@ export function CompanyAccessLegacyRoute() {
           <h1 className="text-lg font-semibold">Advanced Permissions</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Advanced access, scoped assignment, and explicit grant controls are provided by installed company settings extensions.
+          Advanced access, scoped assignment, and explicit grant controls are provided by installed organization settings extensions.
         </p>
       </div>
 
@@ -564,7 +564,7 @@ export function CompanyAccessLegacyRoute() {
         <div className="space-y-2">
           <h2 className="text-sm font-semibold">Advanced permissions unavailable</h2>
           <p className="text-sm text-muted-foreground">
-            Core Paperclip keeps enforcing company boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
+            Core Paperclip keeps enforcing organization boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
           </p>
           {errorMessage ? (
             <p className="text-sm text-destructive">Plugin extensions unavailable: {errorMessage}</p>

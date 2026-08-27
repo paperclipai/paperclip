@@ -771,7 +771,7 @@ describe("Secrets page layout", () => {
 
     expect(container.textContent).toContain("OPENAI_API_KEY");
     expect(container.textContent).toContain("Personal GitHub token");
-    expect(container.textContent).toContain("Company");
+    expect(container.textContent).toContain("Organization");
     expect(container.textContent).toContain("Each user");
     expect(container.textContent).toContain("3/5 set");
     expect(container.textContent).not.toContain("User secret definitions");

@@ -42,7 +42,7 @@ export function CompanyActivity() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select a company to view activity." />;
+    return <EmptyState icon={History} message="Select an organization to view activity." />;
   }
 
   return <AuditFeed companyId={selectedCompanyId} mode={mode} onModeChange={handleModeChange} />;
