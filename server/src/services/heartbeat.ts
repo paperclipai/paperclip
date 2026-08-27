@@ -2753,6 +2753,10 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  issueStateGuard?: {
+    statuses: string[];
+    assigneeAgentId: string;
+  };
 }
 
 type UsageTotals = {
@@ -18674,6 +18678,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             reason: "issue_execution_issue_not_found",
             payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        const issueStateGuard = opts.issueStateGuard;
+        if (
+          issueStateGuard
+          && (
+            !issueStateGuard.statuses.includes(issue.status)
+            || issue.assigneeAgentId !== issueStateGuard.assigneeAgentId
+          )
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_state_guard_mismatch",
+            payload: {
+              ...(payload ?? {}),
+              heartbeatSkip: {
+                reason: "Issue status or assignee changed before the wake could be queued.",
+                issueId: issue.id,
+                expectedStatuses: issueStateGuard.statuses,
+                actualStatus: issue.status,
+                expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
+                actualAssigneeAgentId: issue.assigneeAgentId,
+              },
+            },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,

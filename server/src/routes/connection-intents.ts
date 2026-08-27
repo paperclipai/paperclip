@@ -181,6 +181,10 @@ export async function wakeConnectionIntentAfterResolution(
       source: "connection_intent.resolved",
       forceFreshSession: true,
     },
+    issueStateGuard: {
+      statuses: ["in_progress"],
+      assigneeAgentId: agentId,
+    },
   });
 }
 

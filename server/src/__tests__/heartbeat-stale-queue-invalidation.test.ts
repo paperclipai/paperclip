@@ -331,6 +331,55 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
+  it("checks guarded issue status and assignee under the enqueue lock", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const parkedIssueId = randomUUID();
+    const reassignedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parkedIssueId,
+        companyId,
+        title: "Parked connection intent",
+        status: "backlog" as const,
+        priority: "medium" as const,
+        assigneeAgentId: agentId,
+      },
+      {
+        id: reassignedIssueId,
+        companyId,
+        title: "Reassigned connection intent",
+        status: "in_progress" as const,
+        priority: "medium" as const,
+        assigneeAgentId: null,
+      },
+    ]);
+
+    for (const issueId of [parkedIssueId, reassignedIssueId]) {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, interactionId: randomUUID() },
+        contextSnapshot: { issueId, wakeReason: "issue_commented" },
+        requestedByActorType: "user",
+        requestedByActorId: "responsible-user",
+        issueStateGuard: {
+          statuses: ["in_progress"],
+          assigneeAgentId: agentId,
+        },
+      });
+      expect(run).toBeNull();
+    }
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)).toEqual([
+      { status: "skipped", reason: "issue_state_guard_mismatch" },
+      { status: "skipped", reason: "issue_state_guard_mismatch" },
+    ]);
+  });
+
   it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
