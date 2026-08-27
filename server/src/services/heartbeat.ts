@@ -9888,6 +9888,182 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    * none closed themselves. Closes only untouched children (todo/backlog): an
    * in_progress/in_review child is being worked and is left alone. Bounded.
    */
+  /**
+   * TSMC-22067: nothing ever picks up idle-but-actionable work.
+   *
+   * Dispatch here is WAKE-DRIVEN, not queue-driven. `shouldPickUpIssue` accepts todo /
+   * backlog / blocked / in_progress, but it also requires a wakeReason — and wakes are only
+   * ever produced by assignment, comments, blocker resolution, monitors, routines and
+   * continuations. A card that is owned, dependency-ready and simply waiting its turn has no
+   * event left to generate one, so it waits forever. Three periodic ticks existed (blocked
+   * revalidation, blocker-child hygiene, due monitors) and not one of them looks at ordinary
+   * actionable work.
+   *
+   * Measured 2026-08-26: eight TSMC platform-hardening cards untouched for 14 days, every one
+   * with a live owner and no blockers. Nothing was wrong with them, and nothing was going to
+   * start them either. A card filed during that same session went straight to `backlog` and
+   * stopped there — which is how the gap was finally noticed.
+   *
+   * ⛔ BOUNDED HARD, because the naive version of this is a churn generator, and churn is what
+   * most of this week went into removing:
+   *   - idle for >= IDLE_PICKUP_MIN_AGE_MS (24h), so live work is never poked
+   *   - todo/backlog only: in_progress and in_review are already somebody's problem
+   *   - agent-owned only (assigneeUserId null) — an operator's card is not agent work
+   *   - skips monitored cards, cards with a queued/running run, cards with a pending ask,
+   *     and anything not dependency-ready
+   *   - oldest-first, MAX IDLE_PICKUP_MAX_PER_TICK enqueued per tick across the whole fleet
+   *
+   * Dedup is the wake's own `idempotencyKey`, bucketed per idle period — deliberately NOT a
+   * touch of `issues.updatedAt`. Bumping updatedAt would give a free cooldown, but it would
+   * also make every stale-card report go quiet while nothing had actually shipped: the fix
+   * would erase the evidence that it is needed. Staleness stays honest; the wake dedups itself.
+   */
+  const IDLE_PICKUP_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+  const IDLE_PICKUP_SCAN_LIMIT = 40;
+  const IDLE_PICKUP_MAX_PER_TICK = 5;
+  const IDLE_ACTIONABLE_WAKE_REASON = "idle_actionable_work";
+
+  async function tickIdleActionableWork(now = new Date()) {
+    const idleBefore = new Date(now.getTime() - IDLE_PICKUP_MIN_AGE_MS);
+    const candidates = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        companyId: issues.companyId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(and(
+        inArray(issues.status, ["todo", "backlog"]),
+        isNull(issues.hiddenAt),
+        isNull(issues.assigneeUserId),
+        isNotNull(issues.assigneeAgentId),
+        isNull(issues.monitorNextCheckAt),
+        lt(issues.updatedAt, idleBefore),
+      ))
+      .orderBy(asc(issues.updatedAt))
+      .limit(IDLE_PICKUP_SCAN_LIMIT);
+
+    if (candidates.length === 0) return { checked: 0, enqueued: 0 };
+    const candidateIds = candidates.map((candidate) => candidate.id);
+
+    // Already moving under its own steam — a wake would only duplicate it.
+    const activeIssueIds = new Set(
+      (await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          inArray(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, candidateIds),
+        )))
+        .map((row) => readNonEmptyString(parseObject(row.contextSnapshot).issueId))
+        .filter((issueId): issueId is string => Boolean(issueId)),
+    );
+
+    // ⛔ The sweep starts work that has NEVER RUN, or whose last attempt ended cleanly. It must
+    // never re-run a card whose last attempt failed.
+    //
+    // Caught by heartbeat-retry-scheduling: the first version of this tick re-woke a card whose
+    // queued retries the equivalent-failure circuit breaker had just cancelled — the sweep
+    // quietly undoing the breaker one tick later. The same hole would have re-woken every
+    // ceiling-bricked card every 24h forever, each wake rejected before dispatch: a perpetual
+    // retry storm dressed up as progress. A card that tried and failed needs a re-cut or human
+    // judgement (TSKB0493), not another identical wake.
+    const failedLastAttemptIssueIds = new Set<string>();
+    {
+      const seen = new Set<string>();
+      const recentRuns = await db
+        .select({
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          status: heartbeatRuns.status,
+        })
+        .from(heartbeatRuns)
+        .where(inArray(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, candidateIds))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(500);
+      for (const row of recentRuns) {
+        const issueId = readNonEmptyString(parseObject(row.contextSnapshot).issueId);
+        if (!issueId || seen.has(issueId)) continue;
+        seen.add(issueId);
+        if (row.status === "failed" || row.status === "timed_out" || row.status === "cancelled" || row.status === "interrupted") {
+          failedLastAttemptIssueIds.add(issueId);
+        }
+      }
+    }
+
+    // A card waiting on a human decision is not idle work — it is correctly parked.
+    const pendingAskIssueIds = new Set(
+      (await db
+        .select({ issueId: issueThreadInteractions.issueId })
+        .from(issueThreadInteractions)
+        .where(and(
+          inArray(issueThreadInteractions.issueId, candidateIds),
+          eq(issueThreadInteractions.status, "pending"),
+        )))
+        .map((row) => row.issueId)
+        .filter((issueId): issueId is string => Boolean(issueId)),
+    );
+
+    // Dependency readiness is per-company and batched — never start something still blocked.
+    const readinessByCompany = new Map<string, Map<string, { isDependencyReady?: boolean }>>();
+    for (const companyId of new Set(candidates.map((candidate) => candidate.companyId))) {
+      const ids = candidates.filter((candidate) => candidate.companyId === companyId).map((candidate) => candidate.id);
+      readinessByCompany.set(
+        companyId,
+        (await issuesSvc.listDependencyReadiness(companyId, ids).catch(() => new Map())) as Map<string, { isDependencyReady?: boolean }>,
+      );
+    }
+
+    const bucket = Math.floor(now.getTime() / IDLE_PICKUP_MIN_AGE_MS);
+    let checked = 0;
+    let enqueued = 0;
+    for (const candidate of candidates) {
+      if (enqueued >= IDLE_PICKUP_MAX_PER_TICK) break;
+      checked += 1;
+      if (!candidate.assigneeAgentId) continue;
+      if (activeIssueIds.has(candidate.id)) continue;
+      if (pendingAskIssueIds.has(candidate.id)) continue;
+      if (failedLastAttemptIssueIds.has(candidate.id)) continue;
+      if (readinessByCompany.get(candidate.companyId)?.get(candidate.id)?.isDependencyReady === false) continue;
+
+      const idleHours = Math.floor((now.getTime() - candidate.updatedAt.getTime()) / 3_600_000);
+      const run = await enqueueWakeup(candidate.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: IDLE_ACTIONABLE_WAKE_REASON,
+        idempotencyKey: `idle-actionable:${candidate.id}:${bucket}`,
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat_scheduler",
+        payload: { issueId: candidate.id, idleHours },
+        contextSnapshot: {
+          issueId: candidate.id,
+          source: "idle_actionable_work",
+          wakeReason: IDLE_ACTIONABLE_WAKE_REASON,
+          idleHours,
+        },
+      }).catch(() => null);
+      if (!run) continue;
+      enqueued += 1;
+      await logActivity(db, {
+        companyId: candidate.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: candidate.assigneeAgentId,
+        action: "issue.idle_actionable_wake_emitted",
+        entityType: "issue",
+        entityId: candidate.id,
+        details: {
+          label: `Woke the owner of ${candidate.identifier} — actionable, unblocked and idle ${idleHours}h`,
+          status: candidate.status,
+          idleHours,
+        },
+      }).catch(() => undefined);
+    }
+    return { checked, enqueued };
+  }
+
   async function tickStatedBlockerChildHygiene() {
     const children = await db
       .select({ id: issues.id, identifier: issues.identifier, originId: issues.originId })
@@ -27950,10 +28126,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const blockedRevalidations = await tickBlockedCardRevalidations(now);
       const childHygiene = await tickStatedBlockerChildHygiene();
       const issueMonitors = await tickDueIssueMonitors(now);
+      const idleActionable = await tickIdleActionableWork(now);
 
       return {
-        checked: checked + blockedRevalidations.checked + childHygiene.checked + issueMonitors.checked,
-        enqueued: enqueued + blockedRevalidations.enqueued + childHygiene.closed + issueMonitors.triggered,
+        checked: checked + blockedRevalidations.checked + childHygiene.checked + issueMonitors.checked + idleActionable.checked,
+        enqueued: enqueued + blockedRevalidations.enqueued + childHygiene.closed + issueMonitors.triggered + idleActionable.enqueued,
         skipped: skipped + issueMonitors.skipped,
         // Agents left dormant this tick because their company is outside its
         // activity window (not enqueued, due-time untouched, will re-enqueue
