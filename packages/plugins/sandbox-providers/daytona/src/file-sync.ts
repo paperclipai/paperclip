@@ -545,6 +545,39 @@ async function removeSandboxScratch(
     .catch(() => undefined);
 }
 
+/**
+ * Try to remove each `.zst` scratch name a SECOND time, after every target in
+ * the batch already promoted successfully (PAP-5412).
+ *
+ * The promote script's own cleanup (`rm -f ... || true`, PAP-5408) already
+ * tried once. It never fails the sync when that cleanup fails, because a
+ * completed and safely promoted target must never read back as a failure.
+ * This function does not touch the promote script or its fail-closed guards.
+ * It runs one separate, later sandbox command that retries the removal, then
+ * reports how many names are still present. This makes a leftover that
+ * survives both tries observable instead of silent.
+ *
+ * This function runs exactly once. It is not a retry loop. It swallows its
+ * own command failure and reports the full count as still present — the
+ * same "assume the worst, never throw" contract as
+ * {@link removeSandboxScratch}.
+ */
+async function sweepZstdScratchAfterSuccess(
+  sandbox: Sandbox,
+  zstdScratchNames: string[],
+  timeoutSeconds: number,
+): Promise<number> {
+  if (zstdScratchNames.length === 0) return 0;
+  const removeScript = zstdScratchNames.map((name) => `rm -f ${shellQuote(name)}`).join(" ; ");
+  const checkScript = zstdScratchNames.map((name) => `[ -e ${shellQuote(name)} ] && echo 1 || echo 0`).join(" ; ");
+  const result = await sandbox.process
+    .executeCommand(`sh -c ${shellQuote(`${removeScript} ; ${checkScript}`)}`, undefined, undefined, timeoutSeconds)
+    .catch(() => null);
+  if (!result) return zstdScratchNames.length;
+  const output = (result.result ?? result.artifacts?.stdout ?? "").toString();
+  return output.split("\n").filter((line) => line.trim() === "1").length;
+}
+
 // ---------------------------------------------------------------------------
 // Inbound (host → sandbox)
 // ---------------------------------------------------------------------------
@@ -718,11 +751,15 @@ async function syncInFileMappings(input: {
   const allScratchNames = plans.flatMap((plan) =>
     plan.compressed ? [plan.rawScratch, plan.compressed.zstdScratch] : [plan.rawScratch],
   );
-  const hostTempDirs = plans
-    .filter((plan): plan is FileMappingPlan & { compressed: NonNullable<FileMappingPlan["compressed"]> } =>
+  const compressedPlans = plans.filter(
+    (plan): plan is FileMappingPlan & { compressed: NonNullable<FileMappingPlan["compressed"]> } =>
       plan.compressed !== null,
-    )
-    .map((plan) => plan.compressed.hostTempDir);
+  );
+  const hostTempDirs = compressedPlans.map((plan) => plan.compressed.hostTempDir);
+  // The `.zst` scratch names for compressed mappings. The bounded post-success
+  // sweep below uses this list (PAP-5412). It excludes the raw scratch names,
+  // because the promote script's own rename already consumes them.
+  const compressedZstdScratchNames = compressedPlans.map((plan) => plan.compressed.zstdScratch);
 
   // A failed upload or a mid-batch `mv -f`/decompress failure leaves reserved
   // scratch (some targets promoted, others not) — sweep every reserved name on
@@ -857,6 +894,18 @@ async function syncInFileMappings(input: {
     await Promise.all(
       hostTempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true }).catch(() => undefined)),
     );
+  }
+
+  // Every target is already promoted at this point. Give the promote
+  // script's own `.zst` cleanup (`|| true`, PAP-5408) one more, separate try.
+  // Log a count, never a path, when a leftover survives both tries (PAP-5412).
+  if (compressedZstdScratchNames.length > 0) {
+    const leftoverCount = await sweepZstdScratchAfterSuccess(sandbox, compressedZstdScratchNames, timeoutSeconds);
+    if (leftoverCount > 0) {
+      console.warn(
+        `Daytona zstd transport compression: ${leftoverCount} post-promotion scratch file(s) could not be removed after two attempts. The already-promoted target file(s) are unaffected.`,
+      );
+    }
   }
 
   return { filesTransferred: mappings.length, bytesTransferred };

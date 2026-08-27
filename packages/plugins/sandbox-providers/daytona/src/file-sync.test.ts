@@ -364,23 +364,25 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       await expect(fs.stat(capturedHostTempDir)).rejects.toThrow();
     });
 
-    it("reports the sync as successful when the post-promotion `.zst` cleanup fails (PAP-5408)", async () => {
+    it("reports the sync as successful when the post-promotion `.zst` cleanup fails (PAP-5408), and warns with a leftover count but no path (PAP-5412)", async () => {
       const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
       const sourcePath = path.join(hostDir, "workspace-upload.tar");
       await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
       const targetPath = path.posix.join(remoteDir, "target.bin");
 
-      // Put a stand-in `rm` first on PATH. It always exits 1, so the promote
-      // script's OWN `.zst` cleanup fails, the same way a real transient
-      // cleanup error would. The other commands the script runs (`mv`, `zstd`,
-      // `chmod`) still resolve to the real binaries later on PATH.
+      // Put a stand-in `rm` first on PATH. It always exits 1. So BOTH the
+      // promote script's OWN `.zst` cleanup and the later bounded sweep's
+      // separate `rm -f` fail, the same way a persistent cleanup error would.
+      // The other commands (`mv`, `zstd`, `chmod`) still resolve to the real
+      // binaries later on PATH.
       const fakeBinDir = await mkTempDir("paperclip-daytona-zstd-fakebin-");
       const fakeRmPath = path.join(fakeBinDir, "rm");
       await fs.writeFile(fakeRmPath, "#!/bin/sh\nexit 1\n");
       await fs.chmod(fakeRmPath, 0o755);
       const originalPath = process.env.PATH;
       process.env.PATH = `${fakeBinDir}${path.delimiter}${originalPath}`;
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
       try {
         const { sandbox } = createRealExecSandbox();
@@ -398,9 +400,74 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
         // The forced `rm` failure left the `.zst` scratch behind — proof the
         // fake `rm` actually ran and failed, not that cleanup was skipped.
         const remaining = await fs.readdir(remoteDir);
-        expect(remaining.some((name) => name.endsWith(".zst"))).toBe(true);
+        const zstdName = remaining.find((name) => name.endsWith(".zst"));
+        expect(zstdName).toBeDefined();
+
+        // A leftover that survives both the inline cleanup and the bounded
+        // sweep is observable: exactly one warning, carrying a count, never
+        // the scratch pathname itself.
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const warning = warnSpy.mock.calls[0]?.[0] as string;
+        expect(warning).toContain("1 post-promotion scratch file");
+        expect(warning).not.toContain(zstdName as string);
       } finally {
         process.env.PATH = originalPath;
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("recovers a transient post-promotion `.zst` cleanup failure with the bounded sweep, without warning (PAP-5412)", async () => {
+      const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
+      const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
+      const sourcePath = path.join(hostDir, "workspace-upload.tar");
+      await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
+      const targetPath = path.posix.join(remoteDir, "target.bin");
+
+      // A stand-in `rm` that fails only its first call — the promote script's
+      // own inline `.zst` cleanup. It defers to the real `rm` for every later
+      // call. This simulates a transient cleanup failure: the bounded sweep's
+      // own, separate `rm -f` is the second call, and it succeeds.
+      const fakeBinDir = await mkTempDir("paperclip-daytona-zstd-fakebin-");
+      const counterFile = path.join(fakeBinDir, "rm-call-count");
+      const fakeRmPath = path.join(fakeBinDir, "rm");
+      await fs.writeFile(
+        fakeRmPath,
+        [
+          "#!/bin/sh",
+          "n=0",
+          `[ -f "${counterFile}" ] && n=$(cat "${counterFile}")`,
+          "n=$((n + 1))",
+          `printf '%s' "$n" > "${counterFile}"`,
+          '[ "$n" -eq 1 ] && exit 1',
+          'exec /bin/rm "$@"',
+          "",
+        ].join("\n"),
+      );
+      await fs.chmod(fakeRmPath, 0o755);
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeBinDir}${path.delimiter}${originalPath}`;
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      try {
+        const { sandbox } = createRealExecSandbox();
+        const operations: PluginSyncOperation[] = [{
+          operationId: "sync-op-1",
+          files: [{ sourcePath, targetPath, kind: "file" }],
+        }];
+
+        await performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 });
+
+        expect(await sha256OfFile(targetPath)).toBe(await sha256OfFile(sourcePath));
+        expect(await fs.readFile(counterFile, "utf8")).toBe("2"); // proves the sweep actually ran a second `rm`
+        // The sweep's separate, later `rm -f` succeeded where the inline
+        // cleanup failed — no `.zst` scratch remains, so there is nothing to
+        // warn about.
+        const remaining = await fs.readdir(remoteDir);
+        expect(remaining.some((name) => name.endsWith(".zst"))).toBe(false);
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        process.env.PATH = originalPath;
+        warnSpy.mockRestore();
       }
     });
 
