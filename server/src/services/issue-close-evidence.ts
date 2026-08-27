@@ -58,6 +58,19 @@ const EXPLICIT_ACCEPTANCE_EVIDENCE_RE =
 const ARTIFACT_DELIVERABLE_RE =
   /\b(?:demo\s+video|screen[- ]recording|screencast|walkthrough\s+video|attachment[-\s]?or[-\s]?fail)\b|\b(?:produce|record|deliver|render|export|attach)\s+(?:a|an|the|one)\s+(?:[\w-]+\s+){0,2}(?:as\s+(?:a|an)\s+)?(?:video|recording|screencast|mp4|pdf|deck|screenshot)\b/i;
 
+// TSMC-22113: "get X live and prove it" cards armed nothing because
+// ARTIFACT_DELIVERABLE_RE only matches video/pdf/deck/screenshot nouns.
+// TSK-7606 and TSK-7721 both closed `done` citing live URLs and self-written
+// "served-proof" transcripts (no HTTP headers/body) after hitting Site
+// Studio's agentProductionDeploy=false guardrail — closeContract was null so
+// this gate returned not_applicable and the fabricated prose went unchecked.
+//
+// Same precision bar as ARTIFACT_DELIVERABLE_RE: verb forms require a
+// determiner or an anchoring "live URL" noun phrase, not bare "live" or
+// "deploy" on their own.
+const DEPLOY_LIVE_URL_RE =
+  /\b(?:attach|confirm|verify|prove|quote)\s+(?:the|a|your|that)\s+(?:[\w-]+\s+){0,2}live\s+url\b|\b(?:deploy|publish)\s+(?:it|this|the|a|an|[\w-]+(?:\s+[\w-]+){0,3})\s+(?:to\s+production\s+)?live\b|\b(?:confirm|verify)\s+(?:it|this|that|the\s+(?:[\w-]+\s+){0,2}[\w-]+)\s+is\s+(?:reachable|crawlable)\s+at\s+the\s+live\s+url\b/i;
+
 /** Name the artifact class from the prose that demanded it (artifactKind is a quality floor, not a count unit). */
 function artifactKindForDeliverable(text: string): string {
   if (/\b(?:demo\s+video|screen[- ]recording|screencast|walkthrough\s+video)\b/i.test(text)) {
@@ -295,6 +308,15 @@ export function inferDefaultCloseContractForIssueCreate(input: {
       portableEvidenceTarget: 1,
       evidencePath: input.identifier,
       artifactKind: artifactKindForDeliverable(deliverableText),
+    };
+  }
+  if (DEPLOY_LIVE_URL_RE.test(deliverableText)) {
+    return {
+      mode: "evidence",
+      evidenceTarget: 1,
+      portableEvidenceTarget: 1,
+      evidencePath: input.identifier,
+      artifactKind: "verified_live_url_fetch",
     };
   }
   return null;

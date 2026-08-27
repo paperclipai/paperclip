@@ -106,6 +106,55 @@ describe("inferDefaultCloseContractForIssueCreate — artifact deliverables (TSM
   });
 });
 
+describe("inferDefaultCloseContractForIssueCreate — deploy/publish/live-URL prose (TSMC-22113)", () => {
+  it("arms on 'attach the live URL as proof'", () => {
+    expect(
+      infer("Deploy the Galway page and attach the live URL as proof it is served."),
+    ).toMatchObject({
+      mode: "evidence",
+      evidenceTarget: 1,
+      portableEvidenceTarget: 1,
+      artifactKind: "verified_live_url_fetch",
+    });
+  });
+
+  it("arms on 'confirm it is crawlable at the live URL'", () => {
+    expect(infer("Confirm it is crawlable at the live URL before closing.")).toMatchObject({
+      artifactKind: "verified_live_url_fetch",
+    });
+    expect(infer("Verify the deployed site is reachable at the live URL.")).toMatchObject({
+      artifactKind: "verified_live_url_fetch",
+    });
+  });
+
+  it("arms on 'deploy/publish ... live'", () => {
+    expect(infer("Deploy the rank-and-rent site live via Site Studio.")).toMatchObject({
+      artifactKind: "verified_live_url_fetch",
+    });
+    expect(infer("Publish this build live and report back.")).toMatchObject({
+      artifactKind: "verified_live_url_fetch",
+    });
+  });
+
+  it("does not fire on unrelated discussion of 'live' or 'deploy'", () => {
+    expect(infer("The deploy pipeline docs explain how promotion works.")).toBeNull();
+    expect(infer("We are live-streaming the standup at noon.")).toBeNull();
+    expect(infer("Deploy is scheduled for next week, no rush.")).toBeNull();
+  });
+
+  it("never overrides a contract the author already set", () => {
+    expect(
+      inferDefaultCloseContractForIssueCreate({
+        title: "Deploy the site live and attach the live URL",
+        description: null,
+        cardTemplate: null,
+        closeContract: { mode: "exempt", exemptReason: "no_artifact_expected" },
+        identifier: "TSK-1",
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("inferDefaultCloseContractForIssueCreate — portable floor on inferred contracts", () => {
   it("gives generation/measurement cards a board-visible floor (TSMC-21711)", () => {
     expect(
