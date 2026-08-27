@@ -1,0 +1,374 @@
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  activityLog,
+  agents,
+  companies,
+  createDb,
+  goals,
+  heartbeatRuns,
+  issueQuestionResponseDeliveries,
+  issueThreadInteractions,
+  issues,
+} from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import {
+  buildQuestionResponseDeliveryEnvelope,
+  formatQuestionResponseSteeringMessage,
+  questionResponseDeliveryService,
+} from "../services/question-response-delivery.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+const DIRECT_ADAPTER_TYPES = [
+  "acpx_local",
+  "claude_local",
+  "codex_local",
+  "cursor_cloud",
+  "cursor",
+  "gemini_local",
+  "grok_local",
+  "hermes_gateway",
+  "hermes_local",
+  "kimi_local",
+  "openclaw_gateway",
+  "opencode_local",
+  "pi_local",
+  "process",
+  "http",
+  "external_test_adapter",
+] as const;
+
+describeEmbeddedPostgres("question response delivery", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-question-delivery-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueQuestionResponseDeliveries);
+    await db.delete(issueThreadInteractions);
+    await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed(args: {
+    adapterType?: string;
+    runtimeMode?: "legacy" | "native";
+    sourceStatus?: string;
+    successorStatus?: "queued" | "running";
+  } = {}) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const sourceRunId = randomUUID();
+    const successorRunId = args.successorStatus ? randomUUID() : null;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Question delivery",
+      issuePrefix: `Q${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: args.adapterType ?? "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(goals).values({ id: goalId, companyId, title: "Test", level: "task", status: "active" });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Deliver answers",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: args.sourceStatus ?? "succeeded",
+      runtimeMode: args.runtimeMode ?? "native",
+      driverKind: "codex",
+      contextSnapshot: { issueId },
+      ...(args.sourceStatus === "running" ? { startedAt: new Date() } : { finishedAt: new Date() }),
+    });
+    if (successorRunId && args.successorStatus) {
+      await db.insert(heartbeatRuns).values({
+        id: successorRunId,
+        companyId,
+        agentId,
+        invocationSource: "manual",
+        status: args.successorStatus,
+        runtimeMode: args.runtimeMode ?? "native",
+        driverKind: "codex",
+        contextSnapshot: { issueId },
+        ...(args.successorStatus === "running" ? { startedAt: new Date() } : {}),
+      });
+    }
+
+    const interactionSvc = issueThreadInteractionService(db);
+    const interaction = await interactionSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee",
+        sourceRunId,
+        payload: {
+          version: 1,
+          title: "Server choices",
+          questions: [
+            { id: "purpose", prompt: "What is it for?", selectionMode: "single", required: true, options: [{ id: "custom", label: "Write an answer", freeText: true }] },
+            { id: "runtime", prompt: "Which runtime?", selectionMode: "single", required: true, options: [{ id: "node", label: "Node.js" }, { id: "bun", label: "Bun" }] },
+            { id: "features", prompt: "Which features?", selectionMode: "multi", options: [{ id: "health", label: "Health check" }, { id: "logs", label: "Request logs" }] },
+          ],
+          questionSet: {
+            schema: "paperclip.question_set.v1",
+            title: "Server choices",
+            questions: [
+              { id: "purpose", header: "Purpose", prompt: "What is it for?", required: true, answerMode: "text" },
+              { id: "runtime", header: "Runtime", prompt: "Which runtime?", required: true, answerMode: "single_select", options: [{ id: "node", label: "Node.js" }, { id: "bun", label: "Bun" }] },
+              { id: "features", header: "Features", prompt: "Which features?", required: false, answerMode: "multi_select", options: [{ id: "health", label: "Health check" }, { id: "logs", label: "Request logs" }], customAnswer: { enabled: true, label: "Other" } },
+            ],
+          },
+        },
+      },
+      { agentId, runId: sourceRunId },
+    );
+    const answered = await interactionSvc.answerQuestions(
+      { id: issueId, companyId, status: "in_progress" },
+      interaction.id,
+      { answers: [
+        { questionId: "purpose", optionIds: [], otherText: "Internal API" },
+        { questionId: "runtime", optionIds: ["node"] },
+        { questionId: "features", optionIds: ["health", "logs"], otherText: "Metrics" },
+      ] },
+      { userId: "board-user" },
+    );
+    return { companyId, agentId, issueId, sourceRunId, successorRunId, interaction: answered };
+  }
+
+  it("persists the receipt atomically and steers exactly once into a running successor", async () => {
+    const seeded = await seed({ successorStatus: "running" });
+    const newerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: newerRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "manual",
+      status: "running",
+      runtimeMode: "native",
+      driverKind: "codex",
+      contextSnapshot: { issueId: seeded.issueId },
+      startedAt: new Date(),
+    });
+    await db.update(issues).set({ executionRunId: seeded.successorRunId })
+      .where(eq(issues.id, seeded.issueId));
+    const persistedBeforeDelivery = await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id))
+      .then((rows) => rows[0]);
+    expect(persistedBeforeDelivery).toMatchObject({
+      status: "pending",
+      correlationId: `question-response:${seeded.interaction.id}`,
+      sourceRunId: seeded.sourceRunId,
+    });
+
+    const steer = vi.fn().mockResolvedValue({ turnId: "turn-successor" });
+    const wakeup = vi.fn();
+    const service = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer,
+    });
+    const first = await service.deliver(seeded.interaction.id);
+    const second = await service.deliver(seeded.interaction.id);
+
+    expect(first).toMatchObject({
+      status: "delivered",
+      mode: "steered",
+      targetRunId: seeded.successorRunId,
+      targetTurnId: "turn-successor",
+      duplicate: false,
+    });
+    expect(second).toMatchObject({ mode: "steered", duplicate: true });
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(steer).toHaveBeenCalledWith(expect.objectContaining({
+      runId: seeded.successorRunId,
+      correlationId: `question-response:${seeded.interaction.id}`,
+      message: expect.stringContaining("- Runtime — Which runtime?: Node.js"),
+    }));
+    expect(wakeup).not.toHaveBeenCalled();
+
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "delivered",
+      deliveryMode: "steered",
+      targetRunId: seeded.successorRunId,
+      targetTurnId: "turn-successor",
+      attemptCount: 1,
+    });
+    const deliveryEvents = await db.select().from(activityLog)
+      .where(eq(activityLog.action, "issue.question_response_delivered"));
+    expect(deliveryEvents).toHaveLength(1);
+    expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain("Internal API");
+    expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain("Node.js");
+  });
+
+  it("coalesces into a queued successor without creating another wake", async () => {
+    const seeded = await seed({ successorStatus: "queued" });
+    const successor = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded.successorRunId!))
+      .then((rows) => rows[0]!);
+    const wakeup = vi.fn().mockResolvedValue(successor);
+    const steer = vi.fn();
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer,
+    }).deliver(seeded.interaction.id);
+
+    expect(outcome).toMatchObject({ status: "delivered", mode: "coalesced", targetRunId: successor.id });
+    expect(steer).not.toHaveBeenCalled();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
+      idempotencyKey: `interaction:${seeded.interaction.id}:answered`,
+      contextSnapshot: {
+        interactionId: seeded.interaction.id,
+        interactionStatus: "answered",
+      },
+    });
+  });
+
+  it("never steers into the source run and records the single wake fallback", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const wakeup = vi.fn().mockResolvedValue(null);
+    const steer = vi.fn();
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer,
+    }).deliver(seeded.interaction.id);
+
+    expect(outcome).toMatchObject({ status: "fallback_queued", mode: "wake_fallback", targetRunId: null });
+    expect(steer).not.toHaveBeenCalled();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(wakeup.mock.calls[0])).not.toContain("Internal API");
+    expect(JSON.stringify(wakeup.mock.calls[0])).not.toContain("Node.js");
+  });
+
+  it.each(DIRECT_ADAPTER_TYPES)(
+    "keeps %s on the existing wake path without invoking native steering",
+    async (adapterType) => {
+      const seeded = await seed({
+        adapterType,
+        runtimeMode: "legacy",
+        successorStatus: "running",
+      });
+      const fallbackRunId = randomUUID();
+      const wakeup = vi.fn().mockImplementation(async () => db.insert(heartbeatRuns).values({
+        id: fallbackRunId,
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        invocationSource: "automation",
+        status: "queued",
+        runtimeMode: "legacy",
+        contextSnapshot: { issueId: seeded.issueId },
+      }).returning().then((rows) => rows[0]!));
+      const steer = vi.fn();
+
+      const outcome = await questionResponseDeliveryService(db, {
+        heartbeat: { wakeup } as never,
+        steer,
+      }).deliver(seeded.interaction.id);
+
+      expect(outcome).toMatchObject({
+        status: "fallback_queued",
+        mode: "wake_fallback",
+        targetRunId: fallbackRunId,
+      });
+      expect(steer).not.toHaveBeenCalled();
+      expect(wakeup).toHaveBeenCalledTimes(1);
+      expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
+        idempotencyKey: `interaction:${seeded.interaction.id}:answered`,
+        contextSnapshot: {
+          issueId: seeded.issueId,
+          interactionId: seeded.interaction.id,
+          interactionStatus: "answered",
+        },
+      });
+    },
+  );
+
+  it("falls back once when successor steering is unsupported", async () => {
+    const seeded = await seed({ successorStatus: "running" });
+    const fallbackRunId = randomUUID();
+    const steer = vi.fn().mockRejectedValue(
+      Object.assign(new Error("unsupported"), {
+        code: "steering_unsupported",
+      }),
+    );
+    const wakeup = vi.fn().mockImplementation(async () => db.insert(heartbeatRuns).values({
+      id: fallbackRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "automation",
+      status: "queued",
+      driverKind: "codex",
+      contextSnapshot: { issueId: seeded.issueId },
+    }).returning().then((rows) => rows[0]!));
+    const service = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer,
+    });
+    const first = await service.deliver(seeded.interaction.id);
+    const second = await service.deliver(seeded.interaction.id);
+
+    expect(first).toMatchObject({ status: "fallback_queued", mode: "wake_fallback", targetRunId: fallbackRunId });
+    expect(second?.duplicate).toBe(true);
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("formats text, select labels, multi-select, and custom answers in order", async () => {
+    const seeded = await seed();
+    const envelope = buildQuestionResponseDeliveryEnvelope(seeded.interaction);
+    expect(envelope.response).toEqual({
+      schema: "paperclip.question_response.v1",
+      answers: {
+        purpose: { text: "Internal API" },
+        runtime: { selectedOptionIds: ["node"] },
+        features: { selectedOptionIds: ["health", "logs"], customText: "Metrics" },
+      },
+    });
+    expect(formatQuestionResponseSteeringMessage(envelope)).toBe([
+      "Answered questions",
+      "",
+      "- Purpose — What is it for?: Internal API",
+      "- Runtime — Which runtime?: Node.js",
+      "- Features — Which features?: Health check, Request logs, Metrics",
+    ].join("\n"));
+  });
+});

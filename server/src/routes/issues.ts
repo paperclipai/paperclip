@@ -129,6 +129,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
+  questionResponseDeliveryService,
   type ActivityPublication,
   type IssueFilters,
   clampIssueListLimit,
@@ -2839,6 +2840,9 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const questionResponseDeliveries = questionResponseDeliveryService(db, {
+    heartbeat,
+  });
   const memoizeIssueRead = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof svc.getById>>>({
     shouldCache: (issue) => issue !== null,
   });
@@ -11694,13 +11698,13 @@ export function issueRoutes(
         },
       });
 
-      await queueResolvedInteractionContinuationWakeup({
-        db,
-        heartbeat,
-        issue,
-        interaction,
-        actor,
-        source: "issue.interaction.respond",
+      await questionResponseDeliveries.deliver(interaction.id).catch((err) => {
+        logger.warn({
+          err,
+          companyId: issue.companyId,
+          issueId: issue.id,
+          interactionId: interaction.id,
+        }, "synchronous question response delivery failed; durable outbox will retry");
       });
 
       res.json(interaction);

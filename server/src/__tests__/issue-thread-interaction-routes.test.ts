@@ -47,6 +47,9 @@ const mockInteractionService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
 }));
+const mockQuestionResponseDeliveries = vi.hoisted(() => ({
+  deliver: vi.fn(async () => null),
+}));
 const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => ({ kind: "none" })));
 const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 const mockRunAttribution = vi.hoisted(() => ({
@@ -206,6 +209,7 @@ function registerModuleMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
+    questionResponseDeliveryService: () => mockQuestionResponseDeliveries,
     taskWatchdogService: () => ({
       getActiveForIssue: vi.fn(async () => null),
       upsertForIssue: vi.fn(),
@@ -283,6 +287,7 @@ describe.sequential("issue thread interaction routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockInteractionService.getForIssue.mockReset();
+    mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
     mockResolveTaskWatchdogMutationScope.mockReset();
     mockResolveCoreTrustPreset.mockReset();
     mockAccessDecide.mockReset();
@@ -749,7 +754,7 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("answers questions and emits a continuation wake", async () => {
+  it("answers questions through the durable delivery service", async () => {
     const app = await createApp();
 
     const res = await request(app)
@@ -760,19 +765,10 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockInteractionService.answerQuestions).toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ASSIGNEE_AGENT_ID,
-      expect.objectContaining({
-        reason: "issue_commented",
-        payload: expect.objectContaining({
-          interactionId: "interaction-2",
-          interactionKind: "ask_user_questions",
-          interactionStatus: "answered",
-          sourceCommentId: "comment-2",
-          sourceRunId: RUN_2,
-        }),
-      }),
+    expect(mockQuestionResponseDeliveries.deliver).toHaveBeenCalledWith(
+      "interaction-2",
     );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1902,10 +1898,8 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({ agentId: ASSIGNEE_AGENT_ID, runId: RUN_2, userId: null }),
     );
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ASSIGNEE_AGENT_ID,
-      expect.objectContaining({ idempotencyKey: "interaction:interaction-2:answered" }),
-    );
+    expect(mockQuestionResponseDeliveries.deliver).toHaveBeenCalledWith("interaction-2");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       actorType: "agent",
       agentId: ASSIGNEE_AGENT_ID,
@@ -2327,6 +2321,12 @@ describe.sequential("issue thread interaction routes", () => {
       effectiveResolverPolicy: "board_or_agents",
       payload: { version: 1, questions: [] },
     };
+    mockInteractionService.answerQuestions.mockImplementationOnce(async (_issue, interactionId) => ({
+      ...addressed,
+      id: interactionId,
+      status: "answered",
+      result: { version: 1, answers: [] },
+    }));
     mockInteractionService.getForIssue
       .mockResolvedValueOnce(addressed)
       .mockResolvedValueOnce(addressed)
@@ -2346,10 +2346,8 @@ describe.sequential("issue thread interaction routes", () => {
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-addressed/respond")
       .send({ answers: [] });
     expect(addressee.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ASSIGNEE_AGENT_ID,
-      expect.objectContaining({ idempotencyKey: "interaction:interaction-2:answered" }),
-    );
+    expect(mockQuestionResponseDeliveries.deliver).toHaveBeenCalledWith("interaction-addressed");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
 
     const unrelatedApp = await createApp({
       type: "agent",
