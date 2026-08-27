@@ -69,7 +69,7 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   if (await startBtn.count()) await startBtn.first().click();
 
   // Step 0: front door (skipped when the wizard opens on the create path).
-  const frontDoor = page.getByText("Build a new company");
+  const frontDoor = page.getByText("Build a new organization");
   if (await frontDoor.count()) await frontDoor.first().click();
 
   // Step 1: company name.

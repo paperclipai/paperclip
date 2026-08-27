@@ -262,7 +262,7 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Update company role and membership status");
+    expect(document.body.textContent).toContain("Update organization role and membership status");
     expect(document.body.textContent).not.toContain("Implicit grants from role");
     expect(document.body.textContent).not.toContain("permissionKey");
 
@@ -539,7 +539,7 @@ describe("CompanyAccess invites tab", () => {
 
     const tabLabels = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
     expect(tabLabels).toEqual(["Members", "Invites"]);
-    expect(container.textContent).toContain("Company Members");
+    expect(container.textContent).toContain("Organization Members");
     expect(container.textContent).not.toContain("Invite a person");
 
     await act(async () => {
@@ -567,7 +567,7 @@ describe("CompanyAccess invites tab", () => {
 
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0);
     expect(container.textContent).not.toContain("Invite a person");
-    expect(container.textContent).toContain("Company Members");
+    expect(container.textContent).toContain("Organization Members");
     expect(listInvitesMock).not.toHaveBeenCalled();
 
     await act(async () => {

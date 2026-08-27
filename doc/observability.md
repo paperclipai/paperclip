@@ -148,19 +148,27 @@ imports no Sentry package. The browser fetches no Sentry chunk.
 
 #### 1. Install the Sentry peer dependency
 
-Install `@sentry/node` in the server, the same way you install the
+The supported server SDK version is **`@sentry/node@10.71.0`** — the exact
+version this feature is audited against (see "Server request data"
+below). Install it in the server, the same way you install the
 OpenTelemetry packages above. `@sentry/node` is an *optional peer
 dependency*: it is not in the default lockfile, and the server loads it
-dynamically only when `SENTRY_DSN` is set.
+dynamically only when `SENTRY_DSN` is set. `server/package.json` declares
+this exact version; installing a different version defeats the audit, so
+the server checks the installed version against the declared one at
+startup and logs one diagnostic instead of enabling error monitoring on a
+mismatch (see "Server request data" below).
 
 ```bash
-pnpm add @sentry/node
+pnpm add @sentry/node@10.71.0
 ```
 
 The browser package, `@sentry/browser`, needs no install step. It is
-already a development dependency of the `ui` package, so the browser code
-ships inside every build. A signed-out browser, or a browser with no DSN,
-never fetches the Sentry chunk — see "DSN delivery to the browser" below.
+already a development dependency of the `ui` package, pinned to the same
+exact version, **`10.71.0`**, so the browser code ships inside every
+build at the audited version. A signed-out browser, or a browser with no
+DSN, never fetches the Sentry chunk — see "DSN delivery to the browser"
+below.
 
 #### 2. Set the environment
 

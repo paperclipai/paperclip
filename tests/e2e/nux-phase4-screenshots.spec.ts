@@ -33,7 +33,7 @@ function shot(name: string) {
 
 async function openWizard(page: import("@playwright/test").Page) {
   await page.goto("/onboarding");
-  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Company|Add Agent/ });
+  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Organization|Add Agent/ });
   if (await startBtn.count()) {
     await startBtn.first().click();
   }
@@ -61,7 +61,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await openWizard(page);
     // Front door shows when the wizard doesn't open directly on the create
     // path (e.g. another spec already created a company on this instance).
-    const createCard = page.getByRole("button", { name: /Build a new company/ });
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
     if (await createCard.count()) {
       await createCard.first().click();
     }
@@ -101,7 +101,7 @@ test.describe("NUX Phase 4 visual QA", () => {
       page.getByRole("heading", { name: "Welcome to Paperclip" }),
     ).toBeVisible({ timeout: 10_000 });
     await expect(
-      page.getByRole("heading", { name: "Build a new company" }),
+      page.getByRole("heading", { name: "Build a new organization" }),
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Add agents to your org" }),
@@ -131,7 +131,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     // Composer renders once a company is selected. (Regression guard for the
     // Rules-of-Hooks crash that previously blanked this page — see PAP-50.)
     await expect(
-      page.getByPlaceholder("Ask anything about your company..."),
+      page.getByPlaceholder("Ask anything about your organization..."),
     ).toBeVisible({ timeout: 20_000 });
     await page.waitForTimeout(2_000); // let welcome bubble + suggestion chips stage in
     await page.screenshot({ path: shot("06-board-chat.png") });

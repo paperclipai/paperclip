@@ -655,7 +655,7 @@ describe("SkillDetailPage settings", () => {
       detail: makeDetail(v1, { folderPath: "engineering/code-review" }),
     });
 
-    expect(node.textContent).toContain("Company / Engineering / Code Review");
+    expect(node.textContent).toContain("Organization / Engineering / Code Review");
   });
 
   it("shows a direct fork action for read-only skills", async () => {

@@ -15,8 +15,8 @@ const inviteRoleOptions = [
   {
     value: "viewer",
     label: "Viewer",
-    description: "Can view company work and follow along.",
-    gets: "View-only company membership.",
+    description: "Can view organization work and follow along.",
+    gets: "View-only organization membership.",
   },
   {
     value: "operator",
@@ -33,7 +33,7 @@ const inviteRoleOptions = [
   {
     value: "owner",
     label: "Owner",
-    description: "Full company access, including membership management.",
+    description: "Full organization access, including membership management.",
     gets: "Everything in Admin, plus managing members.",
   },
 ] as const;
@@ -151,7 +151,7 @@ export function InvitesSection() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage invites.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to manage invites.</div>;
   }
 
   if (invitesQuery.isLoading) {
@@ -161,7 +161,7 @@ export function InvitesSection() {
   if (invitesQuery.error) {
     const message =
       invitesQuery.error instanceof ApiError && invitesQuery.error.status === 403
-        ? "You do not have permission to manage company invites."
+        ? "You do not have permission to manage organization invites."
         : invitesQuery.error instanceof Error
           ? invitesQuery.error.message
           : "Failed to load invites.";
@@ -171,7 +171,8 @@ export function InvitesSection() {
   return (
     <div className="max-w-6xl space-y-8">
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Invite people to request access to this company. New invite links are copied to your clipboard when they are generated.
+        Invite people to request access to this organization. New invite links are copied to your clipboard when they are
+        generated.
       </p>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
@@ -296,7 +297,7 @@ export function InvitesSection() {
 
         {inviteHistory.length === 0 ? (
           <div className="border-t border-border px-5 py-8 text-sm text-muted-foreground">
-            No invites have been created for this company yet.
+            No invites have been created for this organization yet.
           </div>
         ) : (
           <div className="border-t border-border">

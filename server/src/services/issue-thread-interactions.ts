@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
   toolActionRequests,
@@ -71,6 +72,7 @@ import {
   isIssueReviewVerdictInteraction,
 } from "./issue-review-policy.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
@@ -3337,30 +3339,36 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         answers: input.answers,
       });
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result: {
-            version: 1,
-            answers: normalizedAnswers,
-            summaryMarkdown: input.summaryMarkdown ?? null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const updated = await db.transaction(async (tx) => {
+        const resolvedAt = new Date();
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "answered",
+            result: {
+              version: 1,
+              answers: normalizedAnswers,
+              summaryMarkdown: input.summaryMarkdown ?? null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        if (!row) throw interactionAlreadyResolvedError();
+        const answered = hydrateInteraction(row) as AskUserQuestionsInteraction;
+        await tx.insert(issueQuestionResponseDeliveries).values(
+          questionResponseDeliveryValues(answered),
+        );
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const answered = hydrateInteraction(updated);
