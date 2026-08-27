@@ -50,6 +50,10 @@ All environment variables that Paperclip uses for server configuration.
   every company-import route with `403 settings_operator_managed`. On
   cloud-managed instances import is floored unconditionally with
   `403 cloud_managed`, independent of this variable.
+- A single tab of the Secrets page: `company.secrets.vaults` (Provider
+  vaults) and `company.secrets.proposals` (Proposals) — the tab disappears
+  while the rest of the page stays up. UI-visibility only; the secret
+  provider-config and proposal APIs stay live for agents and integrations.
 
 Unknown keys are logged and ignored, so one list can be rolled across a fleet
 of mixed app versions. With the variable unset nothing is hidden and behavior

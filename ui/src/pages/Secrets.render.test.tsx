@@ -16,6 +16,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderVaultsTab, Secrets } from "./Secrets";
 import { ApiError } from "../api/client";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -1978,6 +1979,80 @@ describe("Secrets folder view (PAP-14698)", () => {
     // prod/api/token lives outside the current folder yet still matches.
     expect(table.textContent).toContain("prod/api/");
     expect(table.textContent).toContain("token");
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("Secrets operator-hidden tabs", () => {
+  let container: HTMLDivElement;
+
+  function seedSecrets() {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret({ id: "s1", key: "api_key", name: "api_key" })]);
+    mockSecretsApi.providers.mockResolvedValue(providers);
+    mockSecretsApi.providerHealth.mockResolvedValue({ providers: [] });
+    mockSecretsApi.providerConfigs.mockResolvedValue(providerConfigs);
+    mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
+    mockSecretsApi.userSecretDefinitionCoverage.mockResolvedValue(userSecretCoverage);
+    mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
+  }
+
+  async function renderWithHiddenSettings(hiddenSettings: string[]) {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, { hiddenSettings } as never);
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    seedSecrets();
+  });
+
+  afterEach(() => {
+    unmountActiveRoots();
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("hides the Provider vaults and Proposals tabs and skips the proposals poll", async () => {
+    const root = await renderWithHiddenSettings([
+      "company.secrets.vaults",
+      "company.secrets.proposals",
+    ]);
+
+    const tabLabels = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
+    expect(tabLabels.join(" ")).toContain("Secrets");
+    expect(tabLabels.join(" ")).toContain("My secrets");
+    expect(tabLabels.join(" ")).not.toContain("Provider vaults");
+    expect(tabLabels.join(" ")).not.toContain("Proposals");
+    expect(mockSecretsApi.listProposals).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps both tabs when nothing is hidden", async () => {
+    const root = await renderWithHiddenSettings([]);
+
+    const tabLabels = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
+    expect(tabLabels.join(" ")).toContain("Provider vaults");
+    expect(tabLabels.join(" ")).toContain("Proposals");
+    expect(mockSecretsApi.listProposals).toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
