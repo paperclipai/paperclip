@@ -73,7 +73,7 @@
     "yjs": "13.6.29"
   },
   "devDependencies": {
-    "@sentry/browser": "^10.71.0",
+    "@sentry/browser": "10.71.0",
     "@storybook/addon-a11y": "10.5.10",
     "@storybook/addon-docs": "10.5.10",
     "@storybook/react-vite": "10.5.10",

@@ -107,7 +107,8 @@
     "@opentelemetry/exporter-trace-otlp-proto": "0.221.0",
     "@opentelemetry/resources": "2.10.0",
     "@opentelemetry/sdk-node": "0.221.0",
-    "@opentelemetry/semantic-conventions": "1.43.0"
+    "@opentelemetry/semantic-conventions": "1.43.0",
+    "@sentry/node": "10.71.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/auto-instrumentations-node": {
@@ -129,6 +130,9 @@
       "optional": true
     },
     "@opentelemetry/semantic-conventions": {
+      "optional": true
+    },
+    "@sentry/node": {
       "optional": true
     }
   },
