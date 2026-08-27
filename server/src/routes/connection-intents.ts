@@ -220,7 +220,14 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
     status: string;
     actorId: string;
   }) {
-    await wakeConnectionIntentAfterResolution(heartbeat, input);
+    // The operator may park or reassign the issue while the connection work
+    // and activity write are in flight. Re-read immediately before enqueueing
+    // so the wake decision is not made from addressedIntent's stale snapshot.
+    const current = await service.loadIntent(input.loaded.interaction.id);
+    await wakeConnectionIntentAfterResolution(heartbeat, {
+      ...input,
+      loaded: current,
+    });
   }
 
   router.get("/connection-intents/:interactionId/setup-options", async (req, res) => {
