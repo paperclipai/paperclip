@@ -165,7 +165,7 @@ describe("PluginSettings", () => {
     const root = await renderSettings(container);
 
     expect(container.textContent).toContain("Configure this plugin from Settings → Environments.");
-    expect(container.textContent).toContain("secret bindings still resolve through the selected company context");
+    expect(container.textContent).toContain("secret bindings still resolve through the selected organization context");
     const link = container.querySelector('a[href="/company/settings/instance/environments"]');
     expect(link?.textContent).toContain("Open Environments");
 

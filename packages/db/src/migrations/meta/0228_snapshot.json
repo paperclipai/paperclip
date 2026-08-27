@@ -1,5 +1,5 @@
 {
-  "id": "0b55e231-2371-43e7-9975-2599c637bbf1",
+  "id": "a9723409-8948-43af-87ab-e79b5e072242",
   "prevId": "11d55aa5-6b96-4b7b-bca2-52d827ed8f61",
   "version": "7",
   "dialect": "postgresql",
@@ -1601,6 +1601,28 @@
           ],
           "isUnique": true,
           "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'issue_disposition_repair:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_question_response_delivery_idempotency_uq": {
+          "name": "agent_wakeup_requests_question_response_delivery_idempotency_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'question-response:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4854,6 +4876,13 @@
           "notNull": true,
           "default": 0
         },
+        "attachment_max_bytes": {
+          "name": "attachment_max_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 10485760
+        },
         "default_responsible_user_id": {
           "name": "default_responsible_user_id",
           "type": "text",
@@ -4895,6 +4924,12 @@
         },
         "feedback_data_sharing_terms_version": {
           "name": "feedback_data_sharing_terms_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "brand_color": {
+          "name": "brand_color",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -9431,6 +9466,13 @@
         },
         "attempt_count": {
           "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "error_count": {
+          "name": "error_count",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -21070,6 +21112,280 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_question_response_deliveries": {
+      "name": "issue_question_response_deliveries",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "interaction_id": {
+          "name": "interaction_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_run_id": {
+          "name": "source_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_run_id": {
+          "name": "target_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_turn_id": {
+          "name": "target_turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "correlation_id": {
+          "name": "correlation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_sha256": {
+          "name": "payload_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "delivery_mode": {
+          "name": "delivery_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_attempt_at": {
+          "name": "last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acknowledged_at": {
+          "name": "acknowledged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_code": {
+          "name": "last_error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "issue_question_response_deliveries_interaction_uq": {
+          "name": "issue_question_response_deliveries_interaction_uq",
+          "columns": [
+            {
+              "expression": "interaction_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_question_response_deliveries_correlation_uq": {
+          "name": "issue_question_response_deliveries_correlation_uq",
+          "columns": [
+            {
+              "expression": "correlation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_question_response_deliveries_pending_idx": {
+          "name": "issue_question_response_deliveries_pending_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_question_response_deliveries_company_issue_idx": {
+          "name": "issue_question_response_deliveries_company_issue_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "issue_question_response_deliveries_company_id_companies_id_fk": {
+          "name": "issue_question_response_deliveries_company_id_companies_id_fk",
+          "tableFrom": "issue_question_response_deliveries",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_question_response_deliveries_issue_id_issues_id_fk": {
+          "name": "issue_question_response_deliveries_issue_id_issues_id_fk",
+          "tableFrom": "issue_question_response_deliveries",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_question_response_deliveries_interaction_id_issue_thread_interactions_id_fk": {
+          "name": "issue_question_response_deliveries_interaction_id_issue_thread_interactions_id_fk",
+          "tableFrom": "issue_question_response_deliveries",
+          "tableTo": "issue_thread_interactions",
+          "columnsFrom": [
+            "interaction_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_question_response_deliveries_source_run_id_heartbeat_runs_id_fk": {
+          "name": "issue_question_response_deliveries_source_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "issue_question_response_deliveries",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "source_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issue_question_response_deliveries_target_run_id_heartbeat_runs_id_fk": {
+          "name": "issue_question_response_deliveries_target_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "issue_question_response_deliveries",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "target_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "issue_question_response_deliveries_status_check": {
+          "name": "issue_question_response_deliveries_status_check",
+          "value": "\"issue_question_response_deliveries\".\"status\" IN ('pending', 'delivering', 'delivered', 'fallback_queued', 'failed')"
+        },
+        "issue_question_response_deliveries_mode_check": {
+          "name": "issue_question_response_deliveries_mode_check",
+          "value": "\"issue_question_response_deliveries\".\"delivery_mode\" IS NULL OR \"issue_question_response_deliveries\".\"delivery_mode\" IN ('steered', 'coalesced', 'wake_fallback')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.issue_read_states": {

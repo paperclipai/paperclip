@@ -3682,7 +3682,7 @@ export function IssueThreadInteractionCard({
                     </Badge>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs text-xs">
-                    Directed to {addresseeLabel}. Agent-addressed interactions are owned by that agent and are kept out of the open company attention feed.
+                    Directed to {addresseeLabel}. Agent-addressed interactions are owned by that agent and are kept out of the open organization attention feed.
                   </TooltipContent>
                 </Tooltip>
               ) : null}
@@ -3853,7 +3853,7 @@ function ResolvedByAgentChip() {
         </Badge>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-xs text-xs">
-        Resolved by an agent under the company's interaction governance policy — audit-distinct from a human board resolution.
+        Resolved by an agent under the organization's interaction governance policy — audit-distinct from a human board resolution.
       </TooltipContent>
     </Tooltip>
   );

@@ -79,14 +79,14 @@ describe("describeInteractionAudience", () => {
     expect(audience.narrowedBy).toBeNull();
     expect(audience.narrowedNote).toBeNull();
     expect(audience.summary).toBe(
-      "Anyone in the company can respond — the board or any agent, including the one that asked.",
+      "Anyone in the organization can respond — the board or any agent, including the one that asked.",
     );
   });
 
   it("does not present an open card as board-required", () => {
     const audience = describeInteractionAudience({ interaction: confirmation() });
     expect(audience.summary).not.toMatch(/only .*board/i);
-    expect(audience.summary).toMatch(/anyone in the company/i);
+    expect(audience.summary).toMatch(/anyone in the organization/i);
   });
 
   it("names the excluded creator for an explicit not_creator restriction", () => {
@@ -102,7 +102,7 @@ describe("describeInteractionAudience", () => {
     expect(audience.isOpen).toBe(false);
     expect(audience.label).toBe("Anyone except creator");
     expect(audience.narrowedBy).toBe("requested");
-    expect(audience.summary).toBe("Anyone in the company except ClaudeCoder can respond.");
+    expect(audience.summary).toBe("Anyone in the organization except ClaudeCoder can respond.");
     // An explicitly requested restriction needs no extra explanation.
     expect(audience.narrowedNote).toBeNull();
   });
@@ -116,7 +116,7 @@ describe("describeInteractionAudience", () => {
       }),
     });
     expect(audience.summary).toBe(
-      "Anyone in the company except the agent that created it can respond.",
+      "Anyone in the organization except the agent that created it can respond.",
     );
   });
 
@@ -189,7 +189,7 @@ describe("describeInteractionAudience", () => {
     });
     expect(audience.narrowedBy).toBe("company_cap");
     expect(audience.narrowedNote).toBe(
-      "Company interaction governance narrowed this from Anyone to Human only.",
+      "Organization interaction governance narrowed this from Anyone to Human only.",
     );
   });
 
@@ -206,7 +206,7 @@ describe("describeInteractionAudience", () => {
     expect(audience.narrowedNote).toBe(
       "Created before Anyone became the default, so it stays restricted. A new card would be open.",
     );
-    expect(audience.summary).toBe("Anyone in the company except ClaudeCoder can respond.");
+    expect(audience.summary).toBe("Anyone in the organization except ClaudeCoder can respond.");
   });
 });
 
@@ -294,7 +294,7 @@ describe("describeAttentionResolverAudience", () => {
     })));
     expect(audience?.narrowedBy).toBe("company_cap");
     expect(audience?.narrowedNote).toBe(
-      "Company interaction governance narrowed this from Anyone to Human only.",
+      "Organization interaction governance narrowed this from Anyone to Human only.",
     );
   });
 
