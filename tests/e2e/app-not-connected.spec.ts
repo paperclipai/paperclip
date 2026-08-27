@@ -118,12 +118,16 @@ test.describe.serial("not-connected app page", () => {
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/connect\?/, { timeout: 20_000 });
-    await expect(page.getByText("Connect with a link")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Connect your own MCP server")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(mock.url)).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
 
     await page.getByRole("button", { name: "Check link" }).click();
-    await expect(page.getByText(/Connected to .* it offers/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Who can use Bla?" })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Continue to install" }).click();
+    await expect(page.getByRole("heading", { name: /Install .* tools\?/i })).toBeVisible({ timeout: 20_000 });
+    await page.getByRole("button", { name: "Finish setup" }).click();
+    await expect(page.getByRole("heading", { name: "Bla is ready." })).toBeVisible({ timeout: 20_000 });
 
     const apps = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
     const appsBody = await apps.json();
@@ -143,17 +147,37 @@ test.describe.serial("not-connected app page", () => {
     expect(appConns[0].status).not.toBe("archived");
   });
 
-  test("draft app connection stays on provider setup until setup finishes", async ({ page }) => {
-    await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`), { timeout: 20_000 });
-    await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Connect this app" })).toBeVisible();
+  test("draft app connection stays on provider setup until setup finishes", async ({ page, request }) => {
+    const draftMock = await startMockMcp();
+    try {
+      const draft = await request.post(`/api/companies/${seed.companyId}/tools/apps/connect`, {
+        data: {
+          link: draftMock.url,
+          name: "Draft app",
+          credentialValues: { "credentials.authorization": "qa-token" },
+        },
+      });
+      expect(draft.ok(), `draft connect failed ${draft.status()}: ${await draft.text()}`).toBe(true);
+      const draftBody = await draft.json();
+      const draftApplicationId = draftBody.application.id as string;
+      const archive = await request.delete(`/api/tool-connections/${draftBody.connectionId}`);
+      expect(archive.ok(), `draft archive failed ${archive.status()}: ${await archive.text()}`).toBe(true);
+      const revive = await request.patch(`/api/tool-applications/${draftApplicationId}`, { data: { status: "active" } });
+      expect(revive.ok(), `draft revive failed ${revive.status()}: ${await revive.text()}`).toBe(true);
 
-    await page.goto(`/${seed.prefix}/apps/connections`);
-    const row = page.locator("tbody tr", { hasText: "Bla" });
-    await expect(row).toBeVisible({ timeout: 30_000 });
-    await expect(row.getByRole("button", { name: "Connect" })).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-03-reconnected-row.png`, fullPage: true });
+      await page.goto(`/${seed.prefix}/apps/app/${draftApplicationId}`);
+      await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${draftApplicationId}/setup$`), { timeout: 20_000 });
+      await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Connect this app" })).toBeVisible();
+
+      await page.goto(`/${seed.prefix}/apps/connections`);
+      const row = page.locator("tbody tr", { hasText: "Draft app" });
+      await expect(row).toBeVisible({ timeout: 30_000 });
+      await expect(row.getByRole("button", { name: "Connect" })).toBeVisible();
+      await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-03-reconnected-row.png`, fullPage: true });
+    } finally {
+      await draftMock.close();
+    }
   });
 
   test("danger zone on the app page removes the app", async ({ page, request }) => {

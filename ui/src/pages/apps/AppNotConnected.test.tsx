@@ -245,6 +245,37 @@ describe("AppNotConnected", () => {
     );
   });
 
+  it("does not group unrelated generic link applications", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [
+        application({
+          id: "app-1",
+          applicationKey: "app-gallery:link:first",
+          name: "First server",
+          metadata: { source: "link" },
+        }),
+        application({
+          id: "app-2",
+          applicationKey: "app-gallery:link:second",
+          name: "Second server",
+          metadata: { source: "link" },
+        }),
+      ],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({ id: "conn-old", applicationId: "app-1", status: "archived" }),
+        connection({ id: "conn-live", applicationId: "app-2", status: "active" }),
+      ],
+    });
+
+    await renderPage();
+
+    expect(container.textContent).toContain("Not connected");
+    expect(container.textContent).toContain("Reconnect this app");
+    expect(container.textContent).not.toContain("Already connected to First server");
+  });
+
   it.each([
     ["setup", "Reconnect this app"],
     ["review", "Nothing is waiting for your OK right now."],

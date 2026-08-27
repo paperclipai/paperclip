@@ -31,6 +31,12 @@ export function appApplicationSourceSlug(application: ToolApplication | null | u
   const key = application.applicationKey?.trim();
   if (!key) return null;
   const galleryPrefix = "app-gallery:";
-  if (key.startsWith(galleryPrefix)) return key.slice(galleryPrefix.length).split(":")[0] || null;
+  if (key.startsWith(galleryPrefix)) {
+    const slug = key.slice(galleryPrefix.length).split(":")[0] || null;
+    // Curated apps deliberately group multiple accounts by provider. Generic
+    // URL apps use `link` only as a synthetic key, so grouping on it would make
+    // every unrelated MCP server in the company look like the same app.
+    return slug === "link" ? null : slug;
+  }
   return key;
 }
