@@ -1,0 +1,7 @@
+{
+  "name": "paperclip-cloud-server-deps",
+  "private": true,
+  "dependencies": {
+    "@sentry/node": "10.71.0"
+  }
+}

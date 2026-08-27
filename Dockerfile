@@ -174,16 +174,34 @@ RUN set -eu; \
 #
 # The install happens in its own isolated directory, not inside
 # `server/`'s own workspace install, so the self-hosted target above never
-# gains this package. Read the version from `server/package.json`'s declared
-# optional peer instead of a second hardcoded copy, so the two values can
-# never drift.
+# gains this package. The directory sits under `/app` (not `server/`, and
+# excluded from the pnpm workspace by `--ignore-workspace` below) so pnpm
+# still finds the `packageManager` pin in the repo's own `package.json` by
+# walking up from the working directory — the same pnpm version the rest of
+# the build uses, not whatever version a bare directory outside `/app`
+# would fall back to.
+#
+# `docker/cloud-server-deps/package.json` and its committed `pnpm-lock.yaml`
+# pin every package in the Sentry dependency tree, direct and transitive, to
+# an exact resolved version and integrity hash. A build reads that lockfile
+# with `--frozen-lockfile`, so it installs the same tree every time and
+# fails loudly if the lockfile and the package.json ever disagree. This
+# replaces an earlier install that read only the top-level version and
+# re-resolved the rest of the tree fresh on every build, so the image could
+# silently ship different transitive Sentry dependencies from one build to
+# the next. The committed package.json's pinned version must match
+# `server/package.json`'s declared optional peer; the check below fails the
+# build if they drift apart, so the two values cannot go out of sync
+# unnoticed.
 FROM build AS cloud-server-deps
-WORKDIR /cloud-server-deps
+WORKDIR /app/.cloud-server-deps
+COPY docker/cloud-server-deps/package.json docker/cloud-server-deps/pnpm-lock.yaml docker/cloud-server-deps/.npmrc ./
 RUN set -eu; \
-  version="$(node -e "process.stdout.write(require('/app/server/package.json').peerDependencies['@sentry/node'])")"; \
-  test -n "$version" || { echo "ERROR: server/package.json declares no @sentry/node peer version" >&2; exit 1; }; \
-  echo '{"name":"paperclip-cloud-server-deps","private":true}' > package.json; \
-  pnpm add "@sentry/node@${version}" --ignore-workspace --no-lockfile
+  peer_version="$(node -e "process.stdout.write(require('/app/server/package.json').peerDependencies['@sentry/node'])")"; \
+  test -n "$peer_version" || { echo "ERROR: server/package.json declares no @sentry/node peer version" >&2; exit 1; }; \
+  pinned_version="$(node -e "process.stdout.write(require('./package.json').dependencies['@sentry/node'])")"; \
+  test "$peer_version" = "$pinned_version" || { echo "ERROR: docker/cloud-server-deps/package.json pins @sentry/node@${pinned_version}, but server/package.json declares @sentry/node@${peer_version} as its optional peer. Update docker/cloud-server-deps/package.json to match, then regenerate docker/cloud-server-deps/pnpm-lock.yaml (cd docker/cloud-server-deps && pnpm install --ignore-workspace --lockfile-only)." >&2; exit 1; }; \
+  pnpm install --frozen-lockfile --ignore-workspace
 
 FROM production AS cloud
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
@@ -191,4 +209,4 @@ COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-provid
 # directory Node's module resolution walks up to from `/app/server` for
 # both a CommonJS `require.resolve` and an ECMAScript `import` — an entry
 # on `NODE_PATH` would satisfy only the first and silently fail the second.
-COPY --chown=node:node --from=cloud-server-deps /cloud-server-deps/node_modules /app/server/node_modules
+COPY --chown=node:node --from=cloud-server-deps /app/.cloud-server-deps/node_modules /app/server/node_modules

@@ -13,11 +13,16 @@ import { describe, expect, it } from "vitest";
  * `@sentry/node` as a true optional peer dependency: the operator installs
  * it themselves. The hosted (cloud) image installs the exact version
  * `server/package.json` declares, so a managed tenant gets server error
- * reports with no separate install step. This test pins two invariants
- * that nothing else ties together: every Dockerfile instruction that
- * installs `@sentry/node` sits strictly after the `production` stage body
- * ends, and the Dockerfile and the docker workflow carry no second,
- * hardcoded copy of the version.
+ * reports with no separate install step. The install reads a committed
+ * lockfile at `docker/cloud-server-deps/pnpm-lock.yaml`, which pins the
+ * full Sentry dependency tree, so the image installs the same tree on
+ * every build. This test pins three invariants that nothing else ties
+ * together: every Dockerfile instruction that installs `@sentry/node`
+ * sits strictly after the `production` stage body ends; the Dockerfile
+ * and the docker workflow carry no literal version pin (they read the
+ * version from `server/package.json` at build time instead); and the
+ * one committed copy of the version, in
+ * `docker/cloud-server-deps/package.json`, matches the declared peer.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -28,6 +33,15 @@ const serverPackageJson = JSON.parse(
 ) as { peerDependencies?: Record<string, string> };
 
 const declaredVersion = serverPackageJson.peerDependencies?.["@sentry/node"];
+
+const cloudServerDepsPackageJson = JSON.parse(
+  readFileSync(path.join(repoRoot, "docker", "cloud-server-deps", "package.json"), "utf8"),
+) as { dependencies?: Record<string, string> };
+
+const cloudServerDepsLockfile = readFileSync(
+  path.join(repoRoot, "docker", "cloud-server-deps", "pnpm-lock.yaml"),
+  "utf8",
+);
 
 const probeSource = readFileSync(
   path.join(repoRoot, "scripts", "assert-cloud-image-sentry.mjs"),
@@ -132,6 +146,24 @@ describe("cloud image Sentry install", () => {
         ).toBe(declaredVersion);
       }
     }
+  });
+
+  it("pins the committed cloud-server-deps install to the declared peer version", () => {
+    expect(
+      cloudServerDepsPackageJson.dependencies?.["@sentry/node"],
+      "docker/cloud-server-deps/package.json must pin @sentry/node to the version " +
+        "server/package.json declares as its optional peer",
+    ).toBe(declaredVersion);
+
+    const specifierPattern = new RegExp(
+      `'@sentry/node':\\s*\\n\\s*specifier:\\s*${String(declaredVersion).replace(/[.+*?^${}()|[\]\\]/g, "\\$&")}\\b`,
+    );
+    expect(
+      cloudServerDepsLockfile,
+      "docker/cloud-server-deps/pnpm-lock.yaml must resolve @sentry/node at the declared " +
+        "peer version; regenerate it with `cd docker/cloud-server-deps && pnpm install " +
+        "--ignore-workspace --lockfile-only` after bumping the version",
+    ).toMatch(specifierPattern);
   });
 });
 
