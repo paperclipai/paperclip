@@ -2720,9 +2720,14 @@ rl.on("line", (line) => {
       expect(JSON.stringify(deniedInvocation)).not.toContain("sk-denied-secret-123456");
 
       const approvalTool = await createRemoteMcpTool(db, company.id, {
-        applicationKey: "approval-app",
+        applicationKey: "shopify",
         toolName: "kv_set",
         url: fake.url,
+        connectionConfig: {
+          sourceTemplateKey: "shopify",
+          connectionMethodKey: "ucp-commerce",
+          methodConfig: { storeDomain: "paperclip-demo.myshopify.com" },
+        },
       });
       await allowToolsForAgent(db, company.id, agent.id, [
         expectedConnectedToolName({
@@ -2760,6 +2765,9 @@ rl.on("line", (line) => {
         issueId: issue.id,
         status: "pending",
         canonicalArgumentsHash: expect.any(String),
+        canonicalArgumentsSummary: {
+          summary: expect.stringContaining("valid-with-capabilities.json"),
+        },
       });
       const [approvalInteraction] = await db
         .select()
@@ -2802,7 +2810,7 @@ rl.on("line", (line) => {
         policyDecision: "require_approval",
         connectionId: approvalTool.connection.id,
         providerType: "mcp_remote_http",
-        applicationKey: "approval-app",
+        applicationKey: "shopify",
         upstreamToolName: "kv_set",
       });
 
@@ -2835,7 +2843,15 @@ rl.on("line", (line) => {
       expect(fake.requests.at(-1)!.body).toMatchObject({
         params: {
           name: "kv_set",
-          arguments: { key: "approved", value: "original" },
+          arguments: {
+            key: "approved",
+            value: "original",
+            meta: {
+              "ucp-agent": {
+                profile: "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json",
+              },
+            },
+          },
         },
       });
       const [executedApproval] = await db
@@ -3019,7 +3035,7 @@ rl.on("line", (line) => {
       expect(persisted).not.toContain("sk-connected-mcp-secret-123456");
       expect(persisted).not.toContain("sk-denied-secret-123456");
       expect(persisted).toContain("mcp_remote_http");
-      expect(persisted).toContain("approval-app");
+      expect(persisted).toContain("shopify");
       expect(persisted).toContain("kv_set");
     } finally {
       await fake.close();
