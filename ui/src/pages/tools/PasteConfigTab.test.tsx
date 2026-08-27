@@ -90,8 +90,8 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       ownership: "customer",
       transport: "mcp_remote",
       authKind: "none",
-      credentialPolicy: "shared",
       credentialSource: "paperclip_vault",
+      credentialPolicy: "shared",
       status: "draft",
       enabled: false,
       config: { url: "http://127.0.0.1:8848/mcp" },
@@ -124,7 +124,7 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       }],
       canMakeChanges: [],
     },
-    suggestedDefaults: { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
+    suggestedDefaults: { access: "all_agents", askFirstRiskLevels: [] },
     ...overrides,
   };
 }

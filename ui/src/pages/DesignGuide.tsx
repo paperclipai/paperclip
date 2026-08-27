@@ -137,10 +137,18 @@ import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
+import { AppLogo } from "@/pages/apps/AppLogo";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
+import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import {
+  connectedConnectionIntentInteraction,
+  issueThreadInteractionFixtureMeta,
+  pendingConnectionIntentInteraction,
+  retryConnectionIntentInteraction,
+} from "@/fixtures/issueThreadInteractionFixtures";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import {
   EnvInputsList,
@@ -1346,6 +1354,21 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="App logos">
+        <SubSection title="Official marks and runtime fallback">
+          <div className="flex items-center gap-3">
+            <AppLogo
+              name="Notion"
+              logoUrl="/brands/apps/notion.svg"
+              darkLogoUrl="/brands/apps/notion-dark.svg"
+              size={36}
+            />
+            <AppLogo name="Jira" logoUrl="/brands/apps/jira.svg" darkLogoUrl="/brands/apps/jira-dark.svg" size={44} />
+            <AppLogo name="Fallback" logoUrl="/brands/apps/does-not-exist.svg" size={36} />
+          </div>
+        </SubSection>
+      </Section>
+
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
@@ -2054,6 +2077,28 @@ export function DesignGuide() {
           for all 10 states.
         </p>
         <EnvironmentVariablesEditorShowcase />
+      </Section>
+
+      <Section title="Connection Intent">
+        <p className="text-sm text-muted-foreground">
+          The task card is the dialog host for the shared connection setup flow. Provider forms,
+          validation, OAuth, access selection, and completion come from the same feature module as
+          the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
+        </p>
+        <div className="grid gap-4 xl:grid-cols-3">
+          <IssueThreadInteractionCard
+            interaction={pendingConnectionIntentInteraction}
+            currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          />
+          <IssueThreadInteractionCard
+            interaction={retryConnectionIntentInteraction}
+            currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          />
+          <IssueThreadInteractionCard
+            interaction={connectedConnectionIntentInteraction}
+            currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          />
+        </div>
       </Section>
 
       <Section title="Resizable Panels">

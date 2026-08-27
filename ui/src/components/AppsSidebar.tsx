@@ -12,7 +12,7 @@ import { SidebarNavItem } from "./SidebarNavItem";
  * PAP-13254 / U3).
  *
  *   ← Back · APPS: Browse / Review (n)
- *   DEVELOPER: Connections / Gateways / Profiles / Activity
+ *   DEVELOPER: Connections / Activity
  *
  * "Browse" is the store and "Review" holds decisions waiting on the user's
  * OK. Connection management lives with the Developer tools.
@@ -30,9 +30,12 @@ export function AppsSidebar() {
 
   const reviewCount = useReviewCount();
   const { enabled: smokeLabEnabled } = useSmokeLabEnabled();
-  const developerTabs = DEVELOPER_TABS.filter(
-    (tab) => !isExperimentalToolTab(tab.key) || smokeLabEnabled,
-  );
+  const developerTabs = DEVELOPER_TABS.filter((tab) => {
+    // Temporarily hide Gateways and Profiles until they are ready to ship.
+    // Keep their tab definitions and routes intact so we can bring them back later.
+    if (tab.key === "gateways" || tab.key === "profiles") return false;
+    return !isExperimentalToolTab(tab.key) || smokeLabEnabled;
+  });
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">

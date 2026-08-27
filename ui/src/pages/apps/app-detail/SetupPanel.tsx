@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,33 +11,38 @@ import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-
 export function SetupPanel({
   connection,
   galleryEntry,
-  onToggleApp,
-  appToggleDisabled,
   onUpdateConfig,
   configUpdateDisabled,
   identities,
+  agentsSummary,
+  permissionsSummary,
+  permissionsLoading,
+  onOpenPermissions,
 }: Pick<
   AppDetailSectionProps,
   "connection" | "galleryEntry"
 > & {
-  onToggleApp: () => void;
-  appToggleDisabled: boolean;
   onUpdateConfig: (config: Record<string, unknown>) => void;
   configUpdateDisabled: boolean;
   /**
-   * The Identities section (PAP-17835). It replaces the old generic OAuth
-   * "workspace authorization" block, because that block could only ever describe
-   * one shared identity and this connection may act as each person instead.
+   * The fixed Identity section. It replaces the old generic OAuth "workspace
+   * authorization" block and shows the identity type chosen during setup.
    */
   identities?: ReactNode;
+  agentsSummary: string;
+  permissionsSummary: string | null;
+  permissionsLoading: boolean;
+  onOpenPermissions: () => void;
 }) {
-  const description = galleryEntry?.description ?? null;
   return (
-    <div className="space-y-6">
-      {description && (
-        <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
-      )}
+    <div className="space-y-10">
       {identities}
+      <SetupLinkSection title="Agents" summary={agentsSummary} onClick={onOpenPermissions} />
+      <SetupLinkSection
+        title="Actions"
+        summary={permissionsLoading ? "Loading permissions…" : permissionsSummary ?? "Manage permissions"}
+        onClick={onOpenPermissions}
+      />
       {appDefinitionSlug(galleryEntry) === "google-sheets" && (
         <GoogleSheetsAllowlistSection
           connection={connection}
@@ -47,8 +53,31 @@ export function SetupPanel({
       {appDefinitionSlug(galleryEntry) === "posthog" && (
         <PostHogConfigurationSection connection={connection} />
       )}
-      <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
+  );
+}
+
+function SetupLinkSection({
+  title,
+  summary,
+  onClick,
+}: {
+  title: string;
+  summary: string;
+  onClick: () => void;
+}) {
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex w-full items-center justify-between gap-4 rounded-lg border border-border px-4 py-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="min-w-0 text-sm text-muted-foreground">{summary}</span>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </button>
+    </section>
   );
 }
 
@@ -84,7 +113,7 @@ function PostHogConfigurationSection({ connection }: { connection: ToolConnectio
   const tools = typeof config.tools === "string" && config.tools ? config.tools : "None";
   const rows = [
     ["Connection method", method],
-    ["Project ID", typeof config.projectId === "string" ? config.projectId : "Not set"],
+    ["Project pin", typeof config.projectId === "string" ? config.projectId : "Use active project"],
     ["Read-only mode", config.readOnly === true ? "On" : "Off"],
     ["Feature groups", features],
     ["Individual tools", tools],
@@ -94,7 +123,7 @@ function PostHogConfigurationSection({ connection }: { connection: ToolConnectio
     <section>
       <h2 className="text-sm font-bold text-foreground">PostHog access scope</h2>
       <p className="mt-0.5 text-sm text-muted-foreground">
-        This connection is pinned to the project and analytics surface below.
+        PostHog uses its normal account defaults unless you narrow the optional controls below.
       </p>
       <dl className="mt-4 divide-y divide-border">
         {rows.map(([label, value]) => (
@@ -211,41 +240,6 @@ function GoogleSheetsAllowlistSection({
         </Button>
       </div>
       {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
-    </section>
-  );
-}
-
-export function AppLifecycleSection({
-  connection,
-  disabled,
-  onToggle,
-}: {
-  connection: ToolConnection;
-  disabled: boolean;
-  onToggle: () => void;
-}) {
-  const enabled = connection.enabled !== false && connection.status !== "disabled";
-  return (
-    <section>
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">
-            {enabled ? "Agents can use this app" : "This app is paused"}
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {enabled
-              ? "Pause it to stop every agent from using its actions."
-              : "Resume it when agents should be able to use its actions again."}
-          </p>
-        </div>
-        <ToggleSwitch
-          aria-label={enabled ? "Pause this app" : "Resume this app"}
-          checked={enabled}
-          disabled={disabled}
-          onCheckedChange={onToggle}
-          size="lg"
-        />
-      </div>
     </section>
   );
 }

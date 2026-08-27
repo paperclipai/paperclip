@@ -17,6 +17,7 @@ import type { RequestConfirmationInteraction } from "@/lib/issue-thread-interact
 import { queryKeys } from "@/lib/queryKeys";
 import { AgentToolsTab } from "@/pages/AgentToolsTab";
 import { PermissionsPanel } from "@/pages/apps/app-detail/PermissionsPanel";
+import type { AccessDraft } from "@/pages/apps/app-detail/types";
 import { AccessStep } from "@/pages/apps/AppsConnect";
 import type { InstallState } from "@/lib/tool-installs";
 
@@ -137,11 +138,14 @@ function PanelHarness({
   capabilities?: ToolConnectionCapabilities;
 }) {
   const [state, setState] = useState(install);
+  const [access, setAccess] = useState<AccessDraft>({ mode: "all", agentIds: new Set() });
   return (
     <div className="mx-auto max-w-3xl bg-background p-6">
       <PermissionsPanel
         capabilities={capabilities}
+        appName="Gmail"
         agents={AGENTS}
+        access={access}
         install={state}
         readOnly={GMAIL_TOOLS.filter((t) => t.isReadOnly)}
         canChange={GMAIL_TOOLS.filter((t) => !t.isReadOnly)}
@@ -151,6 +155,7 @@ function PanelHarness({
         pending={false}
         installPending={false}
         refreshPending={false}
+        onSaveAccess={setAccess}
         onSaveInstall={setState}
         onSetActionPermission={() => {}}
         onReviewQuarantined={() => {}}

@@ -4,6 +4,7 @@ import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
@@ -48,6 +49,8 @@ import {
   companyCappedRequestConfirmationInteraction,
   legacyRestrictedRequestConfirmationInteraction,
   pendingConnectionIntentInteraction,
+  retryConnectionIntentInteraction,
+  connectedConnectionIntentInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -89,17 +92,22 @@ function renderCard(
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
 
   act(() => {
     root?.render(
-      <TooltipProvider>
-        <ThemeProvider>
-          <IssueThreadInteractionCard
-            interaction={pendingAskUserQuestionsInteraction}
-            {...props}
-          />
-        </ThemeProvider>
-      </TooltipProvider>,
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <ThemeProvider>
+            <IssueThreadInteractionCard
+              interaction={pendingAskUserQuestionsInteraction}
+              {...props}
+            />
+          </ThemeProvider>
+        </TooltipProvider>
+      </QueryClientProvider>,
     );
   });
 
@@ -1388,6 +1396,55 @@ describe("IssueThreadInteractionCard connection-authorization card", () => {
     expect(buttonLabels(host)).not.toContain("Connect Gmail");
     // The card states its own resolver, so the shared footer must not repeat it.
     expect(host.querySelector('[data-testid="interaction-resolved-footer"]')).toBeNull();
+  });
+});
+
+describe("IssueThreadInteractionCard connection-intent card", () => {
+  const USER_LABELS = new Map([[issueThreadInteractionFixtureMeta.currentUserId, "Carol"]]);
+
+  it("offers the addressed user the shared setup entry point and Not now", () => {
+    const host = renderCard({
+      interaction: pendingConnectionIntentInteraction,
+      currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    });
+    expect(host.querySelector('[data-testid="connection-intent-actions"]')).not.toBeNull();
+    const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
+    expect(labels).toContain("Connect / Use existing");
+    expect(labels).toContain("Not now");
+    expect(host.textContent).toContain("Access is added only for this agent");
+  });
+
+  it("shows another viewer only who it is waiting for", () => {
+    const host = renderCard({
+      interaction: pendingConnectionIntentInteraction,
+      currentUserId: "user-someone-else",
+      userLabelMap: USER_LABELS,
+    });
+    expect(host.querySelector('[data-testid="connection-intent-waiting"]')?.textContent)
+      .toContain("Waiting for Carol");
+    expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeNull();
+    expect(host.querySelectorAll("button")).toHaveLength(0);
+    expect(host.innerHTML).not.toContain("authorizationUrl");
+  });
+
+  it("renders retry and connected terminal states without generic confirmation actions", () => {
+    const retry = renderCard({
+      interaction: retryConnectionIntentInteraction,
+      currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    });
+    expect(retry.textContent).toContain("Authorization didn’t finish");
+    expect(retry.textContent).toContain("Try again");
+
+    act(() => root?.unmount());
+    retry.remove();
+    root = null;
+    const connected = renderCard({
+      interaction: connectedConnectionIntentInteraction,
+      currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    });
+    expect(connected.querySelector('[data-testid="connection-intent-terminal"]')?.textContent)
+      .toContain("Notion connected");
+    expect(connected.textContent).not.toContain("Approve");
   });
 });
 

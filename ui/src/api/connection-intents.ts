@@ -9,6 +9,14 @@ export const connectionIntentsApi = {
     api.get<ConnectionIntentSetupOptions>(
       `/connection-intents/${interactionId}/setup-options`,
     ),
+  setPhase: (
+    interactionId: string,
+    phase: ConnectionIntentInteraction["payload"]["phase"],
+  ) =>
+    api.post<ConnectionIntentInteraction>(
+      `/connection-intents/${interactionId}/phase`,
+      { phase },
+    ),
   complete: (interactionId: string, connectionId: string) =>
     api.post<ConnectionIntentInteraction>(
       `/connection-intents/${interactionId}/complete`,

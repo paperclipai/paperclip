@@ -9,27 +9,26 @@ import { RadioCardGroup } from "@/components/ui/radio-card";
 import { cn } from "@/lib/utils";
 import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
-import type { AppDetailSectionProps } from "./types";
+import {
+  formatActionPermissionSummary,
+  summarizeActionPermissions,
+} from "./action-permission-summary";
+import type { AccessDraft, AppDetailSectionProps } from "./types";
 
 type ActionPermission = "off" | "allowed" | "ask";
 
 /**
  * Permissions tab.
  *
- * Agent availability is expressed **once** (PAP-17859). This panel used to
- * stack a legacy "Who can use it" editor on top of "Available to agents",
- * asking the reader to hold two overlapping models of the same fact and to
- * guess which one wins. The install model — *Agents I pick / Any agent* — is
- * now the single visible source of truth.
- *
- * The runtime distinction survives untouched: an install still authorizes its
- * target server-side (`putConnectionInstalls` extends the app profile's
- * bindings), so "installed ⊆ permitted" holds without a second editor. What is
- * gone is the *user-facing* duplicate, and with it the hidden path that could
- * widen access from a control the reader could not see.
+ * Agent access and installs answer two different questions. Access decides who
+ * may use the app when work needs it. Installs decide which agents load the app
+ * on every run. Keeping the sections adjacent makes that distinction explicit
+ * while preserving the server invariant that installed agents are permitted.
  */
 export function PermissionsPanel({
+  appName,
   agents,
+  access,
   install,
   readOnly,
   canChange,
@@ -38,6 +37,7 @@ export function PermissionsPanel({
   askFirstIds,
   pending,
   installPending,
+  onSaveAccess,
   onSaveInstall,
   onSetActionPermission,
   onReviewQuarantined,
@@ -46,10 +46,19 @@ export function PermissionsPanel({
   capabilities,
 }: Pick<
   AppDetailSectionProps,
-  "agents" | "readOnly" | "canChange" | "quarantined" | "enabledIds" | "askFirstIds" | "pending"
+  | "appName"
+  | "agents"
+  | "access"
+  | "readOnly"
+  | "canChange"
+  | "quarantined"
+  | "enabledIds"
+  | "askFirstIds"
+  | "pending"
 > & {
   install: InstallState;
   installPending: boolean;
+  onSaveAccess: (next: AccessDraft) => void;
   onSaveInstall: (next: InstallState) => void;
   onSetActionPermission: (id: string, next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
@@ -63,13 +72,23 @@ export function PermissionsPanel({
   const [searchParams] = useSearchParams();
   const focusId = searchParams.get("focus");
   return (
-    <div className="space-y-6">
-      <AvailableToAgentsSection
+    <div className="space-y-10">
+      <AlwaysInstalledSection
+        appName={appName}
         agents={agents}
         install={install}
         capabilities={capabilities}
         disabled={installPending}
         onSave={onSaveInstall}
+      />
+      <AgentAccessSection
+        appName={appName}
+        agents={agents}
+        access={access}
+        install={install}
+        capabilities={capabilities}
+        disabled={pending}
+        onSave={onSaveAccess}
       />
       <ActionsSection
         readOnly={readOnly}
@@ -89,55 +108,46 @@ export function PermissionsPanel({
   );
 }
 
-/**
- * "Available to agents" (PAP-17835 Surface E).
- *
- * The old section exposed the runtime's own vocabulary — "permitted only",
- * "installed", an auto-extend warning — which asked the reader to hold two
- * overlapping concepts to answer one question. It is now the same two-choice
- * model the create flow uses: pick agents, or any agent. The runtime
- * distinction still exists in code; it just stopped being the user's problem.
- *
- * Every control is gated on a server capability. A viewer, or a member who may
- * not configure this connection, sees the summary and the agent list with no
- * controls at all rather than disabled ones.
- */
-function AvailableToAgentsSection({
+function AgentAccessSection({
+  appName,
   agents,
+  access,
   install,
   capabilities,
   disabled,
   onSave,
 }: {
+  appName: string;
   agents: Agent[];
+  access: AccessDraft;
   install: InstallState;
   capabilities: ToolConnectionCapabilities | undefined;
   disabled: boolean;
-  onSave: (next: InstallState) => void;
+  onSave: (next: AccessDraft) => void;
 }) {
   const liveAgents = agents.filter((a) => a.status !== "terminated");
-  const canManage = capabilities?.canManageAgentInstalls ?? false;
-  const canSetCompanyWide = capabilities?.canSetCompanyInstall ?? false;
-  // "Agents I pick" is scoped to the agents this person may actually edit. The
-  // server decides that set; the client never infers it from a role string.
+  const canManage = capabilities?.canConfigure ?? false;
   const editableAgentIds = capabilities?.editableAgentIds;
   const selectableAgents = editableAgentIds
     ? liveAgents.filter((agent) => editableAgentIds.includes(agent.id))
     : liveAgents;
-  const mode: "all" | "specific" = install.onAll ? "all" : "specific";
-  const selectedAgents = liveAgents.filter((agent) => install.agentIds.has(agent.id));
-  const summary = install.onAll
+  const selectedAgents = liveAgents.filter((agent) => access.agentIds.has(agent.id));
+  const requiredAgentIds = install.agentIds;
+  const summary = access.mode === "all"
     ? "Any agent"
-    : install.agentIds.size === 0
-      ? "No agents yet"
-      : `${install.agentIds.size} ${install.agentIds.size === 1 ? "agent" : "agents"}`;
+    : access.agentIds.size === 0
+      ? "No agents"
+      : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"}`;
 
   return (
-    <section>
+    <section className="border-t border-border pt-8">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-bold text-foreground">Available to agents</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">{summary}</p>
+          <h2 className="text-lg font-semibold text-foreground">Agent access</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Agents that may use {appName} when work needs it.
+          </p>
         </div>
         {disabled && <span className="text-xs text-muted-foreground">Saving…</span>}
       </div>
@@ -146,6 +156,128 @@ function AvailableToAgentsSection({
         <div className="space-y-3 pt-4">
           <RadioCardGroup
             ariaLabel="Which agents can use this connection"
+            value={access.mode}
+            disabled={disabled}
+            className="sm:grid-cols-2"
+            onValueChange={(next) => {
+              if (next === "all") onSave({ mode: "all", agentIds: new Set() });
+              else onSave({
+                mode: "specific",
+                agentIds: new Set([...access.agentIds, ...requiredAgentIds]),
+              });
+            }}
+            options={[
+              {
+                value: "specific",
+                title: "Agents I pick",
+                description: install.onAll
+                  ? "Unavailable while installed for every agent."
+                  : "Only selected agents.",
+                disabled: install.onAll,
+              },
+              {
+                value: "all",
+                title: "Any agent",
+                description: "Available across your company.",
+              },
+            ]}
+          />
+
+          {access.mode === "specific" ? (
+            <AgentMultiSelect
+              agents={selectableAgents}
+              selectedAgentIds={access.agentIds}
+              disabled={disabled}
+              triggerLabel={
+                access.agentIds.size === 0
+                  ? "Choose agents"
+                  : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} selected`
+              }
+              emptyMessage="You cannot edit any agents yet."
+              isAgentDisabled={(agent) => requiredAgentIds.has(agent.id)}
+              getDescription={(agent) => requiredAgentIds.has(agent.id) ? "Always installed" : agent.title}
+              headerContent={requiredAgentIds.size > 0 ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Always-installed agents keep access.
+                </p>
+              ) : null}
+              onChange={(agentIds) => onSave({
+                mode: "specific",
+                agentIds: new Set([...agentIds, ...requiredAgentIds]),
+              })}
+            />
+          ) : null}
+        </div>
+      ) : (
+        // Read-only: the state is still fully legible, just not editable.
+        <div className="pt-3">
+          {access.mode === "all" ? (
+            <p className="text-sm text-muted-foreground">Every agent can use this connection.</p>
+          ) : selectedAgents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No agents can use this connection.</p>
+          ) : (
+            <div className="space-y-0.5">
+              {selectedAgents.map((agent) => (
+                <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1 text-sm">
+                  <AgentIcon icon={agent.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AlwaysInstalledSection({
+  appName,
+  agents,
+  install,
+  capabilities,
+  disabled,
+  onSave,
+}: {
+  appName: string;
+  agents: Agent[];
+  install: InstallState;
+  capabilities: ToolConnectionCapabilities | undefined;
+  disabled: boolean;
+  onSave: (next: InstallState) => void;
+}) {
+  const liveAgents = agents.filter((agent) => agent.status !== "terminated");
+  const canManage = capabilities?.canManageAgentInstalls ?? false;
+  const canSetCompanyWide = capabilities?.canSetCompanyInstall ?? false;
+  const editableAgentIds = capabilities?.editableAgentIds;
+  const selectableAgents = editableAgentIds
+    ? liveAgents.filter((agent) => editableAgentIds.includes(agent.id))
+    : liveAgents;
+  const selectedAgents = liveAgents.filter((agent) => install.agentIds.has(agent.id));
+  const mode: "all" | "specific" = install.onAll ? "all" : "specific";
+  const summary = install.onAll
+    ? "Every agent"
+    : install.agentIds.size === 0
+      ? "No agents"
+      : `${install.agentIds.size} ${install.agentIds.size === 1 ? "agent" : "agents"}`;
+
+  return (
+    <section>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Always installed</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Loads {appName} on every run. Agent access only makes it available when needed.
+          </p>
+        </div>
+        {disabled && <span className="text-xs text-muted-foreground">Saving…</span>}
+      </div>
+
+      {canManage ? (
+        <div className="space-y-3 pt-4">
+          <RadioCardGroup
+            ariaLabel="Which agents always load this connection"
             value={mode}
             disabled={disabled}
             className="sm:grid-cols-2"
@@ -157,14 +289,14 @@ function AvailableToAgentsSection({
               {
                 value: "specific",
                 title: "Agents I pick",
-                description: "Choose one or more agents you can edit.",
+                description: "Always loaded for selected agents.",
               },
               {
                 value: "all",
-                title: "Any agent",
+                title: "Every agent",
                 description: canSetCompanyWide
-                  ? "Make this connection available to every agent."
-                  : "Only someone who can configure this connection can choose this.",
+                  ? "Always loaded for current and future agents."
+                  : "Only a connection manager can choose this.",
               },
             ].filter((option) => option.value !== "all" || canSetCompanyWide || install.onAll)}
           />
@@ -174,23 +306,20 @@ function AvailableToAgentsSection({
               agents={selectableAgents}
               selectedAgentIds={install.agentIds}
               disabled={disabled}
-              triggerLabel={
-                install.agentIds.size === 0
-                  ? "Choose agents"
-                  : `${install.agentIds.size} ${install.agentIds.size === 1 ? "agent" : "agents"} selected`
-              }
+              triggerLabel={install.agentIds.size === 0
+                ? "Choose agents"
+                : `${install.agentIds.size} ${install.agentIds.size === 1 ? "agent" : "agents"} selected`}
               emptyMessage="You cannot edit any agents yet."
               onChange={(agentIds) => onSave({ onAll: false, agentIds })}
             />
           ) : null}
         </div>
       ) : (
-        // Read-only: the state is still fully legible, just not editable.
         <div className="pt-3">
           {install.onAll ? (
-            <p className="text-sm text-muted-foreground">Every agent can use this connection.</p>
+            <p className="text-sm text-muted-foreground">This connection is always loaded for every agent.</p>
           ) : selectedAgents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No agents have this connection yet.</p>
+            <p className="text-sm text-muted-foreground">This connection is not always loaded for any agent.</p>
           ) : (
             <div className="space-y-0.5">
               {selectedAgents.map((agent) => (
@@ -236,14 +365,16 @@ function ActionsSection({
   onRefreshActions: () => void;
 }) {
   return (
-    <section className="space-y-3">
+    <section className="space-y-10 border-t border-border pt-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-sm font-bold text-foreground">Action permissions</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {canConfigure
-              ? "Choose what agents can do and what needs a human first."
-              : "What agents can do, and what needs a human first."}
+          <h2 className="text-lg font-semibold text-foreground">Actions</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {formatActionPermissionSummary(summarizeActionPermissions(
+              [...readOnly, ...canChange],
+              enabledIds,
+              askFirstIds,
+            ))}
           </p>
         </div>
         {/* Viewer rule D4: a forbidden action is omitted, not rendered disabled.
@@ -278,8 +409,8 @@ function ActionsSection({
       )}
 
       <ActionGroup
-        title="Read only"
-        hint="Can look up context without changing anything."
+        title={`Read (${readOnly.length})`}
+        hint="Views data without changing it."
         actions={readOnly}
         enabledIds={enabledIds}
         askFirstIds={askFirstIds}
@@ -289,8 +420,8 @@ function ActionsSection({
         onSetPermission={onSetPermission}
       />
       <ActionGroup
-        title="Can make changes"
-        hint="Can change something in another app."
+        title={`Write (${canChange.length})`}
+        hint="Creates or changes data."
         actions={canChange}
         enabledIds={enabledIds}
         askFirstIds={askFirstIds}
@@ -339,9 +470,9 @@ function ActionGroup({
   if (actions.length === 0) return null;
   return (
     <div>
-      <div className="pb-2 text-sm">
-        <span className="font-bold text-foreground">{title}</span>
-        <span className="ml-2 text-muted-foreground">- {hint}</span>
+      <div className="pb-4">
+        <div className="text-lg font-semibold text-foreground">{title}</div>
+        <div className="mt-1 text-sm text-muted-foreground">{hint}</div>
       </div>
       <div className="divide-y divide-border">
         {actions.map((action) => {

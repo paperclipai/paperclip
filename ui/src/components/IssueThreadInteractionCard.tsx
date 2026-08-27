@@ -41,7 +41,7 @@ import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 import { ProposalJustification } from "../pages/secrets/proposal-review";
-import { ConnectionIntentInteractionBody } from "./ConnectionIntentInteractionBody";
+import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -200,6 +200,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Checkbox confirmation";
     case "request_item_verdicts":
       return "Item verdicts";
+    case "connection_intent":
+      return "Connection request";
     default:
       return kind;
   }
@@ -4082,7 +4084,7 @@ export function IssueThreadInteractionCard({
                 below, because the closing sentence depends on whether the
                 reader is the person who may consent. Rendering the summary here
                 as well would be the second body PAP-17859 removed. */}
-            {interaction.summary && !connectionAuthorization ? (
+            {interaction.summary && !connectionAuthorization && interaction.kind !== "connection_intent" ? (
               <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
                 {interaction.summary}
               </p>
@@ -4162,17 +4164,17 @@ export function IssueThreadInteractionCard({
               onRejectInteraction={onRejectInteraction}
               externalReferences={externalReferences}
             />
-          ) : interaction.kind === "request_item_verdicts" ? (
-            <RequestItemVerdictsCard
-              interaction={interaction}
-              onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
-              externalReferences={externalReferences}
-            />
           ) : interaction.kind === "connection_intent" ? (
             <ConnectionIntentInteractionBody
               interaction={interaction}
               currentUserId={currentUserId}
               addresseeLabel={addresseeLabel ?? "the addressed person"}
+            />
+          ) : interaction.kind === "request_item_verdicts" ? (
+            <RequestItemVerdictsCard
+              interaction={interaction}
+              onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+              externalReferences={externalReferences}
             />
           ) : (
             <RequestConfirmationCard

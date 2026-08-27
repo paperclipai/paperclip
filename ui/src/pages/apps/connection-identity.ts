@@ -1,4 +1,5 @@
 import type {
+  ConnectionGrantKind,
   ConnectionAudienceMember,
   ConnectionGrant,
   ConnectionGrantStatus,
@@ -14,24 +15,34 @@ import type {
  * card cannot drift into three different names for the same thing.
  */
 
-export interface ActsAsSummary {
-  title: string;
-  detail: string;
+export type ConnectionTypeLabel = "Personal" | "Company";
+
+/** The two connection types shown throughout the product. */
+export function connectionTypeLabel(
+  credentialPolicy: ToolConnectionCredentialPolicy,
+): ConnectionTypeLabel {
+  return credentialPolicy === "per_user" ? "Personal" : "Company";
 }
 
-export function actsAsSummary(credentialPolicy: ToolConnectionCredentialPolicy): ActsAsSummary {
-  switch (credentialPolicy) {
-    case "per_user":
-      return { title: "Acts as each person", detail: "Each person connects their own account." };
-    case "per_user_with_fallback":
-      return {
-        title: "Uses a personal identity with organization fallback",
-        detail: "Agents use your account when you have one, and the organization account otherwise.",
-      };
-    case "shared":
-    default:
-      return { title: "Acts as the organization", detail: "Agents share the organization identity." };
+const COMPANY_NAME_SUFFIX = " for the company";
+
+/** Keep company-owned connections unmistakable anywhere their name appears. */
+export function connectionNameForGrantKind(name: string, grantKind: ConnectionGrantKind): string {
+  const trimmed = name.trim();
+  if (grantKind !== "organization" || trimmed.toLocaleLowerCase().endsWith(COMPANY_NAME_SUFFIX)) {
+    return trimmed;
   }
+  return `${trimmed}${COMPANY_NAME_SUFFIX}`;
+}
+
+export function connectionNameForCredentialPolicy(
+  name: string,
+  credentialPolicy: ToolConnectionCredentialPolicy,
+): string {
+  return connectionNameForGrantKind(
+    name,
+    connectionTypeLabel(credentialPolicy) === "Company" ? "organization" : "user",
+  );
 }
 
 /**

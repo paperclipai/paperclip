@@ -7,7 +7,6 @@ import type {
   ToolConnectionCredentialPolicy,
 } from "@paperclipai/shared";
 import { IdentitiesSection } from "@/pages/apps/app-detail/IdentitiesSection";
-import { actsAsSummary } from "@/pages/apps/connection-identity";
 
 // ---------------------------------------------------------------------------
 // PAP-17835 — personal connection identity UX review harness.
@@ -100,11 +99,7 @@ function personalGrant(overrides: Partial<ConnectionGrant> = {}): ConnectionGran
   });
 }
 
-/**
- * Renders the identity surface the way the Setup tab does, including the header
- * "acts as" sentence — that sentence is the at-a-glance answer the design
- * requires, so a screenshot of the rows alone would not show the whole state.
- */
+/** Renders the fixed account surface used on the Setup tab. */
 function IdentitiesHarness({
   credentialPolicy = "per_user",
   grants,
@@ -130,30 +125,17 @@ function IdentitiesHarness({
     currentUserId: CURRENT_USER,
     members: MEMBERS,
   };
-  const actsAs = actsAsSummary(credentialPolicy);
   return (
-    <div className="mx-auto max-w-3xl bg-background p-6">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Gmail</h1>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">{actsAs.title}</span>
-          {" · "}
-          {actsAs.detail}
-        </p>
-      </header>
+    <div className="mx-auto max-w-4xl bg-background p-8">
       <IdentitiesSection
         appName="Gmail"
-        providerName="Gmail"
         credentialPolicy={credentialPolicy}
+        ownerUserId={CURRENT_USER}
+        connectedUser={{ label: "Carol", image: null }}
         grantsQuery={loading || error ? undefined : response}
-        agents={[{ id: "agent-1", name: "Outreach agent", title: "Growth", status: "active" }]}
-        agentsLoading={false}
-        agentsError={false}
         loading={loading}
         error={error}
         connectPending={false}
-        revokePending={false}
-        delegationPending={false}
         audiencePending={false}
         audienceError={audienceError}
         audienceGrantId={openAudience}
@@ -161,9 +143,6 @@ function IdentitiesHarness({
         onCloseAudience={() => setOpenAudience(null)}
         onConnectAsMe={() => {}}
         onConnectOrganization={() => {}}
-        onReconnectOrganization={() => {}}
-        onRevokeGrant={() => {}}
-        onReplaceDelegations={() => {}}
         onReplaceAudience={() => {}}
       />
     </div>
@@ -177,10 +156,10 @@ const meta: Meta = {
 export default meta;
 type Story = StoryObj;
 
-// --- Gate 3: personal connected, organization missing ----------------------
+// --- Gate 3: fixed personal identity ---------------------------------------
 
-export const SetupPersonalConnectedOrganizationMissing: Story = {
-  name: "3 · Setup — your identity connected, organization missing",
+export const SetupPersonalConnectedOrganizationHidden: Story = {
+  name: "3 · Setup — your identity connected, organization hidden",
   render: () => (
     <IdentitiesHarness
       grants={[personalGrant({ providerTenant: { name: "carol@example.com" } })]}
@@ -193,10 +172,10 @@ export const SetupPersonalNotConnected: Story = {
   render: () => <IdentitiesHarness grants={[]} />,
 };
 
-// --- Gate 4: organization identity with a selected audience, manager view ---
+// --- Gate 4: legacy alternates stay hidden after setup ---------------------
 
-export const SetupManagerOversight: Story = {
-  name: "4 · Setup — selected audience + manager oversight",
+export const SetupFixedPersonalIdentity: Story = {
+  name: "4 · Setup — fixed personal identity",
   render: () => (
     <IdentitiesHarness
       credentialPolicy="per_user_with_fallback"
@@ -273,6 +252,7 @@ export const SetupViewerReadOnly: Story = {
   name: "7 · Setup — viewer read-only",
   render: () => (
     <IdentitiesHarness
+      credentialPolicy="shared"
       capabilities={VIEWER_CAPABILITIES}
       grants={[
         grant({

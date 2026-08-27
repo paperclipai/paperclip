@@ -4,8 +4,8 @@ export const APP_TABS = [
   { key: "setup", label: "Setup", icon: Settings2 },
   { key: "test", label: "Test", icon: Beaker },
   { key: "services", label: "Services", icon: Blocks },
-  { key: "review", label: "Review", icon: Inbox },
   { key: "permissions", label: "Permissions", icon: ShieldCheck },
+  { key: "review", label: "Review", icon: Inbox },
   { key: "activity", label: "Activity", icon: Activity },
 ] as const;
 

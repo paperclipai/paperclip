@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ToolConnection } from "@paperclipai/shared";
 import {
   connectionDisplaySecondaryHint,
+  isConnectableAppSlug,
   isToolConnectionAttentionHealth,
 } from "@paperclipai/shared";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
@@ -20,12 +21,12 @@ import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/compa
 import { AppLogo } from "./AppLogo";
 import {
   appApplicationSourceSlug,
+  appDefinitionDarkLogoUrl,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
-import { isMcpDirectOAuthConnectSlug } from "./app-connect-policy";
 import { connectionAddress, connectionTransportLabel, DangerZone } from "./AppDetail";
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
@@ -99,6 +100,11 @@ export function AppNotConnected() {
     queryFn: () => toolsApi.listConnectionActivity(previousConnection!.id, 20),
     enabled: !!previousConnection && activeTab === "activity",
   });
+  const grantsQuery = useQuery({
+    queryKey: queryKeys.tools.connectionGrants(previousConnection?.id ?? "__none__"),
+    queryFn: () => toolsApi.listConnectionGrants(previousConnection!.id),
+    enabled: !!previousConnection && activeTab === "setup",
+  });
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -164,20 +170,48 @@ export function AppNotConnected() {
   }
 
   const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
-  const logoUrl =
-    (appSourceSlug
-      ? appDefinitionLogoUrl(gallery.find((entry) => appDefinitionSlug(entry) === appSourceSlug))
-      : undefined) ??
-    appDefinitionLogoUrl(
-      gallery.find((entry) => appDefinitionName(entry).toLowerCase() === application.name.toLowerCase()),
+  const logoEntry = (appSourceSlug
+    ? gallery.find((entry) => appDefinitionSlug(entry) === appSourceSlug)
+    : undefined) ?? gallery.find(
+      (entry) => appDefinitionName(entry).toLowerCase() === application.name.toLowerCase(),
     );
+  const logoUrl = appDefinitionLogoUrl(logoEntry);
+  const darkLogoUrl = appDefinitionDarkLogoUrl(logoEntry);
 
   const previousAddress = previousConnection ? connectionAddress(previousConnection) : null;
+  const retainedPersonalGrant = previousConnection?.credentialPolicy === "per_user"
+    ? grantsQuery.data?.grants.find((grant) => (
+      grant.kind === "user" && grant.subjectUserId === previousConnection.createdByUserId
+    ))
+      ?? grantsQuery.data?.grants.find((grant) => grant.kind === "user" && grant.status === "active")
+      ?? grantsQuery.data?.grants.find((grant) => grant.kind === "user")
+      ?? null
+    : null;
+  const retainedPersonalUserId = previousConnection?.credentialPolicy === "per_user"
+    ? previousConnection.createdByUserId ?? retainedPersonalGrant?.subjectUserId ?? null
+    : null;
+  const canReconnect = !previousConnection
+    || (previousConnection.credentialPolicy === "per_user"
+      ? Boolean(
+        retainedPersonalUserId
+        && retainedPersonalUserId === grantsQuery.data?.currentUserId
+        && grantsQuery.data?.capabilities.canConnectAsCurrentUser,
+      )
+      : grantsQuery.data?.capabilities.canConfigure === true);
+  const reconnectUnavailableMessage = grantsQuery.isLoading
+    ? "Checking who can reconnect this identity…"
+    : grantsQuery.isError
+      ? "We couldn't verify who can reconnect this identity. Reload the page to try again."
+      : previousConnection?.credentialPolicy === "per_user"
+        && retainedPersonalUserId !== grantsQuery.data?.currentUserId
+        ? "The person this connection belongs to must reconnect it."
+        : "You don't have permission to reconnect this identity.";
   const connectHref = newConnectionHref({
     applicationId,
     appName: application.name,
     previousAddress,
-    sourceSlug: appSourceSlug,
+    previousConnection,
+    sourceSlug: isConnectableAppSlug(appSourceSlug) ? appSourceSlug : null,
   });
 
   return (
@@ -186,6 +220,7 @@ export function AppNotConnected() {
         applicationName={application.name}
         description={application.description}
         logoUrl={logoUrl}
+        darkLogoUrl={darkLogoUrl}
         connectedCount={activeConnections.length}
       />
 
@@ -197,6 +232,8 @@ export function AppNotConnected() {
             previousConnection={previousConnection}
             previousAddress={previousAddress}
             userProfileById={userProfileById}
+            canReconnect={canReconnect}
+            reconnectUnavailableMessage={reconnectUnavailableMessage}
             onConnect={() => navigate(connectHref)}
             onEdit={(connectionId) => navigate(appTabHref(connectionId, "setup"))}
           />
@@ -259,16 +296,18 @@ function ApplicationHeader({
   applicationName,
   description,
   logoUrl,
+  darkLogoUrl,
   connectedCount,
 }: {
   applicationName: string;
   description: string | null;
   logoUrl: string | undefined;
+  darkLogoUrl: string | undefined;
   connectedCount: number;
 }) {
   return (
     <header className="flex flex-wrap items-center gap-4">
-      <AppLogo name={applicationName} logoUrl={logoUrl} size={48} />
+      <AppLogo name={applicationName} logoUrl={logoUrl} darkLogoUrl={darkLogoUrl} size={48} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <h1 className="truncate text-2xl font-bold tracking-tight">{applicationName}</h1>
@@ -290,6 +329,8 @@ function SetupTab({
   previousConnection,
   previousAddress,
   userProfileById,
+  canReconnect,
+  reconnectUnavailableMessage,
   onConnect,
   onEdit,
 }: {
@@ -298,6 +339,8 @@ function SetupTab({
   previousConnection: ToolConnection | null;
   previousAddress: string | null;
   userProfileById: ReadonlyMap<string, CompanyUserProfile>;
+  canReconnect: boolean;
+  reconnectUnavailableMessage: string;
   onConnect: () => void;
   onEdit: (connectionId: string) => void;
 }) {
@@ -368,13 +411,20 @@ function SetupTab({
             </h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
               {previousConnection
-                ? "We kept the previous setup. Add a working key to bring it back online."
+                ? previousConnection.authKind === "oauth"
+                  ? "We kept the previous setup. Sign in again to bring it back online."
+                  : "We kept the previous setup. Add a working key to bring it back online."
                 : "Agents can't use it until it's connected."}
             </p>
+            {previousConnection && !canReconnect ? (
+              <p className="mt-1 text-sm text-muted-foreground">{reconnectUnavailableMessage}</p>
+            ) : null}
           </div>
-          <Button onClick={onConnect}>
-            {previousConnection ? "Reconnect" : "Connect"}
-          </Button>
+          {!previousConnection || canReconnect ? (
+            <Button onClick={onConnect}>
+              {previousConnection ? "Reconnect" : "Connect"}
+            </Button>
+          ) : null}
         </div>
       </section>
 
@@ -465,16 +515,34 @@ function newConnectionHref({
   applicationId,
   appName,
   previousAddress,
+  previousConnection,
   sourceSlug,
 }: {
   applicationId: string;
   appName: string;
   previousAddress: string | null;
+  previousConnection: ToolConnection | null;
   sourceSlug: string | null;
 }): string {
   const params = new URLSearchParams({ applicationId, name: appName, new: "1" });
+  if (previousConnection) {
+    params.set("reconnect", previousConnection.id);
+    params.set("identity", previousConnection.credentialPolicy === "per_user" ? "user" : "organization");
+  }
   if (sourceSlug) params.set("source", sourceSlug);
-  if (!isMcpDirectOAuthConnectSlug(sourceSlug)) params.set("byo", "1");
-  if (previousAddress && /^https?:\/\//i.test(previousAddress)) params.set("link", previousAddress);
-  return `/apps/connect?${params.toString()}`;
+  else params.set("byo", "1");
+  const storedLink = [
+    previousConnection?.config?.url,
+    previousConnection?.config?.endpoint,
+    previousConnection?.config?.remoteUrl,
+    previousConnection?.transportConfig.url,
+    previousConnection?.transportConfig.endpoint,
+    previousConnection?.transportConfig.remoteUrl,
+    previousAddress,
+  ].find((value): value is string => typeof value === "string" && /^https?:\/\//i.test(value));
+  if (storedLink) params.set("link", storedLink);
+  const path = previousConnection?.credentialSource === "vercel_connect"
+    ? "/apps/vercel-connect"
+    : "/apps/connect";
+  return `${path}?${params.toString()}`;
 }

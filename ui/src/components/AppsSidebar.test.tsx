@@ -146,8 +146,11 @@ describe("AppsSidebar", () => {
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ label: "Applications" }),
     );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/profiles", label: "Profiles", end: true }),
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/advanced/gateways", label: "Gateways" }),
+    );
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/advanced/profiles", label: "Profiles" }),
     );
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Rules" }));
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Health" }));

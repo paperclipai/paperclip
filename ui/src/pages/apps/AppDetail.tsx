@@ -34,19 +34,23 @@ import { UnverifiedServerBadge } from "./UnverifiedServerBadge";
 import {
   appApplicationSourceSlug,
   appConnectionSourceSlug,
+  appDefinitionDarkLogoUrl,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
-import { SetupPanel, connectionProviderName } from "./app-detail/SetupPanel";
+import { SetupPanel } from "./app-detail/SetupPanel";
 import { ServicesPanel } from "./app-detail/ServicesPanel";
-import { ComposioProvenanceChip } from "./ComposioProvenanceChip";
+import { ConnectionProvenanceChip } from "./ComposioProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
-import { actsAsSummary } from "./connection-identity";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
 import { TestPanel } from "./app-detail/TestPanel";
+import {
+  formatActionPermissionSummary,
+  summarizeActionPermissions,
+} from "./app-detail/action-permission-summary";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import {
@@ -58,10 +62,8 @@ import {
 } from "./app-detail/AdvancedPanel";
 import type { AccessDraft } from "./app-detail/types";
 import {
-  ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
   connectionOwnerProfile,
-  type ConnectionOwnerProfile,
 } from "./connection-owner";
 
 export { DangerZone, connectionAddress, connectionTransportLabel };
@@ -76,7 +78,7 @@ export function AppDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   const activeTab: AppTabKey | null = isAppTabKey(tab) ? tab : null;
-  const needsCatalog = activeTab === "review" || activeTab === "permissions" || activeTab === "test";
+  const needsCatalog = activeTab === "setup" || activeTab === "review" || activeTab === "permissions" || activeTab === "test";
 
   const connectionQuery = useQuery({
     queryKey: queryKeys.tools.connection(connectionId),
@@ -111,12 +113,16 @@ export function AppDetail() {
   const profilesQuery = useQuery({
     queryKey: queryKeys.tools.profiles(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listProfiles(selectedCompanyId!),
-    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
+    enabled: !!selectedCompanyId && (
+      activeTab === "setup" || activeTab === "review" || activeTab === "permissions"
+    ),
   });
   const policiesQuery = useQuery({
     queryKey: queryKeys.tools.policies(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listPolicies(selectedCompanyId!),
-    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
+    enabled: !!selectedCompanyId && (
+      activeTab === "setup" || activeTab === "review" || activeTab === "permissions"
+    ),
   });
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
@@ -141,19 +147,57 @@ export function AppDetail() {
     queryFn: () => authApi.getSession(),
     enabled: activeTab === "activity",
   });
-  // Identity grants drive the Setup tab's Identities section and the header's
-  // "acts as" sentence, and Permissions reads `capabilities` from the same
-  // response so install controls follow one server verdict (PAP-17835).
+  // Identity grants drive reconnect authorization on every tab as well as the
+  // Setup identities and Permissions controls. A personal reconnect belongs to
+  // one fixed user, so the banner must not offer that action to anyone else.
   const grantsQuery = useQuery({
     queryKey: queryKeys.tools.connectionGrants(connectionId),
     queryFn: () => toolsApi.listConnectionGrants(connectionId),
-    enabled: !!connectionId && (activeTab === "setup" || activeTab === "permissions"),
+    enabled: !!connectionId && !!activeTab,
   });
 
   const connection = connectionQuery.data;
   const application = connection
     ? (applicationsQuery.data?.applications ?? []).find((candidate) => candidate.id === connection.applicationId)
     : undefined;
+  const grantRows = grantsQuery.data?.grants ?? [];
+  const retainedPersonalGrant = connection?.credentialPolicy === "per_user"
+    ? grantRows.find((grant) => (
+      grant.kind === "user" && grant.subjectUserId === connection.createdByUserId
+    ))
+      ?? grantRows.find((grant) => grant.kind === "user" && grant.status === "active")
+      ?? grantRows.find((grant) => grant.kind === "user")
+      ?? null
+    : null;
+  const currentUserPersonalGrant = grantRows.find((grant) => (
+    grant.kind === "user" && grant.subjectUserId === grantsQuery.data?.currentUserId
+  )) ?? null;
+  const retainedOrganizationGrant = grantRows.find((grant) => (
+    grant.kind === "organization" && grant.isDefault
+  )) ?? grantRows.find((grant) => grant.kind === "organization") ?? null;
+  const managedIdentityGrant = connection?.credentialPolicy === "per_user"
+    ? retainedPersonalGrant
+    : connection?.credentialPolicy === "per_user_with_fallback"
+      ? currentUserPersonalGrant ?? retainedOrganizationGrant
+      : retainedOrganizationGrant;
+  const managedPersonalUserId = managedIdentityGrant?.kind === "user"
+    ? managedIdentityGrant.subjectUserId ?? connection?.createdByUserId ?? null
+    : null;
+  const canReconnect = managedIdentityGrant?.kind === "user"
+    ? Boolean(
+      managedPersonalUserId
+      && managedPersonalUserId === grantsQuery.data?.currentUserId
+      && grantsQuery.data?.capabilities.canConnectAsCurrentUser,
+    )
+    : grantsQuery.data?.capabilities.canConfigure === true;
+  const reconnectUnavailableMessage = grantsQuery.isLoading
+    ? "Checking who can reconnect this identity…"
+    : grantsQuery.isError
+      ? "We couldn't verify who can reconnect this identity. Reload the page to try again."
+      : managedIdentityGrant?.kind === "user"
+        && managedPersonalUserId !== grantsQuery.data?.currentUserId
+        ? "The person this connection belongs to must reconnect it."
+        : "You don't have permission to reconnect this identity.";
   const composioChildConnectionCount = (connectionsQuery.data?.connections ?? []).filter(
     (candidate) => candidate.status !== "archived"
       && candidate.config?.provider === "composio"
@@ -178,6 +222,14 @@ export function AppDetail() {
     ? connectionDisplayNameForOwner(connection, baseAppName, owner)
     : "App";
   const successNoticeShownFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== "setup" || searchParams.get("oauth") !== "choose-access") return;
+    // Older OAuth states may still return to the retired post-authorization
+    // identity screen. Identity is now selected before consent, so normalize
+    // the stale URL without asking a contradictory second question.
+    navigate(appTabHref(connectionId, "setup"), { replace: true });
+  }, [activeTab, connectionId, navigate, searchParams]);
 
   useEffect(() => {
     if (
@@ -392,49 +444,6 @@ export function AppDetail() {
       }),
   });
 
-  const replaceDelegations = useMutation({
-    mutationFn: async ({
-      grantId,
-      currentDelegations,
-      agentIds,
-    }: {
-      grantId: string;
-      currentDelegations: Array<{ id: string; agentId: string }>;
-      agentIds: string[];
-    }) => {
-      const desired = new Set(agentIds);
-      const existing = new Map(currentDelegations.map((delegation) => [delegation.agentId, delegation]));
-      await Promise.all([
-        ...currentDelegations
-          .filter((delegation) => !desired.has(delegation.agentId))
-          .map((delegation) => toolsApi.revokeConnectionGrantDelegation(
-            connectionId,
-            grantId,
-            delegation.id,
-          )),
-        ...agentIds
-          .filter((agentId) => !existing.has(agentId))
-          .map((agentId) => toolsApi.createConnectionGrantDelegation(connectionId, grantId, agentId)),
-      ]);
-    },
-    onSuccess: () => {
-      invalidateGrants();
-      pushToast({
-        title: "Autonomous access saved",
-        body: "Only the agents you selected can use your identity in autonomous runs.",
-        tone: "success",
-      });
-    },
-    onError: (error) => {
-      invalidateGrants();
-      pushToast({
-        title: "Couldn't save autonomous access",
-        body: error instanceof Error ? error.message : "Please try again.",
-        tone: "error",
-      });
-    },
-  });
-
   // A denied or conflicting audience save keeps the dialog open with the
   // selection intact, so the error is surfaced inline rather than as a toast.
   const [audienceError, setAudienceError] = useState<string | null>(null);
@@ -575,20 +584,32 @@ export function AppDetail() {
   }
 
   const status = statusFor(connection);
-  const providerName = connectionProviderName(logoEntry, baseAppName);
   const needsReconnect = status.tone === "attention" && connection.healthStatus !== "unknown";
   const quarantined = catalog.filter((e) => e.status === "quarantined");
   const active = catalog.filter((e) => e.status !== "quarantined" && e.status !== "removed");
   const readOnly = active.filter((e) => e.isReadOnly);
   const canChange = active.filter((e) => !e.isReadOnly);
   const actionCount = catalogQuery.data ? active.length : null;
+  const setupPermissionsLoading = catalogQuery.isLoading || profilesQuery.isLoading || policiesQuery.isLoading;
+  const setupPermissionsSummary = setupPermissionsLoading || catalogQuery.isError
+    || profilesQuery.isError || policiesQuery.isError
+    ? null
+    : formatActionPermissionSummary(summarizeActionPermissions(active, enabledIds, askFirstIds));
+  // Setup summarizes app access, not personal-identity delegations. Identity
+  // delegation answers who an agent may act as; the profile binding below is
+  // the source of truth for which agents may use the connection at all.
+  const setupAgentsSummary = access.mode === "all"
+    ? "Every agent"
+    : access.agentIds.size === 0
+      ? "No agents"
+      : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"}`;
   const reviewLoading = catalogQuery.isLoading || profilesQuery.isLoading || policiesQuery.isLoading;
   const permissionsLoading = reviewLoading || installsQuery.isLoading || agentsQuery.isLoading;
   const reviewFailed = catalogQuery.isError || profilesQuery.isError || policiesQuery.isError;
   const permissionsFailed = reviewFailed || installsQuery.isError || agentsQuery.isError;
 
   return (
-    <div className="max-w-3xl space-y-6 pb-12">
+    <div className="max-w-4xl space-y-10 pb-12">
       <AppDetailHeader
         appName={appName}
         connection={connection}
@@ -596,8 +617,7 @@ export function AppDetail() {
         brandKey={brandKey}
         allowRemoteLogo={!applicationsQuery.isPending}
         status={status}
-        actionCount={actionCount}
-        owner={owner}
+        actionCount={activeTab === "setup" ? null : actionCount}
         renaming={renaming}
         nameDraft={nameDraft}
         renamePending={rename.isPending}
@@ -617,6 +637,8 @@ export function AppDetail() {
         <ReconnectCard
           connection={connection}
           galleryEntry={logoEntry}
+          canReconnect={canReconnect}
+          reconnectUnavailableMessage={reconnectUnavailableMessage}
           onReconnected={() => {
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
@@ -626,69 +648,76 @@ export function AppDetail() {
       )}
 
       {activeTab === "setup" && (
-        <div className="space-y-8">
-          <SetupPanel
-            connection={connection}
-            galleryEntry={logoEntry}
-            appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
-            onToggleApp={() => toggleEnabled.mutate()}
-            configUpdateDisabled={updateConfig.isPending}
-            onUpdateConfig={(config) => updateConfig.mutate(config)}
-            identities={
-              <IdentitiesSection
-                appName={appName}
-                providerName={providerName}
-                credentialPolicy={connection.credentialPolicy}
-                grantsQuery={grantsQuery.data}
-                agents={agents}
-                agentsLoading={agentsQuery.isLoading}
-                agentsError={agentsQuery.isError}
-                loading={grantsQuery.isLoading}
-                error={grantsQuery.isError}
-                connectPending={startPersonalAuth.isPending || startOAuth.isPending}
-                revokePending={revokeGrant.isPending}
-                delegationPending={replaceDelegations.isPending}
-                audiencePending={replaceAudience.isPending}
-                audienceError={audienceError}
-                audienceGrantId={audienceOpenGrantId}
-                onOpenAudience={(grantId) => {
-                  setAudienceError(null);
-                  setAudienceOpenGrantId(grantId);
-                }}
-                onCloseAudience={() => {
-                  setAudienceOpenGrantId(null);
-                  setAudienceError(null);
-                }}
-                onConnectAsMe={() => startPersonalAuth.mutate()}
-                // The organization identity is a shared credential, so it goes
-                // through the connection-level OAuth start, not a personal one.
-                onConnectOrganization={() => startOAuth.mutate()}
-                onReconnectOrganization={() => startOAuth.mutate()}
-                onRevokeGrant={(grant) => revokeGrant.mutate(grant.id)}
-                onReplaceDelegations={(grant, agentIds) => replaceDelegations.mutate({
-                  grantId: grant.id,
-                  currentDelegations: grant.delegations ?? [],
-                  agentIds,
-                })}
-                onReplaceAudience={(grant, memberUserIds) =>
-                  replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
-              />
-            }
-          />
-          <AdvancedPanel
-            connection={connection}
-            appName={appName}
-            galleryEntry={logoEntry}
-            childConnectionCount={composioChildConnectionCount}
-            removing={removeApp.isPending}
-            onRemove={() => removeApp.mutate()}
-            onReplaced={() => {
-              queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
-              queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
-              queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId) });
-            }}
-          />
-        </div>
+          <div className="space-y-12">
+            <SetupPanel
+              connection={connection}
+              galleryEntry={logoEntry}
+              configUpdateDisabled={updateConfig.isPending}
+              onUpdateConfig={(config) => updateConfig.mutate(config)}
+              agentsSummary={setupAgentsSummary}
+              permissionsSummary={setupPermissionsSummary}
+              permissionsLoading={setupPermissionsLoading}
+              onOpenPermissions={() => navigate(appTabHref(connectionId, "permissions"))}
+              identities={
+                <IdentitiesSection
+                  appName={appName}
+                  credentialPolicy={connection.credentialPolicy}
+                  ownerUserId={connection.createdByUserId}
+                  connectedUser={owner}
+                  grantsQuery={grantsQuery.data}
+                  loading={grantsQuery.isLoading}
+                  error={grantsQuery.isError}
+                  connectPending={startPersonalAuth.isPending || startOAuth.isPending}
+                  audiencePending={replaceAudience.isPending}
+                  audienceError={audienceError}
+                  audienceGrantId={audienceOpenGrantId}
+                  onOpenAudience={(grantId) => {
+                    setAudienceError(null);
+                    setAudienceOpenGrantId(grantId);
+                  }}
+                  onCloseAudience={() => {
+                    setAudienceOpenGrantId(null);
+                    setAudienceError(null);
+                  }}
+                  onConnectAsMe={() => startPersonalAuth.mutate()}
+                  // The organization identity is a shared credential, so it goes
+                  // through the connection-level OAuth start, not a personal one.
+                  onConnectOrganization={() => startOAuth.mutate()}
+                  onReplaceAudience={(grant, memberUserIds) =>
+                    replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
+                />
+              }
+            />
+            <AdvancedPanel
+              connection={connection}
+              appName={appName}
+              galleryEntry={logoEntry}
+              childConnectionCount={composioChildConnectionCount}
+              removing={removeApp.isPending}
+              onRemove={() => removeApp.mutate()}
+              canReplaceCredential={canReconnect}
+              credentialUnavailableMessage={reconnectUnavailableMessage}
+              appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
+              onToggleApp={() => toggleEnabled.mutate()}
+              identityGrant={managedIdentityGrant}
+              identityCurrentUserId={grantsQuery.data?.currentUserId ?? null}
+              identityProviderName={baseAppName}
+              credentialPolicy={connection.credentialPolicy}
+              identityActionPending={
+                startPersonalAuth.isPending || startOAuth.isPending || revokeGrant.isPending
+              }
+              onReconnectIdentity={managedIdentityGrant ? () => {
+                if (managedIdentityGrant.kind === "user") startPersonalAuth.mutate();
+                else startOAuth.mutate();
+              } : undefined}
+              onRevokeIdentity={(grant) => revokeGrant.mutate(grant.id)}
+              onReplaced={() => {
+                queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+                queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
+                queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId) });
+              }}
+            />
+          </div>
       )}
       {activeTab === "services" && (
         <ServicesPanel connectionId={connectionId} appName={appName} />
@@ -722,7 +751,9 @@ export function AppDetail() {
           ? <ToolsLoading />
           : <PermissionsPanel
               capabilities={grantsQuery.data?.capabilities}
+              appName={appName}
               agents={agents}
+              access={access}
               install={install}
               readOnly={readOnly}
               canChange={canChange}
@@ -732,6 +763,7 @@ export function AppDetail() {
               pending={pending}
               installPending={persistInstall.isPending}
               refreshPending={refreshTools.isPending}
+              onSaveAccess={(next) => apply({ access: accessIncludingInstalls(next, install) })}
               onSaveInstall={(next) => persistInstall.mutate(next)}
               onRefreshActions={() => refreshTools.mutate()}
               onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
@@ -770,7 +802,6 @@ function AppDetailHeader({
   allowRemoteLogo,
   status,
   actionCount,
-  owner,
   renaming,
   nameDraft,
   renamePending,
@@ -786,7 +817,6 @@ function AppDetailHeader({
   allowRemoteLogo: boolean;
   status: StatusInfo;
   actionCount: number | null;
-  owner: ConnectionOwnerProfile | null;
   renaming: boolean;
   nameDraft: string;
   renamePending: boolean;
@@ -796,19 +826,18 @@ function AppDetailHeader({
   onRenameSubmit: (value: string) => void;
 }) {
   const unverifiedHost = unverifiedRemoteHost(connection);
-  const actsAs = actsAsSummary(connection.credentialPolicy);
-
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
+    <header>
       <div className="flex items-center gap-3">
         <AppLogo
           name={appName}
           brandKey={brandKey}
           logoUrl={appDefinitionLogoUrl(logoEntry)}
+          darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
           allowRemoteFallback={allowRemoteLogo}
           size={44}
         />
-        <div>
+        <div className="min-w-0">
           {renaming ? (
             <form
               className="flex items-center gap-2"
@@ -833,7 +862,7 @@ function AppDetailHeader({
             </form>
           ) : (
             <div className="flex items-center gap-1.5">
-              <h1 className="text-2xl font-bold tracking-tight">{appName}</h1>
+              <h1 className="truncate text-xl font-bold">{appName}</h1>
               <Button
                 variant="ghost"
                 size="icon"
@@ -845,32 +874,20 @@ function AppDetailHeader({
               </Button>
             </div>
           )}
-          {connectionDisplaySecondaryHint(connection) && (
-            <p className="text-xs text-muted-foreground">{connectionDisplaySecondaryHint(connection)}</p>
-          )}
-          {/* One sentence, not a cluster of badges: whether an agent acts as you
-              or as the organization is the first thing every tab has to answer
-              (PAP-17835). It lives in the header so it carries across tabs. */}
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{actsAs.title}</span>
-            {" · "}
-            {actsAs.detail}
-          </p>
-          {owner && (
-            <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span>Connected by</span>
-              <ConnectionOwnerIdentity owner={owner} />
-            </div>
-          )}
-          {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-1" /> : null}
-          <ComposioProvenanceChip connection={connection} className="mt-1" />
-          <div className="mt-1 flex items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge status={status} />
             {actionCount !== null && (
               <span className="text-xs text-muted-foreground">
                 {actionCount} {actionCount === 1 ? "action" : "actions"} available
               </span>
             )}
+            {connectionDisplaySecondaryHint(connection) ? (
+              <span className="text-xs text-muted-foreground">
+                {connectionDisplaySecondaryHint(connection)}
+              </span>
+            ) : null}
+            {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} /> : null}
+            <ConnectionProvenanceChip connection={connection} />
           </div>
         </div>
       </div>
@@ -973,11 +990,10 @@ function askFirstCatalogIds(policies: ToolPolicy[], connectionId: string): Set<s
  * Who may use this connection, read back from the app profile's bindings.
  *
  * `finishApp` replaces a profile's whole binding set, so every save from this
- * page — including an action-permission toggle — has to restate this. Since
- * PAP-17859 there is no user-facing editor for it: the Permissions tab shows
- * agent availability once, as installs. This function therefore only ever
- * *preserves* what the server already has, and falls back to the install state
- * when the profile has no bindings yet.
+ * page — including an action-permission toggle — has to restate this. The
+ * Permissions tab exposes the bindings as Agent access, while installs remain
+ * a separate "always loaded" choice. If the profile has no bindings yet, the
+ * install state remains the safest legacy fallback.
  *
  * That fallback is the important part. It used to return "all agents" for an
  * unbound profile, which turned any unrelated save into a silent company-wide
@@ -998,6 +1014,16 @@ function accessFrom(
   return install.onAll
     ? { mode: "all", agentIds: new Set() }
     : { mode: "specific", agentIds: new Set(install.agentIds) };
+}
+
+function accessIncludingInstalls(next: AccessDraft, install: InstallState): AccessDraft {
+  if (install.onAll || next.mode === "all") {
+    return { mode: "all", agentIds: new Set() };
+  }
+  return {
+    mode: "specific",
+    agentIds: new Set([...next.agentIds, ...install.agentIds]),
+  };
 }
 
 function galleryEntryFor(

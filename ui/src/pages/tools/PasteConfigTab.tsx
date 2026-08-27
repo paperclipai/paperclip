@@ -19,7 +19,7 @@ import { useNavigate } from "@/lib/router";
 import {
   OAuthConnectStateScreen,
   type OAuthConnectPhase,
-} from "@/pages/apps/AppsConnect";
+} from "@/features/connections/ConnectionSetupFlow";
 import { endpointHost } from "@/pages/apps/generic-mcp-connect";
 import { McpConfigHelpDialog } from "./McpConfigHelpDialog";
 import { ErrorState } from "./shared";

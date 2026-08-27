@@ -24,19 +24,21 @@ interface AppLogoProps {
   brandKey?: string | null;
   logoUrl?: string | null;
   allowRemoteFallback?: boolean;
+  darkLogoUrl?: string | null;
   size?: number;
   className?: string;
 }
 
 /**
  * App icon for the gallery and connected-apps surfaces. Renders the manifest
- * favicon when available, falling back to a coloured letter tile (deterministic
- * colour per app name) when the image is missing or fails to load.
+ * official local provider mark when available, including a dark-mode variant.
+ * The deterministic letter tile is reserved for runtime image failures.
  */
 export function AppLogo({
   name,
   brandKey,
   logoUrl,
+  darkLogoUrl,
   allowRemoteFallback = true,
   size = 36,
   className,
@@ -57,17 +59,19 @@ export function AppLogo({
   const resolvedLogoUrl = localLookupComplete
     ? localAssets?.light ?? (allowRemoteFallback ? logoUrl : null)
     : null;
-  const lightLogoUrl = resolvedLogoUrl && !failedLogoUrls.has(resolvedLogoUrl)
+  const resolvedDarkLogoUrl = localLookupComplete
+    ? localAssets?.dark ?? (allowRemoteFallback ? darkLogoUrl : null)
+    : null;
+  const lightLogoUrlForRender = resolvedLogoUrl && !failedLogoUrls.has(resolvedLogoUrl)
     ? resolvedLogoUrl
     : null;
-  const requestedDarkLogoUrl = localAssets?.dark ?? null;
-  const darkLogoUrl = requestedDarkLogoUrl && !failedLogoUrls.has(requestedDarkLogoUrl)
-    ? requestedDarkLogoUrl
+  const darkLogoUrlForRender = resolvedDarkLogoUrl && !failedLogoUrls.has(resolvedDarkLogoUrl)
+    ? resolvedDarkLogoUrl
     : null;
   const hasDistinctThemeLogos = Boolean(
-    resolvedLogoUrl && requestedDarkLogoUrl && resolvedLogoUrl !== requestedDarkLogoUrl,
+    resolvedLogoUrl && resolvedDarkLogoUrl && resolvedLogoUrl !== resolvedDarkLogoUrl,
   );
-  const fallbackLogoUrl = lightLogoUrl ?? darkLogoUrl;
+  const fallbackLogoUrl = lightLogoUrlForRender ?? darkLogoUrlForRender;
 
   useEffect(() => {
     let active = true;
@@ -85,7 +89,7 @@ export function AppLogo({
 
   useEffect(() => {
     setFailedLogoUrls(new Set());
-  }, [resolvedLogoUrl, localAssets?.dark]);
+  }, [resolvedDarkLogoUrl, resolvedLogoUrl]);
 
   const markLogoFailed = (url: string) => {
     setFailedLogoUrls((current) => new Set(current).add(url));
@@ -99,19 +103,19 @@ export function AppLogo({
       >
         {hasDistinctThemeLogos ? (
           <>
-            {lightLogoUrl ? (
+            {lightLogoUrlForRender ? (
               <img
-                src={lightLogoUrl}
+                src={lightLogoUrlForRender}
                 alt=""
                 width={size}
                 height={size}
-                className="h-full w-full object-contain dark:hidden"
-                onError={() => markLogoFailed(lightLogoUrl)}
+                className="h-full w-full object-contain p-1.5 dark:hidden"
+                onError={() => markLogoFailed(lightLogoUrlForRender)}
               />
             ) : (
               <span
                 className={cn(
-                  "flex h-full w-full items-center justify-center font-bold text-white dark:hidden",
+                  "flex h-full w-full items-center justify-center text-sm font-bold text-white dark:hidden",
                   colorFor(name),
                 )}
                 aria-hidden="true"
@@ -119,19 +123,19 @@ export function AppLogo({
                 {letter}
               </span>
             )}
-            {darkLogoUrl ? (
+            {darkLogoUrlForRender ? (
               <img
-                src={darkLogoUrl}
+                src={darkLogoUrlForRender}
                 alt=""
                 width={size}
                 height={size}
-                className="hidden h-full w-full object-contain dark:block"
-                onError={() => markLogoFailed(darkLogoUrl)}
+                className="hidden h-full w-full object-contain p-1.5 dark:block"
+                onError={() => markLogoFailed(darkLogoUrlForRender)}
               />
             ) : (
               <span
                 className={cn(
-                  "hidden h-full w-full items-center justify-center font-bold text-white dark:flex",
+                  "hidden h-full w-full items-center justify-center text-sm font-bold text-white dark:flex",
                   colorFor(name),
                 )}
                 aria-hidden="true"
@@ -146,7 +150,7 @@ export function AppLogo({
             alt=""
             width={size}
             height={size}
-            className="h-full w-full object-contain"
+            className="h-full w-full object-contain p-1.5"
             onError={() => markLogoFailed(fallbackLogoUrl)}
           />
         )}
@@ -157,11 +161,11 @@ export function AppLogo({
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-lg font-bold text-white",
+        "inline-flex shrink-0 items-center justify-center rounded-lg text-sm font-bold text-white",
         colorFor(name),
         className,
       )}
-      style={{ ...dimension, fontSize: Math.round(size * 0.42) }}
+      style={dimension}
       aria-hidden="true"
     >
       {letter}

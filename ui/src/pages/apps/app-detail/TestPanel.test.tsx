@@ -229,11 +229,12 @@ describe("TestPanel", () => {
     expect(container.querySelectorAll('[data-slot="skeleton"]')).not.toHaveLength(0);
   });
 
-  it("renders the Test-as header and grouped actions with access badges", async () => {
+  it("renders the test hierarchy and grouped actions with access badges", async () => {
     await act(async () => renderPanel());
     await flushReact();
 
-    expect(container.textContent).toContain("Test as");
+    expect(container.textContent).toContain("Test an action");
+    expect(container.textContent).toContain("Agent");
     expect(container.textContent).toContain("ClaudeCoder");
     expect(container.textContent).toContain("Allowed for 1 action · Ask first for 1 action · Off for 1 action");
     expect(container.textContent).toContain("Read (1)");

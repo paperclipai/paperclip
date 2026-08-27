@@ -20,6 +20,7 @@ import { AppLogo } from "@/pages/apps/AppLogo";
 import {
   appApplicationSourceSlug,
   appConnectionSourceSlug,
+  appDefinitionDarkLogoUrl,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
@@ -106,6 +107,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
             brandKey={brandKey}
             logoUrl={appDefinitionLogoUrl(logoEntry)}
             allowRemoteFallback={!applicationsQuery.isPending}
+            darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
             size={28}
           />
           <span className="flex-1 truncate text-sm font-bold text-foreground">{appName}</span>

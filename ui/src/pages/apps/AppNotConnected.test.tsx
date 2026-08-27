@@ -9,6 +9,7 @@ import { AppNotConnected } from "./AppNotConnected";
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
@@ -23,6 +24,7 @@ vi.mock("@/api/tools", () => ({
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listConnectionGrants: (connectionId: string) => listConnectionGrantsMock(connectionId),
     listConnectionActivity: (connectionId: string, limit: number) =>
       listConnectionActivityMock(connectionId, limit),
     listActionRequests: (companyId: string, status: string) =>
@@ -122,6 +124,8 @@ function connection(overrides: Record<string, unknown> = {}) {
     name: "GitHub",
     connectionKind: "managed",
     transport: "mcp_remote",
+    authKind: "api_key",
+    credentialPolicy: "shared",
     status: "archived",
     transportConfig: { url: "https://github.example/mcp" },
     config: { url: "https://github.example/mcp" },
@@ -156,6 +160,21 @@ describe("AppNotConnected", () => {
       apps: [{ key: "github", name: "GitHub", logoUrl: "https://example.test/github.png" }],
     });
     listConnectionActivityMock.mockResolvedValue({ events: [], issues: {}, actionRequests: {} });
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-old", uid: "conn-old" },
+      grants: [],
+      capabilities: {
+        canConfigure: true,
+        canCreateOrganizationGrant: true,
+        canSetCompanyInstall: true,
+        canConnectAsCurrentUser: true,
+        canManageAgentInstalls: true,
+        canViewOtherPersonalIdentities: false,
+        editableAgentIds: [],
+      },
+      currentUserId: "user-1",
+      members: [],
+    });
     listActionRequestsMock.mockResolvedValue({ actionRequests: [] });
     listUserDirectoryMock.mockResolvedValue({ users: [] });
     mockAgentsList.mockResolvedValue([]);
@@ -340,5 +359,98 @@ describe("AppNotConnected", () => {
     expect(container.textContent).toContain("Last error: Token expired.");
     expect(container.textContent).toContain("https://github.example/mcp");
     expect(container.textContent).toContain("Danger zone");
+  });
+
+  it("carries the retained identity into the reconnect flow", async () => {
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ credentialPolicy: "per_user", createdByUserId: "user-1" })],
+    });
+
+    await renderPage();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/connect?applicationId=app-1&name=GitHub&new=1&reconnect=conn-old&identity=user&source=github&link=https%3A%2F%2Fgithub.example%2Fmcp",
+    );
+  });
+
+  it("keeps a removed Vercel-backed connection in the isolated Vercel setup", async () => {
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ credentialSource: "vercel_connect" })],
+    });
+
+    await renderPage();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/vercel-connect?applicationId=app-1&name=GitHub&new=1&reconnect=conn-old&identity=organization&source=github&link=https%3A%2F%2Fgithub.example%2Fmcp",
+    );
+  });
+
+  it("prefills a custom MCP reconnect from the stored transport URL", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ applicationKey: "custom-mcp", name: "Bla", metadata: null })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({
+        name: "Bla",
+        config: { url: "http://127.0.0.1:49287" },
+        transportConfig: { url: "http://127.0.0.1:49287" },
+      })],
+    });
+    listGalleryMock.mockResolvedValue({ apps: [] });
+
+    await renderPage();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/connect?applicationId=app-1&name=Bla&new=1&reconnect=conn-old&identity=organization&byo=1&link=http%3A%2F%2F127.0.0.1%3A49287",
+    );
+  });
+
+  it("does not offer a removed personal reconnect to someone other than its fixed owner", async () => {
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ credentialPolicy: "per_user", createdByUserId: "user-2" })],
+    });
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-old", uid: "conn-old" },
+      grants: [{
+        id: "grant-user-2",
+        kind: "user",
+        subjectUserId: "user-2",
+        status: "revoked",
+        credentialSecretRefs: [],
+      }],
+      capabilities: {
+        canConfigure: true,
+        canCreateOrganizationGrant: true,
+        canSetCompanyInstall: true,
+        canConnectAsCurrentUser: true,
+        canManageAgentInstalls: true,
+        canViewOtherPersonalIdentities: true,
+        editableAgentIds: [],
+      },
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderPage();
+
+    expect(container.textContent).toContain("The person this connection belongs to must reconnect it.");
+    expect(Array.from(container.querySelectorAll("button")).some(
+      (button) => button.textContent?.trim() === "Reconnect",
+    )).toBe(false);
   });
 });

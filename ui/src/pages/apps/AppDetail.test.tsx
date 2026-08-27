@@ -20,6 +20,7 @@ const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
 const updateConnectionMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
+const finalizeOAuthAccessMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
@@ -55,11 +56,15 @@ vi.mock("@/api/tools", () => ({
       updateConnectionMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
+    finalizeOAuthAccess: (companyId: string, connectionId: string, input: unknown) =>
+      finalizeOAuthAccessMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
       putConnectionInstallsMock(connectionId, installs),
     archiveConnection: vi.fn(),
     refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
-    startOAuth: (connectionId: string) => startOAuthMock(connectionId),
+    startOAuth: (connectionId: string, input?: unknown) => input === undefined
+      ? startOAuthMock(connectionId)
+      : startOAuthMock(connectionId, input),
     listConnectionGrants: (connectionId: string) => listConnectionGrantsMock(connectionId),
     revokeConnectionGrant: (connectionId: string, grantId: string) =>
       revokeConnectionGrantMock(connectionId, grantId),
@@ -365,6 +370,7 @@ describe("AppDetail", () => {
     listActionRequestsMock.mockResolvedValue({ actionRequests: [] });
     updateConnectionMock.mockResolvedValue(connection({ enabled: false }));
     finishAppMock.mockResolvedValue({});
+    finalizeOAuthAccessMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
     refreshCatalogMock.mockResolvedValue({ discoveredCount: 0, quarantinedCount: 0, catalog: [] });
     startOAuthMock.mockResolvedValue({
@@ -412,8 +418,8 @@ describe("AppDetail", () => {
       // Services (PAP-17865) sits below Test rather than above it, so the
       // Setup→Test adjacency this test exists to protect still holds.
       "services",
-      "review",
       "permissions",
+      "review",
       "activity",
     ]);
   });
@@ -421,10 +427,19 @@ describe("AppDetail", () => {
   it("pauses the app by flipping the connection enabled flag", async () => {
     await renderAppDetail();
 
+    const dangerZone = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Danger zone"));
+    expect(dangerZone).toBeTruthy();
+    await act(async () => {
+      dangerZone!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
     const toggle = container.querySelector<HTMLButtonElement>(
-      'button[role="switch"][aria-label="Pause this app"]',
+      'button[role="switch"][aria-label="Pause connection"]',
     );
     expect(toggle).toBeTruthy();
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
 
     await act(async () => {
       toggle!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -486,9 +501,9 @@ describe("AppDetail", () => {
   });
 
   it.each([
-    ["setup", "Agents can use this app", false],
+    ["setup", "Danger zone", false],
     ["review", "Review 1 new action", true],
-    ["permissions", "Action permissions", true],
+    ["permissions", "Agent access", true],
     ["activity", "No activity yet.", false],
   ])("renders the %s tab panel", async (tab, expectedText, showsActionCount) => {
     mockParams.tab = tab;
@@ -512,14 +527,31 @@ describe("AppDetail", () => {
     });
   });
 
-  it("renders setup without waiting for tool discovery", async () => {
+  it("renders setup while its permission summary loads", async () => {
     listCatalogMock.mockImplementation(() => new Promise(() => undefined));
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Agents can use this app");
+    expect(container.textContent).toContain("Danger zone");
+    expect(container.textContent).toContain("Loading permissions…");
     expect(container.textContent).not.toContain("Loading tools");
-    expect(listCatalogMock).not.toHaveBeenCalled();
+    expect(listCatalogMock).toHaveBeenCalledWith("conn-1");
+  });
+
+  it("shows permission totals on Setup and opens Permissions", async () => {
+    await renderAppDetail();
+
+    const summary = "Allowed for 1 action · Ask first for 1 action · Off for 0";
+    expect(container.textContent).toContain(summary);
+
+    const summaryButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes(summary));
+    expect(summaryButton).toBeTruthy();
+    await act(async () => {
+      summaryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
   });
 
   it("shows an explicit lazy-loading state while a tool tab discovers actions", async () => {
@@ -557,6 +589,24 @@ describe("AppDetail", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/test", { replace: true });
   });
 
+  it("normalizes the retired post-OAuth identity choice back to fixed Setup", async () => {
+    mockParams.tab = "setup";
+    mockSearchParams.value = new URLSearchParams("oauth=choose-access");
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Notion",
+      authKind: "oauth",
+      credentialPolicy: "per_user",
+      config: { sourceTemplateKey: "notion" },
+    }));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Only you can use this connection");
+    expect(container.textContent).not.toContain("Who can use this connection?");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/setup", { replace: true });
+    expect(finalizeOAuthAccessMock).not.toHaveBeenCalled();
+  });
+
   it("hides secret URL parameters in setup technical details", async () => {
     mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(
@@ -568,6 +618,12 @@ describe("AppDetail", () => {
     );
 
     await renderAppDetail();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Connection details"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
 
     expect(container.textContent).toContain(
       "https://mcp.zapier.com/api/v1/connect?token=REDACTED&region=us",
@@ -643,15 +699,38 @@ describe("AppDetail", () => {
     expect(finishInput.enabledCatalogEntryIds).not.toContain("catalog-quarantined-block");
   });
 
-  it("keeps setup focused while including technical details and the danger zone", async () => {
+  it("keeps setup focused with secondary details folded away", async () => {
     mockParams.tab = "setup";
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Give agents a governed way to inspect repositories and pull requests.");
-    expect(container.textContent).toContain("Agents can use this app");
-    expect(container.textContent).toContain("Technical details");
+    expect(container.textContent).not.toContain("Give agents a governed way to inspect repositories and pull requests.");
+    expect(container.textContent).toContain("Connection details");
     expect(container.textContent).toContain("Danger zone");
+    expect(container.textContent).not.toContain("This connection always acts as the identity chosen during setup.");
+    expect(container.textContent).not.toContain("Remote HTTP");
+    expect(container.textContent).not.toContain("Pause connection");
+    expect(container.textContent).not.toContain("Stored securely.");
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Connection details"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Remote HTTP");
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Danger zone"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Pause connection");
+    expect(container.textContent).toContain("Reconnect");
+    expect(container.textContent).toContain("Replace the stored credential.");
     expect(container.textContent).not.toContain("Read repo");
     expect(container.textContent).not.toContain("Action permissions");
     expect(container.querySelector("section.bg-card")).toBeNull();
@@ -672,10 +751,10 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    // The old generic "Connect with <provider>" block is gone: identity is now
-    // expressed per-identity, and a connection with no organization grant offers
-    // an explicit connect action instead of a single ambiguous button.
-    expect(container.textContent).toContain("Identities");
+    // The old generic "Connect with <provider>" block is gone: the connection's
+    // fixed identity type is explicit even before that identity is connected.
+    expect(container.textContent).toContain("Account");
+    expect(container.textContent).toContain("Anyone in your company can use this connection");
     expect(container.textContent).toContain("Organization identity");
     expect(container.textContent).toContain("Not connected");
     expect(
@@ -734,15 +813,16 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     expect(container.textContent).toContain("Dotta’s Notion");
-    expect(container.textContent).toContain("Connected by");
-    expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
-    // Identity is legible per identity, and the shared one names its audience.
-    // "workspace authorization" is deliberately gone: it could only ever
-    // describe one shared identity (PAP-17835).
-    expect(container.textContent).toContain("Organization identity");
-    expect(container.textContent).toContain("Notion workspace");
-    expect(container.textContent).toContain("All organization members");
+    expect(container.textContent).not.toContain("Connected by");
+    expect(container.textContent).toContain("Anyone in your company can use this connection");
     expect(container.textContent).not.toContain("workspace authorization");
+    expect(findButton("Reconnect")).toBeUndefined();
+
+    await act(async () => {
+      findButton("Danger zone")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
     expect(
       Array.from(container.querySelectorAll("button")).some(
         (button) => button.textContent?.trim() === "Reconnect",
@@ -812,8 +892,8 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Read only");
-    expect(container.textContent).toContain("Can make changes");
+    expect(container.textContent).toContain("Read (1)");
+    expect(container.textContent).toContain("Write (1)");
     expect(container.textContent).toContain("Read repo");
     expect(container.textContent).toContain("Write issue");
     expect(container.textContent).toContain("Review 1 new action");
@@ -869,7 +949,7 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Available to agents");
+    expect(container.textContent).toContain("Agent access");
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
         .find((button) => button.textContent?.includes("Choose agents"))
@@ -889,13 +969,7 @@ describe("AppDetail", () => {
     ]);
   });
 
-  /**
-   * PAP-17859: agent availability is stated once. The tab used to stack a
-   * legacy "Who can use it" editor — its own Change button, per-agent remove
-   * buttons and Save — on top of "Available to agents", so the same fact had
-   * two visible editors and the reader had to guess which one won.
-   */
-  it("shows one agent-availability model on Permissions, not the legacy access editor", async () => {
+  it("persists agent access independently from always-installed agents", async () => {
     mockParams.tab = "permissions";
     listProfilesMock.mockResolvedValue({
       profiles: [{
@@ -910,12 +984,88 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Available to agents");
+    const accessGroup = container.querySelector('[role="radiogroup"][aria-label="Which agents can use this connection"]');
+    const anyAgent = Array.from(accessGroup?.querySelectorAll('[role="radio"]') ?? [])
+      .find((radio) => radio.textContent?.includes("Any agent"));
+    expect(anyAgent).toBeTruthy();
+
+    await act(async () => {
+      anyAgent?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["catalog-read", "catalog-write"],
+      askFirstCatalogEntryIds: ["catalog-write"],
+      access: "all_agents",
+    });
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps always-installed agents in the access allowlist", async () => {
+    mockParams.tab = "permissions";
+    getConnectionInstallsMock.mockResolvedValue({
+      connectionId: "conn-1",
+      installs: [{
+        id: "install-agent-1",
+        companyId: "company-1",
+        connectionId: "conn-1",
+        targetType: "agent",
+        targetId: "agent-1",
+        createdByAgentId: null,
+        createdByUserId: "user-1",
+        createdAt: new Date(),
+      }],
+    });
+
+    await renderAppDetail();
+
+    const accessGroup = container.querySelector('[role="radiogroup"][aria-label="Which agents can use this connection"]');
+    const pickedAgents = Array.from(accessGroup?.querySelectorAll('[role="radio"]') ?? [])
+      .find((radio) => radio.textContent?.includes("Agents I pick"));
+    await act(async () => {
+      pickedAgents?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["catalog-read", "catalog-write"],
+      askFirstCatalogEntryIds: ["catalog-write"],
+      access: { agentIds: ["agent-1"] },
+    });
+  });
+
+  it("separates agent access from agents that always install the app", async () => {
+    mockParams.tab = "permissions";
+    listProfilesMock.mockResolvedValue({
+      profiles: [{
+        profileKey: "app:conn-1",
+        entries: [
+          { effect: "include", catalogEntryId: "catalog-read" },
+          { effect: "include", catalogEntryId: "catalog-write" },
+        ],
+        bindings: [{ targetType: "agent", targetId: "agent-1" }],
+      }],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Agent access");
+    expect(container.textContent).toContain("Always installed");
+    expect(container.textContent).toContain("Agent access only makes it available when needed.");
+    const alwaysInstalledHeading = Array.from(container.querySelectorAll("h2"))
+      .find((heading) => heading.textContent === "Always installed");
+    const agentAccessHeading = Array.from(container.querySelectorAll("h2"))
+      .find((heading) => heading.textContent === "Agent access");
+    expect(alwaysInstalledHeading).toBeTruthy();
+    expect(agentAccessHeading).toBeTruthy();
+    expect(
+      alwaysInstalledHeading!.compareDocumentPosition(agentAccessHeading!)
+        & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(container.textContent).not.toContain("Who can use it");
-    expect(container.textContent).not.toContain("Only specific agents");
     expect(container.querySelector('button[aria-label="Remove Coder access"]')).toBeNull();
-    // Exactly one radiogroup on the tab: the install model.
-    expect(container.querySelectorAll('[role="radiogroup"]').length).toBe(1);
+    expect(container.querySelectorAll('[role="radiogroup"]').length).toBe(2);
     expect(
       Array.from(container.querySelectorAll("button")).filter(
         (button) => button.textContent?.trim() === "Change",
@@ -947,8 +1097,8 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     // State is still legible.
-    expect(container.textContent).toContain("Available to agents");
-    expect(container.textContent).toContain("Action permissions");
+    expect(container.textContent).toContain("Agent access");
+    expect(container.textContent).toContain("Actions");
     expect(container.textContent).toContain("Read repo");
 
     // Nothing to mutate: no radios, no permission selects, no refresh, no save.
@@ -1130,7 +1280,7 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Needs attention");
     expect(container.textContent).toContain("This app needs reconnecting");
     expect(container.textContent).toContain("Token expired.");
-    expect(container.textContent).toContain("Available to agents");
+    expect(container.textContent).toContain("Agent access");
   });
 
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
@@ -1156,6 +1306,83 @@ describe("AppDetail", () => {
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1");
     expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+  });
+
+  it("reconnects an OAuth warning through the connection's existing personal identity", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth",
+      credentialPolicy: "per_user",
+      createdByUserId: "user-1",
+      healthStatus: "failed",
+      healthMessage: "Authorization expired (invalid_grant).",
+    }));
+
+    await renderAppDetail();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { asCurrentUser: true });
+    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+  });
+
+  it("does not offer a personal reconnect to someone other than its fixed owner", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth",
+      credentialPolicy: "per_user",
+      createdByUserId: "user-2",
+      healthStatus: "failed",
+      healthMessage: "Authorization expired (invalid_grant).",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [personalGrant({ id: "grant-other", subjectUserId: "user-2" })],
+      capabilities: fullCapabilities({ canViewOtherPersonalIdentities: true }),
+      currentUserId: "user-1",
+      members: [{ userId: "user-2", name: "Carol", email: "carol@example.com" }],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Reconnect required");
+    expect(container.textContent).toContain("The person this connection belongs to must reconnect it.");
+    expect(findButton("Reconnect")).toBeUndefined();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("does not offer personal key replacement to someone other than its fixed owner", async () => {
+    mockParams.tab = "setup";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "api_key",
+      credentialPolicy: "per_user",
+      createdByUserId: "user-2",
+      healthStatus: "failed",
+      healthMessage: "The key was rejected.",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [personalGrant({ id: "grant-other", subjectUserId: "user-2" })],
+      capabilities: fullCapabilities({ canViewOtherPersonalIdentities: true }),
+      currentUserId: "user-1",
+      members: [{ userId: "user-2", name: "Carol", email: "carol@example.com" }],
+    });
+
+    await renderAppDetail();
+    await act(async () => {
+      findButton("Danger zone")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Reconnect");
+    expect(container.textContent).toContain("The person this connection belongs to must reconnect it.");
+    expect(Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent?.trim() === "Reconnect",
+    )).toHaveLength(0);
   });
 
   /**
@@ -1214,14 +1441,15 @@ describe("AppDetail", () => {
       .find((button) => button.textContent?.trim() === label);
   }
 
-  it("answers 'who does this act as' in the header on every tab", async () => {
+  it("keeps the app header concise on every tab", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(perUserConnection());
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Acts as each person");
-    expect(container.textContent).toContain("Each person connects their own account.");
+    expect(container.textContent).toContain("Connected");
+    expect(container.textContent).not.toContain("This connection is for one person.");
+    expect(container.textContent).not.toContain("Connected by");
   });
 
   it("lets a regular member connect their own identity and never someone else's", async () => {
@@ -1232,8 +1460,12 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     // Missing personal identity is explicit, never a silent fallback.
-    expect(container.textContent).toContain("Your identity");
-    expect(container.textContent).toContain("You have not connected your account.");
+    expect(container.textContent).toContain("Account");
+    expect(container.textContent).toContain("Only you can use this connection");
+    expect(container.textContent).toContain("Personal account");
+    expect(container.textContent).toContain("Not connected");
+    expect(container.textContent).not.toContain("Organization identity");
+    expect(findButton("Connect organization identity")).toBeUndefined();
 
     await act(async () => {
       findButton("Connect as me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1249,12 +1481,12 @@ describe("AppDetail", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
   });
 
-  it("lets the personal identity owner grant a named agent autonomous access", async () => {
+  it("opens Permissions from app access instead of personal identity delegations", async () => {
     mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(perUserConnection());
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
-      grants: [personalGrant({ delegations: [] })],
+      grants: [personalGrant({ delegations: [{ id: "delegation-1", agentId: "agent-1" }] })],
       capabilities: fullCapabilities(),
       currentUserId: "user-1",
       members: [{ userId: "user-1", name: "Dotta", email: "dotta@example.com" }],
@@ -1262,34 +1494,18 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(findButton("Allow autonomous access")).toBeTruthy();
+    expect(findButton("Every agent")).toBeTruthy();
+    expect(findButton("No agents")).toBeUndefined();
     await act(async () => {
-      findButton("Allow autonomous access")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      findButton("Every agent")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await flushReact();
 
-    const agentCheckbox = document.querySelector<HTMLInputElement>('button[role="checkbox"][aria-label="Allow Coder"]');
-    expect(agentCheckbox).toBeTruthy();
-    await act(async () => {
-      agentCheckbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await act(async () => {
-      Array.from(document.querySelectorAll("button"))
-        .find((button) => button.textContent?.trim() === "Save")
-        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(createConnectionGrantDelegationMock).toHaveBeenCalledWith(
-      "conn-1",
-      "grant-user",
-      "agent-1",
-    );
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
   });
 
   it("keeps a viewer read-only across identities and installs", async () => {
     mockParams.tab = "setup";
-    getConnectionMock.mockResolvedValue(perUserConnection());
+    getConnectionMock.mockResolvedValue(connection({ credentialPolicy: "shared" }));
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
       grants: [organizationGrant({ capabilities: { canRevoke: false, canEditAudience: false } })],
@@ -1308,20 +1524,21 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
+    expect(container.textContent).toContain("Anyone in your company can use this connection");
+
     // State stays legible...
-    expect(container.textContent).toContain("Organization identity");
-    expect(container.textContent).toContain("Connected");
-    expect(container.textContent).toContain("All organization members");
+    expect(container.textContent).toContain("Anyone in your company can use this connection");
+    expect(container.textContent).not.toContain("Personal account");
     // ...and every mutation control is absent rather than disabled.
     expect(findButton("Connect as me")).toBeUndefined();
-    expect(findButton("Manage audience")).toBeUndefined();
+    expect(findButton("Manage access")).toBeUndefined();
     expect(findButton("Revoke")).toBeUndefined();
     expect(findButton("Connect organization identity")).toBeUndefined();
   });
 
-  it("gives a manager oversight of other people's identities", async () => {
+  it("shows one fixed personal identity without an organization switch", async () => {
     mockParams.tab = "setup";
-    getConnectionMock.mockResolvedValue(perUserConnection());
+    getConnectionMock.mockResolvedValue(perUserConnection({ createdByUserId: "user-2" }));
     revokeConnectionGrantMock.mockResolvedValue({ id: "grant-other", kind: "user" });
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
@@ -1339,28 +1556,22 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Other personal identities · 1");
+    expect(container.textContent).toContain("Only you can use this connection");
+    expect(container.textContent).toContain("Carol");
+    expect(container.textContent).not.toContain("Organization identity");
+    expect(container.textContent).not.toContain("Other personal identities");
+    expect(findButton("Connect organization identity")).toBeUndefined();
+    expect(findButton("Agents")).toBeUndefined();
 
+    // A manager can still revoke the displayed identity from the folded danger
+    // zone, but cannot reconnect as Carol or switch the identity type.
     await act(async () => {
-      Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent?.includes("Other personal identities"))
-        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      findButton("Danger zone")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Carol");
-
-    // Scope to Carol's own row: the organization identity also offers Revoke,
-    // and picking the first match would silently test the wrong grant.
-    const carolRow = Array.from(container.querySelectorAll("div"))
-      .filter((row) => row.textContent?.includes("Carol")
-        && Array.from(row.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Revoke"))
-      .at(-1);
-    expect(carolRow).toBeTruthy();
     await act(async () => {
-      Array.from(carolRow!.querySelectorAll("button"))
-        .find((button) => button.textContent?.trim() === "Revoke")
-        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      findButton("Revoke")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -1399,10 +1610,10 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("1 selected member");
+    expect(container.textContent).toContain("Anyone in your company can use this connection");
 
     await act(async () => {
-      findButton("Manage audience")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      findButton("Manage access")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -1444,7 +1655,7 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     await act(async () => {
-      findButton("Manage audience")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      findButton("Manage access")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 

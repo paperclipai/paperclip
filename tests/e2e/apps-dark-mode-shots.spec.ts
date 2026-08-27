@@ -180,6 +180,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await page.getByLabel("App name").fill("QA Renamed App");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("heading", { name: "QA Renamed App" })).toBeVisible({ timeout: 20_000 });
+    await page.getByText("Danger zone", { exact: true }).click();
     await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-06-danger-zone-dark.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();

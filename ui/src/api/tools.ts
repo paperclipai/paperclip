@@ -6,12 +6,12 @@ import type {
 } from "@/pages/apps/composio-services";
 import type {
   ToolApplication,
-  ConnectToolApp,
   ToolConnection,
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionRemovalSummary,
   ConnectToolAppResult,
+  ConnectToolApp,
   FinishToolAppResult,
   ToolCatalogEntry,
   ToolRuntimeSlot,
@@ -61,9 +61,11 @@ import type {
   CreateToolTrustRuleFromActionRequest,
   ToolRedactedValueSummary,
   ConnectionGrant,
+  ConnectionGrantKind,
   ConnectionGrantDelegation,
   ConnectionGrantsResponse,
   ToolConnectionCreateCapabilities,
+  ToolAppMetadataPreflightResult,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -87,6 +89,15 @@ export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = {
   apps: AppDefinition[];
   capabilities: ToolConnectionCreateCapabilities;
+  credentialSources: {
+    vercelConnect: {
+      available: boolean;
+      enabled: boolean;
+      authentication: "workload_oidc" | "access_token" | null;
+      manageUrl: string;
+      reason: string | null;
+    };
+  };
 };
 export type ToolMcpGatewaysResponse = { gateways: ToolMcpGatewayWithTokens[] };
 export type CreateGatewayTokenInput = Omit<CreateToolMcpGatewayToken, "expiresAt"> & {
@@ -268,12 +279,30 @@ export const toolsApi = {
   // --- Applications ---
   listGallery: (companyId: string) =>
     api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
+  preflightAppMetadata: (companyId: string, galleryKey: string, methodKey?: string | null) => {
+    const query = methodKey ? `?methodKey=${encodeURIComponent(methodKey)}` : "";
+    return api.get<ToolAppMetadataPreflightResult>(
+      `/companies/${companyId}/tools/apps/${encodeURIComponent(galleryKey)}/preflight${query}`,
+    );
+  },
   connectApp: (companyId: string, input: ConnectToolApp) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
-  startOAuth: (connectionId: string, interactionId?: string) =>
-    api.post<ToolOAuthStartResult>(
-      `/tools/oauth/${connectionId}/start`,
-      interactionId ? { interactionId } : {},
+  startOAuth: (
+    connectionId: string,
+    input: {
+      asCurrentUser?: boolean;
+      interactionId?: string;
+    } = {},
+  ) =>
+    api.post<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`, input),
+  finalizeOAuthAccess: (
+    companyId: string,
+    connectionId: string,
+    input: { grantKind: ConnectionGrantKind },
+  ) =>
+    api.post<FinishToolAppResult>(
+      `/companies/${companyId}/tools/apps/${connectionId}/finalize-oauth-access`,
+      input,
     ),
   finishApp: (companyId: string, connectionId: string, input: {
     enabledCatalogEntryIds: string[];

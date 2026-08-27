@@ -27,7 +27,9 @@ vi.mock("@/api/access", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
+    <a href={to}>{children}</a>
+  ),
   useNavigate: () => navigateMock,
 }));
 
@@ -69,7 +71,10 @@ function galleryEntry(overrides: Record<string, unknown>) {
     logoUrl: "https://example.com/github.png",
     tagline: "Let agents open PRs and issues.",
     authKind: "oauth",
-    transportTemplate: { transport: "mcp_remote", url: "https://api.github.com/mcp" },
+    transportTemplate: {
+      transport: "mcp_remote",
+      url: "https://api.github.com/mcp",
+    },
     credentialFields: [],
     recommendedDefaults: {},
     urlPatterns: [],
@@ -84,13 +89,40 @@ describe("Browse store door (PAP-13254 door 1)", () => {
   beforeEach(() => {
     listGalleryMock.mockResolvedValue({
       apps: [
-        galleryEntry({ key: "zapier", name: "Zapier", tagline: "Connect automations." }),
-        galleryEntry({ key: "github", name: "GitHub", tagline: "Open PRs and issues." }),
-        galleryEntry({ key: "slack", name: "Slack", tagline: "Post messages to channels." }),
-        galleryEntry({ key: "notion", name: "Notion", tagline: "Read and update workspace content." }),
-        galleryEntry({ key: "composio", name: "Composio", tagline: "Connect hosted toolkits." }),
-        galleryEntry({ key: "gmail", name: "Gmail", tagline: "Search and draft email." }),
-        galleryEntry({ key: "acme", name: "Acme CRM", tagline: "Sync deals and contacts." }),
+        galleryEntry({
+          key: "zapier",
+          name: "Zapier",
+          tagline: "Connect automations.",
+        }),
+        galleryEntry({
+          key: "jira",
+          name: "Jira",
+          tagline: "Track projects and issues.",
+        }),
+        galleryEntry({
+          key: "cloudflare",
+          name: "Cloudflare",
+          tagline: "Manage Cloudflare resources.",
+        }),
+        galleryEntry({
+          key: "notion",
+          name: "Notion",
+          tagline: "Read and update workspace content.",
+        }),
+        galleryEntry({
+          key: "gmail",
+          name: "Gmail",
+          tagline: "Search and draft email.",
+          availability: {
+            available: false,
+            reason: "Gmail is not available on this Paperclip instance yet.",
+          },
+        }),
+        galleryEntry({
+          key: "acme",
+          name: "Acme CRM",
+          tagline: "Sync deals and contacts.",
+        }),
       ],
     });
     listApplicationsMock.mockResolvedValue({ applications: [] });
@@ -107,7 +139,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
   });
 
   async function renderBrowse() {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -129,58 +163,97 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).not.toContain("Other integrations are previews.");
     expect(text).toContain("Popular");
     expect(text).toContain("All apps");
-    expect(text).toContain("GitHub");
-    expect(text).toContain("Slack");
+    expect(text).toContain("Jira");
+    expect(text).toContain("Cloudflare");
     expect(text).toContain("Acme CRM");
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[aria-label="All apps"] > [data-app-slug]',
+        ),
+      ).map((tile) => tile.dataset.appSlug),
+    ).toEqual(["acme", "cloudflare", "gmail", "jira", "notion", "zapier"]);
     // Bring-your-own is a first-class row in the store.
     expect(text).toContain("Connect your own tool");
     expect(text).toContain("All discovered actions are enabled automatically.");
     expect(text).not.toContain("review its actions before enabling it");
+    expect(text).not.toContain("Vercel Connect");
+    expect(text).not.toContain("Composio");
   });
 
-  it("enables Notion, Zapier, Gmail, and custom URLs while fading unfinished integrations", async () => {
+  it("does not surface Vercel Connect even when the backend capability is enabled", async () => {
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [
+        galleryEntry({
+          key: "posthog",
+          name: "PostHog",
+          tagline: "Analyze product usage.",
+        }),
+      ],
+      credentialSources: {
+        vercelConnect: {
+          available: true,
+          enabled: true,
+          authentication: "access_token",
+          manageUrl: "https://vercel.com/connect",
+          reason: null,
+        },
+      },
+    });
+    await renderBrowse();
+
+    expect(container.textContent).not.toContain("Vercel Connect");
+    expect(navigateMock).not.toHaveBeenCalledWith("/apps/vercel-connect");
+  });
+
+  it("routes every capability-backed app and explains instance-disabled apps", async () => {
     await renderBrowse();
 
     const zapierTiles = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Connect for Zapier"]'),
+      container.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="Connect for Zapier"]',
+      ),
     );
-    const githubTiles = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Connect for GitHub"]'),
+    const jiraTiles = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="Connect for Jira"]',
+      ),
     );
     const notionTiles = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Connect for Notion"]'),
+      container.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="Connect for Notion"]',
+      ),
     );
-    const composioTiles = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Connect for Composio"]'),
-    );
-    const gmailTiles = Array.from(
-      container.querySelectorAll<HTMLButtonElement>('button[aria-label="Connect for Gmail"]'),
+    const gmailTile = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Unavailable for Gmail"]',
     );
     const tile = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Coming soon for Acme CRM"]',
+      'button[aria-label="Unavailable for Acme CRM"]',
     );
-    const byoCard = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Connect your own tool"),
+    const byoCard = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect your own tool"),
     );
 
     expect(zapierTiles).toHaveLength(2);
     expect(zapierTiles.every((button) => !button.disabled)).toBe(true);
     expect(notionTiles).toHaveLength(2);
     expect(notionTiles.every((button) => !button.disabled)).toBe(true);
-    expect(composioTiles).toHaveLength(1);
-    expect(composioTiles[0]?.disabled).toBe(false);
-    expect(gmailTiles).toHaveLength(1);
-    expect(gmailTiles[0]?.disabled).toBe(false);
-    expect(githubTiles.every((button) => button.disabled)).toBe(true);
+    expect(jiraTiles).toHaveLength(2);
+    expect(jiraTiles.every((button) => !button.disabled)).toBe(true);
     expect(tile?.disabled).toBe(true);
+    expect(gmailTile?.disabled).toBe(true);
     expect(byoCard?.disabled).toBe(false);
-    expect(tile?.textContent).toContain("Coming soon");
+    expect(tile?.textContent).toContain("Unavailable");
+    expect(container.textContent).toContain(
+      "Gmail is not available on this Paperclip instance yet.",
+    );
+    expect(container.textContent).not.toContain("Coming soon");
     expect(zapierTiles[0]?.textContent).toContain("Connect");
 
     await act(async () => {
       zapierTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&source=zapier");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=zapier");
 
     await act(async () => {
       notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -188,14 +261,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=notion");
 
     await act(async () => {
-      composioTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      jiraTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=composio&stage=setup");
-
-    await act(async () => {
-      gmailTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=gmail&stage=access");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=jira");
 
     await act(async () => {
       byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -206,21 +274,23 @@ describe("Browse store door (PAP-13254 door 1)", () => {
   it("filters the gallery by the search query", async () => {
     await renderBrowse();
 
-    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
+    const input = container.querySelector<HTMLInputElement>(
+      'input[type="search"]',
+    );
     expect(input).toBeTruthy();
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       "value",
     )?.set;
     await act(async () => {
-      setter?.call(input, "slack");
+      setter?.call(input, "cloudflare");
       input?.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushReact();
 
     const text = container.textContent ?? "";
     expect(text).toContain("Results (1)");
-    expect(text).toContain("Slack");
+    expect(text).toContain("Cloudflare");
     expect(text).not.toContain("Acme CRM");
     // Popular grid is hidden while searching.
     expect(text).not.toContain("Popular");
@@ -229,7 +299,13 @@ describe("Browse store door (PAP-13254 door 1)", () => {
   it("shows the connected owner, edits existing connections, and offers a deliberate second account", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [
-        { id: "app-notion", name: "Legacy integration", status: "active", applicationKey: "legacy:notion", metadata: {} },
+        {
+          id: "app-notion",
+          name: "Legacy integration",
+          status: "active",
+          applicationKey: "legacy:notion",
+          metadata: {},
+        },
       ],
     });
     listConnectionsMock.mockResolvedValue({
@@ -248,16 +324,18 @@ describe("Browse store door (PAP-13254 door 1)", () => {
       ],
     });
     listUserDirectoryMock.mockResolvedValue({
-      users: [{
-        principalId: "user-1",
-        status: "active",
-        user: {
-          id: "user-1",
-          name: "Dotta",
-          email: "dotta@example.com",
-          image: "https://example.com/dotta.png",
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: {
+            id: "user-1",
+            name: "Dotta",
+            email: "dotta@example.com",
+            image: "https://example.com/dotta.png",
+          },
         },
-      }],
+      ],
     });
 
     await renderBrowse();
@@ -267,12 +345,112 @@ describe("Browse store door (PAP-13254 door 1)", () => {
         'button[aria-label="Edit connections for Notion"]',
       ),
     );
-    expect(editButtons).toHaveLength(2);
-    expect(editButtons.every((button) => button.textContent?.includes("Edit connections"))).toBe(true);
-    // draft connections count toward the total (they are real, pending-setup connections)
-    expect(container.textContent).toContain("3 connected");
+    expect(editButtons).toHaveLength(3);
+    expect(
+      editButtons.every((button) =>
+        button.textContent?.includes("Edit connections"),
+      ),
+    ).toBe(true);
+    // Interrupted setup remains resumable but is not represented as a
+    // successful provider connection.
+    expect(container.textContent).toContain("2 connected");
     expect(container.textContent).toContain("Dotta’s Notion");
-    expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
+    expect(
+      container.querySelector('[title="Dotta"] [data-slot="avatar"]'),
+    ).toBeTruthy();
+    const connectedAppTiles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[aria-label="Connected apps"] > [data-app-slug]',
+      ),
+    );
+    expect(connectedAppTiles).toHaveLength(1);
+    expect(connectedAppTiles[0]?.dataset.appSlug).toBe("notion");
+    const pageText = container.textContent ?? "";
+    expect(pageText.indexOf("Popular")).toBeLessThan(
+      pageText.indexOf("Connected"),
+    );
+    expect(pageText.indexOf("Connected")).toBeLessThan(
+      pageText.indexOf("All apps"),
+    );
+    const popularAppTiles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[aria-label="Popular apps"] > [data-app-slug]',
+      ),
+    );
+    const popularGrid = container.querySelector<HTMLElement>(
+      '[aria-label="Popular apps"]',
+    );
+    const connectedGrid = container.querySelector<HTMLElement>(
+      '[aria-label="Connected apps"]',
+    );
+    for (const grid of [popularGrid, connectedGrid]) {
+      expect(grid?.className).toContain("lg:grid-cols-4");
+      expect(grid?.className).toContain("xl:grid-cols-6");
+    }
+    for (const tile of popularAppTiles) {
+      expect(tile.className).toContain("min-w-0");
+      expect(
+        tile.querySelector('[data-slot="app-tile-status"]')?.className,
+      ).toContain("min-h-4");
+      expect(
+        tile.querySelector('[data-slot="app-tile-primary-action"]')?.className,
+      ).toContain("w-full");
+      expect(
+        tile.querySelector('[data-slot="app-tile-primary-action"] button')
+          ?.className,
+      ).toContain("max-w-full");
+      expect(
+        tile.querySelector('[data-slot="app-tile-secondary-action"]')
+          ?.className,
+      ).toContain("min-h-5");
+    }
+    const allAppTiles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[aria-label="All apps"] > [data-app-slug]',
+      ),
+    );
+    const notionAllAppsTile = allAppTiles.find(
+      (tile) => tile.dataset.appSlug === "notion",
+    );
+    expect(notionAllAppsTile?.dataset.connected).toBe("true");
+    expect(notionAllAppsTile?.textContent).toContain("Dotta’s Notion");
+    expect(
+      notionAllAppsTile?.querySelector('[data-slot="app-tile-title"]')
+        ?.className,
+    ).toContain("break-words");
+    expect(
+      notionAllAppsTile?.querySelector('[data-slot="app-tile-title"]')
+        ?.className,
+    ).not.toContain("truncate");
+    expect(
+      notionAllAppsTile?.querySelector('[data-slot="app-tile-header-status"]')
+        ?.className,
+    ).toContain("min-h-5");
+    expect(
+      notionAllAppsTile?.querySelector('[data-slot="app-tile-connection-name"]')
+        ?.className,
+    ).toContain("break-words");
+    expect(
+      notionAllAppsTile?.querySelector('[data-slot="app-tile-connection-name"]')
+        ?.className,
+    ).not.toContain("truncate");
+    expect(
+      notionAllAppsTile?.querySelector('[data-slot="app-tile-details"]')
+        ?.className,
+    ).toContain("mt-auto");
+    expect(
+      notionAllAppsTile?.querySelector('[data-slot="app-tile-actions"]'),
+    ).toBeTruthy();
+    expect(
+      notionAllAppsTile?.querySelector(
+        'button[aria-label="Add another Notion account"]',
+      ),
+    ).toBeTruthy();
+    expect(
+      notionAllAppsTile?.querySelector(
+        'button[aria-label="Edit connections for Notion"]',
+      ),
+    ).toBeTruthy();
 
     await act(async () => {
       editButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -291,7 +469,55 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     );
   });
 
-  it("treats an existing draft-only Notion connection as editable", async () => {
+  it("associates a legacy generic Zapier URL connection with the curated Zapier card", async () => {
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [
+        galleryEntry({
+          key: "zapier",
+          name: "Zapier",
+          tagline: "Connect automations.",
+          urlPatterns: ["https://mcp.zapier.com/*"],
+        }),
+      ],
+    });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [
+        {
+          id: "app-zapier-link",
+          name: "Zapier for the company",
+          status: "active",
+          applicationKey: "app-gallery:link:legacy",
+          metadata: { source: "link" },
+        },
+      ],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [
+        {
+          id: "conn-zapier",
+          applicationId: "app-zapier-link",
+          name: "Zapier for the company",
+          status: "active",
+          config: { url: "https://mcp.zapier.com/api/v1/connect" },
+          transportConfig: { url: "https://mcp.zapier.com/api/v1/connect" },
+        },
+      ],
+    });
+
+    await renderBrowse();
+
+    expect(
+      container.querySelector('button[aria-label="Connect for Zapier"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        'button[aria-label="Edit connection for Zapier"]',
+      ),
+    ).toBeTruthy();
+    expect(container.textContent).toContain("1 connected");
+  });
+
+  it("keeps an existing draft-only Notion connection resumable without calling it connected", async () => {
     const applicationId = "057a2df6-175f-4dde-b246-743706444122";
     const connectionId = "46dc23c1-ecfa-46f7-8e60-34a7cdbd661e";
     listApplicationsMock.mockResolvedValue({
@@ -320,28 +546,50 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     await renderBrowse();
 
-    const editButtons = Array.from(
+    const finishButtons = Array.from(
       container.querySelectorAll<HTMLButtonElement>(
-        'button[aria-label="Edit connection for Notion"]',
+        'button[aria-label="Finish setup for Notion"]',
       ),
     );
-    expect(editButtons).toHaveLength(2);
-    expect(container.querySelector('button[aria-label="Connect for Notion"]')).toBeNull();
-    expect(container.textContent).toContain("1 connected");
+    expect(finishButtons).toHaveLength(2);
     expect(
-      container.querySelector('button[aria-label="Add another Notion account"]')?.textContent,
-    ).toContain("Add new");
+      container.querySelector('button[aria-label="Connect for Notion"]'),
+    ).toBeNull();
+    expect(container.textContent).toContain("Setup incomplete");
+    expect(container.textContent).not.toContain("1 connected");
+    expect(container.querySelector('[aria-label="Connected apps"]')).toBeNull();
+    expect(
+      container.querySelector(
+        'button[aria-label="Add another Notion account"]',
+      ),
+    ).toBeNull();
+    const allAppTiles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[aria-label="All apps"] > [data-app-slug]',
+      ),
+    );
+    const notionAllAppsTile = allAppTiles.find(
+      (tile) => tile.dataset.appSlug === "notion",
+    );
+    expect(notionAllAppsTile?.dataset.connected).toBe("false");
+    expect(notionAllAppsTile?.dataset.setupPending).toBe("true");
 
     await act(async () => {
-      editButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      finishButtons[0]?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
-    expect(navigateMock).toHaveBeenCalledWith(`/apps/${connectionId}/setup`);
+    expect(navigateMock).toHaveBeenCalledWith(
+      `/apps/connect?source=notion&resume=${connectionId}`,
+    );
   });
 
   it("keeps the custom URL option available when gallery search has no matches", async () => {
     await renderBrowse();
 
-    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
+    const input = container.querySelector<HTMLInputElement>(
+      'input[type="search"]',
+    );
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       "value",

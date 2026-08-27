@@ -7,6 +7,7 @@ import {
   genericConnectGuidance,
   genericConnectPayload,
   newCustomHeaderRow,
+  oauthCallbackUrlForBrowser,
   type GenericConnectDraft,
 } from "./generic-mcp-connect";
 
@@ -33,6 +34,23 @@ describe("endpointHost", () => {
   it("returns null for anything that isn't a URL", () => {
     expect(endpointHost("not a url")).toBeNull();
     expect(endpointHost("")).toBeNull();
+  });
+});
+
+describe("oauthCallbackUrlForBrowser", () => {
+  it("uses localhost for local HTTP callbacks to match the API authorization request", () => {
+    expect(oauthCallbackUrlForBrowser("http://127.0.0.1:3200")).toBe(
+      "http://localhost:3200/api/tools/oauth/callback",
+    );
+    expect(oauthCallbackUrlForBrowser("http://[::1]:3200")).toBe(
+      "http://localhost:3200/api/tools/oauth/callback",
+    );
+  });
+
+  it("preserves public HTTPS origins", () => {
+    expect(oauthCallbackUrlForBrowser("https://paperclip.example.test")).toBe(
+      "https://paperclip.example.test/api/tools/oauth/callback",
+    );
   });
 });
 

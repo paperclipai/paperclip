@@ -36,6 +36,25 @@ export function endpointHost(url: string): string | null {
 }
 
 /**
+ * The callback URI shown to operators must exactly match the URI the API sends.
+ *
+ * Xero and a few other OAuth providers reject numeric loopback hosts even though
+ * they point at the same machine. The API therefore uses `localhost` for local
+ * HTTP OAuth, so the setup form must advertise that same canonical spelling.
+ */
+export function oauthCallbackUrlForBrowser(origin: string = window.location.origin): string {
+  const callbackUrl = new URL("/api/tools/oauth/callback", origin);
+  const hostname = callbackUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    callbackUrl.protocol === "http:"
+    && (hostname === "127.0.0.1" || hostname === "::1")
+  ) {
+    callbackUrl.hostname = "localhost";
+  }
+  return callbackUrl.toString();
+}
+
+/**
  * A useful, non-secret default label for an arbitrary endpoint.
  *
  * Keep the port and path: one host commonly serves several MCP endpoints, and

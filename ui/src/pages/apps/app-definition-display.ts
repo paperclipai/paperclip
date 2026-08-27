@@ -23,6 +23,10 @@ export function appDefinitionLogoUrl(entry: AppGalleryDisplayEntry | null | unde
   return entry?.branding?.logoUrl ?? entry?.logoUrl;
 }
 
+export function appDefinitionDarkLogoUrl(entry: AppGalleryDisplayEntry | null | undefined): string | undefined {
+  return entry?.branding?.darkLogoUrl;
+}
+
 export function appApplicationSourceSlug(application: ToolApplication | null | undefined): string | null {
   if (!application) return null;
   const metadata = application.metadata;

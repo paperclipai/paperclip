@@ -33,10 +33,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { AppLogo } from "./AppLogo";
-import { ComposioProvenanceChip } from "./ComposioProvenanceChip";
+import { ConnectionProvenanceChip } from "./ComposioProvenanceChip";
 import { composioChildParentConnectionId } from "./composio-services";
 import {
   appApplicationSourceSlug,
+  appDefinitionDarkLogoUrl,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
@@ -44,6 +45,7 @@ import {
 } from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
 import { AdvancedToolsLink } from "./store-cards";
+import { connectionNameForCredentialPolicy, connectionTypeLabel } from "./connection-identity";
 import {
   ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
@@ -71,6 +73,7 @@ type AppRow = {
   actionCount: number;
   lastUsedAt: Date | string | null;
   logoUrl?: string | null;
+  darkLogoUrl?: string | null;
 };
 
 /**
@@ -232,10 +235,11 @@ export function Connections() {
     return applications.flatMap((application): AppRow[] => {
       const appConnections = connectionsByApplication.get(application.id) ?? [];
       const appSourceSlug = appApplicationSourceSlug(application);
-      const galleryEntry = logoByKey.get(appSourceSlug ?? "") ??
+      const resolvedGalleryEntry = logoByKey.get(appSourceSlug ?? "") ??
         logoByName.get(application.name.toLowerCase());
-      const logoUrl = appDefinitionLogoUrl(galleryEntry);
+      const logoUrl = appDefinitionLogoUrl(resolvedGalleryEntry);
       const brandKey = appSourceSlug ?? application.name;
+      const darkLogoUrl = appDefinitionDarkLogoUrl(resolvedGalleryEntry);
       const agentAvailableConnectionCount = appConnections.filter(
         (connection) => connection.status === "active" && connection.enabled,
       ).length;
@@ -251,14 +255,22 @@ export function Connections() {
           actionCount: 0,
           lastUsedAt: null,
           logoUrl,
+          darkLogoUrl,
         }];
       }
       return appConnections.map((connection) => {
         const owner = connectionOwnerProfile(connection, userProfileById);
+        const type = connectionTypeLabel(connection.credentialPolicy);
+        const displayName = type === "Company"
+          ? connectionNameForCredentialPolicy(
+              humanizeConnectionDisplayName(connection),
+              connection.credentialPolicy,
+            )
+          : connectionDisplayNameForOwner(connection, application.name, owner);
         return {
           application,
           connection,
-          displayName: connectionDisplayNameForOwner(connection, application.name, owner),
+          displayName,
           brandKey,
           owner,
           remainingAgentAvailableConnectionCount: Math.max(
@@ -270,6 +282,7 @@ export function Connections() {
           actionCount: actionCountByConnection.get(`app:${connection.id}`) ?? 0,
           lastUsedAt: connection.lastUsedAt ?? null,
           logoUrl,
+          darkLogoUrl,
         };
       });
     });
@@ -362,6 +375,7 @@ export function Connections() {
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5">Connection</th>
+                  <th className="px-4 py-2.5">Type</th>
                   <th className="px-4 py-2.5">Connected by</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Actions</th>
@@ -408,18 +422,24 @@ export function Connections() {
                             name={row.displayName}
                             brandKey={row.brandKey}
                             logoUrl={row.logoUrl}
+                            darkLogoUrl={row.darkLogoUrl}
                             size={32}
                           />
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="font-medium text-foreground">{row.displayName}</span>
-                              <ComposioProvenanceChip connection={row.connection} />
+                              <ConnectionProvenanceChip connection={row.connection} />
                             </div>
                             {hint && (
                               <div className="truncate text-xs text-muted-foreground">{hint}</div>
                             )}
                           </div>
                         </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs font-medium text-foreground">
+                          {connection ? connectionTypeLabel(connection.credentialPolicy) : "—"}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         <ConnectionOwnerIdentity owner={row.owner} />

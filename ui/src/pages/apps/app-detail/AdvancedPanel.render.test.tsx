@@ -37,24 +37,40 @@ function renderComposioDangerZone() {
   return container;
 }
 
+function expandDangerZone(node: HTMLDivElement) {
+  const trigger = Array.from(node.querySelectorAll("button"))
+    .find((button) => button.textContent?.includes("Danger zone"));
+  expect(trigger).toBeTruthy();
+  act(() => trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+}
+
 /**
  * Remove app deletes the operator's credentials and revokes agent access
- * (PAP-17119). The confirmation has to say so before the operator commits — a
- * "you can connect it again later" reassurance implies the pasted key survives,
- * so these assertions exist to stop that copy coming back.
+ * (PAP-17119). The compact confirmation still names both effects before the
+ * operator commits.
  */
 describe("DangerZone", () => {
-  it("promises credential deletion and re-authentication before the operator confirms", () => {
-    const text = renderDangerZone().textContent ?? "";
+  it("keeps dangerous actions folded by default", () => {
+    const node = renderDangerZone();
 
-    expect(text).toContain("Deletes the saved credentials for PostHog");
-    expect(text).toContain("takes agent access away right away");
-    expect(text).toContain("needs a new sign-in or key");
-    expect(text).not.toContain("You can connect it again later");
+    expect(node.textContent).toContain("Danger zone");
+    expect(node.textContent).not.toContain("Remove app");
+    expect(node.textContent).not.toContain("Deletes credentials");
+  });
+
+  it("promises credential deletion and re-authentication before the operator confirms", () => {
+    const node = renderDangerZone();
+    expandDangerZone(node);
+    const text = node.textContent ?? "";
+
+    expect(text).toContain("Deletes credentials for PostHog");
+    expect(text).toContain("removes agent access");
+    expect(text).toContain("requires a new sign-in or key");
   });
 
   it("keeps the warning visible in the confirming state", () => {
     const node = renderDangerZone();
+    expandDangerZone(node);
     const trigger = Array.from(node.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Remove app");
     expect(trigger).toBeTruthy();
@@ -63,13 +79,13 @@ describe("DangerZone", () => {
 
     const text = node.textContent ?? "";
     expect(text).toContain("Yes, remove it");
-    expect(text).toContain("Deletes the saved credentials for PostHog");
-    expect(text).toContain("needs a new sign-in or key");
+    expect(text).toContain("Deletes credentials for PostHog");
+    expect(text).toContain("requires a new sign-in or key");
   });
 
   it("names every child service that parent removal will take down", () => {
     const node = renderComposioDangerZone();
-    expect(node.textContent).toContain("removes 2 connected services");
-    expect(node.textContent).toContain("Agents lose access to all of them right away");
+    expandDangerZone(node);
+    expect(node.textContent).toContain("2 connected services");
   });
 });

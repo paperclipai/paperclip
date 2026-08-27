@@ -8,6 +8,7 @@ import type {
 import type { IssueTimelineEvent } from "../lib/issue-timeline-events";
 import type {
   AskUserQuestionsInteraction,
+  ConnectionIntentInteraction,
   IssueThreadInteractionBase,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
@@ -908,6 +909,105 @@ export const resolvedConnectionAuthorizationInteraction = createConnectionAuthor
   resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
   updatedAt: new Date("2026-04-20T15:02:03.000Z"),
   result: { version: 1, outcome: "accepted" },
+});
+
+function createConnectionIntentInteraction(
+  overrides: Partial<ConnectionIntentInteraction> = {},
+): ConnectionIntentInteraction {
+  return {
+    id: "interaction-connection-intent-default",
+    companyId: issueThreadInteractionFixtureMeta.companyId,
+    issueId: issueThreadInteractionFixtureMeta.issueId,
+    kind: "connection_intent",
+    title: "Connect Notion",
+    summary: "Researcher needs this connection to continue.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "11111111-1111-4111-8111-111111111111",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    addresseeUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    createdAt: new Date("2026-04-20T15:08:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:08:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      serviceSlug: "notion",
+      serviceName: "Notion",
+      serviceLogoUrl: null,
+      requestingAgentId: "11111111-1111-4111-8111-111111111111",
+      requestingAgentName: "Researcher",
+      phase: "requested",
+    },
+    result: null,
+    resolverPolicy: "human_only",
+    requestedResolverPolicy: "human_only",
+    effectiveResolverPolicy: "human_only",
+    resolverPolicyProvenance: "explicit",
+    effectiveResolverPolicySource: "governed_action",
+    legacyResolverPolicyAliases: {
+      requested: "board_only",
+      effective: "board_only",
+    },
+    ...overrides,
+  };
+}
+
+export const pendingConnectionIntentInteraction = createConnectionIntentInteraction();
+export const retryConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-retry",
+  payload: {
+    version: 1,
+    serviceSlug: "notion",
+    serviceName: "Notion",
+    serviceLogoUrl: null,
+    requestingAgentId: "11111111-1111-4111-8111-111111111111",
+    requestingAgentName: "Researcher",
+    phase: "needs_retry",
+  },
+});
+export const authorizingConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-authorizing",
+  payload: {
+    version: 1,
+    serviceSlug: "notion",
+    serviceName: "Notion",
+    serviceLogoUrl: null,
+    requestingAgentId: "11111111-1111-4111-8111-111111111111",
+    requestingAgentName: "Researcher",
+    phase: "authorizing",
+  },
+});
+export const connectedConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-connected",
+  status: "accepted",
+  result: {
+    version: 1,
+    outcome: "connected",
+    connectionId: "22222222-2222-4222-8222-222222222222",
+  },
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
+});
+export const declinedConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-declined",
+  status: "rejected",
+  result: { version: 1, outcome: "declined", reason: "Not right now" },
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
+});
+export const supersededConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-superseded",
+  status: "expired",
+  result: { version: 1, outcome: "superseded" },
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
+});
+export const expiredConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-expired",
+  status: "expired",
+  result: { version: 1, outcome: "expired" },
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
 });
 
 export const executedSecretProposalInteraction = createSecretProposalConfirmationInteraction({

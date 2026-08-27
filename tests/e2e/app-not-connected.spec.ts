@@ -123,7 +123,9 @@ test.describe.serial("not-connected app page", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
 
     await page.getByRole("button", { name: "Check link" }).click();
-    await expect(page.getByRole("heading", { name: "Bla is ready." })).toBeVisible({ timeout: 20_000 });
+    // Reconnect retains the previous identity and application, so the generic
+    // check can commit the restored connection transactionally.
+    await expect(page.getByRole("heading", { name: "Bla is ready." })).toBeVisible({ timeout: 30_000 });
 
     const apps = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
     const appsBody = await apps.json();
@@ -180,6 +182,7 @@ test.describe.serial("not-connected app page", () => {
 
     await page.goto(`/${seed.prefix}/apps/app/${secondBody.application.id}/advanced`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
+    await page.getByText("Danger zone", { exact: true }).click();
     await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-04-app-page-danger.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();

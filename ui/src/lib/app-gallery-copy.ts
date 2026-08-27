@@ -68,7 +68,7 @@ const APP_COPY: Record<string, AppCopy> = {
   },
   posthog: {
     tagline: "Explore product usage, errors, flags, and experiments.",
-    short: "Choose one project and the analytics tools your agents can use.",
+    short: "Sign in with PostHog. Project pinning and access controls are optional.",
   },
   linear: {
     tagline: "Create, update and read tickets.",
@@ -76,11 +76,39 @@ const APP_COPY: Record<string, AppCopy> = {
   },
   "google-sheets": {
     tagline: "Read and update selected spreadsheets.",
-    short: "Share each sheet with the robot email, then paste the links.",
+    short: "Read spreadsheets or update the files you choose.",
   },
   gmail: {
     tagline: "Read mail and create drafts for your review.",
     short: "Read mail and create drafts for your review.",
+  },
+  "google-drive": {
+    tagline: "Find, read, and create files in Drive.",
+    short: "Find, read, and create files in Drive.",
+  },
+  "google-docs": {
+    tagline: "Read and update documents.",
+    short: "Read and update documents.",
+  },
+  "google-slides": {
+    tagline: "Read and update presentations.",
+    short: "Read and update presentations.",
+  },
+  "google-calendar": {
+    tagline: "Review calendars and manage events.",
+    short: "Review calendars and manage events.",
+  },
+  "google-chat": {
+    tagline: "Read conversations and send messages.",
+    short: "Read conversations and send messages.",
+  },
+  "google-people": {
+    tagline: "Look up contacts and people in your directory.",
+    short: "Look up contacts and people in your directory.",
+  },
+  "google-workspace-search": {
+    tagline: "Search across your Google workspace.",
+    short: "Search across your Google workspace.",
   },
   hubspot: {
     tagline: "Look up contacts and update deal stages.",

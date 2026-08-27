@@ -166,9 +166,9 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
 
-    // Link-mode setup uses the safe organization/any-agent defaults, enables
-    // discovered actions, and applies risk-based ask-first defaults in one
-    // commit. Classification remains covered by the server suite.
+    // The Access choice was captured before credentials. A successful generic
+    // probe now commits discovered actions and risk defaults transactionally,
+    // so the key check lands directly on success.
     await expect(page.getByRole("heading", { name: /is ready\.$/i })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
