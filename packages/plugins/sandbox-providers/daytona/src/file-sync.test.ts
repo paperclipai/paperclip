@@ -159,9 +159,9 @@ describe("daytona file-sync inbound scratch cleanup", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// PAP-5387 — zstd-3 transport compression on the inbound file-mapping path
-// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------
+// zstd-3 transport compression on the inbound file-mapping path
+// ---------------------------------------------------------------
 
 const ZSTD_MIN_SOURCE_BYTES_FOR_TEST = 8 * 1024 * 1024;
 
@@ -290,7 +290,7 @@ function createRealExecSandbox(input?: {
   };
 }
 
-describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () => {
+describe("daytona file-sync inbound zstd transport compression", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
@@ -335,7 +335,7 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       expect(remaining.filter((name) => name.includes(".paperclip-upload"))).toHaveLength(0);
     });
 
-    it("removes the private compressed host temp directory after a successful sync (PAP-5397)", async () => {
+    it("removes the private compressed host temp directory after a successful sync", async () => {
       const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
       const sourcePath = path.join(hostDir, "workspace-upload.tar");
@@ -364,7 +364,7 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       await expect(fs.stat(capturedHostTempDir)).rejects.toThrow();
     });
 
-    it("reports the sync as successful when the post-promotion `.zst` cleanup fails (PAP-5408), and warns with a leftover count but no path (PAP-5412)", async () => {
+    it("reports the sync as successful when the post-promotion `.zst` cleanup fails, and warns with a leftover count but no path", async () => {
       const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
       const sourcePath = path.join(hostDir, "workspace-upload.tar");
@@ -416,7 +416,7 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       }
     });
 
-    it("recovers a transient post-promotion `.zst` cleanup failure with the bounded sweep, without warning (PAP-5412)", async () => {
+    it("recovers a transient post-promotion `.zst` cleanup failure with the bounded sweep, without warning", async () => {
       const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
       const sourcePath = path.join(hostDir, "workspace-upload.tar");
@@ -870,7 +870,7 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       }
     });
 
-    it("removes the private host temp directory when the post-compression size stat throws (PAP-5400)", async () => {
+    it("removes the private host temp directory when the post-compression size stat throws", async () => {
       const realStat = fs.stat.bind(fs);
       const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (targetPath, ...rest) => {
         if (typeof targetPath === "string" && path.basename(targetPath) === "artifact.zst") {
@@ -943,7 +943,7 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       expect(rmCommands.length).toBeGreaterThan(0); // both reserved scratch names swept
     });
 
-    it("stages the compressed artifact in a private 0700 directory with a 0600 file, and removes the directory when the upload fails (PAP-5397)", async () => {
+    it("stages the compressed artifact in a private 0700 directory with a 0600 file, and removes the directory when the upload fails", async () => {
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
       const sourcePath = path.join(hostDir, "big.tar");
       await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
