@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -59,6 +60,7 @@ describeEmbeddedPostgres("question response delivery", () => {
     await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(goals);
     await db.delete(agents);
@@ -263,7 +265,7 @@ describeEmbeddedPostgres("question response delivery", () => {
     });
   });
 
-  it("never steers into the source run and records the single wake fallback", async () => {
+  it("never steers into the source run and keeps a skipped wake retryable", async () => {
     const seeded = await seed({ sourceStatus: "running" });
     const wakeup = vi.fn().mockResolvedValue(null);
     const steer = vi.fn();
@@ -272,11 +274,75 @@ describeEmbeddedPostgres("question response delivery", () => {
       steer,
     }).deliver(seeded.interaction.id);
 
-    expect(outcome).toMatchObject({ status: "fallback_queued", mode: "wake_fallback", targetRunId: null });
+    expect(outcome).toBeNull();
     expect(steer).not.toHaveBeenCalled();
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(wakeup.mock.calls[0])).not.toContain("Internal API");
     expect(JSON.stringify(wakeup.mock.calls[0])).not.toContain("Node.js");
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+      lastErrorCode: "question_response_wake_skipped",
+    });
+  });
+
+  it("reuses a durable wake receipt instead of issuing a duplicate continuation", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const [wakeRequest] = await db.insert(agentWakeupRequests).values({
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      status: "queued",
+      idempotencyKey: `interaction:${seeded.interaction.id}:answered`,
+    }).returning();
+    const [wakeRun] = await db.insert(heartbeatRuns).values({
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "automation",
+      status: "queued",
+      runtimeMode: "legacy",
+      wakeupRequestId: wakeRequest!.id,
+      contextSnapshot: { issueId: seeded.issueId },
+    }).returning();
+    await db.update(agentWakeupRequests).set({ runId: wakeRun!.id })
+      .where(eq(agentWakeupRequests.id, wakeRequest!.id));
+    const wakeup = vi.fn();
+
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer: vi.fn(),
+    }).deliver(seeded.interaction.id);
+
+    expect(outcome).toMatchObject({
+      status: "delivered",
+      mode: "coalesced",
+      targetRunId: wakeRun!.id,
+    });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps a long wake claim leased while the side effect is active", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    let releaseWake!: (value: null) => void;
+    const wakeup = vi.fn(() => new Promise<null>((resolve) => {
+      releaseWake = resolve;
+    }));
+    const service = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer: vi.fn(),
+      claimStaleMs: 40,
+      claimRefreshMs: 5,
+    });
+
+    const deliveryPromise = service.deliver(seeded.interaction.id);
+    await vi.waitFor(() => expect(wakeup).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await expect(service.sweepPending()).resolves.toMatchObject({ scanned: 0 });
+    releaseWake(null);
+    await expect(deliveryPromise).resolves.toBeNull();
   });
 
   it.each(DIRECT_ADAPTER_TYPES)(

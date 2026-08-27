@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agentWakeupRequests,
   agents,
   heartbeatRuns,
   issueQuestionResponseDeliveries,
@@ -21,8 +22,18 @@ import type { heartbeatService } from "./heartbeat.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 
 const DELIVERY_CLAIM_STALE_MS = 30_000;
+const DELIVERY_CLAIM_REFRESH_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const DELIVERY_CORRELATION_PREFIX = "question-response:";
+const DURABLE_WAKE_REQUEST_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "coalesced",
+  "deferred_issue_execution",
+  "retrying",
+  "scheduled_retry",
+] as const;
 
 type QuestionInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type DeliveryRow = typeof issueQuestionResponseDeliveries.$inferSelect;
@@ -55,6 +66,9 @@ export interface QuestionResponseDeliveryServiceOptions {
   /** Optional native steering seam. Direct adapters use the durable wake fallback. */
   steer?: QuestionResponseSteer;
   now?: () => Date;
+  /** Test-only lease timings. Production callers use the bounded defaults. */
+  claimStaleMs?: number;
+  claimRefreshMs?: number;
 }
 
 function readSteeringErrorCode(error: unknown): string {
@@ -235,6 +249,11 @@ export function questionResponseDeliveryService(
 ) {
   const steer = options.steer;
   const now = options.now ?? (() => new Date());
+  const claimStaleMs = Math.max(2, options.claimStaleMs ?? DELIVERY_CLAIM_STALE_MS);
+  const claimRefreshMs = Math.max(
+    1,
+    Math.min(options.claimRefreshMs ?? DELIVERY_CLAIM_REFRESH_MS, Math.floor(claimStaleMs / 2)),
+  );
 
   async function claim(interactionId: string): Promise<DeliveryRow | null> {
     const claimAt = now();
@@ -249,7 +268,7 @@ export function questionResponseDeliveryService(
       if (
         current.status === "delivering"
         && current.lastAttemptAt
-        && current.lastAttemptAt.getTime() > claimAt.getTime() - DELIVERY_CLAIM_STALE_MS
+        && current.lastAttemptAt.getTime() > claimAt.getTime() - claimStaleMs
       ) return null;
       return tx.update(issueQuestionResponseDeliveries).set({
         status: "delivering",
@@ -368,6 +387,60 @@ export function questionResponseDeliveryService(
     return exhausted;
   }
 
+  async function withClaimLease<T>(delivery: DeliveryRow, operation: () => Promise<T>): Promise<T> {
+    let stopped = false;
+    let renewal = Promise.resolve();
+    const timer = setInterval(() => {
+      renewal = renewal.then(async () => {
+        if (stopped) return;
+        const renewedAt = now();
+        const renewed = await db.update(issueQuestionResponseDeliveries).set({
+          lastAttemptAt: renewedAt,
+          updatedAt: renewedAt,
+        }).where(and(
+          eq(issueQuestionResponseDeliveries.id, delivery.id),
+          eq(issueQuestionResponseDeliveries.status, "delivering"),
+        )).returning({ id: issueQuestionResponseDeliveries.id });
+        if (renewed.length === 0) stopped = true;
+      }).catch((error) => {
+        logger.warn({ err: error, deliveryId: delivery.id }, "question response claim lease renewal failed");
+      });
+    }, claimRefreshMs);
+    timer.unref?.();
+    try {
+      return await operation();
+    } finally {
+      stopped = true;
+      clearInterval(timer);
+      await renewal;
+    }
+  }
+
+  async function findDurableWakeRequest(input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+  }) {
+    const request = await db.select({
+      id: agentWakeupRequests.id,
+      runId: agentWakeupRequests.runId,
+      status: agentWakeupRequests.status,
+    }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.agentId, input.agentId),
+      eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+      inArray(agentWakeupRequests.status, [...DURABLE_WAKE_REQUEST_STATUSES]),
+    )).orderBy(desc(agentWakeupRequests.createdAt)).limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!request?.runId) return request ? { request, run: null } : null;
+    const run = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, request.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+    )).limit(1).then((rows) => rows[0] ?? null);
+    return { request, run };
+  }
+
   async function deliver(interactionId: string): Promise<QuestionResponseDeliveryOutcome | null> {
     const claimed = await claim(interactionId);
     if (!claimed) return terminalOutcome(interactionId);
@@ -421,10 +494,11 @@ export function questionResponseDeliveryService(
         errorCode: !issue ? "question_response_issue_missing" : "question_response_target_unavailable",
       });
     }
+    const assigneeAgentId = issue.assigneeAgentId;
 
     const liveRuns = await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, interaction.companyId),
-      eq(heartbeatRuns.agentId, issue.assigneeAgentId),
+      eq(heartbeatRuns.agentId, assigneeAgentId),
       inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
     )).orderBy(asc(heartbeatRuns.createdAt));
     const issueRuns = liveRuns.filter((run) => issueIdFromRun(run) === interaction.issueId);
@@ -462,11 +536,11 @@ export function questionResponseDeliveryService(
     let steeringErrorCode: string | null = null;
     if (successorRunning?.runtimeMode === "native" && steer) {
       try {
-        const acknowledgement = await steer({
+        const acknowledgement = await withClaimLease(claimed, () => steer({
           runId: successorRunning.id,
           message: formatQuestionResponseSteeringMessage(envelope),
           correlationId: claimed.correlationId,
-        });
+        }));
         return recordTerminal({
           delivery: claimed,
           interaction,
@@ -484,43 +558,72 @@ export function questionResponseDeliveryService(
     }
 
     const actor = actorForInteraction(interaction);
+    const wakeIdempotencyKey = `interaction:${interaction.id}:${interaction.status}`;
     try {
-      const wakeRun = await options.heartbeat.wakeup(issue.assigneeAgentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_commented",
-        payload: {
-          issueId: issue.id,
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          sourceCommentId: interaction.sourceCommentId,
-          sourceRunId: interaction.sourceRunId,
-          mutation: "interaction",
-        },
-        idempotencyKey: `interaction:${interaction.id}:${interaction.status}`,
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-        contextSnapshot: {
-          issueId: issue.id,
-          taskId: issue.id,
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          sourceCommentId: interaction.sourceCommentId,
-          sourceRunId: interaction.sourceRunId,
-          wakeReason: "issue_commented",
-          source: "issue.interaction.respond",
-        },
+      const existingWake = await findDurableWakeRequest({
+        companyId: interaction.companyId,
+        agentId: assigneeAgentId,
+        idempotencyKey: wakeIdempotencyKey,
       });
-      const coalesced = Boolean(queuedSuccessor && wakeRun?.id === queuedSuccessor.id);
+      const wakeRun = existingWake?.run ?? (existingWake ? null : await withClaimLease(
+        claimed,
+        () => options.heartbeat.wakeup(assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_commented",
+          payload: {
+            issueId: issue.id,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            sourceCommentId: interaction.sourceCommentId,
+            sourceRunId: interaction.sourceRunId,
+            mutation: "interaction",
+          },
+          idempotencyKey: wakeIdempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            sourceCommentId: interaction.sourceCommentId,
+            sourceRunId: interaction.sourceRunId,
+            wakeReason: "issue_commented",
+            source: "issue.interaction.respond",
+          },
+        }),
+      ));
+      const durableWake = existingWake ?? (wakeRun ? null : await findDurableWakeRequest({
+        companyId: interaction.companyId,
+        agentId: assigneeAgentId,
+        idempotencyKey: wakeIdempotencyKey,
+      }));
+      if (!wakeRun && !durableWake) {
+        const errorCode = "question_response_wake_skipped";
+        const exhausted = await releaseForRetry(claimed, errorCode);
+        if (!exhausted) return null;
+        return recordTerminal({
+          delivery: claimed,
+          interaction,
+          status: "failed",
+          mode: null,
+          targetRunId: null,
+          adapter,
+          errorCode,
+        });
+      }
+      const targetRun = wakeRun ?? durableWake?.run ?? queuedSuccessor ?? null;
+      const coalesced = Boolean(queuedSuccessor && targetRun?.id === queuedSuccessor.id);
       return recordTerminal({
         delivery: claimed,
         interaction,
         status: coalesced ? "delivered" : "fallback_queued",
         mode: coalesced ? "coalesced" : "wake_fallback",
-        targetRunId: wakeRun?.id ?? queuedSuccessor?.id ?? null,
-        adapter: wakeRun?.driverKind ?? adapter,
+        targetRunId: targetRun?.id ?? null,
+        adapter: targetRun?.driverKind ?? adapter,
         errorCode: steeringErrorCode,
       });
     } catch (error) {
@@ -550,7 +653,7 @@ export function questionResponseDeliveryService(
 
   async function sweepPending(limit = 50) {
     const sweepAt = now();
-    const staleAt = new Date(sweepAt.getTime() - DELIVERY_CLAIM_STALE_MS);
+    const staleAt = new Date(sweepAt.getTime() - claimStaleMs);
     await db.update(issueQuestionResponseDeliveries).set({
       status: "pending",
       updatedAt: sweepAt,
