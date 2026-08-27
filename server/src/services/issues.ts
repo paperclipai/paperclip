@@ -8382,16 +8382,54 @@ export function issueService(db: Db) {
         }
       }
 
-      // If this run already owns it and it's in_progress, return it (no self-409)
+      // If this run already owns it and it's in_progress, return it (no self-409).
+      // Re-validate ownership under a row lock before mutating run context, so a
+      // concurrent release or reassignment cannot leave the run context pointing
+      // at an issue the run no longer owns.
       if (
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
-        if (checkoutRunId) {
-          await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
-        }
-        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+        const row = await db.transaction(async (tx) => {
+          const locked = await tx
+            .select({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              checkoutRunId: issues.checkoutRunId,
+            })
+            .from(issues)
+            .where(eq(issues.id, id))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+
+          if (
+            !locked ||
+            locked.assigneeAgentId !== agentId ||
+            locked.status !== "in_progress" ||
+            !sameRunLock(locked.checkoutRunId, checkoutRunId)
+          ) {
+            throw conflict("Issue checkout conflict", {
+              issueId: id,
+              status: locked?.status,
+              assigneeAgentId: locked?.assigneeAgentId,
+              checkoutRunId: locked?.checkoutRunId,
+              executionRunId: null,
+            });
+          }
+
+          if (checkoutRunId) {
+            await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId, tx);
+          }
+
+          return tx
+            .select()
+            .from(issues)
+            .where(eq(issues.id, id))
+            .then((rows) => rows[0] ?? null);
+        });
+
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
         return enriched;
