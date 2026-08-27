@@ -791,6 +791,7 @@ export interface Issue {
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
+  blockedByIssueIds?: string[];
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;

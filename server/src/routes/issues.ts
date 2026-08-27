@@ -6463,6 +6463,7 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
         blockedBy: relationsWithRecoveryActions.blockedBy,
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
@@ -6723,6 +6724,7 @@ export function issueRoutes(
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
+      blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
@@ -8804,8 +8806,13 @@ export function issueRoutes(
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
+    const relations = await svc.getRelationSummaries(issue.id);
+
     res.status(201).json({
       ...issue,
+      blockedByIssueIds: relations.blockedBy.map((relation) => relation.id),
+      blockedBy: relations.blockedBy,
+      blocks: relations.blocks,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
@@ -10089,6 +10096,7 @@ export function issueRoutes(
       ? issueReferencesSvc.diffIssueReferenceSummary(updateReferenceSummaryBefore, updateReferenceSummaryAfter)
       : null;
     let issueResponse: typeof issue & {
+      blockedByIssueIds?: string[];
       blockedBy?: unknown;
       blocks?: unknown;
       activeRecoveryAction?: unknown;
@@ -10100,8 +10108,7 @@ export function issueRoutes(
       updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
-        blockedByIssueIds:
-          issue.blockedByIssueIds ?? [...new Set(req.body.blockedByIssueIds as string[])].sort(),
+        blockedByIssueIds: updatedRelations.blockedBy.map((relation) => relation.id),
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };
