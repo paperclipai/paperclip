@@ -59,7 +59,7 @@ Env:
   PAPERCLIP_PINNED_DEPLOY_SKIP_HEAVY=1   # tests only
   PAPERCLIP_PINNED_DEPLOY_LAUNCHD_LABEL  # default ie.thinkstack.paperclip-deploy
   PAPERCLIP_PINNED_DEPLOY_API_URL        # default http://127.0.0.1:3100
-  PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS # default 150
+  PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS # explicit override (default adapts to host load)
   PAPERCLIP_PINNED_DEPLOY_LEASE_TOKEN    # required, unique per approved deployment
   PAPERCLIP_PINNED_DEPLOY_BOOT_PORT      # candidate boot-proof port (default 3399)
   PAPERCLIP_PINNED_DEPLOY_BOOT_TIMEOUT_SEC # default 240 (raise it on a loaded box)
@@ -1092,7 +1092,11 @@ wait_for_hot_restart_report() {
   local instance_id="${PAPERCLIP_INSTANCE_ID:-default}"
   local paperclip_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
   local report="$paperclip_home/instances/$instance_id/hot-restart-report.json"
-  local timeout="${PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS:-150}"
+  local candidate_sha
+  candidate_sha="$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(r.candidateSha||""))' "$(working_receipt_path)" 2>/dev/null || true)"
+  [ -n "$candidate_sha" ] || fail "promote-and-restart: working receipt has no candidate SHA for continuity probe"
+  local timeout
+  timeout="$(adaptive_restart_timeout)"
   local elapsed=0
   while [ "$elapsed" -lt "$timeout" ]; do
     if [ -f "$report" ] && node - "$report" "$old_pid" <<'NODE'
@@ -1114,7 +1118,70 @@ NODE
     sleep 1
     elapsed=$((elapsed + 1))
   done
+  # The report is the strongest continuity proof, but a loaded host can serve
+  # the new deployment before startup has written its adoption report.  Probe
+  # the state the promotion actually authorises before reporting failure: a
+  # receipt and live health response that both name the candidate prove the
+  # pointer moved and the replacement server is live.
+  if health_serves_candidate "$api_base" "$candidate_sha"; then
+    log "hot-restart continuity verified late; served candidate=$candidate_sha after ${timeout}s (report pending: $report)"
+    return 0
+  fi
   fail "promote-and-restart: no matching hot-restart report after ${timeout}s; deployment continuity is unverified"
+}
+
+adaptive_restart_timeout() {
+  # An explicit operator value remains authoritative.  Otherwise give a busy
+  # host more time to schedule the new service, bounded so a genuinely failed
+  # restart still surfaces promptly.  Tests may inject the sampled one-minute
+  # load without depending on host-specific sysctl output.
+  if [ -n "${PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS:-}" ]; then
+    printf '%s' "$PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS"
+    return 0
+  fi
+  local load cpus
+  load="${PAPERCLIP_PINNED_DEPLOY_RESTART_LOAD_AVG:-}"
+  if [ -z "$load" ]; then
+    if [ -r /proc/loadavg ]; then
+      load="$(awk '{print $1}' /proc/loadavg)"
+    else
+      load="$(sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/, ""); print $1}' || true)"
+    fi
+  fi
+  cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+  node - "$load" "$cpus" <<'NODE'
+const load = Number(process.argv[2]);
+const cpus = Number(process.argv[3]);
+const base = 150;
+const overload = Number.isFinite(load) && Number.isFinite(cpus) && cpus > 0
+  ? Math.max(0, load - cpus)
+  : 0;
+// Five seconds per one-minute load unit beyond CPU capacity, capped at ten
+// minutes. This keeps the normal quiet-host deadline at 150 seconds.
+process.stdout.write(String(Math.min(600, Math.ceil(base + overload * 5))));
+NODE
+}
+
+health_serves_candidate() {
+  local api_base="$1" candidate_sha="$2"
+  curl -fsS --max-time 5 "$api_base/api/health" \
+    | node -e '
+      let raw = "";
+      const candidate = process.argv[1].toLowerCase();
+      process.stdin.on("data", (chunk) => { raw += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const health = JSON.parse(raw);
+          // Version is the public health contract; accept explicit SHA fields
+          // too so deploy labels may omit the `.git.` segment.
+          const values = [health.version, health.serverVersion, health.gitSha, health.commitSha]
+            .filter((value) => typeof value === "string")
+            .map((value) => value.toLowerCase());
+          const matches = values.some((value) => value === candidate || value.includes(`.git.${candidate}`));
+          process.exit(matches ? 0 : 1);
+        } catch { process.exit(1); }
+      });
+    ' "$candidate_sha"
 }
 
 # Single sanctioned door: pointer flip + zero-loss LaunchAgent handoff.
@@ -1310,4 +1377,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

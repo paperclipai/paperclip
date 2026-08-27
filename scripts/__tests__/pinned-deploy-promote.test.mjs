@@ -793,6 +793,41 @@ test("sanctioned restart uses SIGTERM so the old server can write its handoff sn
   assert.doesNotMatch(source, /^\s*launchctl kickstart -k/m);
 });
 
+test("restart continuity wait adapts to load and probes served candidate before failing", () => {
+  const state = mkdtempSync(path.join(os.tmpdir(), "pinned-restart-probe-"));
+  try {
+    const common = {
+      PAPERCLIP_PINNED_DEPLOY_STATE_DIR: state,
+      PAPERCLIP_PINNED_DEPLOY_RECEIPT_DIR: path.join(state, "receipts"),
+    };
+    const adaptive = runOk("bash", ["-c", 'source "$1"; adaptive_restart_timeout', "--", PROMOTE], {
+      ...common,
+      PAPERCLIP_PINNED_DEPLOY_RESTART_LOAD_AVG: "10000",
+    });
+    assert.equal(adaptive.stdout.trim(), "600", "high load gets the capped adaptive deadline");
+
+    const override = runOk("bash", ["-c", 'source "$1"; adaptive_restart_timeout', "--", PROMOTE], {
+      ...common,
+      PAPERCLIP_PINNED_DEPLOY_RESTART_TIMEOUT_SECONDS: "17",
+    });
+    assert.equal(override.stdout.trim(), "17", "operator timeout override stays authoritative");
+
+    const probe = 'source "$1"; curl() { printf "%s" "$HEALTH_BODY"; }; health_serves_candidate http://unused "$2"';
+    const served = sh("bash", ["-c", probe, "--", PROMOTE, "d15b55b0e"], {
+      ...common,
+      HEALTH_BODY: '{"version":"2026.722.0+1278.git.d15b55b0e"}',
+    });
+    assert.equal(served.status, 0, served.stderr);
+    const stale = sh("bash", ["-c", probe, "--", PROMOTE, "d15b55b0e"], {
+      ...common,
+      HEALTH_BODY: '{"version":"2026.722.0+1278.git.other"}',
+    });
+    assert.notEqual(stale.status, 0, "a health response for another commit must not verify continuity");
+  } finally {
+    rmSync(state, { recursive: true, force: true });
+  }
+});
+
 test("rollback-drill passes in isolated state dir", () => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-rollback-"));
   try {
