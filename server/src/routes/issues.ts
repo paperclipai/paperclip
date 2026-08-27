@@ -247,6 +247,7 @@ import {
 } from "../services/issue-thread-interaction-resolution.js";
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
+  bindCheckoutRunSourceIssueIfUnset,
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
@@ -11055,6 +11056,18 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     if (updated?.harnessKind === "skill_test") {
       await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
+    }
+
+    // Belt-and-suspenders: bind the calling actor's own run's source issue at
+    // checkout time when unbound, rather than only relying on that run's
+    // first comment/PATCH to trigger the bind-on-first-write path.
+    if (req.actor.type === "agent" && checkoutRunId) {
+      await bindCheckoutRunSourceIssueIfUnset(db, {
+        companyId: issue.companyId,
+        runId: checkoutRunId,
+        agentId: req.body.agentId,
+        issueId: issue.id,
+      });
     }
 
     await logActivity(db, {
