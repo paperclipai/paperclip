@@ -50,44 +50,68 @@ describe("closeRegisteredClients", () => {
     server = null;
   });
 
-  it("ends a reserved connection before its backend dies, so no query can reach a null socket", async () => {
-    const started = await startFakePostgresServer();
-    server = started.server;
-    const url = `postgres://test:test@127.0.0.1:${started.port}/test`;
+  it(
+    "ends a reserved connection before its backend dies, so no query can reach a null socket",
+    async () => {
+      const started = await startFakePostgresServer();
+      server = started.server;
+      const url = `postgres://test:test@127.0.0.1:${started.port}/test`;
 
-    const db = createDb(url, { connectTimeoutSeconds: 5 });
-    // `sql.reserve()` pins one physical connection. Drizzle `db.transaction()`
-    // reaches the same surface through `sql.begin()`, so this stands in for a
-    // suite that left a transaction connection open.
-    const reserved = await db.$client.reserve();
+      const db = createDb(url, { connectTimeoutSeconds: 5 });
+      // `sql.reserve()` pins one physical connection. Drizzle `db.transaction()`
+      // reaches the same surface through `sql.begin()`, so this stands in for a
+      // suite that left a transaction connection open.
+      const reserved = await db.$client.reserve();
 
-    const order: string[] = [];
+      // The driver calls this only after it has fully processed a connection
+      // close: its socket reference cleared and any in-flight query failed.
+      // Waiting for it, instead of a fixed number of ticks, is what the
+      // historical crash reproduction does — it is real observed state from
+      // the driver, not a guess at timing.
+      const driverProcessedClose = new Promise<void>((resolve) => {
+        db.$client.options.onclose = () => resolve();
+      });
 
-    // This is the order our fixture owns: end every registered client for
-    // this host and port before a caller stops the cluster it points at.
-    await closeRegisteredClients(url);
-    order.push("clients-closed");
+      // This is the order our fixture owns: end every registered client for
+      // this host and port before a caller stops the cluster it points at.
+      await closeRegisteredClients(url);
 
-    // Simulate the cluster stop that follows in the real fixture. Before the
-    // fix, killing the backend here while a client still held the reserved
-    // connection open crashed the process on a later deferred write.
-    for (const socket of started.backendSockets) socket.destroy();
-    order.push("cluster-stopped");
+      // Simulate the cluster stop that follows in the real fixture. Before the
+      // fix, killing the backend here while a client still held the reserved
+      // connection open crashed the process on a later deferred write.
+      for (const socket of started.backendSockets) socket.destroy();
+      await driverProcessedClose;
 
-    expect(order).toEqual(["clients-closed", "cluster-stopped"]);
+      // A query sent only after the driver finished processing the close still
+      // buffers its frame for a deferred flush one tick later. If the fix let
+      // the reserved connection outlive the backend, that flush reaches a
+      // cleared socket reference and throws from inside the timer callback —
+      // this specific promise then never settles, because nothing on that
+      // path ever calls its resolve or reject. This test's own timeout (set
+      // below, on the `it` call) is what turns that hang into a reported
+      // failure, alongside the unhandled exception the crash raises
+      // separately.
+      const settled = await reserved`select 1`.catch((error: unknown) => error);
+      expect(settled).toBeInstanceOf(Error);
 
-    // Let any timer the driver's teardown scheduled run to completion. If a
-    // deferred write still fired against a null socket, it would surface here
-    // as an unhandled error and fail this test file.
-    await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
-
-    // A query on the reserved connection rejects through the ordinary
-    // closed-connection path; it does not throw past this call.
-    const settled = await reserved`select 1`.catch((error: unknown) => error);
-    expect(settled).toBeInstanceOf(Error);
-  });
+      // Let the deferred flush actually run. If it still fires against a null
+      // socket, it surfaces here as an unhandled error and fails this test
+      // file — the exact signature the fix protects against.
+      await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+    },
+    2_000,
+  );
 
   it("does nothing when no client is registered for a host and port", async () => {
     await expect(closeRegisteredClients("postgres://test:test@127.0.0.1:1/test")).resolves.toBeUndefined();
+  });
+
+  it("does not throw when createDb receives a URL that new URL() cannot parse", async () => {
+    let db: ReturnType<typeof createDb> | undefined;
+    expect(() => {
+      db = createDb("", { connectTimeoutSeconds: 1 });
+    }).not.toThrow();
+
+    await db?.$client.end({ timeout: 0 }).catch(() => {});
   });
 });

@@ -25,6 +25,22 @@ function hostPortKey(url: string): string {
   return `${parsed.hostname}:${parsed.port || "5432"}`;
 }
 
+/**
+ * Same as `hostPortKey`, but returns `null` instead of throwing when the URL
+ * does not parse. `postgres(url)` tolerates a value `new URL()` rejects (an
+ * empty string falls back to the `PG*` environment variables), so `createDb`
+ * must tolerate it too: skip the registry entry and let the driver decide
+ * the outcome, instead of throwing an error the driver itself would not.
+ */
+function hostPortKeyOrNull(url: string): string | null {
+  try {
+    return hostPortKey(url);
+  } catch (error) {
+    if (error instanceof TypeError && (error as NodeJS.ErrnoException).code === "ERR_INVALID_URL") return null;
+    throw error;
+  }
+}
+
 // Tracks every client `createDb` hands out, keyed by host and port, so a test
 // fixture can end them before it stops the Postgres cluster they point at. A
 // `WeakRef` plus `FinalizationRegistry` means a long-lived process (a real
@@ -177,7 +193,8 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = options ?? databaseClientOptionsFromEnv();
   const sql = postgres(url, postgresJsOptions(resolved));
-  registerClient(hostPortKey(url), sql);
+  const key = hostPortKeyOrNull(url);
+  if (key) registerClient(key, sql);
   return drizzlePg(sql, { schema });
 }
 
