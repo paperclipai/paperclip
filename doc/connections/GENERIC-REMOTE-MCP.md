@@ -5,7 +5,7 @@ Paperclip code change. A curated `AppDefinition` is a **convenience layer** —
 branding, tailored fields, scoped defaults, support copy — not a prerequisite.
 
 This is the documented baseline for connecting anything. Read
-[Connector playbook](./CONNECTOR-PLAYBOOK.md) when you want to add the branded
+[Connection authoring runbook](./CONNECTOR-PLAYBOOK.md) when you want to add the branded
 convenience layer on top for a vendor Paperclip should promote.
 
 Accepted in the [generic remote MCP plan](/PAP/issues/PAP-17078#document-plan),

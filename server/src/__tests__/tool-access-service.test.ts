@@ -45,7 +45,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { classifyRisk, normalizeConnectionMethodConfig, toolAccessService } from "../services/tool-access.js";
+import {
+  classifyRisk,
+  normalizeConnectionMethodConfig,
+  projectConnectionMethodToolInputSchema,
+  projectConnectionMethodToolArguments,
+  toolAccessService,
+} from "../services/tool-access.js";
 import { accessService } from "../services/access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
@@ -10972,16 +10978,24 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ name: "brand_new_tool" }, "posthog")).toBe("write");
     expect(classifyRisk({ name: "exec" }, "posthog")).toBe("destructive");
   });
+
+  it("keeps Shopify checkout completion and cancellation behind destructive-action approval", () => {
+    expect(classifyRisk({ name: "cancel_cart" }, "shopify")).toBe("destructive");
+    expect(classifyRisk({ name: "cancel_checkout" }, "shopify")).toBe("destructive");
+    expect(classifyRisk({ name: "complete_checkout" }, "shopify")).toBe("destructive");
+    expect(classifyRisk({ name: "create_cart" }, "shopify")).toBe("write");
+  });
 });
 
 describe("normalizeConnectionMethodConfig", () => {
   const posthog = getConnectableAppDefinition("posthog")!;
   const apiKeyMethod = posthog.methods.find((method) => method.key === "mcp-api-key")!;
   const clickhouseMethod = getConnectableAppDefinition("clickhouse")!.methods[0]!;
-  const shopifyMethod = getConnectableAppDefinition("shopify")!.methods[0]!;
+  const shopifyMethods = getConnectableAppDefinition("shopify")!.methods;
+  const shopifyMethod = shopifyMethods.find((method) => method.key === "storefront-mcp")!;
+  const shopifyUcpMethod = shopifyMethods.find((method) => method.key === "ucp-commerce")!;
 
   it("builds a concrete Shopify endpoint from the validated store domain", () => {
-    const shopifyMethod = getConnectableAppDefinition("shopify")!.methods[0]!;
     expect(normalizeConnectionMethodConfig(shopifyMethod, {
       storeDomain: "paperclip-demo.myshopify.com",
     })).toEqual({
@@ -11045,5 +11059,53 @@ describe("normalizeConnectionMethodConfig", () => {
     expect(() => normalizeConnectionMethodConfig(shopifyMethod, {
       storeDomain: "shop.myshopify.com@example.com",
     })).toThrow("Store domain has an invalid value");
+    expect(normalizeConnectionMethodConfig(shopifyUcpMethod, {
+      storeDomain: "rcvbsa-pz.myshopify.com",
+    })).toMatchObject({
+      url: "https://rcvbsa-pz.myshopify.com/api/ucp/mcp",
+    });
+    expect(projectConnectionMethodToolArguments(shopifyUcpMethod, {
+      catalog: { query: "shirts" },
+      meta: {
+        caller: "kept",
+        "ucp-agent": { profile: "https://attacker.example/profile.json" },
+      },
+    })).toEqual({
+      catalog: { query: "shirts" },
+      meta: {
+        caller: "kept",
+        "ucp-agent": {
+          profile: "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json",
+        },
+      },
+    });
+    expect(projectConnectionMethodToolInputSchema(shopifyUcpMethod, {
+      type: "object",
+      required: ["meta", "catalog"],
+      properties: {
+        meta: {
+          type: "object",
+          required: ["ucp-agent", "idempotency-key"],
+          properties: {
+            "ucp-agent": { type: "object" },
+            "idempotency-key": { type: "string" },
+          },
+        },
+        catalog: { type: "object" },
+      },
+    })).toEqual({
+      type: "object",
+      required: ["meta", "catalog"],
+      properties: {
+        meta: {
+          type: "object",
+          required: ["idempotency-key"],
+          properties: {
+            "idempotency-key": { type: "string" },
+          },
+        },
+        catalog: { type: "object" },
+      },
+    });
   });
 });

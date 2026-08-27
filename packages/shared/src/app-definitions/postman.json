@@ -29,13 +29,18 @@
       },
       "guidanceMd": "Connect Postman in the browser. A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints.",
       "riskTier": "S3",
-      "label": "US · Minimal",
+      "label": "US · Browser sign-in",
       "consoleLinks": {
         "docs": "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server"
       },
       "warnings": [
         "A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints."
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "minimal",
+        "label": "Minimal",
+        "description": "Essential workspace, collection, and environment tools with the smallest tool catalog."
+      }
     },
     {
       "key": "mcp-oauth-code",
@@ -50,13 +55,18 @@
       },
       "guidanceMd": "Connect Postman in the browser. A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints.",
       "riskTier": "S3",
-      "label": "US · Code",
+      "label": "US · Browser sign-in",
       "consoleLinks": {
         "docs": "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server"
       },
       "warnings": [
         "A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints."
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "code",
+        "label": "Code",
+        "description": "Tools for generating client code from API definitions."
+      }
     },
     {
       "key": "mcp-oauth-full",
@@ -71,13 +81,18 @@
       },
       "guidanceMd": "Connect Postman in the browser. A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints.",
       "riskTier": "S3",
-      "label": "US · Full",
+      "label": "US · Browser sign-in",
       "consoleLinks": {
         "docs": "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server"
       },
       "warnings": [
         "A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints."
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Full",
+        "description": "All Postman API tools, including write-capable collaboration and advanced features."
+      }
     },
     {
       "key": "mcp-eu-key-minimal",
@@ -92,7 +107,7 @@
       },
       "guidanceMd": "Use a customer-created Postman key. A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints.",
       "riskTier": "S3",
-      "label": "EU · Minimal",
+      "label": "EU · API key",
       "credentialFields": [
         {
           "key": "authorization",
@@ -105,8 +120,8 @@
       ],
       "keyPlacement": {
         "location": "header",
-        "name": "X-API-Key",
-        "prefix": null
+        "name": "Authorization",
+        "prefix": "Bearer "
       },
       "consoleLinks": {
         "keys": "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
@@ -114,7 +129,12 @@
       },
       "warnings": [
         "A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints."
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "minimal",
+        "label": "Minimal",
+        "description": "Essential workspace, collection, and environment tools with the smallest tool catalog."
+      }
     },
     {
       "key": "mcp-eu-key-code",
@@ -129,7 +149,7 @@
       },
       "guidanceMd": "Use a customer-created Postman key. A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints.",
       "riskTier": "S3",
-      "label": "EU · Code",
+      "label": "EU · API key",
       "credentialFields": [
         {
           "key": "authorization",
@@ -142,8 +162,8 @@
       ],
       "keyPlacement": {
         "location": "header",
-        "name": "X-API-Key",
-        "prefix": null
+        "name": "Authorization",
+        "prefix": "Bearer "
       },
       "consoleLinks": {
         "keys": "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
@@ -151,7 +171,12 @@
       },
       "warnings": [
         "A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints."
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "code",
+        "label": "Code",
+        "description": "Tools for generating client code from API definitions."
+      }
     },
     {
       "key": "mcp-eu-key-full",
@@ -166,7 +191,7 @@
       },
       "guidanceMd": "Use a customer-created Postman key. A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints.",
       "riskTier": "S3",
-      "label": "EU · Full",
+      "label": "EU · API key",
       "credentialFields": [
         {
           "key": "authorization",
@@ -179,8 +204,8 @@
       ],
       "keyPlacement": {
         "location": "header",
-        "name": "X-API-Key",
-        "prefix": null
+        "name": "Authorization",
+        "prefix": "Bearer "
       },
       "consoleLinks": {
         "keys": "https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server",
@@ -188,7 +213,12 @@
       },
       "warnings": [
         "A Postman account; OAuth is available for US endpoints and API keys are required for EU endpoints."
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Full",
+        "description": "All Postman API tools, including write-capable collaboration and advanced features."
+      }
     }
   ]
 }

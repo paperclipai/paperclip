@@ -28,6 +28,8 @@ const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github")!
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
+const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
+const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
@@ -495,6 +497,53 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
+  it("submits the Postman access mode selected on the setup screen", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [POSTMAN] });
+    mockParams.appKey = "postman";
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-postman",
+      application: { id: "app-postman", name: "Postman" },
+      connection: { id: "conn-postman" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://oauth.pstmn.io/authorize?state=opaque" },
+    });
+
+    await render();
+    await passAccessStep();
+
+    const full = radioContaining("Full");
+    const code = radioContaining("Code");
+    expect(full).toBeTruthy();
+    expect(code).toBeTruthy();
+    expect(full?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      code?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(code?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      full?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(full?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("US · Browser sign-in")?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "postman",
+      connectionMethodKey: "mcp-oauth-full",
+    }));
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://oauth.pstmn.io/authorize?state=opaque",
+    );
+  });
+
   it("opens a manual OAuth app from the same source deep link Browse uses", async () => {
     listGalleryMock.mockResolvedValue({ apps: [ASANA] });
     mockParams.appKey = undefined;
@@ -540,6 +589,22 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(radioContaining("Read only")?.getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).toContain("Before connecting, enroll the signed-in Workspace account");
     expect(container.textContent).toContain("Your OAuth app");
+  });
+
+  it("explains Shopify's public-storefront gate before collecting the store domain", async () => {
+    mockParams.appKey = "shopify";
+    listGalleryMock.mockResolvedValue({ apps: [SHOPIFY] });
+
+    await render();
+
+    expect(container.textContent).toContain("Launch the storefront before connecting");
+    expect(container.textContent).toContain("Storefront visibility to Public");
+    expect(container.textContent).toContain("private or password-protected storefront returns HTTP 401");
+    expect(
+      Array.from(container.querySelectorAll<HTMLAnchorElement>("a")).find((link) =>
+        link.textContent?.includes("Open Shopify Admin"),
+      )?.href,
+    ).toBe("https://admin.shopify.com/");
   });
 
   /**

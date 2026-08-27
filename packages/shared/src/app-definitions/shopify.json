@@ -11,23 +11,31 @@
     "logoUrl": "/brands/apps/shopify.svg"
   },
   "urlPatterns": [
+    "https://*.myshopify.com/api/ucp/mcp",
     "https://*.myshopify.com/api/mcp"
   ],
   "methods": [
     {
-      "key": "storefront-mcp",
+      "key": "ucp-commerce",
       "transport": "mcp_remote",
       "auth": "none",
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use a store's public myshopify.com domain. No Shopify app or OAuth registration is required.",
+      "whenToUse": "Recommended for Shopify's current UCP catalog, cart, and checkout tools.",
       "defaults": {
-        "serverUrlTemplate": "https://{storeDomain}/api/mcp"
+        "serverUrlTemplate": "https://{storeDomain}/api/ucp/mcp",
+        "toolArgumentDefaults": {
+          "meta": {
+            "ucp-agent": {
+              "profile": "https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json"
+            }
+          }
+        }
       },
-      "guidanceMd": "Connect Shopify's official Storefront MCP server for shopper-facing catalog, policy, and cart tools.",
+      "guidanceMd": "Connect Shopify's current UCP server for shopper-facing catalog and commerce tools. Paperclip supplies the required agent profile automatically.",
       "riskTier": "S3",
-      "label": "Connect a Shopify storefront",
+      "label": "Shopify UCP commerce",
       "tenantFields": [
         {
           "key": "storeDomain",
@@ -35,7 +43,47 @@
           "type": "text",
           "required": true,
           "placeholder": "your-store.myshopify.com",
-          "helperMd": "Enter the full myshopify.com domain without https://.",
+          "helperMd": "Enter the permanent myshopify.com domain without https://. Custom storefront domains are not the MCP endpoint.",
+          "validation": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*\\.myshopify\\.com$",
+            "maxLength": 255
+          }
+        }
+      ],
+      "consoleLinks": {
+        "docs": "https://shopify.dev/docs/agents/catalog/storefront-catalog"
+      },
+      "warnings": [
+        "This is Shopify's shopper-facing UCP server, not Admin API access. It does not manage merchant products or customers.",
+        "The storefront must be public. A private or password-protected storefront returns HTTP 401 even when the merchant is signed in to Shopify Admin.",
+        "Paperclip currently uses Shopify's documented hosted agent-profile fixture while Paperclip's production UCP profile is being established."
+      ],
+      "requiredResourceFilters": [
+        "store"
+      ]
+    },
+    {
+      "key": "storefront-mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use Shopify's compatibility server when agents need storefront policy and FAQ search.",
+      "defaults": {
+        "serverUrlTemplate": "https://{storeDomain}/api/mcp"
+      },
+      "guidanceMd": "Connect Shopify's official Storefront MCP server for shopper-facing catalog, policy, and cart tools.",
+      "riskTier": "S3",
+      "label": "Storefront policies and compatibility tools",
+      "tenantFields": [
+        {
+          "key": "storeDomain",
+          "label": "Store domain",
+          "type": "text",
+          "required": true,
+          "placeholder": "your-store.myshopify.com",
+          "helperMd": "Enter the permanent myshopify.com domain without https://. Custom storefront domains are not the MCP endpoint.",
           "validation": {
             "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*\\.myshopify\\.com$",
             "maxLength": 255
@@ -47,11 +95,23 @@
       },
       "warnings": [
         "This is Shopify's Storefront MCP, not Admin API access. It does not manage merchant products, orders, or customers.",
-        "The storefront must be publicly reachable. Password-protected or restricted trial stores can return HTTP 401."
+        "The storefront must be public. A private or password-protected storefront returns HTTP 401 even when the merchant is signed in to Shopify Admin."
       ],
       "requiredResourceFilters": [
         "store"
       ]
     }
-  ]
+  ],
+  "docsUrl": "https://shopify.dev/docs/apps/build/storefront-mcp/servers/storefront",
+  "setupPrerequisite": {
+    "title": "Launch the storefront before connecting",
+    "description": "Shopify's Storefront MCP is a public, no-auth endpoint. Paperclip cannot use the merchant's Shopify Admin session to bypass a private storefront.",
+    "steps": [
+      "Select a Shopify plan; Shopify keeps trial storefronts private until a plan is selected.",
+      "In Shopify Admin, open Online Store → Preferences and set Storefront visibility to Public (remove password protection).",
+      "Use the permanent <store>.myshopify.com domain in Paperclip, even if the store also has a custom domain."
+    ],
+    "actionLabel": "Open Shopify Admin",
+    "actionUrl": "https://admin.shopify.com/"
+  }
 }

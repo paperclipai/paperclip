@@ -927,6 +927,88 @@ export function projectedConnectionHeaders(connection: typeof toolConnections.$i
   return normalizeConnectionMethodConfig(method, asRecord(connection.config.methodConfig)).headers ?? {};
 }
 
+function mergeManagedToolArguments(
+  supplied: Record<string, unknown>,
+  managed: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...supplied };
+  for (const [key, value] of Object.entries(managed)) {
+    const suppliedValue = merged[key];
+    merged[key] = asRecord(value) === value && asRecord(suppliedValue) === suppliedValue
+      ? mergeManagedToolArguments(suppliedValue as Record<string, unknown>, value as Record<string, unknown>)
+      : value;
+  }
+  return merged;
+}
+
+export function projectConnectionMethodToolArguments(
+  method: ConnectionMethodDef,
+  parameters: unknown,
+): Record<string, unknown> {
+  const supplied = asRecord(parameters);
+  const managed = method.defaults?.toolArgumentDefaults;
+  return managed ? mergeManagedToolArguments(supplied, managed) : supplied;
+}
+
+function stripManagedToolArgumentSchema(
+  schema: Record<string, unknown>,
+  managed: Record<string, unknown>,
+): Record<string, unknown> {
+  const properties = asRecord(schema.properties);
+  if (Object.keys(properties).length === 0) return schema;
+  const nextProperties = { ...properties };
+  for (const [key, managedValue] of Object.entries(managed)) {
+    const propertySchema = asRecord(nextProperties[key]);
+    const managedRecord = asRecord(managedValue);
+    if (Object.keys(propertySchema).length === 0 || Object.keys(managedRecord).length === 0) {
+      delete nextProperties[key];
+      continue;
+    }
+    const projectedProperty = stripManagedToolArgumentSchema(propertySchema, managedRecord);
+    if (Object.keys(asRecord(projectedProperty.properties)).length === 0) delete nextProperties[key];
+    else nextProperties[key] = projectedProperty;
+  }
+  const nextSchema: Record<string, unknown> = { ...schema, properties: nextProperties };
+  if (Array.isArray(schema.required)) {
+    const required = schema.required.filter((key): key is string => typeof key === "string" && key in nextProperties);
+    if (required.length > 0) nextSchema.required = required;
+    else delete nextSchema.required;
+  }
+  return nextSchema;
+}
+
+export function projectConnectionMethodToolInputSchema(
+  method: ConnectionMethodDef,
+  inputSchema: Record<string, unknown>,
+): Record<string, unknown> {
+  const managed = method.defaults?.toolArgumentDefaults;
+  return managed ? stripManagedToolArgumentSchema(inputSchema, managed) : inputSchema;
+}
+
+export function projectedConnectionToolArguments(
+  connection: typeof toolConnections.$inferSelect,
+  parameters: unknown,
+): Record<string, unknown> {
+  const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string"
+    ? connection.config.sourceTemplateKey
+    : null;
+  const app = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+  if (!app) return asRecord(parameters);
+  return projectConnectionMethodToolArguments(connectionMethodForConnection(app, connection), parameters);
+}
+
+export function projectedConnectionToolInputSchema(
+  connection: typeof toolConnections.$inferSelect,
+  inputSchema: Record<string, unknown>,
+): Record<string, unknown> {
+  const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string"
+    ? connection.config.sourceTemplateKey
+    : null;
+  const app = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+  if (!app) return inputSchema;
+  return projectConnectionMethodToolInputSchema(connectionMethodForConnection(app, connection), inputSchema);
+}
+
 function googleSheetsAllowedSpreadsheetIds(configValues: Record<string, unknown> | undefined): string[] {
   const raw = configValues?.allowedSpreadsheetIds;
   const values = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\n,]/g) : [];
@@ -1233,7 +1315,11 @@ function toCatalogEntryForConnection(
   row: typeof toolCatalogEntries.$inferSelect,
   connection: typeof toolConnections.$inferSelect,
 ): ToolCatalogEntry {
-  const catalogEntry = toCatalogEntry(row);
+  const rawCatalogEntry = toCatalogEntry(row);
+  const catalogEntry = {
+    ...rawCatalogEntry,
+    inputSchema: projectedConnectionToolInputSchema(connection, rawCatalogEntry.inputSchema ?? {}),
+  };
   if (
     connection.transport === "local_stdio"
     && asRecord(connection.config).templateId === GOOGLE_SHEETS_TEMPLATE_ID
@@ -1737,6 +1823,12 @@ const NOTION_WRITE_TOOLS = new Set([
   "notion-update-view",
 ]);
 
+const SHOPIFY_DESTRUCTIVE_TOOLS = new Set([
+  "cancel-cart",
+  "cancel-checkout",
+  "complete-checkout",
+]);
+
 function normalizedProviderToolName(toolName: string): string {
   return toolName
     .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
@@ -1749,6 +1841,7 @@ export function classifyRisk(tool: McpToolDescriptor, sourceTemplateKey?: string
   if (annotations.destructiveHint === true || annotations.destructive === true) return "destructive";
   const normalizedToolName = normalizedProviderToolName(tool.name);
   if (sourceTemplateKey === "posthog" && normalizedToolName === "exec") return "destructive";
+  if (sourceTemplateKey === "shopify" && SHOPIFY_DESTRUCTIVE_TOOLS.has(normalizedToolName)) return "destructive";
   // Notion's hosted MCP catalog contains mutations whose names do not use one
   // of the generic create/update/delete verbs (move, duplicate, and convert).
   // Keep all reviewed tools explicit so provider changes are visible in code,

@@ -68,7 +68,11 @@ import {
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
-import { projectedConnectionHeaders } from "./tool-access.js";
+import {
+  projectedConnectionHeaders,
+  projectedConnectionToolArguments,
+  projectedConnectionToolInputSchema,
+} from "./tool-access.js";
 import { parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { guardedRemoteHttpFetch, type GuardedRemoteHttpFetchOptions } from "./remote-http-fetch.js";
 import {
@@ -1001,7 +1005,7 @@ export function createToolGatewayService(
         ? `${baseName}-${shortStableId(catalogEntry.id)}`
         : baseName;
       const applicationKey = application.applicationKey ?? null;
-      const inputSchema = catalogEntry.inputSchema ?? {};
+      const inputSchema = projectedConnectionToolInputSchema(connection, catalogEntry.inputSchema ?? {});
       const outputSchema = catalogEntry.outputSchema ?? null;
       const annotations = catalogEntry.annotations ?? {};
       const risk = riskFromCatalogEntry(catalogEntry);
@@ -3791,6 +3795,7 @@ export function createToolGatewayService(
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
+    const projectedParameters = projectedConnectionToolArguments(connection, parameters);
     const grant = await resolveConnectionGrant(session, connection);
     const composioScopeRevision = `${grant.id}:${grant.status}:${grant.updatedAt.toISOString()}`;
     const composioChild = composioChildConfig(connection);
@@ -3871,7 +3876,7 @@ export function createToolGatewayService(
           method: "tools/call",
           params: {
             name: entry.toolName,
-            arguments: parameters ?? {},
+            arguments: projectedParameters,
           },
         }),
       };
