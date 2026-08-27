@@ -18,14 +18,24 @@ const DISALLOWED_SEGMENT_CHARS = /[^a-zA-Z0-9_.:@|-]+/g;
 /** Human-readable statement of the namespace rule. Reused in API errors. */
 export const ASSET_NAMESPACE_RULE = `"namespace" must be 1-${ASSET_NAMESPACE_MAX_LENGTH} characters of letters, numbers, or / _ - . : @ |, and cannot contain "." or ".." path segments`;
 
-/** True when the segment is safe to keep in a namespace. */
+/** True when the segment is a relative path step, which is traversal. */
+function isDotSegment(segment: string): boolean {
+  return segment === "." || segment === "..";
+}
+
+/**
+ * True when the segment is safe to keep in a namespace.
+ *
+ * The schema and the sanitizer share `isDotSegment`, so the sanitizer never
+ * drops a segment that the schema accepts. A segment of three or more dots is
+ * an ordinary directory name, and it survives.
+ */
 function isUsableSegment(segment: string): boolean {
-  // Empty segments collapse away, and dot-only segments are path traversal.
-  return segment.length > 0 && !/^\.+$/.test(segment);
+  return segment.length > 0 && !isDotSegment(segment);
 }
 
 function hasNoDotSegments(namespace: string): boolean {
-  return !namespace.split("/").some((segment) => segment === "." || segment === "..");
+  return !namespace.split("/").some(isDotSegment);
 }
 
 export const createAssetImageMetadataSchema = z.object({
@@ -45,7 +55,7 @@ export type CreateAssetImageMetadata = z.infer<typeof createAssetImageMetadataSc
  * Make a namespace that `createAssetImageMetadataSchema` accepts.
  *
  * Each "/"-separated segment keeps its accepted characters. Other characters
- * become "-", repeated dashes collapse, and empty or dot-only segments go
+ * become "-", repeated dashes collapse, and empty, "." and ".." segments go
  * away. The result is at most `ASSET_NAMESPACE_MAX_LENGTH` characters.
  *
  * Returns undefined when no segment survives. Callers then send no namespace
@@ -61,7 +71,7 @@ export function sanitizeAssetNamespace(namespace: string): string | undefined {
     return cleaned.length > 0 ? cleaned : undefined;
   }
 
-  // A cut can leave an empty or dot-only tail segment, so filter again.
+  // A cut can leave an empty, "." or ".." tail segment, so filter again.
   const truncated = cleaned
     .slice(0, ASSET_NAMESPACE_MAX_LENGTH)
     .split("/")

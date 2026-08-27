@@ -107,10 +107,16 @@ describe("sanitizeAssetNamespace", () => {
     expect(sanitizeAssetNamespace("/profiles/user-1")).toBe("profiles/user-1");
   });
 
-  it("drops dot-only segments", () => {
+  it("drops the . and .. segments", () => {
     expect(sanitizeAssetNamespace("profiles/../secrets")).toBe("profiles/secrets");
     expect(sanitizeAssetNamespace("profiles/./user-1")).toBe("profiles/user-1");
     expect(sanitizeAssetNamespace("../../etc/passwd")).toBe("etc/passwd");
+  });
+
+  it("keeps a segment of three or more dots, which the schema accepts", () => {
+    expect(sanitizeAssetNamespace("profiles/...")).toBe("profiles/...");
+    expect(sanitizeAssetNamespace("profiles/....")).toBe("profiles/....");
+    expect(parseNamespace("profiles/...").success).toBe(true);
   });
 
   it("caps the result at the maximum length", () => {
