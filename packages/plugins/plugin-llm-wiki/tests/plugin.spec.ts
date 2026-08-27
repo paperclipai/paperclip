@@ -3493,6 +3493,54 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(true);
   });
 
+  it("indexes extensionless project wikilinks as canonical markdown page backlinks", async () => {
+    const harness = createTestHarness({ manifest });
+    const files = new Map<string, string>();
+    harness.ctx.localFolders.readText = async (_companyId, _folderKey, relativePath) => {
+      const value = files.get(relativePath);
+      if (value == null) throw new Error("missing");
+      return value;
+    };
+    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
+      files.set(relativePath, contents);
+      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+    };
+
+    await plugin.definition.setup(harness.ctx);
+    await harness.executeTool("wiki_write_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/projects/bounceless-v2/index.md",
+      contents: [
+        "# Bounceless v2",
+        "",
+        "See [[wiki/entities/paperclip]] and [[wiki/concepts/dependency-gated-delivery|dependency gates]].",
+        "",
+        "- Current standup: [[wiki/projects/bounceless-v2/standup#next-actions]]",
+      ].join("\n"),
+    });
+    await harness.executeTool("wiki_write_page", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      path: "wiki/projects/bounceless-v2/standup.md",
+      contents: "# Bounceless v2 Standup\n\n- [[wiki/projects/bounceless-v2/index]]\n",
+    });
+
+    const pageWrites = harness.dbExecutes.filter((execute) =>
+      execute.sql.includes("INSERT INTO")
+      && execute.sql.includes("wiki_pages")
+      && !execute.sql.includes("wiki_page_revisions"),
+    );
+    expect(pageWrites.at(-2)?.params).toContain(JSON.stringify([
+      "wiki/concepts/dependency-gated-delivery.md",
+      "wiki/entities/paperclip.md",
+      "wiki/projects/bounceless-v2/standup.md",
+    ]));
+    expect(pageWrites.at(-1)?.params).toContain(JSON.stringify([
+      "wiki/projects/bounceless-v2/index.md",
+    ]));
+  });
+
   it("blocks agent-tool writes to AGENTS.md but allows explicit board edits", async () => {
     const harness = createTestHarness({ manifest });
     const files = new Map<string, string>([

@@ -1669,6 +1669,16 @@ function extractWikiLinks(contents: string): string[] {
       links.add(target);
     }
   }
+  const wikiLinkPattern = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
+  for (const match of contents.matchAll(wikiLinkPattern)) {
+    const target = match[1]?.trim();
+    if (!target) continue;
+    if (target.startsWith("wiki/")) {
+      links.add(target.endsWith(".md") ? target : `${target}.md`);
+    } else if (["index.md", "log.md", "AGENTS.md", "IDEA.md"].includes(target)) {
+      links.add(target);
+    }
+  }
   const wikiTokenPattern = /\bwiki\/[A-Za-z0-9._/-]+\.md\b/g;
   for (const match of contents.matchAll(wikiTokenPattern)) {
     links.add(match[0]);
