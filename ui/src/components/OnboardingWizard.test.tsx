@@ -321,6 +321,64 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("hires from a legacy draft that saved an empty role", async () => {
+      // `agentRole: ""` was this field's default before the arc stopped asking
+      // for a role, so every draft saved by an earlier build carries it. `??`
+      // would pass the empty string straight through to the hire's silent
+      // return — the same no-op the default exists to prevent, arriving
+      // through a restored draft instead of a fresh one.
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({ step: 1, onboardingPath: "create", companyName: "Initech", agentRole: "" }),
+      );
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+
+      const { root, queryClient } = render();
+      const renderTree = () =>
+        act(async () => {
+          root.render(
+            <QueryClientProvider client={queryClient}>
+              <OnboardingWizard />
+            </QueryClientProvider>,
+          );
+        });
+      await renderTree();
+      await flushReact();
+
+      const clickText = async (match: (t: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      await clickText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "Ada");
+      });
+      await flushReact();
+      await clickText((t) => t.startsWith("Next"));
+      await clickText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      // The mock is declared with no parameters, so index the call rather than
+      // destructuring a zero-length tuple type.
+      const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
+      expect((hireArgs[1] as { role: string }).role).toBe("general");
+
+      await act(async () => root.unmount());
+    });
+
     it("hires one agent when Connect fires twice in one breath", async () => {
       // The Connect handler re-runs a cached failed probe now that "Test now"
       // is gone — so two overlapping submissions could both pass the fresh

@@ -443,6 +443,7 @@ function legacyToolsRedirectTarget(tab?: string) {
 export function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const { t } = useTranslation();
   const cloudInstance = useCloudInstance();
   const createStackUrl = cloudStackCreateUrl(cloudInstance?.cloudBaseUrl ?? null);
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
@@ -476,26 +477,39 @@ export function OnboardingRoutePage() {
         <h1 className="text-xl font-semibold">{title}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-4">
-          <Button
-            onClick={() =>
-              matchedCompany
-                ? openOnboarding({
-                    // "Add another agent" to a company that already has its
-                    // mission must not stop to ask for the mission again. An
-                    // unsettled or failed lookup reads as "no mission" and
-                    // costs the step, which the customer can pass - and the
-                    // mission step now updates the existing goal rather than
-                    // adding a second one.
-                    initialStep: onboardingStepForCompany(),
-                    companyId: matchedCompany.id,
-                  })
-                : cloudInstance
-                  ? createStackUrl && navigateTopLevel(createStackUrl)
-                  : openOnboarding()
-            }
-          >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
-          </Button>
+          {/* On a managed stack whose Cloud origin is unknown there is nowhere
+              to send this click: creation lives on Cloud, and in-app creation
+              is a 403 floor. A button that does nothing is worse than none, so
+              say why instead of rendering an inert control. */}
+          {!matchedCompany && cloudInstance && !createStackUrl ? (
+            <p className="text-sm text-muted-foreground">
+              {t("app.cloudCreateUnavailable", {
+                defaultValue:
+                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+              })}
+            </p>
+          ) : (
+            <Button
+              onClick={() =>
+                matchedCompany
+                  ? openOnboarding({
+                      // "Add another agent" to a company that already has its
+                      // mission must not stop to ask for the mission again. An
+                      // unsettled or failed lookup reads as "no mission" and
+                      // costs the step, which the customer can pass - and the
+                      // mission step now updates the existing goal rather than
+                      // adding a second one.
+                      initialStep: onboardingStepForCompany(),
+                      companyId: matchedCompany.id,
+                    })
+                  : cloudInstance && createStackUrl
+                    ? navigateTopLevel(createStackUrl)
+                    : openOnboarding()
+              }
+            >
+              {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -580,15 +594,26 @@ function NoCompaniesStartPage() {
           {t("app.noCompanies.description", { defaultValue: "Get started by creating a company." })}
         </p>
         <div className="mt-4">
-          <Button
-            onClick={() =>
-              cloudInstance
-                ? createStackUrl && navigateTopLevel(createStackUrl)
-                : openOnboarding()
-            }
-          >
-            {t("app.noCompanies.newCompany", { defaultValue: "New Company" })}
-          </Button>
+          {/* Same as the onboarding route: no Cloud origin means nowhere to
+              send the click, and in-app creation is a 403 floor here. */}
+          {cloudInstance && !createStackUrl ? (
+            <p className="text-sm text-muted-foreground">
+              {t("app.cloudCreateUnavailable", {
+                defaultValue:
+                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+              })}
+            </p>
+          ) : (
+            <Button
+              onClick={() =>
+                cloudInstance && createStackUrl
+                  ? navigateTopLevel(createStackUrl)
+                  : openOnboarding()
+              }
+            >
+              {t("app.noCompanies.newCompany", { defaultValue: "New Company" })}
+            </Button>
+          )}
         </div>
       </div>
     </div>

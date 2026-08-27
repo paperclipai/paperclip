@@ -423,7 +423,13 @@ function OnboardingWizardInner({
   // silently when it is missing. An unset role there would mean Connect
   // appearing to work and hiring nobody.
   const [agentRole, setAgentRole] = useState<AgentRole>(
-    (saved?.agentRole as AgentRole) ?? DEFAULT_AGENT_ROLE,
+    // `||`, not `??`: the empty string was this field's default before the arc
+    // stopped asking for a role, so every draft saved by an earlier build holds
+    // `agentRole: ""`. `??` passes that straight through, and an empty role
+    // reaches the silent return in the hire — the exact failure the default
+    // exists to prevent, arriving through a restored draft instead of a fresh
+    // one.
+    (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
   const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
