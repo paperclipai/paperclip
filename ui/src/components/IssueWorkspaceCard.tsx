@@ -210,7 +210,7 @@ export function IssueWorkspaceCard({
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
 
-  const { data: experimentalSettings, isFetched: experimentalSettingsLoaded } = useQuery({
+  const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
@@ -218,10 +218,11 @@ export function IssueWorkspaceCard({
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed-sandbox-only policy: the workspace path is a host filesystem path,
   // so the card omits it and keeps branch, repo, and environment. The gate fails
-  // closed while the settings query is in flight, because an unresolved policy
-  // reads as "not managed" and would flash the path on the first render.
+  // closed whenever the policy is unknown — in flight and also on a failed read
+  // — because an unresolved policy reads as "not managed" and would show the
+  // path the policy exists to hide.
   const hideHostPaths =
-    !experimentalSettingsLoaded || experimentalSettings?.enableManagedSandboxOnly === true;
+    experimentalSettings === undefined || experimentalSettings.enableManagedSandboxOnly === true;
   const policyEnabled = experimentalSettings?.enableIsolatedWorkspaces === true
     && Boolean(project?.executionWorkspacePolicy?.enabled);
 

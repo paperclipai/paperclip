@@ -272,7 +272,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: experimentalSettings, isFetched: experimentalSettingsLoaded } = useQuery({
+  const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
@@ -343,10 +343,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   // Defense in depth alongside the server's managed-sandbox-only read
   // filter: a cached environments list may still carry the local row.
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
-  // The gate for the host-path surfaces below. It fails closed while the
-  // settings query is in flight: an unresolved policy reads as "not managed",
-  // which would flash the local folder the policy exists to hide.
-  const hideHostPaths = !experimentalSettingsLoaded || managedSandboxOnly;
+  // The gate for the host-path surfaces below. It fails closed whenever the
+  // policy is unknown — in flight and also on a failed read: an unresolved
+  // policy reads as "not managed", which would show the local folder the policy
+  // exists to hide.
+  const hideHostPaths = experimentalSettings === undefined || managedSandboxOnly;
   const runSelectableEnvironments = filterManagedSandboxSelectableEnvironments(
     environments ?? [],
     managedSandboxOnly,

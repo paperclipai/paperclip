@@ -282,7 +282,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [pendingProposals, editAgentId],
   );
   const proposalReview = useProposalReview(selectedCompanyId, []);
-  const { data: experimentalSettings, isFetched: experimentalSettingsLoaded } = useQuery({
+  const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
@@ -293,10 +293,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // execution-engine choice. Declared here because the field gates below and
   // the adapter field props both read it.
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
-  // The gate the host-path fields use. It fails closed while the settings query
-  // is in flight: an unresolved policy reads as "not managed", which would flash
-  // a stored working directory or instructions-file path on the first render.
-  const hideHostPaths = !experimentalSettingsLoaded || managedSandboxOnly;
+  // The gate the host-path fields use. It fails closed whenever the policy is
+  // unknown — in flight and also on a failed read: an unresolved policy reads as
+  // "not managed", which would show a stored working directory or
+  // instructions-file path.
+  const hideHostPaths = experimentalSettings === undefined || managedSandboxOnly;
 
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes

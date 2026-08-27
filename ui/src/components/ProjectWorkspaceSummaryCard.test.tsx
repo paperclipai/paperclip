@@ -173,6 +173,50 @@ describe("ProjectWorkspaceSummaryCard", () => {
     });
   });
 
+  it("keeps the path row hidden when the policy read fails", async () => {
+    // A failed settings read leaves the policy unknown, and an unknown policy
+    // must not be read as "not managed". React Query reports such a query as
+    // fetched with no data, so a guard keyed on "fetched" would show the
+    // execution-host path on exactly the managed instance whose settings
+    // endpoint is unreachable.
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(new Error("settings unavailable"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectWorkspaceSummaryCard
+            projectRef="paperclip-app"
+            summary={createSummary()}
+            runtimeActionKey={null}
+            runtimeActionPending={false}
+            onRuntimeAction={() => {}}
+            onCloseWorkspace={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    // Drive the rejected query all the way to a settled failure, so the
+    // assertion below covers the resolved-error case and not merely the
+    // in-flight one the loading test already covers.
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (queryClient.getQueryState(queryKeys.instance.experimentalSettings)?.status === "error") break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(queryClient.getQueryState(queryKeys.instance.experimentalSettings)?.status).toBe("error");
+
+    expect(container.textContent).not.toContain("Path");
+    expect(container.textContent).toContain("Branch");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("drops the path row when the instance runs agents only in the platform-managed environment", () => {
     const root = createRoot(container);
     act(() => {
