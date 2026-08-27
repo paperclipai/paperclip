@@ -40,6 +40,7 @@ describe("connection grants phase 4 migration", () => {
     expect(migrationSql).toContain(`phase4_ambiguous_personal_secrets`);
     expect(migrationSql).toContain(`count(DISTINCT g."subject_user_id") AS "owner_count"`);
     expect(migrationSql).toContain(`organization_grant."kind" <> 'user'`);
+    expect(migrationSql).toContain(`FROM "company_secret_bindings" binding`);
     expect(migrationSql).toContain(`"status" = 'needs_reauthorization'`);
     expect(migrationSql).toContain(`"health_status" = 'missing_secret'`);
   });
@@ -63,6 +64,7 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
       ownerUserIds: string[];
       includeOrganizationGrant?: boolean;
       includeConnectionReference?: boolean;
+      includeCompanyBinding?: boolean;
     }) {
       const companyId = randomUUID();
       const applicationId = randomUUID();
@@ -109,6 +111,15 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
           )
         `;
       }
+      if (input.includeCompanyBinding) {
+        await sql`
+          INSERT INTO "company_secret_bindings" (
+            "company_id", "secret_id", "target_type", "target_id", "config_path"
+          ) VALUES (
+            ${companyId}, ${secretId}, 'environment', ${randomUUID()}, 'env.SHARED_TOKEN'
+          )
+        `;
+      }
       return { companyId, connectionId, secretId, ownerUserId: input.ownerUserIds[0]! };
     }
 
@@ -130,6 +141,37 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
         owner_user_id: valid.ownerUserId,
         user_secret_definition_id: expect.any(String),
       }]);
+
+      const bound = await seedLegacyCredential({
+        ownerUserIds: ["binding-owner"],
+        includeCompanyBinding: true,
+      });
+      await rewindMigration();
+      await applyPendingMigrations(database.connectionString);
+      expect(await sql<{ scope: string; owner_user_id: string | null }[]>`
+        SELECT "scope", "owner_user_id"
+        FROM "company_secrets"
+        WHERE "id" = ${bound.secretId}
+      `).toEqual([{ scope: "company", owner_user_id: null }]);
+      expect(await sql<{ status: string; credential_secret_refs: unknown[] }[]>`
+        SELECT "status", "credential_secret_refs"
+        FROM "connection_grants"
+        WHERE "company_id" = ${bound.companyId} AND "kind" = 'user'
+      `).toEqual([{ status: "needs_reauthorization", credential_secret_refs: [] }]);
+      expect(await sql<{ secret_id: string }[]>`
+        SELECT "secret_id"
+        FROM "company_secret_bindings"
+        WHERE "company_id" = ${bound.companyId}
+      `).toEqual([{ secret_id: bound.secretId }]);
+
+      // Replaying the migration preserves the same company-scoped binding.
+      await rewindMigration();
+      await applyPendingMigrations(database.connectionString);
+      expect(await sql<{ scope: string; owner_user_id: string | null }[]>`
+        SELECT "scope", "owner_user_id"
+        FROM "company_secrets"
+        WHERE "id" = ${bound.secretId}
+      `).toEqual([{ scope: "company", owner_user_id: null }]);
 
       const ambiguous = await seedLegacyCredential({ ownerUserIds: ["alice", "bob"] });
       await rewindMigration();
