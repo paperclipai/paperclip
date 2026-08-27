@@ -107,6 +107,11 @@ type InteractionActor = {
   resolutionDetails?: Record<string, unknown>;
 };
 
+type CreateInteractionOptions = {
+  /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
+  supersedePendingSiblingInteractions?: boolean;
+};
+
 type InteractionWakeup = (agentId: string, options: {
   source: "automation";
   triggerDetail: "system";
@@ -2469,6 +2474,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       issue: { id: string; companyId: string },
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
+      options: CreateInteractionOptions = {},
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
       const usedDeprecatedResolverPolicyAlias =
@@ -2634,10 +2640,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           // result shape. Scoped strictly to the same agent + issue + kind, so
           // other agents' or other kinds' pending cards are untouched.
           const canSupersedeSiblingCards =
-            (data.kind === "request_confirmation"
-              && data.payload.toolAction === undefined
-              && data.payload.secretProposal === undefined)
-            || data.kind === "ask_user_questions";
+            options.supersedePendingSiblingInteractions !== false
+            && (
+              (data.kind === "request_confirmation"
+                && data.payload.toolAction === undefined
+                && data.payload.secretProposal === undefined)
+              || data.kind === "ask_user_questions"
+            );
           if (!actor.agentId || !canSupersedeSiblingCards) {
             return { row, supersededRows: [] };
           }

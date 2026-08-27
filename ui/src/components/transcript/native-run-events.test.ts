@@ -109,6 +109,70 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("collapses streaming usage updates into one cumulative run summary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "usage.reported", {
+        runDelta: {
+          inputTokens: 12,
+          outputTokens: 3,
+          cacheReadTokens: 2,
+          providerCostUsd: 0.01,
+        },
+        cumulative: {
+          inputTokens: 12,
+          outputTokens: 3,
+          cacheReadTokens: 2,
+          providerCostUsd: 0.01,
+        },
+      }),
+      event(2, "usage.reported", {
+        runDelta: {
+          inputTokens: 4,
+          outputTokens: 2,
+          cacheReadTokens: 1,
+          providerCostUsd: 0.005,
+        },
+        cumulative: {
+          inputTokens: 16,
+          outputTokens: 5,
+          cacheReadTokens: 3,
+          providerCostUsd: 0.015,
+        },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "result",
+        subtype: "paperclip_runner_usage",
+        inputTokens: 16,
+        outputTokens: 5,
+        cachedTokens: 3,
+        costUsd: 0.015,
+      }),
+    ]);
+  });
+
+  it("sums delta-only usage reports into one run summary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "usage.reported", {
+        runDelta: { inputTokens: 2, outputTokens: 1, providerCostUsd: 0.01 },
+      }),
+      event(2, "usage.reported", {
+        runDelta: { inputTokens: 3, outputTokens: 4, providerCostUsd: 0.02 },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "result",
+        inputTokens: 5,
+        outputTokens: 5,
+        costUsd: 0.03,
+      }),
+    ]);
+  });
+
   it("uses the structured run summary when no agent message was emitted", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "run.result.proposed", { summary: "Recovered final reply." }),

@@ -211,6 +211,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import {
   deliverNativeQuestionResponse,
+  nativeQuestionRunIdsToCancelForIssue,
   nativeQuestionRunToCancel,
   validateNativeQuestionResponseInput,
 } from "../services/native-runtime/native-question-bridge.js";
@@ -2862,6 +2863,21 @@ export function issueRoutes(
     heartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db, interaction),
   });
+
+  const cancelExpiredNativeQuestionRuns = async (
+    issue: { id: string; companyId: string },
+    status: string,
+  ) => {
+    const runIds = await nativeQuestionRunIdsToCancelForIssue(db, issue);
+    for (const runId of runIds) {
+      await heartbeat.cancelRun(runId, "Task closed while waiting for operator input", {
+        resultJson: {
+          cancelledByIssueStatus: status,
+          cancelledIssueId: issue.id,
+        },
+      });
+    }
+  };
   const memoizeIssueRead = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof svc.getById>>>({
     shouldCache: (issue) => issue !== null,
   });
@@ -10874,6 +10890,7 @@ export function issueRoutes(
           actor,
           source: "issue.status_transition.issue_closed",
         });
+        await cancelExpiredNativeQuestionRuns(issue, issue.status);
         await destroyReusableSandboxLeasesForTerminalIssue(issue);
       }
       if (becameTerminal && issue.parentId) {
@@ -11843,6 +11860,18 @@ export function issueRoutes(
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
+      if (interaction.kind === "ask_user_questions") {
+        const nativeRunId = await nativeQuestionRunToCancel(db, interaction);
+        if (nativeRunId) {
+          await heartbeat.cancelRun(nativeRunId, "Question withdrawn while waiting for operator input", {
+            resultJson: {
+              withdrawnInteractionId: interaction.id,
+              withdrawnByActorType: actor.actorType,
+              withdrawnByActorId: actor.actorId,
+            },
+          });
+        }
+      }
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -12859,6 +12888,7 @@ export function issueRoutes(
           actor,
           source: "issue.status_transition.issue_closed",
         });
+        await cancelExpiredNativeQuestionRuns(currentIssue, currentIssue.status);
         await destroyReusableSandboxLeasesForTerminalIssue(currentIssue);
       }
       if (becameTerminal && currentIssue.parentId) {

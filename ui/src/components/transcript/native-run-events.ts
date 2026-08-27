@@ -51,6 +51,13 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   const entries: TranscriptEntry[] = [];
   const startedToolIds = new Set<string>();
   let hasAssistantMessage = false;
+  let usageSummary: {
+    ts: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    costUsd: number;
+  } | null = null;
   const orderedEvents = [...events].sort((a, b) => a.seq - b.seq);
   const completedAgentMessageIds = new Set<string>();
   for (const event of orderedEvents) {
@@ -125,20 +132,28 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "usage.reported") {
-      const measurement = record(payload.runDelta) ?? record(payload.cumulative);
+      const cumulative = record(payload.cumulative);
+      const measurement = cumulative ?? record(payload.runDelta);
       if (!measurement) continue;
-      entries.push({
-        kind: "result",
+      const next = {
         ts,
-        text: "",
         inputTokens: finiteNumber(measurement.inputTokens),
         outputTokens: finiteNumber(measurement.outputTokens),
         cachedTokens: finiteNumber(measurement.cacheReadTokens),
         costUsd: finiteNumber(measurement.providerCostUsd),
-        subtype: "paperclip_runner_usage",
-        isError: false,
-        errors: [],
-      });
+      };
+      // A cumulative measurement is authoritative. Delta-only providers are
+      // still supported by folding every subsequent report into the same run
+      // summary rather than rendering one usage row per streaming update.
+      usageSummary = cumulative || !usageSummary
+        ? next
+        : {
+            ts,
+            inputTokens: usageSummary.inputTokens + next.inputTokens,
+            outputTokens: usageSummary.outputTokens + next.outputTokens,
+            cachedTokens: usageSummary.cachedTokens + next.cachedTokens,
+            costUsd: usageSummary.costUsd + next.costUsd,
+          };
       continue;
     }
 
@@ -155,6 +170,17 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       const summary = text(payload.summary);
       if (summary) entries.push({ kind: "stderr", ts, text: summary });
     }
+  }
+
+  if (usageSummary) {
+    entries.push({
+      kind: "result",
+      ...usageSummary,
+      text: "",
+      subtype: "paperclip_runner_usage",
+      isError: false,
+      errors: [],
+    });
   }
 
   return entries;

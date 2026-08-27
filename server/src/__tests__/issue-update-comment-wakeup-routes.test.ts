@@ -31,6 +31,14 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockNativeQuestionRunIdsToCancelForIssue = vi.hoisted(() => vi.fn(async () => [] as string[]));
+
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+  nativeQuestionRunIdsToCancelForIssue: mockNativeQuestionRunIdsToCancelForIssue,
+  nativeQuestionRunToCancel: vi.fn(async () => null),
+  validateNativeQuestionResponseInput: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -236,6 +244,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+    mockNativeQuestionRunIdsToCancelForIssue.mockResolvedValue([]);
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -484,7 +493,7 @@ describe("issue update comment wakeups", () => {
     );
   });
 
-  it("does not wake the assignee when a closure comment marks the issue done", async () => {
+  it("cancels a native question run without waking the assignee when a closure marks the issue done", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
@@ -503,6 +512,7 @@ describe("issue update comment wakeups", () => {
       companyId: existing.companyId,
       body: "Closing this out.",
     });
+    mockNativeQuestionRunIdsToCancelForIssue.mockResolvedValue(["native-run-1"]);
 
     const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
@@ -517,6 +527,16 @@ describe("issue update comment wakeups", () => {
       ([, wakeup]: [string, { reason?: string }]) => wakeup?.reason === "issue_commented",
     );
     expect(issueCommentedWakeCalls).toEqual([]);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "native-run-1",
+      "Task closed while waiting for operator input",
+      expect.objectContaining({
+        resultJson: expect.objectContaining({
+          cancelledByIssueStatus: "done",
+          cancelledIssueId: existing.id,
+        }),
+      }),
+    );
   });
 
   it("wakes the assignee on top-level board issue comments", async () => {

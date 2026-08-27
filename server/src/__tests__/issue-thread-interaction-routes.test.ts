@@ -46,6 +46,16 @@ const mockInteractionService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  cancelRun: vi.fn(async () => null),
+}));
+const mockNativeQuestionRunToCancel = vi.hoisted(() => vi.fn(async () => null as string | null));
+const mockNativeQuestionRunIdsToCancelForIssue = vi.hoisted(() => vi.fn(async () => [] as string[]));
+
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+  nativeQuestionRunIdsToCancelForIssue: mockNativeQuestionRunIdsToCancelForIssue,
+  nativeQuestionRunToCancel: mockNativeQuestionRunToCancel,
+  validateNativeQuestionResponseInput: vi.fn(),
 }));
 const mockQuestionResponseDeliveries = vi.hoisted(() => ({
   deliver: vi.fn(async () => null),
@@ -290,6 +300,8 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockInteractionService.getForIssue.mockReset();
     mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
+    mockNativeQuestionRunToCancel.mockResolvedValue(null);
+    mockNativeQuestionRunIdsToCancelForIssue.mockResolvedValue([]);
     mockResolveTaskWatchdogMutationScope.mockReset();
     mockResolveCoreTrustPreset.mockReset();
     mockAccessDecide.mockReset();
@@ -860,6 +872,38 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.thread_interaction_withdrawn",
     }));
+  });
+
+  it("cancels the bound native run when its question is withdrawn", async () => {
+    mockInteractionService.withdrawInteraction.mockResolvedValueOnce({
+      id: "interaction-withdraw",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "ask_user_questions",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      status: "cancelled",
+      continuationPolicy: "none",
+      payload: { version: 1, questions: [] },
+      result: { version: 1, answers: [], cancelled: true },
+    });
+    mockNativeQuestionRunToCancel.mockResolvedValueOnce(RUN_1);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw/withdraw`)
+      .send({ reason: "No longer needed" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      RUN_1,
+      "Question withdrawn while waiting for operator input",
+      expect.objectContaining({
+        resultJson: expect.objectContaining({
+          withdrawnInteractionId: "interaction-withdraw",
+          withdrawnByActorType: "user",
+        }),
+      }),
+    );
   });
 
   it("allows the creator agent to withdraw and wakes a different assignee", async () => {

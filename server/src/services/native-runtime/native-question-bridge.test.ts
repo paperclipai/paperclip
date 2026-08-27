@@ -23,6 +23,7 @@ import {
   deliverNativeQuestionResponse,
   flushNativeQuestionResponses,
   nativeQuestionBridgeInternals,
+  nativeQuestionRunIdsToCancelForIssue,
   nativeQuestionRunToCancel,
   projectNativeRuntimeRequest,
   registerNativeQuestionCommandTarget,
@@ -187,6 +188,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       effectiveResolverPolicy: "human_only",
       payload: {
         runtimeRequestId: "request-1",
+        supersedeOnUserComment: false,
         questionSet: { schema: "paperclip.question_set.v1" },
         questions: [{
           id: "color",
@@ -274,6 +276,21 @@ describeEmbeddedPostgres("native question bridge", () => {
     expect(second?.id).toBe(first?.id);
     expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
     expect(await db.select().from(activityLog)).toHaveLength(1);
+  });
+
+  it("identifies the active native run after its unanswered card expires", async () => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    await db.update(issueThreadInteractions)
+      .set({ status: "expired", resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, interaction!.id));
+
+    await expect(nativeQuestionRunIdsToCancelForIssue(db, { id: issueId, companyId }))
+      .resolves.toEqual([runId]);
   });
 
   it("removes the UI-only marker from a canonical custom response", async () => {

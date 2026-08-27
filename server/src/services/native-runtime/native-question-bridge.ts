@@ -115,6 +115,9 @@ function toInteractionPayload(questionSet: PaperclipQuestionSet, runtimeRequestI
     }),
     questionSet: questionSet as PaperclipQuestionSetPayload,
     runtimeRequestId,
+    // A generic task comment cannot satisfy this provider request. Keep the
+    // card actionable until a validated answer or an explicit terminal action.
+    supersedeOnUserComment: false,
   };
 }
 
@@ -232,6 +235,7 @@ export async function projectNativeRuntimeRequest(input: {
       payload: toInteractionPayload(questionSet, request.requestId),
     },
     { agentId: input.binding.agentId, runId: input.binding.runId },
+    { supersedePendingSiblingInteractions: false },
   ) as AskUserQuestionsInteraction;
   if (!existing) {
     await logActivity(input.db, {
@@ -358,6 +362,25 @@ export async function nativeQuestionRunToCancel(
 ): Promise<string | null> {
   const run = await authorizedNativeRun(db, interaction);
   return run && ["queued", "running"].includes(run.status) ? run.id : null;
+}
+
+/** Find active native runs whose question cards became terminal with no answer. */
+export async function nativeQuestionRunIdsToCancelForIssue(
+  db: Db,
+  issue: { id: string; companyId: string },
+): Promise<string[]> {
+  const interactions = await issueThreadInteractionService(db).listForIssue(issue.id);
+  const runIds = new Set<string>();
+  for (const interaction of interactions) {
+    if (
+      interaction.companyId !== issue.companyId
+      || interaction.kind !== "ask_user_questions"
+      || !["cancelled", "expired"].includes(interaction.status)
+    ) continue;
+    const runId = await nativeQuestionRunToCancel(db, interaction);
+    if (runId) runIds.add(runId);
+  }
+  return [...runIds];
 }
 
 export const nativeQuestionBridgeInternals = {
