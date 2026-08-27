@@ -31,6 +31,7 @@ import {
 import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_GROK_LOCAL_MODEL, grokModelSupportsXhigh } from "@paperclipai/adapter-grok-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
@@ -299,6 +300,16 @@ const kimiThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "high", label: "High" },
   { id: "max", label: "Max" },
+] as const;
+
+// Grok Build CLI accepts low/medium/high/xhigh via --reasoning-effort.
+// Order matches Codex/Claude: Auto, then less → more.
+const grokThinkingEffortOptions = [
+  { id: "", label: "Auto" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "X-High" },
 ] as const;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -1259,7 +1270,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : adapterType === "pi_local" ? "thinking" : "effort";
+          : adapterType === "pi_local"
+            ? "thinking"
+            : adapterType === "grok_local"
+              ? "reasoningEffort"
+              : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
       ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
@@ -1274,8 +1289,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : claudeThinkingEffortOptions;
-  const currentThinkingEffort = isCreate
+              : adapterType === "grok_local"
+                ? grokModelSupportsXhigh(currentModelId)
+                  ? grokThinkingEffortOptions
+                  : grokThinkingEffortOptions.filter((option) => option.id !== "xhigh")
+                : claudeThinkingEffortOptions;
+  const rawThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
       ? eff(
@@ -1287,7 +1306,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-          : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+          : adapterType === "grok_local"
+            ? eff(
+                "adapterConfig",
+                "reasoningEffort",
+                String(config.reasoningEffort ?? config.effort ?? ""),
+              )
+            : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+  const currentThinkingEffort =
+    adapterType === "grok_local"
+      && rawThinkingEffort === "xhigh"
+      && !grokModelSupportsXhigh(currentModelId)
+      ? "high"
+      : rawThinkingEffort;
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
     && adapterType !== "paperclip_runner";
@@ -1592,6 +1623,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
                     } else if (t === "kimi_local") {
                       nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
+                    } else if (t === "grok_local") {
+                      nextValues.model = DEFAULT_GROK_LOCAL_MODEL;
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -1614,12 +1647,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_KIMI_LOCAL_MODEL
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
+                            : t === "grok_local"
+                              ? DEFAULT_GROK_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
                             : t === "paperclip_runner"
                               ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
                         effort: "",
+                        reasoningEffort: "",
                         modelReasoningEffort: "",
                         variant: "",
                         mode: "",
