@@ -9889,7 +9889,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    * in_progress/in_review child is being worked and is left alone. Bounded.
    */
   /**
-   * TSMC-22067: nothing ever picks up idle-but-actionable work.
+   * TSMC-22070: nothing ever picks up idle-but-actionable work.
    *
    * Dispatch here is WAKE-DRIVEN, not queue-driven. `shouldPickUpIssue` accepts todo /
    * backlog / blocked / in_progress, but it also requires a wakeReason — and wakes are only
