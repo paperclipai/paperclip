@@ -230,28 +230,36 @@ export function companyService(db: Db) {
    */
   async function resolveRenamedIssuePrefix(
     tx: CompanyTx,
-    existing: { id: string; name: string },
+    companyId: string,
     companyPatch: Partial<typeof companies.$inferInsert>,
   ): Promise<{ fromPrefix: string; toPrefix: string } | null> {
+    // Only patch and environment facts gate the lock. Every comparison against
+    // the company's own name or prefix happens below, under the lock.
     // An explicit prefix in the patch is the caller's decision; never override it.
     if (companyPatch.issuePrefix !== undefined) return null;
     const nextName = companyPatch.name;
     if (typeof nextName !== "string" || nextName.trim().length === 0) return null;
-    if (nextName === existing.name) return null;
     if (!isCloudManagedInstance()) return null;
 
-    // Lock the company row before deciding anything. Two concurrent renames of
-    // the same company would otherwise both re-key from the prefix they read
-    // before either committed: the second one would look for identifiers the
-    // first had already moved, find none, and leave the stored identifiers on
-    // the first rename's prefix while the company row carried the second one's.
-    // Reading the row under the lock makes the loser re-key from what the
-    // winner actually wrote. Only a managed rename pays for this lock; an
-    // ordinary company update never reaches it.
+    // Lock the company row before comparing anything against it. Two concurrent
+    // updates would otherwise each decide from the row they read before either
+    // committed, and both ways of getting that wrong end with a company whose
+    // prefix disagrees with its own identifiers:
+    //
+    //   - Two renames: the second re-keys from the prefix it read, finds the
+    //     identifiers the first already moved, and leaves them on the first
+    //     rename's prefix while the row carries the second one's.
+    //   - A rename plus a stale form that resubmits the original name: the
+    //     second sees a name equal to the one it read, skips re-derivation, and
+    //     restores the old name on top of the first rename's prefix.
+    //
+    // Reading the row under the lock makes the second transaction decide from
+    // what the first actually committed. Only a managed instance takes this
+    // lock, and only for an update that carries a name.
     const locked = await tx
       .select({ name: companies.name, issuePrefix: companies.issuePrefix })
       .from(companies)
-      .where(eq(companies.id, existing.id))
+      .where(eq(companies.id, companyId))
       .for("update")
       .then((rows) => rows[0] ?? null);
     if (!locked || nextName === locked.name) return null;
@@ -346,7 +354,7 @@ export function companyService(db: Db) {
           }
         }
 
-        const renamedPrefix = await resolveRenamedIssuePrefix(tx, existing, companyPatch);
+        const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
         const updated = await tx
           .update(companies)

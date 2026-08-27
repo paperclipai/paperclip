@@ -25,6 +25,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companyService } from "../services/companies.js";
+import { deriveIssuePrefixBase } from "../services/issue-prefix.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { builtInAgentService, reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
@@ -1043,6 +1044,32 @@ describeEmbeddedPostgres("companyService", () => {
       await expect(readIdentifiers(companyId)).resolves.toEqual({
         issues: [`${prefix}-1`, `${prefix}-12`, null],
         cases: [`${prefix}-C3`],
+      });
+    });
+
+    it("keeps the prefix consistent when a stale form resubmits the old name during a rename", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+      const svc = companyService(db);
+
+      // The second caller submits the name it loaded before the rename. Judged
+      // against its own stale read that name looks unchanged, so a pre-lock
+      // comparison would skip re-derivation and restore "Acme Robotics" on top
+      // of the rename's prefix.
+      await Promise.all([
+        svc.update(companyId, { name: "Northwind Traders" }, TEST_ACTOR),
+        svc.update(companyId, { name: "Acme Robotics" }, TEST_ACTOR),
+      ]);
+
+      const [company] = await db
+        .select({ name: companies.name, issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, companyId));
+      // Whichever update commits last, the prefix derives from the name that
+      // survived, and the identifiers sit on that prefix.
+      expect(company!.issuePrefix.startsWith(deriveIssuePrefixBase(company!.name))).toBe(true);
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: [`${company!.issuePrefix}-1`, `${company!.issuePrefix}-12`, null],
+        cases: [`${company!.issuePrefix}-C3`],
       });
     });
 
