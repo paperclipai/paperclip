@@ -14,6 +14,65 @@ function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
 
+type RegisteredPostgresClient = ReturnType<typeof postgres>;
+
+/**
+ * Derives a registry key from a connection URL's host and port only. We must
+ * not retain or log the full URL, because it carries credentials.
+ */
+function hostPortKey(url: string): string {
+  const parsed = new URL(url);
+  return `${parsed.hostname}:${parsed.port || "5432"}`;
+}
+
+// Tracks every client `createDb` hands out, keyed by host and port, so a test
+// fixture can end them before it stops the Postgres cluster they point at. A
+// `WeakRef` plus `FinalizationRegistry` means a long-lived process (a real
+// server) retains nothing extra: an unreferenced client is pruned on its own.
+const clientsByHostPort = new Map<string, Set<WeakRef<RegisteredPostgresClient>>>();
+const clientFinalizer = new FinalizationRegistry<{ hostPortKey: string; ref: WeakRef<RegisteredPostgresClient> }>(
+  ({ hostPortKey, ref }) => {
+    const refs = clientsByHostPort.get(hostPortKey);
+    if (!refs) return;
+    refs.delete(ref);
+    if (refs.size === 0) clientsByHostPort.delete(hostPortKey);
+  },
+);
+
+function registerClient(key: string, client: RegisteredPostgresClient): void {
+  const ref = new WeakRef(client);
+  let refs = clientsByHostPort.get(key);
+  if (!refs) {
+    refs = new Set();
+    clientsByHostPort.set(key, refs);
+  }
+  refs.add(ref);
+  clientFinalizer.register(client, { hostPortKey: key, ref }, ref);
+}
+
+/**
+ * Ends every live client `createDb` handed out for the given URL's host and
+ * port, then forgets them. Call this before stopping a Postgres cluster: a
+ * client that outlives the cluster it points at can crash the process (a
+ * reserved connection's deferred write firing after the socket is gone).
+ * Swallows individual `end()` errors so one bad client cannot block the rest.
+ */
+export async function closeRegisteredClients(url: string): Promise<void> {
+  const key = hostPortKey(url);
+  const refs = clientsByHostPort.get(key);
+  if (!refs) return;
+
+  clientsByHostPort.delete(key);
+  const clients: RegisteredPostgresClient[] = [];
+  for (const ref of refs) {
+    clientFinalizer.unregister(ref);
+    const client = ref.deref();
+    if (client) clients.push(client);
+  }
+
+  await Promise.all(clients.map((client) => client.end({ timeout: 1 }).catch(() => {})));
+}
+
 function isSafeIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -118,6 +177,7 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = options ?? databaseClientOptionsFromEnv();
   const sql = postgres(url, postgresJsOptions(resolved));
+  registerClient(hostPortKey(url), sql);
   return drizzlePg(sql, { schema });
 }
 
