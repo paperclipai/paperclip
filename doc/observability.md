@@ -8,42 +8,62 @@ separate first-party event system.
 
 Paperclip ships with **opt-in** OpenTelemetry auto-instrumentation for the
 server process. When activated it produces **traces only** — no metrics and no
-logs are exported by this integration. The OTel packages are *optional peer
-dependencies*: they are not in the default lockfile and are loaded dynamically
-only when an operator turns the feature on.
+logs are exported by this integration.
 
-When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, none of the `@opentelemetry/*`
+`@opentelemetry/api` is a normal dependency of `@paperclipai/server`. Every
+install includes it. It stays a no-op interface until an SDK registers a
+provider, so it exports no telemetry by itself.
+
+The SDK, the auto-instrumentation bundle, and the resources and
+semantic-conventions helpers are *optional peer dependencies*: they are not in
+the default lockfile, and the server loads them dynamically only when an
+operator turns the feature on. The three exporters below are mutually
+alternative peer dependencies — install exactly **one**, matching
+`OTEL_EXPORTER_OTLP_PROTOCOL`.
+
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, none of the `@opentelemetry/*` SDK
 packages are imported and there is zero runtime overhead.
+
+`server/package.json` declares each optional package at the exact version the
+server tests against; install that exact version. Our Dependabot cannot bump
+these versions: its npm parser reads only `dependencies`, `devDependencies`,
+and `optionalDependencies`, never `peerDependencies`. A peer version here is a
+compatibility claim, not an installed version, so raising it is a human
+decision. `@opentelemetry/api` is the one OpenTelemetry package Paperclip
+maintains as a dependency; once you install the packages below, they become
+normal dependencies of **your own** project, and your own Dependabot updates
+them.
 
 ## Enabling tracing
 
 ### 1. Install the OTel peer dependencies
 
 Install the SDK, the auto-instrumentations bundle, the resources/semconv
-helpers, and **one** exporter matching your chosen OTLP protocol.
+helpers, and **one** exporter matching your chosen OTLP protocol, at the exact
+versions below.
 
 Common to every protocol:
 
 ```bash
 pnpm add \
-  @opentelemetry/sdk-node \
-  @opentelemetry/auto-instrumentations-node \
-  @opentelemetry/resources \
-  @opentelemetry/semantic-conventions
+  @opentelemetry/sdk-node@0.221.0 \
+  @opentelemetry/auto-instrumentations-node@0.79.0 \
+  @opentelemetry/resources@2.10.0 \
+  @opentelemetry/semantic-conventions@1.43.0
 ```
 
 Then add the exporter for the protocol you intend to use:
 
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | Exporter package                              |
-| ----------------------------- | --------------------------------------------- |
-| `grpc` (default if unset)     | `@opentelemetry/exporter-trace-otlp-grpc`     |
-| `http/protobuf`               | `@opentelemetry/exporter-trace-otlp-proto`    |
-| `http/json`                   | `@opentelemetry/exporter-trace-otlp-http`     |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Exporter package                           | Version   |
+| ------------------------------ | ------------------------------------------- | --------- |
+| `grpc` (default if unset)      | `@opentelemetry/exporter-trace-otlp-grpc`   | `0.221.0` |
+| `http/protobuf`                | `@opentelemetry/exporter-trace-otlp-proto`  | `0.221.0` |
+| `http/json`                    | `@opentelemetry/exporter-trace-otlp-http`   | `0.221.0` |
 
 For example, for the default gRPC path:
 
 ```bash
-pnpm add @opentelemetry/exporter-trace-otlp-grpc
+pnpm add @opentelemetry/exporter-trace-otlp-grpc@0.221.0
 ```
 
 ### 2. Set the environment
@@ -94,9 +114,11 @@ can confirm the value.
 If `OTEL_EXPORTER_OTLP_PROTOCOL` is set to an unrecognized value, Paperclip
 logs a single warning and falls back to gRPC.
 
-If `OTEL_EXPORTER_OTLP_ENDPOINT` is set but the OTel packages are not
-installed, the server logs a single diagnostic line on boot and continues
-without tracing — your server stays up.
+Before it imports any OTel package, the server checks the four common
+packages and the selected exporter against the exact versions
+`server/package.json` declares. If `OTEL_EXPORTER_OTLP_ENDPOINT` is set and a
+package is missing or installed at a different version, the server logs one
+diagnostic line on boot and continues without tracing — your server stays up.
 
 ## Scope
 

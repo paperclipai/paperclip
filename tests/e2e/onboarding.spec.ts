@@ -53,15 +53,15 @@ test.describe("Onboarding wizard", () => {
 
     // Step 1 — Name your organization.
     await expect(
-      page.getByRole("heading", { name: "Name your organization" }),
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
-    await page.getByRole("button", { name: /^Next/ }).click();
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(COMPANY_NAME);
+    await page.getByRole("button", { name: /^Continue/ }).click();
 
     // Step 1's "Next" now creates the company and goes straight to the agent.
     // The mission step used to sit between them and do the creating; onboarding
     // no longer asks for the mission, which is collected later in the app.
-    await page.waitForSelector("#onboarding-agent-role", {
+    await page.waitForSelector("#onboarding-agent-name", {
       timeout: 30_000,
     });
 

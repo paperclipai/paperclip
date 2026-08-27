@@ -61,7 +61,7 @@ export function Stepper({
   onJumpToStep?: (target: number) => void;
 }) {
   return (
-    <div className="mb-7 flex flex-col gap-3.5">
+    <div className="mb-7 flex flex-col items-start gap-3.5">
       <div className="flex items-center gap-2">
         {Array.from({ length: total }, (_, index) => index + 1).map((segment) => {
           const jumpable = Boolean(canJumpToStep?.(segment) && onJumpToStep);
@@ -74,7 +74,11 @@ export function Stepper({
               disabled={!jumpable}
               onClick={() => jumpable && onJumpToStep?.(segment)}
               className={cn(
-                "h-(--sz-3px) flex-1 rounded-full transition-colors",
+                // Dots, not bars: three of them, left-aligned, keeping the bar
+                // strip's gap so the rhythm is unchanged. A full-width bar implied
+                // a continuous quantity — how much of the arc is done — which three
+                // discrete steps do not have.
+                "size-(--sz-3px) shrink-0 rounded-full transition-colors",
                 segment <= step ? "bg-foreground" : "bg-border",
                 jumpable ? "cursor-pointer" : "cursor-default",
               )}
