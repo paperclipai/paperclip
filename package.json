@@ -62,6 +62,7 @@
     "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:mcp-user-stories": "node scripts/e2e-mcp-user-stories.mjs",
+    "test:e2e:connection-intents": "npx playwright test --config tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
@@ -91,7 +92,19 @@
     "overrides": {
       "rollup": ">=4.59.0",
       "react": "^19.2.8",
-      "react-dom": "^19.2.8"
+      "react-dom": "^19.2.8",
+      "lexical": "0.48.0",
+      "@lexical/clipboard": "0.48.0",
+      "@lexical/extension": "0.48.0",
+      "@lexical/history": "0.48.0",
+      "@lexical/link": "0.48.0",
+      "@lexical/list": "0.48.0",
+      "@lexical/markdown": "0.48.0",
+      "@lexical/plain-text": "0.48.0",
+      "@lexical/react": "0.48.0",
+      "@lexical/rich-text": "0.48.0",
+      "@lexical/selection": "0.48.0",
+      "@lexical/utils": "0.48.0"
     }
   }
 }

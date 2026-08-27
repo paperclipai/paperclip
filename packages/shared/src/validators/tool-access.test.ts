@@ -91,6 +91,11 @@ describe("tool access validators", () => {
       oauthClient: { clientId: "client-abc", clientSecret: "shhh" },
     });
     expect(manualClient.success).toBe(true);
+
+    expect(connectToolAppSchema.safeParse({
+      galleryKey: "asana",
+      oauthClient: { clientId: "customer-client", clientSecret: "customer-secret" },
+    }).success).toBe(true);
   });
 
   it("rejects header credentials Paperclip refuses to send", () => {
@@ -123,7 +128,7 @@ describe("tool access validators", () => {
     }
   });
 
-  it("keeps generic advanced authentication off the curated gallery path", () => {
+  it("keeps generic auth-mode selection off curated apps while allowing owned OAuth clients", () => {
     expect(connectToolAppSchema.safeParse({
       galleryKey: "posthog",
       authMode: "bearer",
@@ -131,7 +136,7 @@ describe("tool access validators", () => {
     expect(connectToolAppSchema.safeParse({
       galleryKey: "posthog",
       oauthClient: { clientId: "client-abc" },
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 
   it("accepts secret references for connection credentials", () => {

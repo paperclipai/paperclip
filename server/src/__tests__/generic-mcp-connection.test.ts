@@ -359,7 +359,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(result.auth ?? null).toBeNull();
     expect(result.actions.readOnly.map((action) => action.toolName)).toEqual(["list_insights"]);
     expect(result.actions.canMakeChanges.map((action) => action.toolName)).toEqual(["create_insight"]);
-    expect(result.suggestedDefaults).toMatchObject({ askFirstRiskLevels: ["write", "destructive"] });
+    expect(result.suggestedDefaults).toMatchObject({ askFirstRiskLevels: [] });
 
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, result.connectionId));
     expect(connection).toMatchObject({ transport: "mcp_remote", authKind: "none", status: "draft" });

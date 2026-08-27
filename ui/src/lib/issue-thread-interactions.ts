@@ -239,6 +239,16 @@ export function buildIssueThreadInteractionSummary(
     return buildItemVerdictsSummary(interaction);
   }
 
+  if (interaction.kind === "connection_intent") {
+    const serviceName = interaction.payload.serviceName;
+    const outcome = interaction.result?.outcome;
+    if (outcome === "connected") return `Connected ${serviceName}`;
+    if (outcome === "declined") return `Declined ${serviceName} connection`;
+    if (outcome === "superseded") return `${serviceName} connection request was superseded`;
+    if (outcome === "expired") return `${serviceName} connection request expired`;
+    return `Requested a ${serviceName} connection`;
+  }
+
   const count = interaction.payload.questions.length;
   if (interaction.status === "answered") {
     return count === 1 ? "Answered 1 question" : `Answered ${count} questions`;

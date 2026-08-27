@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
@@ -11,9 +12,25 @@ import {
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
+  AdapterRuntimeToolAccess,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
+
+export function buildRuntimeToolsEnv(
+  access: AdapterRuntimeToolAccess | null | undefined,
+): Record<string, string> {
+  if (!access) return {};
+  return {
+    PAPERCLIP_RUNTIME_TOOLS_MCP_URL: access.mcpEndpoint,
+    PAPERCLIP_RUNTIME_TOOLS_TOKEN: access.bearerToken,
+    PAPERCLIP_RUNTIME_TOOLS_EXPIRES_AT: access.expiresAt,
+    PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL: access.rest.connectionsSearch,
+    PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL: access.rest.connectionRequest,
+    PAPERCLIP_RUNTIME_TOOLS_AVAILABLE: access.tools.join(","),
+    PAPERCLIP_RUNTIME_TOOLS_GUIDANCE: access.guidance,
+  };
+}
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -182,6 +199,8 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "",
+  CONNECTION_INTENT_AGENT_GUIDANCE,
 ].join("\n");
 
 export const WATCHDOG_DEFAULT_MANDATE = [

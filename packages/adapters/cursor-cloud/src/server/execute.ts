@@ -15,6 +15,7 @@ import {
   asBoolean,
   asString,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
@@ -106,6 +107,7 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const env: Record<string, string> = {
     ...configEnv,
     ...buildPaperclipEnv(agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: runId,
   };
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run

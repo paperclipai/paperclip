@@ -1080,6 +1080,29 @@ export interface ConnectToolAppResult {
   auth?: ConnectToolAppAuthChallenge | null;
 }
 
+export interface ToolAppMetadataPreflightAttempt {
+  kind: "endpoint" | "oauth_metadata";
+  url: string;
+  status: number;
+  ok: boolean;
+  contentType: string | null;
+}
+
+/** Credential-free inspection of a curated app's public MCP/OAuth metadata. */
+export interface ToolAppMetadataPreflightResult {
+  galleryKey: string;
+  methodKey: string;
+  serverUrl: string;
+  endpointReachable: boolean;
+  oauth: {
+    metadataFound: boolean;
+    registrationAdvertised: boolean;
+    clientIdMetadataDocumentSupported: boolean;
+  } | null;
+  attempts: ToolAppMetadataPreflightAttempt[];
+  checkedAt: string;
+}
+
 export interface ToolOAuthStartResult {
   connectionId: string;
   provider: string;

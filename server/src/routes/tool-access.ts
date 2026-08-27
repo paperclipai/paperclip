@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
 import {
   CONNECTABLE_APP_DEFINITIONS,
@@ -24,6 +24,8 @@ import {
   disableToolStdioCommandTemplateSchema,
   duplicateToolProfileSchema,
   finishToolAppSchema,
+  finalizeOAuthAccessSchema,
+  startToolOAuthSchema,
   reconnectToolAppSchema,
   replaceConnectionGrantMembersSchema,
   reviewToolProfileNewToolsSchema,
@@ -54,9 +56,14 @@ import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
 } from "../services/tool-access.js";
+import { isLoopbackHost } from "../url-utils.js";
+import { connectionIntentService } from "../services/connection-intents.js";
+import { wakeConnectionIntentAfterResolution } from "./connection-intents.js";
+import type { heartbeatService } from "../services/heartbeat.js";
 
 const COMPANY_INSTALL_DENIAL_REASON =
   "Only someone who can configure this connection can choose this.";
+type Heartbeat = ReturnType<typeof heartbeatService>;
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
@@ -125,6 +132,26 @@ export function filterVisibleToolConnections<T extends {
     || Boolean(actor.userId && connection.createdByUserId === actor.userId));
 }
 
+export function connectionIntentOAuthOutcomeHtml(input: {
+  interactionId: string;
+  issueId: string | null;
+  outcome: "connected" | "declined" | "failed";
+}) {
+  // The callback window is only a signal. Connection identity and every
+  // authorization URL stay server-side; the opener refreshes the task from the
+  // interaction id instead of trusting provider-window data.
+  const message = JSON.stringify({
+    type: "paperclip.connection-intent.oauth",
+    interactionId: input.interactionId,
+    outcome: input.outcome,
+  }).replace(/</g, "\\u003c");
+  const issuePath = input.issueId
+    ? `/issues/${encodeURIComponent(input.issueId)}`
+    : "/issues";
+  const fallback = JSON.stringify(issuePath);
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};if(window.opener&&window.opener!==window){window.opener.postMessage(message,window.location.origin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
+}
+
 export function toolAccessRoutes(
   db: Db,
   options: {
@@ -137,11 +164,64 @@ export function toolAccessRoutes(
     remoteHttpEndpointLookup?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpEndpointLookup"];
     remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
     composioClientFactory?: (apiKey: string) => ComposioClient;
+    connectionIntentHeartbeat?: Pick<Heartbeat, "wakeup">;
   } = {},
 ) {
   const router = Router();
   const svc = toolAccessService(db, options);
   const policySvc = toolAccessPolicyService(db);
+  const connectionIntents = connectionIntentService(db);
+
+  async function isConnectionIntent(interactionId: string | null | undefined) {
+    if (!interactionId) return false;
+    const row = await db
+      .select({ kind: issueThreadInteractions.kind })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row?.kind === "connection_intent";
+  }
+
+  async function finishConnectionIntentOAuth(input: {
+    interactionId: string;
+    connectionId?: string;
+    userId: string;
+    outcome: "connected" | "declined" | "failed";
+    canManageOrganizationGrant: boolean;
+  }) {
+    const loaded = await connectionIntents.loadIntent(input.interactionId);
+    if (loaded.interaction.addresseeUserId !== input.userId) {
+      throw forbidden("OAuth callback user does not match the connection request");
+    }
+    if (loaded.interaction.status !== "pending") return loaded.interaction;
+    const interaction = input.outcome === "connected" && input.connectionId
+      ? await connectionIntents.complete(input.interactionId, input.connectionId, input.userId, {
+          canManageOrganizationGrant: input.canManageOrganizationGrant,
+        })
+      : input.outcome === "declined"
+        ? await connectionIntents.decline(input.interactionId, input.userId, "Authorization was declined in the provider window")
+        : await connectionIntents.updatePhase(input.interactionId, "needs_retry", input.userId);
+    if (input.outcome !== "failed" && options.connectionIntentHeartbeat) {
+      await wakeConnectionIntentAfterResolution(options.connectionIntentHeartbeat, {
+        loaded,
+        status: interaction.status,
+        actorId: input.userId,
+      });
+    }
+    return interaction;
+  }
+
+  function sendConnectionIntentOAuthOutcome(
+    res: import("express").Response,
+    input: {
+      interactionId: string;
+      issueId: string | null;
+      outcome: "connected" | "declined" | "failed";
+    },
+  ) {
+    res.type("html").send(connectionIntentOAuthOutcomeHtml(input));
+  }
 
   function configuredPublicBaseUrl() {
     const raw = (
@@ -160,15 +240,34 @@ export function toolAccessRoutes(
     }
   }
 
-  function oauthRedirectUri() {
-    const configured = configuredPublicBaseUrl();
-    if (!configured) {
+  function requestLoopbackBaseUrl(req: Request) {
+    const host = req.get("host")?.trim();
+    if (!host) return null;
+    try {
+      const parsed = new URL(`${req.protocol}://${host}`);
+      if (
+        (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+        || parsed.username
+        || parsed.password
+        || !isLoopbackHost(parsed.hostname)
+      ) {
+        return null;
+      }
+      return parsed.origin;
+    } catch {
+      return null;
+    }
+  }
+
+  function oauthRedirectUri(req: Request) {
+    const baseUrl = configuredPublicBaseUrl() ?? requestLoopbackBaseUrl(req);
+    if (!baseUrl) {
       throw unprocessable(
         "This Paperclip needs a browser-reachable HTTPS address (or loopback HTTP) before browser sign-in can start.",
         { code: "oauth_redirect_origin_unsupported" },
       );
     }
-    return new URL("/api/tools/oauth/callback", configured).toString();
+    return new URL("/api/tools/oauth/callback", baseUrl).toString();
   }
 
   async function oauthAppPath(
@@ -184,6 +283,7 @@ export function toolAccessRoutes(
     if (!company) throw new Error("OAuth callback connection belongs to a missing company");
     return `/${company.issuePrefix}/apps/${connectionId}/${tab}`;
   }
+
   const access = accessService(db);
 
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
@@ -436,7 +536,7 @@ export function toolAccessRoutes(
       subjectUserId: req.body.subjectUserId,
       scopes: req.body.scopes,
       returnTo: req.body.returnTo,
-      redirectUri: oauthRedirectUri(),
+      redirectUri: oauthRedirectUri(req),
     });
     res.json({ url: result.authorizationUrl });
   });
@@ -499,6 +599,14 @@ export function toolAccessRoutes(
     });
   });
 
+  router.get("/companies/:companyId/tools/apps/:galleryKey/preflight", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const methodKey = typeof req.query.methodKey === "string" ? req.query.methodKey.trim() || null : null;
+    res.json(await svc.preflightGalleryAppMetadata(req.params.galleryKey as string, methodKey));
+  });
+
   /**
    * Paperclip's Client ID Metadata Document (PAP-17087).
    *
@@ -510,7 +618,7 @@ export function toolAccessRoutes(
    * data of any kind.
    */
   router.get(OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH.replace(/^\/api/, ""), (_req, res) => {
-    const redirectUri = oauthRedirectUri();
+    const redirectUri = oauthRedirectUri(_req);
     const clientId = new URL(OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH, new URL(redirectUri).origin).toString();
     res.type("application/json").json(oauthClientIdMetadataDocument({ clientId, redirectUri }));
   });
@@ -529,7 +637,7 @@ export function toolAccessRoutes(
           // so this cannot start consent on someone else's behalf.
           const personalSubjectUserId = req.body.grantKind === "user" ? req.actor.userId ?? null : null;
           const start = await svc.startOAuth(companyId, result.connectionId, {
-            redirectUri: oauthRedirectUri(),
+            redirectUri: oauthRedirectUri(req),
             actor: getActorInfo(req),
             ...(personalSubjectUserId ? { subjectUserId: personalSubjectUserId } : {}),
           });
@@ -583,7 +691,7 @@ export function toolAccessRoutes(
       const existing = await svc.getConnection(req.params.connectionId as string, companyId);
       await assertToolConnectionAccess(req, existing);
       const result = await svc.startOAuth(companyId, existing.id, {
-        redirectUri: oauthRedirectUri(),
+        redirectUri: oauthRedirectUri(req),
         actor: getActorInfo(req),
         subjectUserId: req.body.subjectUserId,
         scopes: req.body.scopes,
@@ -593,13 +701,27 @@ export function toolAccessRoutes(
     },
   );
 
-  router.post("/tools/oauth/:connectionId/start", async (req, res) => {
+  router.post("/tools/oauth/:connectionId/start", validate(startToolOAuthSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    await assertToolConnectionConfigureAccess(req, existing);
+    const subjectUserId = req.body?.asCurrentUser === true ? req.actor.userId ?? null : null;
+    if (req.body?.asCurrentUser === true && !subjectUserId) {
+      throw forbidden("Connecting an app as yourself requires a signed-in user");
+    }
+    if (subjectUserId && existing.credentialPolicy === "per_user") {
+      // Personal reconnect is consent owned by the fixed subject, not a manager
+      // configuration action. Membership blocks viewers; the service then
+      // proves this caller is the connection's retained subject before it can
+      // create OAuth state. Shared reconnects keep the stricter configure gate.
+      activeToolMembership(req, existing.companyId);
+    } else {
+      await assertToolConnectionConfigureAccess(req, existing);
+    }
     const result = await svc.startOAuth(existing.companyId, existing.id, {
-      redirectUri: oauthRedirectUri(),
+      redirectUri: oauthRedirectUri(req),
       actor: getActorInfo(req),
+      ...(subjectUserId ? { subjectUserId } : {}),
+      ...(req.body?.interactionId ? { interactionId: req.body.interactionId } : {}),
     });
     res.json(result);
   });
@@ -614,6 +736,7 @@ export function toolAccessRoutes(
       throw badRequest("Invalid or expired OAuth state");
     }
     const pendingConnection = await svc.getConnection(pendingState.connectionId, pendingState.companyId);
+    const pendingConnectionIntent = await isConnectionIntent(pendingState.interactionId);
     if (pendingState.subjectUserId && pendingState.subjectUserId === req.actor.userId) {
       await assertToolConnectionAccess(req, pendingConnection);
     } else {
@@ -636,6 +759,21 @@ export function toolAccessRoutes(
         entityId: result.connection.id,
         details: { applicationId: result.application.id, catalogEntryCount: result.catalog.length, provider: "gmail" },
       });
+      if (acceptsHtml && pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
+        await finishConnectionIntentOAuth({
+          interactionId: pendingState.interactionId,
+          connectionId: result.connection.id,
+          userId: req.actor.userId,
+          outcome: "connected",
+          canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+        });
+        sendConnectionIntentOAuthOutcome(res, {
+          interactionId: pendingState.interactionId,
+          issueId: pendingState.issueId,
+          outcome: "connected",
+        });
+        return;
+      }
       if (acceptsHtml) {
         const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
         res.redirect(303, `${testPath}?success=1`);
@@ -647,6 +785,21 @@ export function toolAccessRoutes(
       const details = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object"
         ? callbackError.details as Record<string, unknown>
         : null;
+      if (pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
+        const outcome = details?.code === "oauth_authorization_denied" ? "declined" : "failed";
+        await finishConnectionIntentOAuth({
+          interactionId: pendingState.interactionId,
+          userId: req.actor.userId,
+          outcome,
+          canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+        });
+        sendConnectionIntentOAuthOutcome(res, {
+          interactionId: pendingState.interactionId,
+          issueId: pendingState.issueId,
+          outcome,
+        });
+        return;
+      }
       const params = new URLSearchParams({ oauth: details?.code === "oauth_authorization_denied" ? "denied" : "failed" });
       if (typeof details?.code === "string") params.set("code", details.code);
       const setupPath = await oauthAppPath(pendingState.companyId, pendingState.connectionId, "setup");
@@ -668,6 +821,7 @@ export function toolAccessRoutes(
       throw badRequest("Invalid or expired OAuth state");
     }
     const pendingConnection = await svc.getConnection(pendingState.connectionId, pendingState.companyId);
+    const pendingConnectionIntent = await isConnectionIntent(pendingState.interactionId);
     if (pendingState.subjectUserId && pendingState.subjectUserId === req.actor.userId) {
       await assertToolConnectionAccess(req, pendingConnection);
     } else {
@@ -684,7 +838,7 @@ export function toolAccessRoutes(
         // A provider denial is bound and consumed by state alone. Avoid
         // requiring this deployment's callback origin just to record that the
         // user declined; successful code exchange still validates the origin.
-        redirectUri: error ? "" : oauthRedirectUri(),
+        redirectUri: error ? "" : oauthRedirectUri(req),
         actor: getActorInfo(req),
       });
     } catch (callbackError) {
@@ -696,10 +850,45 @@ export function toolAccessRoutes(
         ? callbackError.details as Record<string, unknown>
         : null;
       const callbackErrorCode = typeof details?.code === "string" ? details.code : null;
+      const callbackFailureCode = callbackErrorCode
+        ?? (callbackError instanceof HttpError ? `oauth_callback_http_${callbackError.status}` : "oauth_callback_failed");
+      await logActivity(db, {
+        companyId: pendingState.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_failed",
+        entityType: "tool_connection",
+        entityId: pendingState.connectionId,
+        details: {
+          code: callbackFailureCode,
+          status: callbackError instanceof HttpError ? callbackError.status : 500,
+          // HttpError messages are Paperclip-authored. Provider-authored
+          // error_description/error_uri values are never read above and cannot
+          // be reflected into the activity stream.
+          message: callbackError instanceof HttpError
+            ? callbackError.message
+            : "OAuth callback failed unexpectedly.",
+        },
+      });
+      if (pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
+        const outcome = callbackErrorCode === "oauth_authorization_denied" ? "declined" : "failed";
+        await finishConnectionIntentOAuth({
+          interactionId: pendingState.interactionId,
+          userId: req.actor.userId,
+          outcome,
+          canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+        });
+        sendConnectionIntentOAuthOutcome(res, {
+          interactionId: pendingState.interactionId,
+          issueId: pendingState.issueId,
+          outcome,
+        });
+        return;
+      }
       const params = new URLSearchParams({
         oauth: callbackErrorCode === "oauth_authorization_denied" ? "denied" : "failed",
       });
-      if (callbackErrorCode) params.set("code", callbackErrorCode);
+      params.set("code", callbackFailureCode);
       const setupPath = await oauthAppPath(pendingState.companyId, pendingState.connectionId, "setup");
       res.redirect(303, `${setupPath}?${params.toString()}`);
       return;
@@ -716,6 +905,21 @@ export function toolAccessRoutes(
         catalogEntryCount: result.catalog.length,
       },
     });
+    if (acceptsHtml && pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
+      await finishConnectionIntentOAuth({
+        interactionId: pendingState.interactionId,
+        connectionId: result.connection.id,
+        userId: req.actor.userId,
+        outcome: "connected",
+        canManageOrganizationGrant: await isToolConnectionManager(req, pendingConnection.companyId),
+      });
+      sendConnectionIntentOAuthOutcome(res, {
+        interactionId: pendingState.interactionId,
+        issueId: pendingState.issueId,
+        outcome: "connected",
+      });
+      return;
+    }
     if (acceptsHtml) {
       const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
       res.redirect(303, `${testPath}?success=1`);
@@ -723,6 +927,31 @@ export function toolAccessRoutes(
     }
     res.json(result);
   });
+
+  router.post(
+    "/companies/:companyId/tools/apps/:connectionId/finalize-oauth-access",
+    validate(finalizeOAuthAccessSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const existing = await svc.getConnection(req.params.connectionId as string, companyId);
+      await assertToolConnectionConfigureAccess(req, existing);
+      const result = await svc.finalizeOAuthAccess(companyId, existing.id, req.body, getActorInfo(req));
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_access_finalized",
+        entityType: "tool_connection",
+        entityId: result.connection.id,
+        details: {
+          grantKind: req.body.grantKind,
+          profileId: result.profile.id,
+          profileEntryCount: result.profileEntries.length,
+        },
+      });
+      res.json(result);
+    },
+  );
 
   router.post("/companies/:companyId/tools/apps/:connectionId/finish", validate(finishToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;

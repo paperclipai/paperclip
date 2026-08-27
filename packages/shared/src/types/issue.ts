@@ -1285,6 +1285,32 @@ export interface RequestConfirmationConnectionAuthorizationPayload {
   requestingAgentName?: string | null;
 }
 
+export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
+
+/**
+ * Server-authored request for a responsible user to connect a first-party app.
+ * It intentionally contains presentation-safe identifiers only; credentials and
+ * authorization URLs are returned solely from addressed board endpoints.
+ */
+export interface ConnectionIntentPayload {
+  version: 1;
+  serviceSlug: string;
+  serviceName: string;
+  serviceLogoUrl?: string | null;
+  serviceDarkLogoUrl?: string | null;
+  requestingAgentId: string;
+  requestingAgentName: string;
+  phase: ConnectionIntentPhase;
+}
+
+export interface ConnectionIntentResult {
+  version: 1;
+  outcome: "connected" | "declined" | "superseded" | "expired";
+  connectionId?: string | null;
+  reason?: string | null;
+  supersededByInteractionId?: string | null;
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1463,26 +1489,35 @@ export interface RequestItemVerdictsInteraction extends IssueThreadInteractionBa
   result?: RequestItemVerdictsResult | null;
 }
 
+export interface ConnectionIntentInteraction extends IssueThreadInteractionBase {
+  kind: "connection_intent";
+  payload: ConnectionIntentPayload;
+  result?: ConnectionIntentResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction
-  | RequestItemVerdictsInteraction;
+  | RequestItemVerdictsInteraction
+  | ConnectionIntentInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
   | RequestConfirmationPayload
   | RequestCheckboxConfirmationPayload
-  | RequestItemVerdictsPayload;
+  | RequestItemVerdictsPayload
+  | ConnectionIntentPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
   | RequestConfirmationResult
   | RequestCheckboxConfirmationResult
-  | RequestItemVerdictsResult;
+  | RequestItemVerdictsResult
+  | ConnectionIntentResult;
 
 export interface IssueAttachment {
   id: string;

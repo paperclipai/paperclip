@@ -756,6 +756,50 @@ export const issueThreadInteractionContinuationPolicySchema = z.enum(
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
 );
 
+export const connectionIntentPhaseSchema = z.enum(["requested", "authorizing", "needs_retry"]);
+const connectionIntentBrandAssetSchema = z.string().max(2048).refine((value) => {
+  if (/^\/brands\/apps\/[a-z0-9][a-z0-9._-]*\.(?:svg|png)$/i.test(value)) return true;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}, "Connection intent brand assets must be HTTPS URLs or local app brand paths");
+
+export const connectionIntentPayloadSchema = z.object({
+  version: z.literal(1),
+  serviceSlug: z.string().trim().min(1).max(120),
+  serviceName: z.string().trim().min(1).max(160),
+  serviceLogoUrl: connectionIntentBrandAssetSchema.nullable().optional(),
+  serviceDarkLogoUrl: connectionIntentBrandAssetSchema.nullable().optional(),
+  requestingAgentId: z.string().guid(),
+  requestingAgentName: z.string().trim().min(1).max(160),
+  phase: connectionIntentPhaseSchema,
+}).strict();
+
+export const connectionIntentResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+  connectionId: z.string().guid().nullable().optional(),
+  reason: z.string().trim().max(4000).nullable().optional(),
+  supersededByInteractionId: z.string().guid().nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.outcome === "connected" && !value.connectionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["connectionId"],
+      message: "Connected intents require a connection id",
+    });
+  }
+  if (value.outcome === "superseded" && !value.supersededByInteractionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["supersededByInteractionId"],
+      message: "Superseded intents require the replacement interaction id",
+    });
+  }
+});
+
 export const issueDocumentKeySchema = z
   .string()
   .trim()

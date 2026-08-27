@@ -4167,6 +4167,13 @@ export function IssueThreadInteractionCard({
               onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
               externalReferences={externalReferences}
             />
+          ) : interaction.kind === "connection_intent" ? (
+            <div className="space-y-2 rounded-md border border-border bg-muted/30 p-4 text-sm">
+              <div className="font-medium text-foreground">{interaction.payload.serviceName}</div>
+              <div className="text-muted-foreground">
+                This connection request can be completed from the Apps setup flow.
+              </div>
+            </div>
           ) : (
             <RequestConfirmationCard
               interaction={interaction}

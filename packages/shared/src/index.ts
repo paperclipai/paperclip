@@ -1,6 +1,12 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
+  CONNECTION_INTENT_AGENT_GUIDANCE,
+  CONNECTION_REQUEST_TOOL_DESCRIPTION,
+  CONNECTION_RUNTIME_TOOL_NAMES,
+  CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
+} from "./connection-intent-guidance.js";
+export {
   nativeFinalizationResultSchema,
   nativeFinalizationResultV1Schema,
   nativeReportedWorkDispositionSchema,
@@ -36,6 +42,27 @@ export {
 } from "./validators/decision.js";
 
 export { decisionEffectTargetIssueIds } from "./types/decision.js";
+
+export type {
+  ConnectionAvailabilityState,
+  ConnectionSearchResultItem,
+  ConnectionsSearchResult,
+  ConnectionRequestResult,
+  ConnectionIntentSetupOptions,
+  CompleteConnectionIntentInput,
+  DeclineConnectionIntentInput,
+} from "./types/connection-intent.js";
+
+export {
+  connectionsSearchInputSchema,
+  connectionRequestInputSchema,
+  completeConnectionIntentSchema,
+  declineConnectionIntentSchema,
+  type ConnectionsSearchInput,
+  type ConnectionRequestInput,
+  type CompleteConnectionIntent,
+  type DeclineConnectionIntent,
+} from "./validators/connection-intent.js";
 
 export type {
   DecisionEffectStaleness,
@@ -262,16 +289,30 @@ export {
 } from "./trust-policy.js";
 export {
   CONNECTABLE_APP_DEFINITIONS,
+  CONNECTABLE_APP_SLUGS,
   DEFAULT_OWNERSHIP_AVAILABILITY,
+  appAcceptsCustomerOAuthClient,
+  appSupportsCatalogSetup,
+  appSupportsAutomaticOAuth,
+  connectionMethodAcceptsCustomerOAuthClient,
+  connectionMethodRequiresConfiguration,
+  connectionMethodSupportsCatalogSetup,
+  connectionMethodSupportsAutomaticOAuth,
   credentialConfigPath,
   getAppDefinitionForUrl,
   getAvailableConnectionMethod,
   getAvailableConnectionMethods,
   getConnectableAppDefinition,
+  isConnectableAppSlug,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
 } from "./app-definitions.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
+export {
+  BLOCKED_MCP_PROVIDERS,
+  SELF_SERVE_MCP_CANDIDATES,
+  SELF_SERVE_MCP_RESEARCH,
+} from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
@@ -1108,6 +1149,9 @@ export type {
   RequestConfirmationToolActionPayload,
   RequestConfirmationToolActionResult,
   RequestConfirmationConnectionAuthorizationPayload,
+  ConnectionIntentPhase,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
   RequestConfirmationSecretProposalPayload,
   RequestConfirmationSecretProposalResult,
   RequestCheckboxConfirmationOption,
@@ -1130,6 +1174,7 @@ export type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestItemVerdictsInteraction,
+  ConnectionIntentInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
@@ -1304,6 +1349,8 @@ export type {
   RejectSecretProposalInput,
   ConnectToolAppAuthChallenge,
   ConnectToolAppResult,
+  ToolAppMetadataPreflightAttempt,
+  ToolAppMetadataPreflightResult,
   ToolOAuthClientRegistrationSource,
   ToolOAuthStartResult,
   ToolActionRequest,
@@ -1870,6 +1917,9 @@ export {
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
   issueThreadInteractionContinuationPolicySchema,
+  connectionIntentPhaseSchema,
+  connectionIntentPayloadSchema,
+  connectionIntentResultSchema,
   suggestedTaskDraftSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultCreatedTaskSchema,
@@ -2097,6 +2147,8 @@ export {
   reconnectToolAppSchema,
   createToolApplicationSchema,
   finishToolAppSchema,
+  finalizeOAuthAccessSchema,
+  startToolOAuthSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
   createToolMcpGatewaySchema,
@@ -2159,6 +2211,8 @@ export {
   type CreateToolActionRequest,
   type CreateToolApplication,
   type FinishToolApp,
+  type FinalizeOAuthAccess,
+  type StartToolOAuth,
   type UpdateToolApplication,
   type CreateToolConnection,
   type CreateToolMcpGateway,

@@ -7,6 +7,8 @@ import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte,
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  CONNECTION_INTENT_AGENT_GUIDANCE,
+  CONNECTION_RUNTIME_TOOL_NAMES,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   MAX_TASK_DRAIN_TTL_MS,
@@ -99,10 +101,12 @@ import type {
   AdapterRuntimeEvent,
   AdapterRuntimeMcpAccess,
   AdapterRuntimeMcpServer,
+  AdapterRuntimeToolAccess,
   AdapterSessionCodec,
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -3467,12 +3471,19 @@ type ManagedMcpGatewayRunConfig = {
   }>;
 };
 
-function paperclipApiBaseUrl(): string {
+function configuredPaperclipApiBaseUrl(): string | null {
   const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  return configured
+    ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
+    : null;
+}
+
+function paperclipApiBaseUrl(): string {
+  const configured = configuredPaperclipApiBaseUrl();
   if (!configured) {
     throw new Error("PAPERCLIP_API_URL is required to deliver managed runtime MCP servers");
   }
-  return configured.replace(/\/+$/, "").replace(/\/api$/, "");
+  return configured;
 }
 
 export async function revokeHeartbeatRunGatewayTokens(input: {
@@ -3607,7 +3618,11 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     });
     servers.push({
       name: connection.name,
-      url: `${paperclipApiBaseUrl()}/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      // Runtime MCP clients authenticate with a short-lived gateway bearer, not
+      // a Paperclip agent JWT. Route them through the public gateway protocol
+      // endpoint mounted ahead of the API auth middleware; the gateway service
+      // still validates the bearer and its run binding on every request.
+      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway.gatewayPublicId}`,
       token: token.token,
       connectionId: connection.id,
     });
@@ -3630,6 +3645,40 @@ function createAdapterRuntimeMcpAccess(
   const snapshot = servers.map((server) => Object.freeze({ ...server }));
   return Object.freeze({
     getServers: () => snapshot.map((server) => ({ ...server })),
+  });
+}
+
+function createAdapterRuntimeToolAccess(input: {
+  agentId: string;
+  companyId: string;
+  runId: string;
+  responsibleUserId: string | null;
+}): AdapterRuntimeToolAccess | undefined {
+  if (!input.responsibleUserId) return undefined;
+  const minted = createRuntimeToolsToken({
+    agentId: input.agentId,
+    companyId: input.companyId,
+    runId: input.runId,
+    responsibleUserId: input.responsibleUserId,
+  });
+  if (!minted) return undefined;
+  // The normal server bootstrap always exports PAPERCLIP_API_URL. Some service
+  // tests invoke heartbeat execution without booting an HTTP server, however;
+  // in that context there is no reachable endpoint to advertise and runtime
+  // tools should simply remain unavailable instead of failing the run.
+  const baseUrl = configuredPaperclipApiBaseUrl();
+  if (!baseUrl) return undefined;
+  return Object.freeze({
+    version: 1,
+    guidance: CONNECTION_INTENT_AGENT_GUIDANCE,
+    mcpEndpoint: `${baseUrl}/mcp/runtime-tools`,
+    rest: {
+      connectionsSearch: `${baseUrl}/runtime-tools/connections/search`,
+      connectionRequest: `${baseUrl}/runtime-tools/connections/request`,
+    },
+    bearerToken: minted.token,
+    expiresAt: minted.expiresAt,
+    tools: CONNECTION_RUNTIME_TOOL_NAMES,
   });
 }
 
@@ -3787,7 +3836,9 @@ export async function createManagedMcpRunConfig(input: {
     managedGateways.push({
       id: gateway.id,
       name: gateway.name,
-      endpointPath: `/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      // This path must bypass the normal /api agent-JWT middleware. The MCP
+      // gateway performs its own bearer validation for the run-scoped token.
+      endpointPath: `/mcp/gateways/${gateway.gatewayPublicId}`,
       bearerToken: token.token,
       tokenPrefix: token.tokenPrefix,
     });
@@ -16640,12 +16691,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
         } else {
           const adapterContext = { ...context };
+          const runtimeTools = createAdapterRuntimeToolAccess({
+            agentId: agent.id,
+            companyId: agent.companyId,
+            runId: run.id,
+            responsibleUserId: run.responsibleUserId,
+          });
+          if (!runtimeTools) {
+            logger.warn(
+              {
+                companyId: agent.companyId,
+                agentId: agent.id,
+                runId: run.id,
+              },
+              "runtime connection tools could not be delivered",
+            );
+          }
           const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
             db,
             agent,
             runId: run.id,
           });
+          const runtimeToolDelivery = adapter.runtimeToolDelivery ?? "invocation_context";
+          if (runtimeTools && runtimeToolDelivery === "native_mcp") {
+            runtimeMcpServers.unshift({
+              name: "Paperclip connections",
+              url: runtimeTools.mcpEndpoint,
+              token: runtimeTools.bearerToken,
+              connectionId: "paperclip-runtime-tools",
+            });
+          }
           const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
+          if (runtimeTools && runtimeToolDelivery === "invocation_context") {
+            adapterContext.paperclipRuntimeTools = runtimeTools;
+          }
           const managedMcpConfig = await createManagedMcpRunConfig({
             db,
             agent,
@@ -16669,6 +16748,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
               : undefined,
             runtimeMcp,
+            runtimeTools,
             onLog,
             onMeta: onAdapterMeta,
             onEvent: onAdapterEvent,
