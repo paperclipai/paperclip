@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=vercel.com&sz=128"
+    "logoUrl": "/brands/apps/vercel.svg",
+    "darkLogoUrl": "/brands/apps/vercel-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.vercel.com/*"
@@ -34,5 +35,9 @@
         "environment"
       ]
     }
-  ]
+  ],
+  "availability": {
+    "available": false,
+    "reason": "Vercel currently reviews and approves MCP clients."
+  }
 }

@@ -3,18 +3,25 @@
   "slug": "composio",
   "name": "Composio",
   "description": "Connect Composio so Paperclip can discover and manage the toolkits in your project.",
-  "categories": ["productivity"],
+  "categories": [
+    "productivity"
+  ],
   "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=composio.dev&sz=128"
+    "logoUrl": "/brands/apps/composio.svg",
+    "darkLogoUrl": "/brands/apps/composio-dark.svg"
   },
-  "urlPatterns": ["https://backend.composio.dev/*"],
+  "urlPatterns": [
+    "https://backend.composio.dev/*"
+  ],
   "methods": [
     {
       "key": "api-key",
       "transport": "rest_api",
       "auth": "api_key",
-      "ownershipModes": ["customer"],
+      "ownershipModes": [
+        "customer"
+      ],
       "whenToUse": "Use a project API key from the Composio project that owns the toolkits and connected accounts.",
       "defaults": {
         "serviceHost": "backend.composio.dev"

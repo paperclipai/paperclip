@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "webflow",
+  "name": "Webflow",
+  "description": "Connect Webflow's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/webflow.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.webflow.com/*"
+  ],
+  "docsUrl": "https://developers.webflow.com/mcp/reference/getting-started",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.webflow.com/mcp"
+      },
+      "guidanceMd": "Connect Webflow in the browser. A Webflow account; workspace and site roles constrain accessible sites.",
+      "riskTier": "S3",
+      "label": "Sign in with Webflow",
+      "consoleLinks": {
+        "docs": "https://developers.webflow.com/mcp/reference/getting-started"
+      },
+      "warnings": [
+        "A Webflow account; workspace and site roles constrain accessible sites."
+      ]
+    }
+  ]
+}

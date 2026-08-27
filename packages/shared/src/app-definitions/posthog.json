@@ -2,13 +2,14 @@
   "schemaVersion": 1,
   "slug": "posthog",
   "name": "PostHog",
-  "description": "Analyze product usage, errors, feature flags, and experiments in a pinned PostHog project.",
+  "description": "Analyze product usage, errors, feature flags, and experiments with PostHog's hosted MCP server.",
   "categories": [
     "analytics"
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=posthog.com&sz=128"
+    "logoUrl": "/brands/apps/posthog.svg",
+    "darkLogoUrl": "/brands/apps/posthog-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.posthog.com/*"
@@ -26,16 +27,16 @@
       "defaults": {
         "serverUrl": "https://mcp.posthog.com/mcp"
       },
-      "guidanceMd": "Pin the connection to one PostHog project and expose the full tool catalog by default. Narrow feature groups or tools only when needed.",
+      "guidanceMd": "Connect with PostHog's recommended defaults. Project pinning, read-only access, and catalog filters are optional advanced controls.",
       "riskTier": "S3",
       "tenantFields": [
         {
           "key": "projectId",
-          "label": "Project ID",
+          "label": "Pin to project ID",
           "type": "text",
-          "required": true,
-          "placeholder": "12345",
-          "helperMd": "Find the numeric project ID in PostHog project settings.",
+          "advanced": true,
+          "placeholder": "Optional numeric project ID",
+          "helperMd": "Optional. Pin this connection to one project and remove PostHog's project-switching tool.",
           "validation": {
             "pattern": "^[0-9]+$",
             "maxLength": 32
@@ -49,6 +50,7 @@
           "key": "readOnly",
           "label": "Read-only mode",
           "type": "checkbox",
+          "advanced": true,
           "defaultValue": false,
           "helperMd": "Turn on to hide tools that can change PostHog data.",
           "transport": {
@@ -94,7 +96,7 @@
           "key": "mode",
           "label": "Tool response mode",
           "type": "select",
-          "advanced": true,
+          "hidden": true,
           "required": true,
           "placeholder": "Individual tools",
           "defaultValue": "tools",
@@ -111,12 +113,27 @@
           }
         }
       ],
-      "requiredResourceFilters": [
-        "project"
-      ],
       "label": "Sign in with PostHog",
       "consoleLinks": {
         "docs": "https://posthog.com/docs/model-context-protocol"
+      },
+      "credentialSources": {
+        "vercelConnect": {
+          "services": [
+            "posthog",
+            "mcp.posthog.com/mcp"
+          ],
+          "principalModes": [
+            "user"
+          ],
+          "scopes": [
+            "*"
+          ],
+          "header": {
+            "name": "Authorization",
+            "prefix": "Bearer "
+          }
+        }
       }
     },
     {
@@ -130,16 +147,16 @@
       "defaults": {
         "serverUrl": "https://mcp.posthog.com/mcp"
       },
-      "guidanceMd": "Pin the connection to one PostHog project and expose the full tool catalog by default. Narrow feature groups or tools only when needed.",
+      "guidanceMd": "Connect with PostHog's recommended defaults. Project pinning, read-only access, and catalog filters are optional advanced controls.",
       "riskTier": "S3",
       "tenantFields": [
         {
           "key": "projectId",
-          "label": "Project ID",
+          "label": "Pin to project ID",
           "type": "text",
-          "required": true,
-          "placeholder": "12345",
-          "helperMd": "Find the numeric project ID in PostHog project settings.",
+          "advanced": true,
+          "placeholder": "Optional numeric project ID",
+          "helperMd": "Optional. Pin this connection to one project and remove PostHog's project-switching tool.",
           "validation": {
             "pattern": "^[0-9]+$",
             "maxLength": 32
@@ -153,6 +170,7 @@
           "key": "readOnly",
           "label": "Read-only mode",
           "type": "checkbox",
+          "advanced": true,
           "defaultValue": false,
           "helperMd": "Turn on to hide tools that can change PostHog data.",
           "transport": {
@@ -198,7 +216,7 @@
           "key": "mode",
           "label": "Tool response mode",
           "type": "select",
-          "advanced": true,
+          "hidden": true,
           "required": true,
           "placeholder": "Individual tools",
           "defaultValue": "tools",
@@ -214,9 +232,6 @@
             "name": "mode"
           }
         }
-      ],
-      "requiredResourceFilters": [
-        "project"
       ],
       "label": "Use a personal API key",
       "credentialFields": [
@@ -237,7 +252,27 @@
       "consoleLinks": {
         "keys": "https://posthog.com/docs/model-context-protocol/faq",
         "docs": "https://posthog.com/docs/model-context-protocol/faq"
+      },
+      "credentialSources": {
+        "vercelConnect": {
+          "services": [
+            "posthog",
+            "mcp.posthog.com/mcp"
+          ],
+          "principalModes": [
+            "app"
+          ],
+          "scopes": [
+            "*"
+          ],
+          "header": {
+            "name": "Authorization",
+            "prefix": "Bearer "
+          }
+        }
       }
     }
-  ]
+  ],
+  "docsUrl": "https://posthog.com/docs/model-context-protocol",
+  "redirectConstraints": "https-or-loopback-http"
 }

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "slug": "shopify",
+  "name": "Shopify",
+  "description": "Search a store's products and policies, and manage shopping carts.",
+  "categories": [
+    "commerce"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/shopify.svg"
+  },
+  "urlPatterns": [
+    "https://*.myshopify.com/api/mcp"
+  ],
+  "methods": [
+    {
+      "key": "storefront-mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a store's public myshopify.com domain. No Shopify app or OAuth registration is required.",
+      "defaults": {
+        "serverUrlTemplate": "https://{storeDomain}/api/mcp"
+      },
+      "guidanceMd": "Connect Shopify's official Storefront MCP server for shopper-facing catalog, policy, and cart tools.",
+      "riskTier": "S3",
+      "label": "Connect a Shopify storefront",
+      "tenantFields": [
+        {
+          "key": "storeDomain",
+          "label": "Store domain",
+          "type": "text",
+          "required": true,
+          "placeholder": "your-store.myshopify.com",
+          "helperMd": "Enter the full myshopify.com domain without https://.",
+          "validation": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*\\.myshopify\\.com$",
+            "maxLength": 255
+          }
+        }
+      ],
+      "consoleLinks": {
+        "docs": "https://shopify.dev/docs/apps/build/storefront-mcp/servers/storefront"
+      },
+      "warnings": [
+        "This is Shopify's Storefront MCP, not Admin API access. It does not manage merchant products, orders, or customers.",
+        "The storefront must be publicly reachable. Password-protected or restricted trial stores can return HTTP 401."
+      ],
+      "requiredResourceFilters": [
+        "store"
+      ]
+    }
+  ]
+}

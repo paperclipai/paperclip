@@ -18,9 +18,19 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("https://docs.googleapis.com/drive/v3/files")).toBeNull();
   });
 
-  it("does not list Google Drive until its OAuth client flow is supported", () => {
-    expect(CONNECTABLE_APP_DEFINITIONS.map((app) => app.slug)).not.toContain("google-drive");
-    expect(getAppDefinitionForUrl("https://mcp.google.com/drive")).toBeNull();
+  it("lists each reviewed Google Workspace MCP endpoint independently", () => {
+    expect(CONNECTABLE_APP_DEFINITIONS.map((app) => app.slug)).toEqual(expect.arrayContaining([
+      "gmail",
+      "google-drive",
+      "google-docs",
+      "google-sheets",
+      "google-slides",
+      "google-calendar",
+      "google-chat",
+      "google-people",
+      "google-workspace-search",
+    ]));
+    expect(getAppDefinitionForUrl("https://drivemcp.googleapis.com/mcp/v1")?.slug).toBe("google-drive");
   });
 
   it("lists Composio as a connectable API-key app", () => {

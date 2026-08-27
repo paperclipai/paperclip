@@ -1,6 +1,33 @@
-import type { ConnectionGrantKind, ToolConnectionOwnership, ToolConnectionTransport } from "./tool-access.js";
+import type { ConnectionGrantKind, ToolConnectionOwnership, ToolConnectionTransport, VercelConnectPrincipalMode } from "./tool-access.js";
 export type AppCategory = "ai"|"analytics"|"commerce"|"communication"|"content"|"data"|"developer"|"productivity"|"other";
 export type OAuthRedirectConstraints = "https-or-loopback-http";
-export interface FieldDef { key:string; label:string; type:"text"|"password"|"textarea"|"datetime"|"select"|"checkbox"; required?:boolean; advanced?:boolean; placeholder?:string; helperMd?:string; secret?:boolean; prefix?:string; defaultValue?:string|boolean; validation?:{pattern?:string;maxLength?:number}; options?:Array<{value:string;label:string}>; transport?:{location:"query"|"header";name:string;format?:"string"|"csv"|"boolean";omitFalse?:boolean} }
-export interface ConnectionMethodDef { key:string; label?:string; transport:ToolConnectionTransport; auth:"oauth"|"api_key"|"none"; oauthStrategy?:"paperclip_id_connector"; grantKinds?:ConnectionGrantKind[]; ownershipModes:ToolConnectionOwnership[]; whenToUse:string; defaults?:{serverUrl?:string;discoveryUrl?:string|null;serviceHost?:string;templateKey?:string;authorizationEndpoint?:string;tokenEndpoint?:string;metadataUrl?:string;scopesHint?:string[]}; tenantFields?:FieldDef[]; extensionFields?:FieldDef[]; configRequirements?:{atLeastOneOf?:string[]}; credentialFields?:FieldDef[]; keyPlacement?:{location:"header"|"query"|"body_json"|"env";name:string;prefix?:string|null}; guidanceMd:string; consoleLinks?:{register?:string;keys?:string;settings?:string;docs?:string}; warnings?:string[]; variants?:Array<{key:string;label:string;whenToUse:string;tenantFields?:FieldDef[]}>; riskTier:"S1"|"S2"|"S3"|"S4"; requiredResourceFilters?:string[] }
-export interface AppDefinition { schemaVersion:1; slug:string; name:string; description:string; categories:AppCategory[]; featured?:boolean; branding:{logoUrl:string;darkLogoUrl?:string;backgroundColor?:string;accentColor?:string}; urlPatterns:string[]; docsUrl?:string; redirectConstraints?:OAuthRedirectConstraints; methods:ConnectionMethodDef[]; suggestable?:boolean; availability?:{available:boolean;reason?:string;robotEmail?:string}; ownershipAvailability?:Partial<Record<ToolConnectionOwnership,boolean>> }
+export interface FieldDef { key:string; label:string; type:"text"|"password"|"textarea"|"datetime"|"select"|"checkbox"; required?:boolean; advanced?:boolean; hidden?:boolean; placeholder?:string; helperMd?:string; secret?:boolean; prefix?:string; defaultValue?:string|boolean; validation?:{pattern?:string;maxLength?:number}; options?:Array<{value:string;label:string}>; transport?:{location:"query"|"header";name:string;format?:"string"|"csv"|"boolean";omitFalse?:boolean} }
+export interface ConnectionMethodDef { key:string; label?:string; transport:ToolConnectionTransport; auth:"oauth"|"api_key"|"none"; oauthStrategy?:"paperclip_id_connector"; connectorProfile?:string; capabilityProfile?:{key:string;label:string;description?:string}; grantKinds?:ConnectionGrantKind[]; ownershipModes:ToolConnectionOwnership[]; whenToUse:string; defaults?:{serverUrl?:string;serverUrlTemplate?:string;discoveryUrl?:string|null;serviceHost?:string;templateKey?:string;authorizationEndpoint?:string;tokenEndpoint?:string;metadataUrl?:string;scopesHint?:string[];oauthAuthorizationParams?:{access_type?:"offline";prompt?:"consent"}}; tenantFields?:FieldDef[]; extensionFields?:FieldDef[]; configRequirements?:{atLeastOneOf?:string[]}; credentialFields?:FieldDef[]; keyPlacement?:{location:"header"|"query"|"body_json"|"env";name:string;prefix?:string|null}; credentialSources?:{vercelConnect?:{services:string[];principalModes:VercelConnectPrincipalMode[];scopes:string[];header:{name:string;prefix?:string|null}}}; guidanceMd:string; consoleLinks?:{register?:string;keys?:string;settings?:string;docs?:string}; warnings?:string[]; variants?:Array<{key:string;label:string;whenToUse:string;tenantFields?:FieldDef[]}>; riskTier:"S1"|"S2"|"S3"|"S4"; requiredResourceFilters?:string[] }
+export interface AppDefinition { schemaVersion:1; slug:string; name:string; description:string; categories:AppCategory[]; featured?:boolean; branding:{logoUrl:string;darkLogoUrl?:string;backgroundColor?:string;accentColor?:string}; urlPatterns:string[]; docsUrl?:string; setupPrerequisite?:{title:string;description:string;steps?:string[];actionLabel:string;actionUrl:string}; redirectConstraints?:OAuthRedirectConstraints; methods:ConnectionMethodDef[]; suggestable?:boolean; availability?:{available:boolean;reason?:string;robotEmail?:string}; ownershipAvailability?:Partial<Record<ToolConnectionOwnership,boolean>> }
+
+export type SelfServeMcpAuthMode =
+  | "dcr"
+  | "dcr_cimd"
+  | "dcr_or_api_key"
+  | "customer_oauth"
+  | "api_key"
+  | "generated_url"
+  | "provider_approval";
+
+export interface SelfServeMcpResearchEntry {
+  slug: string;
+  name: string;
+  wave: 1 | 2 | 3 | "blocked";
+  status: "self_serve" | "blocked";
+  docsUrl: string;
+  serverUrl: string;
+  authMode: SelfServeMcpAuthMode;
+  prerequisite: string;
+  riskTier: "S1" | "S2" | "S3" | "S4";
+}
+
+export interface SelfServeMcpResearchManifest {
+  schemaVersion: 1;
+  verifiedAt: string;
+  entries: SelfServeMcpResearchEntry[];
+}

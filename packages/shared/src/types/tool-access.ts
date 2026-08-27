@@ -70,6 +70,7 @@ export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport = "mcp_remote" | "rest_api" | "local_stdio";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned" | "customer" | "dcr";
+export type VercelConnectPrincipalMode = "app" | "user";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
 export type ToolConnectionInstallTargetType = "company" | "agent";
 export type ConnectionGrantKind = "organization" | "user";
