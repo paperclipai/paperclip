@@ -499,7 +499,7 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
   });
 
-  it("retains an organization credential for another active audience member", async () => {
+  it("retains an organization credential for another restorable audience member", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const [departing, surviving] = await db.insert(companyMemberships).values([
       {
@@ -513,7 +513,7 @@ describeEmbeddedPostgres("access service", () => {
         companyId: company.id,
         principalType: "user" as const,
         principalId: `surviving-org-${randomUUID()}`,
-        status: "active" as const,
+        status: "suspended" as const,
         membershipRole: "member" as const,
       },
     ]).returning();
@@ -595,6 +595,13 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ subjectId: surviving!.principalId })]);
     expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
+
+    await accessService(db).updateMember(company.id, surviving!.id, { status: "active" });
+
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))
+      .toHaveLength(1);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
+      .toEqual([expect.objectContaining({ status: "active", credentialSecretRefs })]);
   });
 
   it("revokes delegated personal connection access when membership is suspended", async () => {
