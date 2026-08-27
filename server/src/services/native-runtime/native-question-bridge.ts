@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueThreadInteractions } from "@paperclipai/db";
@@ -42,6 +42,17 @@ interface NativeQuestionCommandTarget {
 
 const activeTargets = new Map<string, NativeQuestionCommandTarget>();
 
+interface NativeQuestionIdentity {
+  idempotencyKey?: string | null;
+  sourceRunId?: string | null;
+  payload: unknown;
+}
+
+interface NativeQuestionAuthorizationIdentity extends NativeQuestionIdentity {
+  companyId: string;
+  issueId: string;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -49,15 +60,16 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 function requestIdForInteraction(
-  interaction: Pick<AskUserQuestionsInteraction, "idempotencyKey" | "sourceRunId" | "payload">,
+  interaction: NativeQuestionIdentity,
 ): string | null {
-  if (!interaction.sourceRunId || !interaction.payload.questionSet) return null;
+  const payload = record(interaction.payload);
+  if (!interaction.sourceRunId || !payload?.questionSet) return null;
   const key = interaction.idempotencyKey;
   const expectedPrefix = `${QUESTION_KEY_PREFIX}${interaction.sourceRunId}:`;
   if (!key?.startsWith(expectedPrefix)) return null;
   const requestId = key.slice(expectedPrefix.length);
   if (!REQUEST_ID_PATTERN.test(requestId)) return null;
-  return interaction.payload.runtimeRequestId && interaction.payload.runtimeRequestId !== requestId
+  return typeof payload.runtimeRequestId === "string" && payload.runtimeRequestId !== requestId
     ? null
     : requestId;
 }
@@ -159,7 +171,7 @@ function canonicalResponse(
 
 async function authorizedNativeRun(
   db: Db,
-  interaction: Pick<AskUserQuestionsInteraction, "companyId" | "issueId" | "sourceRunId" | "payload" | "idempotencyKey">,
+  interaction: NativeQuestionAuthorizationIdentity,
 ) {
   const requestId = requestIdForInteraction(interaction);
   if (!requestId || !interaction.sourceRunId) return null;
@@ -358,7 +370,7 @@ export function registerNativeQuestionCommandTarget(target: NativeQuestionComman
 
 export async function nativeQuestionRunToCancel(
   db: Db,
-  interaction: AskUserQuestionsInteraction,
+  interaction: NativeQuestionAuthorizationIdentity,
 ): Promise<string | null> {
   const run = await authorizedNativeRun(db, interaction);
   return run && ["queued", "running"].includes(run.status) ? run.id : null;
@@ -369,14 +381,32 @@ export async function nativeQuestionRunIdsToCancelForIssue(
   db: Db,
   issue: { id: string; companyId: string },
 ): Promise<string[]> {
-  const interactions = await issueThreadInteractionService(db).listForIssue(issue.id);
+  // Terminal transitions may already have expired the cards inside the issue
+  // service transaction. Read only the native-question identity fields here;
+  // using listForIssue would also hydrate the entire thread and issue status,
+  // coupling every legacy terminal update to unrelated query capabilities.
+  const selected = await db
+    .select({
+      companyId: issueThreadInteractions.companyId,
+      issueId: issueThreadInteractions.issueId,
+      sourceRunId: issueThreadInteractions.sourceRunId,
+      payload: issueThreadInteractions.payload,
+      idempotencyKey: issueThreadInteractions.idempotencyKey,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, issue.companyId),
+      eq(issueThreadInteractions.issueId, issue.id),
+      eq(issueThreadInteractions.kind, "ask_user_questions"),
+      inArray(issueThreadInteractions.status, ["cancelled", "expired"]),
+    ));
+  // Some legacy route tests intentionally provide a partial query-builder
+  // double because they exercise issue behavior without interaction storage.
+  // A real Drizzle query always resolves to an array; treat an incomplete
+  // double as an empty result instead of introducing background rejections.
+  const interactions = Array.isArray(selected) ? selected : [];
   const runIds = new Set<string>();
   for (const interaction of interactions) {
-    if (
-      interaction.companyId !== issue.companyId
-      || interaction.kind !== "ask_user_questions"
-      || !["cancelled", "expired"].includes(interaction.status)
-    ) continue;
     const runId = await nativeQuestionRunToCancel(db, interaction);
     if (runId) runIds.add(runId);
   }
