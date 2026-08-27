@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -62,7 +62,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
 import { cn, relativeTime } from "../lib/utils";
 import { resolveSkillSummaryText } from "../lib/company-skill-summary";
@@ -140,8 +140,10 @@ import {
   HelpCircle,
   LayoutGrid,
   Link2,
+  Loader2,
   Lock,
   ExternalLink,
+  MessageSquare,
   FlaskConical,
   MoreHorizontal,
   Paperclip,
@@ -154,8 +156,10 @@ import {
   Save,
   Search,
   Settings,
+  Shield,
   ShieldCheck,
   Star,
+  Sparkles,
   Trash2,
   Users,
   Hash,
@@ -254,12 +258,588 @@ function buildTree(entries: CompanySkillFileInventoryEntry[]) {
   return root.children;
 }
 
+/* ── agentskill.sh inline review ─────────────────────────────────── */
+
+function AgentSkillReview({
+  slug,
+  onSubmitted,
+}: {
+  slug: string;
+  onSubmitted?: () => void;
+}) {
+  const [rating, setRating] = useState(0);
+  const [hover, setHover] = useState(0);
+  const [comment, setComment] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  async function handleSubmit() {
+    if (rating === 0) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`https://agentskill.sh/api/skills/${slug.split("/").map(encodeURIComponent).join("/")}/agent-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          score: rating,
+          comment: comment.trim() || undefined,
+          platform: "paperclip",
+          agentName: "Paperclip",
+          sessionId: `paperclip-${slug}-${Date.now()}`,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSubmitted(true);
+      onSubmitted?.();
+    } catch {
+      // silent fail
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="text-green-500">Thanks for your review!</span>
+        <span className="flex items-center gap-0.5">
+          {Array.from({ length: 5 }, (_, i) => (
+            <Star
+              key={i}
+              className={cn("h-3 w-3", i < rating ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground/30")}
+            />
+          ))}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 text-xs">
+      <div className="flex items-center gap-1">
+        <span className="text-muted-foreground">Rate:</span>
+        {Array.from({ length: 5 }, (_, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => setRating(i + 1)}
+            onMouseEnter={() => setHover(i + 1)}
+            onMouseLeave={() => setHover(0)}
+            className="p-0"
+          >
+            <Star
+              className={cn(
+                "h-4 w-4 transition-colors",
+                i < (hover || rating)
+                  ? "fill-yellow-400 text-yellow-400"
+                  : "text-muted-foreground/30 hover:text-yellow-400/50",
+              )}
+            />
+          </button>
+        ))}
+      </div>
+      {rating > 0 && (
+        <>
+          <input
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Optional comment"
+            className="w-40 rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+          />
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={submitting}
+            onClick={handleSubmit}
+            className="h-6 px-2 text-xs"
+          >
+            {submitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <MessageSquare className="h-3 w-3" />}
+            <span className="ml-1">Submit</span>
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── agentskill.sh in-app browser ────────────────────────────────── */
+
+type AgentSkillResult = {
+  slug: string;
+  name: string;
+  owner: string;
+  description: string;
+  category: string;
+  avatarUrl?: string;
+  platforms: string[];
+  installCount: number;
+  githubStars: number;
+  securityScore: number;
+  contentQualityScore: number;
+  updatedAt: string;
+};
+
+type AgentSkillSearchResponse = {
+  data: AgentSkillResult[];
+  total: number;
+  hasMore: boolean;
+  page: number;
+};
+
+type AgentSkillsetSkillDetail = {
+  slug: string;
+  name: string;
+  description: string;
+  securityScore: number;
+  qualityReview?: { score: number };
+};
+
+type AgentSkillset = {
+  slug: string;
+  name: string;
+  description: string;
+  skills: string[];
+  skillDetails: AgentSkillsetSkillDetail[];
+  installCount: number;
+  avgQualityScore: number;
+  avgSecurityScore: number;
+  author: { name: string; username: string };
+};
+
+const AGENTSKILL_API = "https://agentskill.sh/api/skills";
+const AGENTSKILL_SKILLSETS_API = "https://agentskill.sh/api/skillsets";
+const AGENTSKILL_SECTIONS = [
+  { value: "top", label: "Top" },
+  { value: "trending", label: "Trending" },
+  { value: "hot", label: "Hot" },
+  { value: "latest", label: "Latest" },
+];
+type AgentSkillCategory = { value: string; label: string };
+const AGENTSKILL_CATEGORIES_API = "https://agentskill.sh/api/skills/categories";
+
+function scoreColor(score: number) {
+  if (score >= 80) return "text-green-500";
+  if (score >= 50) return "text-yellow-500";
+  return "text-red-400";
+}
+
+const SKILLS_PAGE_SIZE = 20;
+
+function AgentSkillBrowser({
+  onInstall,
+  installing,
+}: {
+  onInstall: (slug: string) => void;
+  installing: string | null;
+}) {
+  const [query, setQuery] = useState("");
+  const [section, setSection] = useState("top");
+  const [category, setCategory] = useState("");
+  const [categories, setCategories] = useState<AgentSkillCategory[]>([]);
+  const [results, setResults] = useState<AgentSkillResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const doSearch = useCallback(async (q: string, cat: string, sec: string, pg = 1) => {
+    if (pg === 1) setLoading(true);
+    else setLoadingMore(true);
+    try {
+      const params = new URLSearchParams({
+        limit: String(SKILLS_PAGE_SIZE),
+        page: String(pg),
+        section: sec,
+      });
+      if (q) params.set("q", q);
+      if (cat) params.set("category", cat);
+      const res = await fetch(`${AGENTSKILL_API}?${params}`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) throw new Error("API error");
+      const data = (await res.json()) as AgentSkillSearchResponse;
+      if (pg === 1) {
+        setResults(data.data);
+      } else {
+        setResults((prev) => [...prev, ...data.data]);
+      }
+      setHasMore(data.hasMore && data.data.length > 0);
+      setPage(pg);
+    } catch {
+      if (pg === 1) setResults([]);
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetch(AGENTSKILL_CATEGORIES_API, { headers: { Accept: "application/json" } })
+      .then((r) => r.json())
+      .then((d: { data: Array<{ slug: string; name: string; count: number }> }) => {
+        setCategories(
+          d.data
+            .filter((c) => c.count > 0)
+            .sort((a, b) => b.count - a.count)
+            .map((c) => ({ value: c.slug, label: c.name })),
+        );
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setResults([]);
+    setHasMore(false);
+    setPage(1);
+    const previousTimeout = debounceRef.current;
+    if (previousTimeout) {
+      clearTimeout(previousTimeout);
+    }
+    debounceRef.current = setTimeout(() => doSearch(query, category, section, 1), 300);
+    return () => {
+      const currentTimeout = debounceRef.current;
+      if (currentTimeout) {
+        clearTimeout(currentTimeout);
+      }
+    };
+  }, [query, category, section, doSearch]);
+
+  // Infinite scroll via IntersectionObserver
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && hasMore && !loading && !loadingMore) {
+          doSearch(query, category, section, page + 1);
+        }
+      },
+      { root: scrollRef.current, threshold: 0.1 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loading, loadingMore, page, query, category, section, doSearch]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search"
+            className="w-full rounded-md border border-border bg-background py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+          />
+        </div>
+        <div className="flex items-center gap-1 rounded-md border border-border bg-background p-0.5 text-xs">
+          {AGENTSKILL_SECTIONS.map((s) => (
+            <button
+              key={s.value}
+              type="button"
+              onClick={() => setSection(s.value)}
+              className={cn(
+                "rounded px-2 py-1 transition-colors",
+                section === s.value
+                  ? "bg-foreground text-background font-medium"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="rounded-md border border-border bg-background px-2 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+        >
+          <option value="">All categories</option>
+          {categories.map((c) => (
+            <option key={c.value} value={c.value}>{c.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div ref={scrollRef} className="max-h-[360px] overflow-y-auto rounded-md border border-border">
+        {loading && !results.length ? (
+          <div className="flex items-center justify-center py-12 text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Loading skills...
+          </div>
+        ) : results.length === 0 && !loading ? (
+          <div className="py-12 text-center text-sm text-muted-foreground">
+            No skills found. Try a different search.
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {results.map((skill) => (
+              <div
+                key={skill.slug}
+                className="flex items-start gap-3 px-3 py-3 transition-colors hover:bg-accent/30"
+              >
+                {skill.avatarUrl && (
+                  <img
+                    src={skill.avatarUrl}
+                    alt={skill.owner}
+                    className="mt-0.5 h-5 w-5 shrink-0 rounded"
+                  />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={`https://agentskill.sh/${skill.slug}?ref=paperclip`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="truncate text-sm font-medium hover:underline"
+                    >
+                      {skill.name}
+                    </a>
+                    <span className="shrink-0 text-xs text-muted-foreground">{skill.owner}</span>
+                  </div>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                    {skill.description}
+                  </p>
+                  <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
+                    <span className={cn("flex items-center gap-1", scoreColor(skill.contentQualityScore))}>
+                      <Sparkles className="h-3 w-3" />
+                      Quality {skill.contentQualityScore}
+                    </span>
+                    <span className={cn("flex items-center gap-1", scoreColor(skill.securityScore))}>
+                      <Shield className="h-3 w-3" />
+                      Security {skill.securityScore}
+                    </span>
+                    {skill.githubStars > 0 && (
+                      <span className="flex items-center gap-1" title="GitHub stars">
+                        <Star className="h-3 w-3" />
+                        {skill.githubStars > 999
+                          ? `${(skill.githubStars / 1000).toFixed(1)}k`
+                          : skill.githubStars}
+                      </span>
+                    )}
+                    <Badge variant="outline" className="h-4 text-[10px] px-1.5">
+                      {skill.category}
+                    </Badge>
+                  </div>
+                  {skill.securityScore < 50 && (
+                    <p className="mt-1 text-[11px] text-red-400">
+                      Low security score. This skill may contain unsafe tool calls or executable code. Review before installing.
+                    </p>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant={skill.securityScore < 50 ? "destructive" : "outline"}
+                  className="shrink-0 mt-1"
+                  disabled={installing === skill.slug}
+                  onClick={() => {
+                    if (skill.securityScore < 50) {
+                      if (!window.confirm(`Security score is ${skill.securityScore}/100. Install anyway?`)) return;
+                    }
+                    onInstall(skill.slug);
+                  }}
+                >
+                  {installing === skill.slug ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  <span className="ml-1">Install</span>
+                </Button>
+              </div>
+            ))}
+            {hasMore && (
+              <div ref={sentinelRef} className="flex items-center justify-center py-3 text-muted-foreground">
+                {loadingMore && <Loader2 className="h-4 w-4 animate-spin" />}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>Powered by agentskill.sh</span>
+        <a
+          href="https://agentskill.sh?ref=paperclip"
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1 text-foreground/60 hover:text-foreground transition-colors"
+        >
+          Browse all <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function AgentSkillsetBrowser({
+  onInstallSkillset,
+  installingSkillset,
+}: {
+  onInstallSkillset: (skillset: AgentSkillset) => void;
+  installingSkillset: string | null;
+}) {
+  const [skillsets, setSkillsets] = useState<AgentSkillset[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(AGENTSKILL_SKILLSETS_API, {
+          headers: { Accept: "application/json" },
+        });
+        if (!res.ok) throw new Error("API error");
+        const data = await res.json() as { data: AgentSkillset[] };
+        setSkillsets(data.data ?? []);
+      } catch {
+        setSkillsets([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-muted-foreground">
+        Skillsets are curated bundles of skills. Install all skills in a set with one click.
+      </p>
+
+      <div className="max-h-[360px] overflow-y-auto rounded-md border border-border">
+        {loading ? (
+          <div className="flex items-center justify-center py-12 text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Loading skillsets...
+          </div>
+        ) : skillsets.length === 0 ? (
+          <div className="py-12 text-center text-sm text-muted-foreground">
+            No skillsets available.
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {skillsets.map((ss) => (
+              <div key={ss.slug} className="px-3 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5 text-left"
+                      onClick={() => setExpanded(expanded === ss.slug ? null : ss.slug)}
+                    >
+                      {expanded === ss.slug
+                        ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      }
+                      <span className="text-sm font-medium">{ss.name}</span>
+                      <Badge variant="outline" className="h-4 text-[10px] px-1.5">
+                        {ss.skills.length} skills
+                      </Badge>
+                    </button>
+                    <p className="mt-0.5 ml-5 text-xs text-muted-foreground line-clamp-1">
+                      {ss.description}
+                    </p>
+                    <div className="mt-1 ml-5 flex items-center gap-3 text-xs text-muted-foreground">
+                      <span className={cn("flex items-center gap-1", scoreColor(ss.avgQualityScore))}>
+                        <Sparkles className="h-3 w-3" />
+                        Quality {ss.avgQualityScore}
+                      </span>
+                      <span className={cn("flex items-center gap-1", scoreColor(ss.avgSecurityScore))}>
+                        <Shield className="h-3 w-3" />
+                        Security {ss.avgSecurityScore}
+                      </span>
+                      <span className="flex items-center gap-1" title="Total installs">
+                        <Download className="h-3 w-3" />
+                        {ss.installCount} installs
+                      </span>
+                      <span>by {ss.author.name || ss.author.username}</span>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 mt-1"
+                    disabled={installingSkillset === ss.slug}
+                    onClick={() => onInstallSkillset(ss)}
+                  >
+                    {installingSkillset === ss.slug ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    <span className="ml-1">Install all</span>
+                  </Button>
+                </div>
+                {expanded === ss.slug && ss.skillDetails.length > 0 && (
+                  <div className="mt-2 ml-5 grid grid-cols-1 gap-1.5 rounded-md border border-border/50 bg-accent/10 p-2 max-h-[200px] overflow-y-auto">
+                    {ss.skillDetails.map((skill) => (
+                      <a
+                        key={skill.slug}
+                        href={`https://agentskill.sh/${skill.slug}?ref=paperclip`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="group flex items-center gap-2 rounded px-2 py-1.5 text-xs no-underline transition-colors hover:bg-accent/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="font-medium text-foreground/90 group-hover:underline">{skill.name}</span>
+                          <p className="mt-0.5 truncate text-muted-foreground">{skill.description}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-3">
+                          <span className={cn("flex items-center gap-0.5", skill.qualityReview ? scoreColor(skill.qualityReview.score) : "text-muted-foreground")} title="Quality">
+                            <Sparkles className="h-3 w-3" />
+                            {skill.qualityReview?.score ?? "?"}
+                          </span>
+                          <span className={cn("flex items-center gap-0.5", scoreColor(skill.securityScore))} title="Security">
+                            <Shield className="h-3 w-3" />
+                            {skill.securityScore}
+                          </span>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>Powered by agentskill.sh</span>
+        <a
+          href="https://agentskill.sh/skillsets?ref=paperclip"
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1 text-foreground/60 hover:text-foreground transition-colors"
+        >
+          Browse all skillsets <ExternalLink className="h-3 w-3" />
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function AgentSkillShMark(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="M12 2L2 7l10 5 10-5-10-5Z" />
+      <path d="M2 17l10 5 10-5" />
+      <path d="M2 12l10 5 10-5" />
+    </svg>
+  );
+}
+
 function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | null) {
   const normalizedLabel = sourceLabel?.toLowerCase() ?? "";
   const isSkillsShManaged =
     normalizedLabel.includes("skills.sh") || normalizedLabel.includes("vercel-labs/skills");
 
   switch (sourceBadge) {
+    case "agentskill_sh":
+      return { icon: AgentSkillShMark, label: sourceLabel ?? "agentskill.sh", managedLabel: "agentskill.sh" };
     case "skills_sh":
       return { icon: VercelMark, label: sourceLabel ?? "skills.sh", managedLabel: "skills.sh managed" };
     case "github":
@@ -358,7 +938,7 @@ function classifySource(skill: {
     if (kind === "optional") return "optional";
     return "company";
   }
-  if (skill.sourceBadge === "github" || skill.sourceBadge === "skills_sh" || skill.sourceBadge === "url" || skill.sourceBadge === "local") {
+  if (skill.sourceBadge === "github" || skill.sourceBadge === "skills_sh" || skill.sourceBadge === "agentskill_sh" || skill.sourceBadge === "url" || skill.sourceBadge === "local") {
     return "external";
   }
   return "company";
@@ -3821,11 +4401,25 @@ function SkillPane({
                       <Copy className="h-3.5 w-3.5" />
                     </CopyText>
                   </>
+                ) : detail.sourceType === "agentskill_sh" && detail.sourceLocator ? (
+                  <a
+                    href={`${detail.sourceLocator}?ref=paperclip`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                  >
+                    {source.label}
+                  </a>
                 ) : (
                   <span className="truncate">{source.label}</span>
                 )}
               </span>
             </div>
+            {detail.sourceType === "agentskill_sh" && detail.sourceLocator && (
+              <AgentSkillReview
+                slug={(detail.metadata as Record<string, unknown>)?.agentSkillSlug as string ?? detail.slug}
+              />
+            )}
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">Pin</span>
@@ -4021,6 +4615,8 @@ export function CompanySkills() {
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
   const [emptySourceHelpOpen, setEmptySourceHelpOpen] = useState(false);
+  const [installingSlug, setInstallingSlug] = useState<string | null>(null);
+  const [installingSkillset, setInstallingSkillset] = useState<string | null>(null);
   const [expandedSkillId, setExpandedSkillId] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Record<string, Set<string>>>({});
   const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
@@ -5119,6 +5715,65 @@ export function CompanySkills() {
     importSkill.mutate(trimmedSource);
   }
 
+  async function handleAgentSkillInstall(slug: string) {
+    if (!selectedCompanyId) return;
+    setInstallingSlug(slug);
+    try {
+      const sourceUrl = `https://agentskill.sh/${slug}`;
+      await companySkillsApi.importFromSource(selectedCompanyId, sourceUrl);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId) });
+      pushToast({ tone: "success", title: "Skill installed", body: slug });
+    } catch (error) {
+      pushToast({
+        tone: "error",
+        title: "Install failed",
+        body: error instanceof Error ? error.message : `Failed to install ${slug}`,
+      });
+    } finally {
+      setInstallingSlug(null);
+    }
+  }
+
+  async function handleAgentSkillsetInstall(skillset: AgentSkillset) {
+    if (!selectedCompanyId) return;
+    setInstallingSkillset(skillset.slug);
+    let installed = 0;
+    let failed = 0;
+    try {
+      const lowSecuritySkills = skillset.skillDetails?.filter((skill) => skill.securityScore < 50) ?? [];
+      if (lowSecuritySkills.length > 0) {
+        const names = lowSecuritySkills.map((skill) => `${skill.name} (${skill.securityScore}/100)`).join(", ");
+        if (!window.confirm(`${lowSecuritySkills.length} skill(s) have low security scores: ${names}. Install anyway?`)) {
+          setInstallingSkillset(null);
+          return;
+        }
+      }
+      for (const slug of skillset.skills) {
+        try {
+          const sourceUrl = `https://agentskill.sh/${slug}`;
+          await companySkillsApi.importFromSource(selectedCompanyId, sourceUrl);
+          installed += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId) });
+      pushToast({
+        tone: failed > 0 ? "warn" : "success",
+        title: `Skillset "${skillset.name}" installed`,
+        body: `${installed} skills installed${failed > 0 ? `, ${failed} failed` : ""}`,
+      });
+    } catch (error) {
+      pushToast({
+        tone: "error",
+        title: "Install failed",
+        body: error instanceof Error ? error.message : "Failed to install skillset",
+      });
+    } finally {
+      setInstallingSkillset(null);
+    }
+  }
+
   // Opening a card stays inside the new store and always lands on a regular full
   // page: installed skills go to their detail route; catalog/bundled/optional
   // skills open the standalone catalog page (no modal, no legacy split view).
@@ -5271,50 +5926,81 @@ export function CompanySkills() {
       />
 
       <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Import a skill</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command to import a skill into this company.
+              Browse agentskill.sh, install a curated skillset, or paste a local path, GitHub URL, or `skills.sh` command.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 border-b border-border pb-2">
-              <Input
-                value={source}
-                onChange={(event) => setSource(event.target.value)}
-                placeholder="Paste path, GitHub URL, or skills.sh command"
-                className="h-9 rounded-none border-0 px-0 shadow-none focus-visible:ring-0"
+          <Tabs defaultValue="agentskill">
+            <TabsList variant="line" className="w-full">
+              <TabsTrigger value="agentskill">
+                <Search className="h-4 w-4" />
+                Skills
+              </TabsTrigger>
+              <TabsTrigger value="skillsets">
+                <Boxes className="h-4 w-4" />
+                Skillsets
+              </TabsTrigger>
+              <TabsTrigger value="other">
+                <Github className="h-4 w-4" />
+                Other sources
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="agentskill" className="mt-3">
+              <AgentSkillBrowser
+                onInstall={handleAgentSkillInstall}
+                installing={installingSlug}
               />
-              <Button size="sm" onClick={handleAddSkillSource} disabled={importSkill.isPending}>
-                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Import"}
-              </Button>
-            </div>
-            <a
-              href="https://skills.sh"
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-sm text-foreground no-underline transition-colors hover:bg-accent/40"
-            >
-              <span>
-                <span className="block font-medium">Browse skills.sh</span>
-                <span className="mt-1 block text-muted-foreground">Find install commands and paste one here.</span>
-              </span>
-              <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            </a>
-            <a
-              href="https://github.com/search?q=SKILL.md&type=code"
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-sm text-foreground no-underline transition-colors hover:bg-accent/40"
-            >
-              <span>
-                <span className="block font-medium">Search GitHub</span>
-                <span className="mt-1 block text-muted-foreground">Look for repositories with `SKILL.md`, then paste the repo URL.</span>
-              </span>
-              <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            </a>
-          </div>
+            </TabsContent>
+            <TabsContent value="skillsets" className="mt-3">
+              <AgentSkillsetBrowser
+                onInstallSkillset={handleAgentSkillsetInstall}
+                installingSkillset={installingSkillset}
+              />
+            </TabsContent>
+            <TabsContent value="other" className="mt-3">
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 border-b border-border pb-2">
+                  <Input
+                    value={source}
+                    onChange={(event) => setSource(event.target.value)}
+                    placeholder="Paste path, GitHub URL, skills.sh command, or agentskill.sh URL"
+                    className="h-9 rounded-none border-0 px-0 shadow-none focus-visible:ring-0"
+                  />
+                  <Button size="sm" onClick={handleAddSkillSource} disabled={importSkill.isPending}>
+                    {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Import"}
+                  </Button>
+                </div>
+                <a
+                  href="https://skills.sh"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-sm text-foreground no-underline transition-colors hover:bg-accent/40"
+                >
+                  <span>
+                    <span className="block font-medium">Browse skills.sh</span>
+                    <span className="mt-1 block text-muted-foreground">Find install commands and paste one here.</span>
+                  </span>
+                  <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                </a>
+                <a
+                  href="https://github.com/search?q=SKILL.md&type=code"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-sm text-foreground no-underline transition-colors hover:bg-accent/40"
+                >
+                  <span>
+                    <span className="block font-medium">Search GitHub</span>
+                    <span className="mt-1 block text-muted-foreground">Look for repositories with `SKILL.md`, then paste the repo URL.</span>
+                  </span>
+                  <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                </a>
+              </div>
+            </TabsContent>
+          </Tabs>
+          <DialogFooter showCloseButton />
         </DialogContent>
       </Dialog>
 

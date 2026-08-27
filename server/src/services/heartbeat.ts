@@ -102,6 +102,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { priceOpenAiUsageCents } from "./openai-pricing.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -294,6 +295,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { getCodexModelCompactionPolicy } from "@paperclipai/adapter-codex-local";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -3867,6 +3869,45 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+const OPENAI_SUBSCRIPTION_LEDGER_BILLING_TYPES: readonly BillingType[] = [
+  "subscription_included",
+  "subscription_overage",
+];
+
+/**
+ * OpenAI/Codex subscription runs do not report a USD cost. Attribute their
+ * token usage at the configured public API rates so it contributes to spend
+ * totals and API-run statistics without changing the run's auth metadata.
+ */
+export function resolveOpenAiSubscriptionBilling(input: {
+  provider: string | null | undefined;
+  model: string | null | undefined;
+  usage: UsageTotals | null;
+  billingType: BillingType;
+  reportedCostUsd: number | null | undefined;
+}): { costCents: number; billingType: BillingType; biller: string } | null {
+  if (
+    typeof input.reportedCostUsd === "number" &&
+    Number.isFinite(input.reportedCostUsd) &&
+    input.reportedCostUsd > 0
+  ) {
+    return null;
+  }
+  if ((input.provider ?? "").trim().toLowerCase() !== "openai") return null;
+  if (!OPENAI_SUBSCRIPTION_LEDGER_BILLING_TYPES.includes(input.billingType)) return null;
+  if (!input.usage) return null;
+
+  const costCents = priceOpenAiUsageCents({
+    model: input.model,
+    inputTokens: input.usage.inputTokens,
+    cachedInputTokens: input.usage.cachedInputTokens,
+    outputTokens: input.usage.outputTokens,
+  });
+  if (costCents <= 0) return null;
+
+  return { costCents, billingType: "metered_api", biller: "openai" };
+}
+
 export function resolveLedgerCostStatus(input: {
   costUsd: number | null | undefined;
   inputTokens: number;
@@ -4061,8 +4102,21 @@ function formatCount(value: number | null | undefined) {
   return value.toLocaleString("en-US");
 }
 
-export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect): SessionCompactionPolicy {
-  return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
+export function parseSessionCompactionPolicy(
+  agent: typeof agents.$inferSelect,
+  effectiveAdapterConfig?: Record<string, unknown>,
+): SessionCompactionPolicy {
+  const modelCompactionPolicy =
+    agent.adapterType === "codex_local"
+      ? getCodexModelCompactionPolicy(
+          readConfiguredModelFromAdapterConfig(effectiveAdapterConfig ?? parseObject(agent.adapterConfig)),
+        )
+      : null;
+  return resolveSessionCompactionPolicy(
+    agent.adapterType,
+    agent.runtimeConfig,
+    modelCompactionPolicy,
+  ).policy;
 }
 
 export function resolveRuntimeSessionParamsForWorkspace(input: {
@@ -4472,28 +4526,52 @@ export type ExecutionWorkspaceReuseRequestForIssue = {
   requestedExecutionWorkspaceId: string | null;
   requestedShouldReuseExisting: boolean;
   existingExecutionWorkspaceAvailable: boolean;
+  explicitReuseRequested: boolean;
+  automaticSharedReuseRequested: boolean;
 };
 
 export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   issueExecutionWorkspaceId?: string | null;
   issueExecutionWorkspacePreference?: string | null;
+  resolvedExecutionWorkspaceMode?: string | null;
+  resolvedProjectId?: string | null;
   existingExecutionWorkspaceStatus?: string | null;
+  existingExecutionWorkspaceClosedAt?: Date | string | null;
+  existingExecutionWorkspaceMode?: string | null;
+  existingExecutionWorkspaceProjectId?: string | null;
   requestedExistingBranch?: string | null;
   existingExecutionWorkspaceBranchName?: string | null;
 }): ExecutionWorkspaceReuseRequestForIssue {
   const requestedExecutionWorkspaceId = readNonEmptyString(input.issueExecutionWorkspaceId);
-  // An explicitly pinned existing branch outranks an inherited reuse_existing
-  // binding: a persisted workspace on any other branch (or with no recorded
-  // branch) is stale for this issue, so dispatch realizes the pinned branch
-  // instead of restoring the mismatched workspace.
+  // A pinned branch outranks either explicit or automatic workspace reuse: a
+  // persisted workspace on another branch is stale for this issue and must not
+  // be restored in place.
   const requestedExistingBranch = readNonEmptyString(input.requestedExistingBranch);
   const existingWorkspaceMatchesRequestedBranch =
     requestedExistingBranch === null ||
     readNonEmptyString(input.existingExecutionWorkspaceBranchName) === requestedExistingBranch;
-  const requestedShouldReuseExisting =
+  const explicitReuseRequested =
     input.issueExecutionWorkspacePreference === "reuse_existing" &&
     requestedExecutionWorkspaceId !== null &&
     existingWorkspaceMatchesRequestedBranch;
+  const existingStatusSupportsAutomaticReuse =
+    input.existingExecutionWorkspaceStatus === "active" ||
+    input.existingExecutionWorkspaceStatus === "idle" ||
+    input.existingExecutionWorkspaceStatus === "in_review";
+  const resolvedProjectIdNonEmpty = readNonEmptyString(input.resolvedProjectId);
+  const existingProjectIdNonEmpty = readNonEmptyString(input.existingExecutionWorkspaceProjectId);
+  const automaticSharedReuseRequested = Boolean(
+    requestedExecutionWorkspaceId &&
+    input.resolvedExecutionWorkspaceMode === "shared_workspace" &&
+    input.existingExecutionWorkspaceMode === "shared_workspace" &&
+    existingStatusSupportsAutomaticReuse &&
+    !input.existingExecutionWorkspaceClosedAt &&
+    existingWorkspaceMatchesRequestedBranch &&
+    resolvedProjectIdNonEmpty !== null &&
+    existingProjectIdNonEmpty !== null &&
+    resolvedProjectIdNonEmpty === existingProjectIdNonEmpty,
+  );
+  const requestedShouldReuseExisting = explicitReuseRequested || automaticSharedReuseRequested;
 
   return {
     requestedExecutionWorkspaceId,
@@ -4503,16 +4581,22 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
       input.existingExecutionWorkspaceStatus !== null &&
       input.existingExecutionWorkspaceStatus !== undefined &&
       input.existingExecutionWorkspaceStatus !== "archived",
+    explicitReuseRequested,
+    automaticSharedReuseRequested,
   };
 }
 
 export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   requestedShouldReuseExisting: boolean;
+  forceRestoreExisting?: boolean;
   workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
 }): ExecutionWorkspaceReuseProvisioningPolicy {
-  const shouldRestoreExistingWorkspace = input.requestedShouldReuseExisting;
+  const forceRestoreExisting = input.forceRestoreExisting ?? input.requestedShouldReuseExisting;
+  const shouldRestoreExistingWorkspace =
+    forceRestoreExisting ||
+    (input.requestedShouldReuseExisting && input.workspaceConfigFreshness.shouldReuseExisting);
   const replacementClassDrift =
-    input.requestedShouldReuseExisting && input.workspaceConfigFreshness.action === "replace";
+    shouldRestoreExistingWorkspace && input.workspaceConfigFreshness.action === "replace";
 
   return {
     shouldRestoreExistingWorkspace,
@@ -4551,6 +4635,7 @@ function formatInheritedExecutionWorkspaceReuseFailure(input: {
 
 export async function provisionExecutionWorkspaceForFreshnessDecision<T extends { warnings?: string[] }>(input: {
   requestedShouldReuseExisting: boolean;
+  forceRestoreExisting?: boolean;
   existingExecutionWorkspaceId?: string | null;
   issueRef: WorkspaceReuseIssueRef;
   runId: string;
@@ -4564,6 +4649,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
 }> {
   const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
     requestedShouldReuseExisting: input.requestedShouldReuseExisting,
+    forceRestoreExisting: input.forceRestoreExisting,
     workspaceConfigFreshness: input.workspaceConfigFreshness,
   });
 
@@ -8395,6 +8481,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function evaluateSessionCompaction(input: {
     agent: typeof agents.$inferSelect;
+    effectiveAdapterConfig: Record<string, unknown>;
     sessionId: string | null;
     issueId: string | null;
     continuationSummaryBody?: string | null;
@@ -8409,7 +8496,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    const policy = parseSessionCompactionPolicy(agent);
+    const policy = parseSessionCompactionPolicy(agent, input.effectiveAdapterConfig);
     if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
       return {
         rotate: false,
@@ -12724,7 +12811,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
-        await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+        await cancelQueuedRunForStaleIssue(run, staleness);
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -13043,7 +13130,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function cancelQueuedRunForStaleIssue(
     run: typeof heartbeatRuns.$inferSelect,
-    issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
     const now = new Date();
@@ -13067,22 +13153,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       error: staleness.reason,
     });
 
-    await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.companyId, run.companyId),
-          eq(issues.id, issueId),
-          eq(issues.executionRunId, run.id),
-        ),
-      );
-
     await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
       eventType: "lifecycle",
       stream: "system",
@@ -13090,6 +13160,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: staleness.reason,
       payload: staleness.details,
     });
+
+    // A stage handoff can defer the new participant's wake behind this queued
+    // holder. Use the normal finalization path so cancelling the stale holder
+    // also promotes that deferred wake instead of parking it forever.
+    await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
 
     return cancelled;
   }
@@ -13956,9 +14031,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
-    const billingType = normalizeLedgerBillingType(result.billingType);
+    const baseBillingType = normalizeLedgerBillingType(result.billingType);
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
+    const baseCostCents = normalizeBilledCostCents(billedCostUsd, baseBillingType);
+    const openAiSubscriptionBilling = resolveOpenAiSubscriptionBilling({
+      provider: result.provider,
+      model: result.model,
+      usage,
+      billingType: baseBillingType,
+      reportedCostUsd: billedCostUsd,
+    });
+    const billingType = openAiSubscriptionBilling?.billingType ?? baseBillingType;
+    const additionalCostCents = openAiSubscriptionBilling?.costCents ?? baseCostCents;
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
@@ -13967,7 +14051,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       outputTokens,
     });
     const provider = result.provider ?? "unknown";
-    const biller = resolveLedgerBiller(result);
+    const biller = openAiSubscriptionBilling?.biller ?? resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
     await db
@@ -14534,7 +14618,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
       issueExecutionWorkspaceId: requestedExecutionWorkspaceId,
       issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
+      resolvedExecutionWorkspaceMode: requestedExecutionWorkspaceMode,
+      resolvedProjectId: issueRef?.projectId ?? null,
       existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
+      existingExecutionWorkspaceClosedAt: existingExecutionWorkspace?.closedAt ?? null,
+      existingExecutionWorkspaceMode: existingExecutionWorkspace?.mode ?? null,
+      existingExecutionWorkspaceProjectId: existingExecutionWorkspace?.projectId ?? null,
       requestedExistingBranch: issueExecutionWorkspaceSettings?.workspaceStrategy?.existingBranch ?? null,
       existingExecutionWorkspaceBranchName: existingExecutionWorkspace?.branchName ?? null,
     });
@@ -15034,6 +15123,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const workspaceReuseProvisioningPolicy = resolveExecutionWorkspaceReuseProvisioningPolicy({
       requestedShouldReuseExisting,
+      forceRestoreExisting: workspaceReuseRequest.explicitReuseRequested,
       workspaceConfigFreshness,
     });
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
@@ -15054,6 +15144,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { executionWorkspace, reusedExecutionWorkspace, policy: resolvedWorkspaceReusePolicy } =
       await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
         requestedShouldReuseExisting,
+        forceRestoreExisting: workspaceReuseRequest.explicitReuseRequested,
         existingExecutionWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
         issueRef,
         runId: run.id,
@@ -15615,6 +15706,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
+      effectiveAdapterConfig: runtimeConfig,
       sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
       issueId,
       continuationSummaryBody: continuationSummary?.body ?? null,

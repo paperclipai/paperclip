@@ -158,15 +158,22 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
 export function resolveSessionCompactionPolicy(
   adapterType: string | null | undefined,
   runtimeConfig: unknown,
+  modelCompactionPolicy?: Pick<SessionCompactionPolicy, "enabled" | "maxRawInputTokens" | "maxSessionRuns" | "maxSessionAgeHours"> | null,
 ): ResolvedSessionCompactionPolicy {
   const adapterSessionManagement = getAdapterSessionManagement(adapterType);
   const explicitOverride = readSessionCompactionOverride(runtimeConfig);
   const hasExplicitOverride = Object.keys(explicitOverride).length > 0;
   const fallbackEnabled = Boolean(adapterType && LEGACY_SESSIONED_ADAPTER_TYPES.has(adapterType));
-  const basePolicy = adapterSessionManagement?.defaultSessionCompaction ?? {
+  const adapterDefault = adapterSessionManagement?.defaultSessionCompaction ?? {
     ...DEFAULT_SESSION_COMPACTION_POLICY,
     enabled: fallbackEnabled,
   };
+  // When the adapter delegates context management to the model (all thresholds = 0)
+  // but we have a known model-specific context window, use the model policy as the base.
+  const basePolicy =
+    modelCompactionPolicy && !hasSessionCompactionThresholds(adapterDefault)
+      ? { ...adapterDefault, ...modelCompactionPolicy }
+      : adapterDefault;
 
   return {
     policy: {

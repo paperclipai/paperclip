@@ -18,7 +18,7 @@ function cssBlock(selector: string): string {
   return stylesheet.slice(bodyStart + 1, bodyEnd);
 }
 
-/* The rendered code block used to be pinned to fixed Catppuccin literals
+/* The rendered code block used to be pinned to fixed Catppuccin colors
    in the normal AND the prose-invert variables. A code
    block therefore stayed dark in light mode. These tests fail if any of
    those surfaces is pinned to a literal again, rather than riding a token

@@ -320,6 +320,8 @@ For Linux local coding adapters, `filesystemScope: "workspace"` adds host-level 
 
 `networkScope` is also disabled by default and can be enabled independently or together with filesystem confinement. `"deny"` creates a private network namespace with no egress. `"allowlist"` keeps direct sockets blocked and injects an HTTP(S) proxy that accepts only exact `networkAllowlist` hostnames (optionally with a port); list the coding provider endpoint and every other required API origin explicitly. For example, a standard Codex API-key setup normally needs `api.openai.com`, while Claude setups may need `api.anthropic.com` or their configured Bedrock, Vertex, or gateway origins. Wildcards are intentionally unsupported. Install `bwrap` on the Paperclip host before enabling either scope. Auto engine selection uses the CLI lane while a scope is enabled; explicit ACP mode is rejected because ACP processes are not yet covered by the spawn wrapper.
 
+Paperclip probes the complete Bubblewrap namespace path before starting an adapter. If the kernel denies unprivileged user namespaces, Paperclip retries only through `sudo -n --preserve-env -- <resolved-bwrap>`; the fallback succeeds only when the operator has installed a passwordless rule scoped to that exact Bubblewrap binary. Paperclip adds `--uid` and `--gid` to return the sandboxed process to the server identity and masks the resolved `sudo` executable inside the sandbox. If the scoped rule is absent or fails, the run fails closed before Codex starts. Do not grant general passwordless sudo to the Paperclip account.
+
 ### Output parsing
 
 Codex emits JSONL events. Parse line-by-line and extract:

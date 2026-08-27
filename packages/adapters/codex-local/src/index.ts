@@ -65,6 +65,7 @@ export const models = [
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
+  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
   { id: "o4-mini", label: "o4-mini" },
@@ -78,11 +79,53 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
-    adapterConfig: {},
+    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
+    adapterConfig: {
+      model: "gpt-5.3-codex-spark",
+      // Spark is the cheap lane by model price; high effort keeps Codex coding behavior usable for delegated work.
+      modelReasoningEffort: "high",
+    },
     source: "adapter_default",
   },
 ];
+
+/**
+ * Known context window sizes (in tokens) for Codex models.
+ * Only models with notably smaller windows need entries here — larger flagship models
+ * are left to Codex's native context management. The threshold used for session
+ * compaction is set conservatively at 70% of the context window to leave headroom.
+ */
+export const CODEX_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "gpt-5.3-codex-spark": 131_072,
+  "gpt-5-mini": 131_072,
+  "gpt-5-nano": 32_768,
+  "codex-mini-latest": 131_072,
+};
+
+export type CodexModelCompactionPolicy = {
+  enabled: boolean;
+  maxRawInputTokens: number;
+  maxSessionRuns: number;
+  maxSessionAgeHours: number;
+};
+
+/**
+ * Returns a session compaction policy for models with a known (smaller) context window,
+ * or null for models where Codex's native context management should be trusted.
+ */
+export function getCodexModelCompactionPolicy(
+  model: string | null | undefined,
+): CodexModelCompactionPolicy | null {
+  const normalizedModel = typeof model === "string" ? model.trim() : "";
+  const contextWindow = CODEX_MODEL_CONTEXT_WINDOWS[normalizedModel];
+  if (!contextWindow) return null;
+  return {
+    enabled: true,
+    maxRawInputTokens: Math.floor(contextWindow * 0.7),
+    maxSessionRuns: 0,
+    maxSessionAgeHours: 0,
+  };
+}
 
 export const agentConfigurationDoc = `# codex_local agent configuration
 
@@ -105,7 +148,7 @@ Core fields:
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 - filesystemScope (string, optional): set to "workspace" to confine local CLI filesystem access with Bubblewrap. Off by default. The workspace and managed CODEX_HOME remain writable; other host paths are hidden.
 - filesystemExtraPaths (array, optional): additional absolute host paths exposed inside the workspace sandbox. String entries are read-only; object entries use { path: "/absolute/path", access: "ro" | "rw" }.
-- filesystemSandboxCommand (string, optional): Bubblewrap executable name or absolute path; defaults to "bwrap". Linux only.
+- filesystemSandboxCommand (string, optional): Bubblewrap executable name or absolute path; defaults to "bwrap". Linux only. Paperclip probes it before launch and, when unprivileged user namespaces are denied, can use only a passwordless sudo rule scoped to the resolved Bubblewrap binary.
 - networkScope (string, optional): "deny" blocks all network egress; "allowlist" permits only networkAllowlist targets through Paperclip's HTTP(S) proxy. Off by default.
 - networkAllowlist (string[], optional): exact hostnames, hostname:port entries, or origin URLs. Include the configured Codex provider origin, such as "api.openai.com" or a custom model provider gateway.
 
@@ -120,7 +163,7 @@ Operational fields:
 - warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
 
 Notes:
-- filesystemScope and networkScope are spawn-level confinement and are orthogonal to Codex approval/sandbox flags. Both require Bubblewrap on the host and select the CLI engine in auto mode; engine="acp" is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
+- filesystemScope and networkScope are spawn-level confinement and are orthogonal to Codex approval/sandbox flags. Both require Bubblewrap on the host and select the CLI engine in auto mode; engine="acp" is rejected because ACP confinement is not yet supported. Paperclip probes Bubblewrap before starting Codex. If the kernel denies unprivileged user namespaces, it attempts sudo with an explicit UID/GID drop and masks sudo inside the sandbox; without that exact scoped rule it fails closed. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
 - If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.
 - Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.

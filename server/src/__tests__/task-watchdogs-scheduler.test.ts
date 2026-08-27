@@ -22,6 +22,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { buildPaperclipWakePayload } from "../services/heartbeat.ts";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -227,6 +228,58 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       waitsByIssueId: {},
     });
     expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("keeps null-origin descendants in the database walk and reuses the watchdog child", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-MIXED", status: "done" });
+    const doneId = await seedIssue(companyId, { identifier: "WDOG-DONE", parentId: sourceId, status: "done" });
+    const blockedId = await seedIssue(companyId, { identifier: "WDOG-BLOCKED", parentId: sourceId, status: "blocked" });
+    const reviewId = await seedIssue(companyId, { identifier: "WDOG-REVIEW", parentId: sourceId, status: "in_review" });
+    const agentId = await seedAgent(companyId);
+    const reusableWatchdogId = await seedIssue(companyId, {
+      identifier: "WDOG-REUSABLE",
+      parentId: sourceId,
+      originKind: "task_watchdog",
+      originId: sourceId,
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    const watchdogDescendantId = await seedIssue(companyId, {
+      identifier: "WDOG-INTERNAL",
+      parentId: reusableWatchdogId,
+      status: "blocked",
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    const context = wakes[0]?.opts?.contextSnapshot as any;
+    const expectedTerminalLeaves = expect.arrayContaining([
+      expect.objectContaining({ issueId: doneId, status: "done" }),
+      expect.objectContaining({ issueId: blockedId, status: "blocked" }),
+      expect.objectContaining({ issueId: reviewId, status: "in_review" }),
+    ]);
+    expect(context.terminalLeafSummaries).toEqual(expectedTerminalLeaves);
+    expect(context.taskWatchdog.terminalLeafSummaries).toEqual(expectedTerminalLeaves);
+    expect(context.terminalLeafSummaries.map((leaf: any) => leaf.issueId)).not.toContain(watchdogDescendantId);
+    expect(context.taskWatchdog.terminalLeafSummaries.map((leaf: any) => leaf.issueId)).not.toContain(watchdogDescendantId);
+
+    const adapterWakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: context,
+    });
+    expect(adapterWakePayload?.taskWatchdog).toMatchObject({
+      terminalLeafSummaries: expectedTerminalLeaves,
+    });
+    const watchdogIssues = await db.select().from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(watchdogIssues).toHaveLength(1);
+    expect(watchdogIssues[0]?.id).toBe(reusableWatchdogId);
   });
 
   it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {

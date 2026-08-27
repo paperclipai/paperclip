@@ -268,10 +268,11 @@ type ParsedSkillImportSource = {
   resolvedSource: string;
   requestedSkillSlug: string | null;
   originalSkillsShUrl: string | null;
+  agentSkillShSlug: string | null;
   warnings: string[];
 };
 
-const EXTERNAL_SKILL_SOURCE_TYPES = new Set<CompanySkillSourceType>(["github", "skills_sh", "url"]);
+const EXTERNAL_SKILL_SOURCE_TYPES = new Set<CompanySkillSourceType>(["github", "skills_sh", "url", "agentskill_sh"]);
 
 function isPinnedCommitRef(value: string | null | undefined) {
   return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
@@ -330,6 +331,10 @@ type SkillSourceMeta = {
   workspaceId?: string;
   workspaceName?: string;
   workspaceCwd?: string;
+  agentSkillSlug?: string;
+  qualityScore?: number | null;
+  securityScore?: number | null;
+  fileContents?: Record<string, string>;
   catalogId?: string;
   catalogKind?: string;
   originHash?: string;
@@ -889,6 +894,7 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: normalizeSkillSlug(skillSlugRaw),
       originalSkillsShUrl: `https://skills.sh/${owner}/${repo}/${skillSlugRaw}`,
+      agentSkillShSlug: null,
       warnings,
     };
   }
@@ -898,6 +904,21 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       resolvedSource: `https://github.com/${canonicalSource}`,
       requestedSkillSlug,
       originalSkillsShUrl: null,
+      agentSkillShSlug: null,
+      warnings,
+    };
+  }
+
+  // Detect agentskill.sh URLs: https://agentskill.sh/owner/skill-slug → API-based import
+  const agentSkillShMatch = normalizedSource.match(
+    /^https?:\/\/(?:www\.)?agentskill\.sh\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:[?#].*)?$/i,
+  );
+  if (agentSkillShMatch) {
+    return {
+      resolvedSource: normalizedSource,
+      requestedSkillSlug: null,
+      originalSkillsShUrl: null,
+      agentSkillShSlug: agentSkillShMatch[1]!,
       warnings,
     };
   }
@@ -910,6 +931,7 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: skillSlugRaw ? normalizeSkillSlug(skillSlugRaw) : requestedSkillSlug,
       originalSkillsShUrl: canonicalSource,
+      agentSkillShSlug: null,
       warnings,
     };
   }
@@ -924,6 +946,7 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
     resolvedSource: canonicalSource,
     requestedSkillSlug,
     originalSkillsShUrl: null,
+    agentSkillShSlug: null,
     warnings,
   };
 }
@@ -2663,6 +2686,17 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
     };
   }
 
+  if (skill.sourceType === "agentskill_sh") {
+    const agentSkillSlug = asString(metadata.agentSkillSlug) ?? null;
+    return {
+      editable: false,
+      editableReason: "agentskill.sh skills are read-only.",
+      sourceLabel: agentSkillSlug ?? skill.sourceLocator,
+      sourceBadge: "agentskill_sh",
+      sourcePath: null,
+    };
+  }
+
   if (skill.sourceType === "github") {
     const owner = asString(metadata.owner) ?? null;
     const repo = asString(metadata.repo) ?? null;
@@ -4296,13 +4330,17 @@ export function companySkillService(db: Db) {
         throw unprocessable("Skill source metadata is incomplete.");
       }
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
-      try {
-        content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
-      } catch (error) {
-        if (normalizedPath === "SKILL.md" && skill.markdown) {
-          content = skill.markdown;
+      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
+    } else if (skill.sourceType === "agentskill_sh") {
+      if (normalizedPath === "SKILL.md" && skill.markdown) {
+        content = skill.markdown;
+      } else {
+        const metadata = getSkillMeta(skill);
+        const storedFiles = metadata.fileContents;
+        if (isPlainRecord(storedFiles) && typeof storedFiles[normalizedPath] === "string") {
+          content = storedFiles[normalizedPath] as string;
         } else {
-          throw error;
+          throw notFound("Skill file not found");
         }
       }
     } else if (skill.sourceType === "url") {
@@ -6083,9 +6121,98 @@ export function companySkillService(db: Db) {
     return out;
   }
 
+  async function importFromAgentSkillSh(
+    companyId: string,
+    agentSkillSlug: string,
+  ): Promise<{ skills: CompanySkill[]; warnings: string[] }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    const apiUrl = `https://agentskill.sh/api/agent/skills/${agentSkillSlug.split("/").map(encodeURIComponent).join("/")}/install`;
+    let response: Response;
+    try {
+      response = await fetch(apiUrl, {
+        headers: { Accept: "application/json", "User-Agent": "paperclip" },
+        signal: controller.signal,
+        redirect: "follow",
+      });
+    } catch {
+      throw unprocessable(`Failed to reach agentskill.sh. Please try again.`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) {
+      throw unprocessable(`Skill "${agentSkillSlug}" not found on agentskill.sh (HTTP ${response.status}).`);
+    }
+    const data = await response.json() as {
+      slug: string;
+      name: string;
+      description: string;
+      skillMd: string;
+      skillFiles?: Array<{ path: string; content: string }>;
+      owner?: string;
+      contentQualityScore?: number;
+      securityScore?: number;
+    };
+    if (!data.skillMd) {
+      throw unprocessable(`Skill "${agentSkillSlug}" has no content on agentskill.sh.`);
+    }
+    const markdown = data.skillMd;
+    const parsedMarkdown = parseFrontmatterMarkdown(markdown);
+    const slug = agentSkillSlug;
+    const sourceUrl = `https://agentskill.sh/${slug}`;
+
+    // Build file inventory and content map from API response
+    const inventory: CompanySkillFileInventoryEntry[] = [{ path: "SKILL.md", kind: "skill" }];
+    const fileContents: Record<string, string> = {};
+    if (data.skillFiles && Array.isArray(data.skillFiles)) {
+      for (const file of data.skillFiles) {
+        if (file.path && file.content) {
+          inventory.push({ path: file.path, kind: classifyInventoryKind(file.path) });
+          fileContents[file.path] = file.content;
+        }
+      }
+    }
+
+    const metadata: Record<string, unknown> = {
+      sourceKind: "agentskill_sh",
+      agentSkillSlug: slug,
+      qualityScore: data.contentQualityScore ?? null,
+      securityScore: data.securityScore ?? null,
+      fileContents,
+    };
+    const skill: ImportedSkill = {
+      key: deriveCanonicalSkillKey(companyId, {
+        slug: normalizeSkillSlug(slug) ?? slug,
+        sourceType: "agentskill_sh",
+        sourceLocator: sourceUrl,
+        metadata,
+      }),
+      slug: normalizeSkillSlug(slug) ?? slug,
+      name: asString(parsedMarkdown.frontmatter.name) ?? data.name ?? slug,
+      description: asString(parsedMarkdown.frontmatter.description) ?? data.description ?? null,
+      markdown,
+      sourceType: "agentskill_sh",
+      sourceLocator: sourceUrl,
+      sourceRef: null,
+      trustLevel: deriveTrustLevel(inventory),
+      compatibility: "compatible",
+      fileInventory: inventory,
+      metadata,
+    };
+    const imported = await upsertImportedSkills(companyId, [skill]);
+    return { skills: imported, warnings: [] };
+  }
+
   async function importFromSource(companyId: string, source: string): Promise<CompanySkillImportResult> {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
+
+    // agentskill.sh API-based import (no git clone needed)
+    if (parsed.agentSkillShSlug) {
+      const result = await importFromAgentSkillSh(companyId, parsed.agentSkillShSlug);
+      return { imported: result.skills, warnings: [...parsed.warnings, ...result.warnings] };
+    }
+
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
     if (local) {
       await assertLocalImportSourceAllowed(companyId, parsed.resolvedSource);

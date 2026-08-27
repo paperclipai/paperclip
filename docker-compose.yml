@@ -1,0 +1,178 @@
+# Paperclip docker-compose
+#
+# By default the production stack starts Redis and Paperclip with embedded
+# PostgreSQL. Optional profile services are created only when enabled.
+#
+# Profiles
+#   postgres  — separate PostgreSQL server instead of Paperclip's embedded one
+#               Enable explicitly or through COMPOSE_PROFILES after setting
+#               POSTGRES_PASSWORD and DATABASE_URL in .env.
+#   ollama    — Ollama local-LLM server
+#               Also set OLLAMA_HOST in .env, e.g.:
+#               OLLAMA_HOST=http://ollama:11434
+#   proxy     — nginx TLS reverse proxy
+#               Enable explicitly or through COMPOSE_PROFILES after setting
+#               PAPERCLIP_TLS_SERVER_NAME in .env.
+#
+# Examples
+#   docker compose up
+#   docker compose --profile postgres up                # use separate PostgreSQL
+#   docker compose --profile ollama up                  # also start Ollama
+#   docker compose --profile proxy up                   # also start TLS proxy
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  postgres:
+    profiles: [postgres]
+    image: postgres:17-alpine
+    container_name: paperclip-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-}"
+      POSTGRES_DB: paperclip
+    volumes:
+      # PostgreSQL 17 stores clusters in a major-version subdirectory.
+      - ${POSTGRES_DATA_DIR:-postgres-data}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Intentionally no host port mapping: PostgreSQL is only reachable on the Docker network.
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: paperclip-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Intentionally no host port mapping: Redis is only reachable on the Docker network.
+
+  # ---------------------------------------------------------------------------
+  # Optional: Ollama local-LLM server
+  # Activate with: --profile ollama
+  # Also set OLLAMA_HOST=http://ollama:11434 in .env
+  # ---------------------------------------------------------------------------
+  ollama:
+    profiles: [ollama]
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ${OLLAMA_DATA_DIR:-ollama-data}:/root/.ollama
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  # ---------------------------------------------------------------------------
+  # Paperclip application (always started)
+  # ---------------------------------------------------------------------------
+  paperclip:
+    image: ghcr.io/starlein/paperclip:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      args:
+        USER_UID: ${USER_UID:-1000}
+        USER_GID: ${USER_GID:-1000}
+        DOCKER_GID: ${DOCKER_GID:-992}
+    container_name: paperclip
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+      ollama:
+        condition: service_healthy
+        required: false
+    ports:
+      # Loopback-only access without bypassing the public TLS proxy.
+      # Set PAPERCLIP_PORT in .env to change the host port (default: 3100).
+      - "127.0.0.1:${PAPERCLIP_PORT:-3100}:3100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${PAPERCLIP_DATA_DIR:-./data/docker-paperclip}:/paperclip
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3100
+      SERVE_UI: "true"
+      # An empty DATABASE_URL selects Paperclip's embedded PostgreSQL. To use the
+      # Compose PostgreSQL service, enable the postgres profile and set DATABASE_URL.
+      DATABASE_URL: "${DATABASE_URL:-}"
+      # Leave REDIS_URL unset when not using the redis profile.
+      REDIS_URL: "${REDIS_URL:-}"
+      PAPERCLIP_REDIS_URL: "${PAPERCLIP_REDIS_URL:-}"
+      NODE_ENV: production
+      HOME: /paperclip
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_INSTANCE_ID: default
+      PAPERCLIP_CONFIG: /paperclip/instances/default/config.json
+      PAPERCLIP_DEPLOYMENT_MODE: authenticated
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_AUTH_SECRET: "${PAPERCLIP_AUTH_SECRET:-}"
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-localhost,127.0.0.1}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      OPENCODE_ALLOW_ALL_MODELS: "true"
+      PAPERCLIP_TELEMETRY_DISABLED: "true"
+      USER_UID: ${USER_UID:-1000}
+      USER_GID: ${USER_GID:-1000}
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/paperclip/.local/bin
+      DOCKER_HOST: unix:///var/run/docker.sock
+      # Leave OLLAMA_HOST unset when not using the ollama profile.
+      OLLAMA_HOST: "${OLLAMA_HOST:-}"
+
+  # ---------------------------------------------------------------------------
+  # Nginx reverse-proxy with TLS termination
+  # ---------------------------------------------------------------------------
+  proxy:
+    profiles: [proxy]
+    image: paperclip-nginx-selfsigned:local
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    container_name: paperclip-proxy
+    restart: unless-stopped
+    depends_on:
+      paperclip:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PAPERCLIP_TLS_SERVER_NAME: "${PAPERCLIP_TLS_SERVER_NAME:-localhost}"
+      PAPERCLIP_TLS_CERT_ALT_NAMES: "${PAPERCLIP_TLS_CERT_ALT_NAMES:-DNS:localhost,IP:127.0.0.1}"
+    volumes:
+      - ./docker/nginx/paperclip.conf:/etc/nginx/conf.d/default.conf:ro
+      - proxy-certs:/etc/nginx/certs
+
+volumes:
+  postgres-data:
+  redis-data:
+  ollama-data:
+  proxy-certs:

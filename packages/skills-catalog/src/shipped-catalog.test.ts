@@ -41,6 +41,7 @@ const SKILL_FRONTMATTER_ROOTS = [
 function listSkillFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory() && entry.name === "node_modules") return [];
     if (entry.isDirectory()) return listSkillFiles(entryPath);
     if (entry.isFile() && entry.name === "SKILL.md") return [entryPath];
     return [];

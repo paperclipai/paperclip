@@ -3,15 +3,9 @@ name: Docker
 on:
   push:
     branches:
-      - "master"
+      - "main-latest"
     tags:
       - "v*"
-      - "nightly/v*"
-      - "beta/v*"
-  # Release workflows push lane tags with GITHUB_TOKEN, and GitHub suppresses
-  # push-triggered runs for those, so release.yml dispatches this workflow at
-  # the new tag ref instead. The tag mapping below keys off github.ref either
-  # way.
   workflow_dispatch:
 
 permissions:
@@ -158,13 +152,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # ghcr.io/${{ github.repository }} == ghcr.io/starlein/paperclip.
+          # Tag :latest only for the mymaster integration branch (the GitHub
+          # default branch is master-upstream, so is_default_branch is wrong here).
           tags: |
-            type=raw,value=canary,enable=${{ github.ref == 'refs/heads/master' }}
-            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
-            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main-latest' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}

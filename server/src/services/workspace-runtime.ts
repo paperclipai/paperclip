@@ -2653,6 +2653,12 @@ async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
   return path.dirname(path.resolve(checkoutRoot, commonDir));
 }
 
+async function resolveGitOwnerRepoRootOrNull(cwd: string | null | undefined): Promise<string | null> {
+  const exactPath = asString(cwd, "");
+  if (!exactPath) return null;
+  return await resolveGitOwnerRepoRoot(exactPath).catch(() => null);
+}
+
 async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
   const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
   if (!raw) return null;
@@ -3686,24 +3692,31 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     }
     return realized;
   }
-  // Validate the base checkout before the git spawn. A missing or empty base
-  // path makes the "git" spawn fail with a raw "spawn git ENOENT" error. That
-  // error hides the real cause: the base project checkout is not on disk.
-  // Throw a clear cause first so a future failure names the missing checkout.
-  // Keep the persisted path exact. A directory name can start or end with a
-  // space, so a trim would change a valid checkout path.
+  // Prefer the live base checkout used by upstream's archived-worktree reopen
+  // path. Existing persisted worktrees can still recover their owner repository
+  // when an older workspace record has a stale or non-git base path.
   const baseCwd = asString(input.base.baseCwd, "");
-  if (!baseCwd) {
+  const persistedWorktreePath = realized.worktreePath ?? cwd;
+  const repoRoot =
+    await resolveGitOwnerRepoRootOrNull(baseCwd)
+    ?? (await directoryExists(persistedWorktreePath)
+      ? await resolveGitOwnerRepoRootOrNull(persistedWorktreePath)
+      : null);
+  if (!repoRoot) {
+    if (!baseCwd) {
+      throw new Error(
+        "Cannot rebuild the git worktree: the base project checkout path is empty.",
+      );
+    }
+    if (!await directoryExists(baseCwd)) {
+      throw new Error(
+        "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
+      );
+    }
     throw new Error(
-      "Cannot rebuild the git worktree: the base project checkout path is empty.",
+      `Execution workspace "${cwd}" cannot be reused because neither base workspace "${input.base.baseCwd}" nor the persisted worktree path is a git repository.`,
     );
   }
-  if (!await directoryExists(baseCwd)) {
-    throw new Error(
-      "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
-    );
-  }
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], baseCwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
     const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
@@ -4005,6 +4018,7 @@ async function deleteGitBranchAtVerifiedTip(input: {
 export async function cleanupExecutionWorkspaceArtifacts(input: {
   workspace: {
     id: string;
+    mode?: string | null;
     cwd: string | null;
     providerType: string;
     providerRef: string | null;
@@ -4061,6 +4075,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   // their worktrees are removable, but their branch refs are operator-owned.
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
   const branchCreatedByRuntime = isRuntimeOwnedGitBranch(input.workspace.metadata);
+  const projectWorkspaceCwd = input.projectWorkspace?.cwd ? path.resolve(input.projectWorkspace.cwd) : null;
+  const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
+  const preservesSharedProjectWorkspace =
+    input.workspace.mode === "shared_workspace"
+    && resolvedWorkspacePath !== null
+    && projectWorkspaceCwd !== null
+    && resolvedWorkspacePath === projectWorkspaceCwd;
   const cleanupCommands = input.runCleanupCommands === false
     ? []
     : [
@@ -4183,9 +4204,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         }
       }
     }
-  } else if (input.workspace.providerType === "local_fs" && createdByRuntime && workspacePath) {
-    const projectWorkspaceCwd = input.projectWorkspace?.cwd ? path.resolve(input.projectWorkspace.cwd) : null;
-    const resolvedWorkspacePath = path.resolve(workspacePath);
+  } else if (
+    input.workspace.providerType === "local_fs"
+    && createdByRuntime
+    && workspacePath
+    && resolvedWorkspacePath
+    && !preservesSharedProjectWorkspace
+  ) {
     const containsProjectWorkspace = projectWorkspaceCwd
       ? (
           resolvedWorkspacePath === projectWorkspaceCwd ||
@@ -4217,6 +4242,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   const cleaned =
+    preservesSharedProjectWorkspace ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 

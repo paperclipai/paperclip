@@ -128,6 +128,34 @@ describe("plugin workspace diff service", () => {
     expect(diff.files[0]?.patches.map((patch) => patch.kind)).toEqual(["head"]);
   }, 20_000);
 
+  it("falls back from an unrelated workspace base ref to a diffable inferred base ref", async () => {
+    const repoRoot = await createTempRepo();
+    await runGit(repoRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    await runGit(repoRoot, ["checkout", "-b", "feature"]);
+    await fs.writeFile(path.join(repoRoot, "tracked-staged.txt"), "alpha\ncommitted\n", "utf8");
+    await runGit(repoRoot, ["add", "tracked-staged.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Feature change"]);
+    await runGit(repoRoot, ["checkout", "--orphan", "unrelated-main"]);
+    await runGit(repoRoot, ["rm", "-rf", "."]);
+    await runGit(repoRoot, ["commit", "--allow-empty", "-m", "Unrelated local main"]);
+    await runGit(repoRoot, ["branch", "-M", "main"]);
+    await runGit(repoRoot, ["checkout", "feature"]);
+
+    const diff = await workspaceDiffService().getDiff(
+      createWorkspace(repoRoot, { baseRef: "main" }),
+      workingTreeQuery({ view: "head", includeUntracked: false }),
+    );
+
+    expect(diff.baseRef).toBe("origin/main");
+    expect(diff.defaultBaseRef).toBe("origin/main");
+    expect(diff.files.map((file) => file.path)).toEqual(["tracked-staged.txt"]);
+
+    await expect(workspaceDiffService().getDiff(
+      createWorkspace(repoRoot, { baseRef: "main" }),
+      workingTreeQuery({ view: "head", baseRef: "main", includeUntracked: false }),
+    )).rejects.toMatchObject({ status: 422, details: { code: "base_ref_unrelated", baseRef: "main" } });
+  }, 20_000);
+
   it("filters changed files by relative workspace paths", async () => {
     const repoRoot = await createTempRepo();
     await fs.writeFile(path.join(repoRoot, "tracked-staged.txt"), "alpha\none\n", "utf8");

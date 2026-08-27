@@ -12,6 +12,8 @@ const mockIssueService = vi.hoisted(() => ({
   createChild: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
+  getDependencyReadiness: vi.fn(),
+  getProposedDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -193,6 +195,21 @@ describe("issue execution policy routes", () => {
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.addComment.mockImplementation(async (issueId: string, body: string) => ({
+      id: "66666666-6666-4666-8666-666666666666",
+      issueId,
+      body,
+    }));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: [],
+      isDependencyReady: true,
+      unresolvedBlockerCount: 0,
+    });
+    mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: [],
+      isDependencyReady: true,
+      unresolvedBlockerCount: 0,
+    });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -200,9 +217,22 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation(() => ({
+      innerJoin: () => ({ where: mockDbSelectWhere }),
+      where: mockDbSelectWhere,
+    }));
     mockDbSelectWhere.mockImplementation(() => ({
       for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([{
+            id: "55555555-5555-4555-8555-555555555555",
+            companyId: "company-1",
+            agentId: "33333333-3333-4333-8333-333333333333",
+            contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+            permissions: null,
+          }]).then(onFulfilled, onRejected),
+      }),
+      limit: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
           Promise.resolve([{
             id: "55555555-5555-4555-8555-555555555555",
@@ -794,6 +824,194 @@ describe("issue execution policy routes", () => {
       expect.anything(),
     );
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("normalizes an active review with unresolved blockers to blocked without deciding the stage", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    })!;
+    const executionState = {
+      status: "pending" as const,
+      currentStageId: "11111111-1111-4111-8111-111111111111",
+      currentStageIndex: 0,
+      currentStageType: "review" as const,
+      currentParticipant: { type: "agent" as const, agentId: "33333333-3333-4333-8333-333333333333" },
+      returnAssignee: { type: "agent" as const, agentId: "44444444-4444-4444-8444-444444444444" },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    };
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Blocked active review",
+      executionPolicy: policy,
+      executionState,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: ["77777777-7777-4777-8777-777777777777"],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+    });
+    mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: ["77777777-7777-4777-8777-777777777777"],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const reviewerApp = await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    });
+    const blockerIssueId = "77777777-7777-4777-8777-777777777777";
+    const blockerAdded = await request(reviewerApp)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        blockedByIssueIds: [blockerIssueId],
+        assigneeAgentId: "55555555-5555-4555-8555-555555555555",
+      });
+
+    expect(blockerAdded.status, JSON.stringify(blockerAdded.body)).toBe(200);
+    expect(blockerAdded.body).toMatchObject({
+      status: "blocked",
+      executionPolicy: policy,
+      executionState,
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+    });
+    const blockerPatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(blockerPatch).toMatchObject({
+      status: "blocked",
+      blockedByIssueIds: [blockerIssueId],
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+    });
+    expect(blockerPatch).not.toHaveProperty("executionPolicy");
+    expect(blockerPatch).not.toHaveProperty("executionState");
+    mockIssueService.update.mockClear();
+
+    const disposition = await request(reviewerApp)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_progress", comment: "Changes are required, but the dependency is unresolved." });
+
+    expect(disposition.status, JSON.stringify(disposition.body)).toBe(200);
+    expect(disposition.body).toMatchObject({
+      status: "blocked",
+      executionPolicy: policy,
+      executionState,
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+    });
+    const dispositionPatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(dispositionPatch).toMatchObject({ status: "blocked" });
+    expect(dispositionPatch).not.toHaveProperty("executionPolicy");
+    expect(dispositionPatch).not.toHaveProperty("executionState");
+    expect(dispositionPatch).toMatchObject({
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+    });
+  });
+
+  it.each([
+    ["policy replacement", {
+      mode: "normal",
+      commentRequired: false,
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    }],
+    ["null policy", null],
+    ["current-stage removal", {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        id: "22222222-2222-4222-8222-222222222222",
+        type: "approval",
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+      }],
+    }],
+    ["participant drift", {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: "55555555-5555-4555-8555-555555555555" }],
+      }],
+    }],
+  ])("rejects reviewer blocker normalization combined with %s", async (_label, requestedPolicy) => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    })!;
+    const executionState = {
+      status: "pending" as const,
+      currentStageId: "11111111-1111-4111-8111-111111111111",
+      currentStageIndex: 0,
+      currentStageType: "review" as const,
+      currentParticipant: { type: "agent" as const, agentId: "33333333-3333-4333-8333-333333333333" },
+      returnAssignee: { type: "agent" as const, agentId: "44444444-4444-4444-8444-444444444444" },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    };
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Blocked active review",
+      executionPolicy: policy,
+      executionState,
+    });
+    mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: ["77777777-7777-4777-8777-777777777777"],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+    });
+
+    const reviewerApp = await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    });
+    const res = await request(reviewerApp)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        blockedByIssueIds: ["77777777-7777-4777-8777-777777777777"],
+        executionPolicy: requestedPolicy,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("executionPolicy cannot be changed while unresolved blockers suspend an active stage");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("allows a board user to cancel a drifted pending agent review task", async () => {

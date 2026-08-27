@@ -2656,6 +2656,74 @@ describe("realizeExecutionWorkspace", () => {
     expect(actualHead).toBe(expectedHead);
   }, 15_000);
 
+  it("reuses an existing persisted git worktree when the base workspace cwd is unavailable", async () => {
+    const repoRoot = await createTempRepo();
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-453",
+        title: "Reuse persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+    const unavailableBaseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-base-"));
+
+    const reused = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: unavailableBaseCwd,
+        source: "task_session",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: initial.branchName,
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-453",
+        title: "Reuse persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(reused).not.toBeNull();
+    expect(reused?.cwd).toBe(initial.cwd);
+    expect(reused?.worktreePath).toBe(initial.worktreePath);
+    await expect(readGit(initial.cwd, ["rev-parse", "--show-toplevel"])).resolves.toBe(initial.cwd);
+  }, 15_000);
+
   it("repairs a clean persisted git worktree branch mismatch when both branches point at the same commit", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-454-repair-clean-branch-mismatch";
@@ -3626,6 +3694,41 @@ describe("realizeExecutionWorkspace", () => {
     expect(worktreeOp).toBeDefined();
     expect(worktreeOp!.metadata!.baseRef).toBe("origin/master");
   }, 10_000);
+
+  it("preserves a shared project workspace and reports logical cleanup complete", async () => {
+    const projectWorkspaceCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-workspace-"));
+
+    try {
+      const cleanup = await cleanupExecutionWorkspaceArtifacts({
+        workspace: {
+          id: "execution-workspace-shared",
+          mode: "shared_workspace",
+          cwd: projectWorkspaceCwd,
+          providerType: "local_fs",
+          providerRef: projectWorkspaceCwd,
+          branchName: null,
+          repoUrl: null,
+          baseRef: null,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          sourceIssueId: "issue-1",
+          metadata: { createdByRuntime: true },
+        },
+        projectWorkspace: {
+          cwd: projectWorkspaceCwd,
+          cleanupCommand: null,
+        },
+      });
+
+      expect(cleanup).toMatchObject({
+        cleaned: true,
+        warnings: [],
+      });
+      await expect(fs.stat(projectWorkspaceCwd)).resolves.toMatchObject({});
+    } finally {
+      await fs.rm(projectWorkspaceCwd, { recursive: true, force: true });
+    }
+  });
 
   it("removes a created git worktree and branch during cleanup", async () => {
     const repoRoot = await createTempRepo();

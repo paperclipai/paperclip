@@ -1,0 +1,2 @@
+Defaults:node !requiretty
+node ALL=(root) NOPASSWD: SETENV: /app/node_modules/.pnpm/@openai+codex@*/node_modules/@openai/codex/vendor/*/codex-resources/bwrap

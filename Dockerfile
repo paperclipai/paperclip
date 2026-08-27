@@ -2,8 +2,10 @@
 FROM node:24-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG DOCKER_GID=992
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 tini \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 mc nano procps zstd tini net-tools libicu76 inetutils-ping lynx sudo \
+  && apt-get install -y php8.4 php8.4-pgsql php8.4-mysql php8.4-pdo php8.4-mbstring php8.4-sqlite3 php8.4-xsl composer mariadb-client node-playwright chromium-driver chromium-headless-shell postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
@@ -11,6 +13,15 @@ RUN apt-get update \
 RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
+
+# Docker CLI for controlled Docker-outside-of-Docker access via mounted /var/run/docker.sock.
+# DOCKER_GID must match the host docker.sock group so the non-root node user can manage
+# sibling containers, Docker networks, and published ports through the host daemon.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends docker.io docker-cli docker-compose \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupmod -o -g "$DOCKER_GID" docker \
+  && usermod -a -G docker node
 
 FROM base AS deps
 WORKDIR /app
@@ -57,8 +68,20 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app /app
 COPY . .
+
+RUN pnpm --filter @paperclipai/shared build
+RUN pnpm --filter @paperclipai/db build
+RUN pnpm --filter @paperclipai/adapter-utils build
+RUN pnpm --filter "@paperclipai/adapter-*" build
+RUN pnpm --filter @paperclipai/hermes-paperclip-adapter build
+RUN pnpm --filter @paperclipai/mcp-server build \
+  && pnpm --filter @paperclipai/google-sheets-mcp-server build \
+  && pnpm --filter @paperclipai/kv-demo-mcp-server build
+RUN pnpm --filter @paperclipai/skills-catalog build \
+  && pnpm --filter @paperclipai/teams-catalog build
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
@@ -69,7 +92,13 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm --filter @paperclipai/server build
+
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f packages/adapter-utils/dist/index.js \
+  && test -f packages/mcp-server/dist/stdio.js \
+  && test -f packages/google-sheets-mcp-server/dist/stdio.js \
+  && test -f packages/kv-demo-mcp-server/dist/main.js \
+  || (echo "ERROR: required package build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 
 FROM base AS production
@@ -93,12 +122,15 @@ WORKDIR /app
 # (the single most expensive layer: four CLI toolchains + apt, per arch) can
 # never hit the layer cache and rebuilds on every build.
 RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
-  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @moonshot-ai/kimi-code@latest \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @tobilu/qmd @moonshot-ai/kimi-code@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+# Sudoers Drop-in mit korrekten Rechten kopieren:
+COPY --chmod=0440 scripts/paperclip-bwrap /etc/sudoers.d/paperclip-bwrap
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
@@ -124,13 +156,6 @@ ENV NODE_ENV=production \
 
 EXPOSE 3100
 
-# tini, not node, is PID 1. The entrypoint ends in `exec`, so without an init
-# node inherits PID 1 and never wait()s the orphans the kernel re-parents onto
-# it -- agent runs spawn git/claude/esbuild/sh descendants that outlive their
-# leader, so they pile up as permanent zombies (~79/h measured) until the
-# cgroup pid limit is exhausted and *every* fork() in the container fails.
-# tini reaps adopted orphans and forwards signals, so the exec chain below and
-# graceful shutdown are unchanged. Mirrors docker/agent-runtime/Dockerfile.base.
 ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
 

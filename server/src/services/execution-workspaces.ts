@@ -264,6 +264,10 @@ export function deriveExecutionWorkspaceDeliveryState(input: {
   return "unknown";
 }
 
+export function shouldRequireTerminalWorkspaceDeliveryEvidence(mode: string): boolean {
+  return mode !== "shared_workspace";
+}
+
 export type ExecutionWorkspaceBranchReconcileMode = "forward" | "override" | "quarantine_restore";
 
 export type ExecutionWorkspaceBranchReconcileActor = {
@@ -1378,7 +1382,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .catch(() => null)
       : null;
 
-    if (sourceIssueTerminal) {
+    if (sourceIssueTerminal && shouldRequireTerminalWorkspaceDeliveryEvidence(workspace.mode)) {
       const products = await listDeliveryPullRequestProducts(workspace);
       for (const product of products) {
         const references = extractGitHubPullRequestReferences([
@@ -1493,14 +1497,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       issue.checkoutRunId,
       issue.executionRunId,
     ]).filter((runId): runId is string => Boolean(runId)))];
-    if (runIds.length === 0) return false;
+    const liveRunReferences = [
+      sql<boolean>`${heartbeatRuns.contextSnapshot} ->> 'executionWorkspaceId' = ${workspace.id}`,
+      ...(runIds.length > 0 ? [inArray(heartbeatRuns.id, runIds)] : []),
+    ];
     const active = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, workspace.companyId),
-        inArray(heartbeatRuns.id, runIds),
         inArray(heartbeatRuns.status, ["queued", "running"]),
+        or(...liveRunReferences),
       ))
       .limit(1);
     return active.length > 0;
@@ -2342,6 +2349,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
       }
 
+      if (await workspaceHasActiveRun(workspace)) {
+        blockingReasons.push("This workspace is still used by a queued or running heartbeat run.");
+      }
+
       if (isSharedWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
       }
@@ -2585,8 +2596,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
-        if (!statusInspectionSucceeded) {
+        const requiresDeliveryEvidence = shouldRequireTerminalWorkspaceDeliveryEvidence(workspace.mode);
+        const { git, statusInspectionSucceeded } = requiresDeliveryEvidence
+          ? await inspectGitCloseReadiness(executionWorkspace)
+          : { git: null, statusInspectionSucceeded: true };
+        if (requiresDeliveryEvidence && !statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
           continue;
         }
@@ -2610,12 +2624,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        if (requiresDeliveryEvidence && assessment.workspaceDirty) {
           result.skippedUndelivered += 1;
           continue;
         }
         if (
-          assessment.deliveryState !== "merged_via_pr"
+          requiresDeliveryEvidence
+          && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
           result.skippedUndelivered += 1;
@@ -2737,17 +2752,25 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               )`,
               sql<boolean>`NOT EXISTS (
                 SELECT 1
-                FROM ${issues} linked_issue
-                JOIN ${heartbeatRuns} live_run
-                  ON live_run.id = linked_issue.checkout_run_id
-                  OR live_run.id = linked_issue.execution_run_id
-                WHERE linked_issue.company_id = ${workspace.companyId}
-                  AND (
-                    linked_issue.execution_workspace_id = ${workspace.id}
-                    OR linked_issue.id = ${workspace.sourceIssueId}
-                  )
-                  AND live_run.company_id = ${workspace.companyId}
+                FROM ${heartbeatRuns} live_run
+                WHERE live_run.company_id = ${workspace.companyId}
                   AND live_run.status IN ('queued', 'running')
+                  AND (
+                    live_run.context_snapshot ->> 'executionWorkspaceId' = ${workspace.id}
+                    OR EXISTS (
+                      SELECT 1
+                      FROM ${issues} linked_issue
+                      WHERE linked_issue.company_id = ${workspace.companyId}
+                        AND (
+                          linked_issue.execution_workspace_id = ${workspace.id}
+                          OR linked_issue.id = ${workspace.sourceIssueId}
+                        )
+                        AND (
+                          linked_issue.checkout_run_id = live_run.id
+                          OR linked_issue.execution_run_id = live_run.id
+                        )
+                    )
+                  )
               )`,
               sql<boolean>`NOT EXISTS (
                 WITH RECURSIVE issue_tree(id, status) AS (

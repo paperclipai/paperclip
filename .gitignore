@@ -70,3 +70,12 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# Local deployment overrides and TLS material
+docker-compose.override.yml
+docker-compose.*.local.yml
+docker/nginx/certs/
+*.pem
+*.key
+*.crt
+*.csr

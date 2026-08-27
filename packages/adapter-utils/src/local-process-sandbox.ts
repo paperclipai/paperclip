@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { spawn } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -70,6 +71,87 @@ const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", 
 const SANDBOX_PROXY_PORT = 31_337;
 const UNIX_SOCKET_PATH_MAX_BYTES = 107;
 const NETWORK_PROXY_TEMP_PREFIX = "paperclip-network-sandbox-";
+const SANDBOX_PROBE_TIMEOUT_MS = 5_000;
+
+export interface LocalProcessSandboxCapability {
+  supported: boolean;
+  reason: "supported" | "command_unavailable" | "user_namespace_unavailable" | "probe_failed" | "probe_timeout";
+  detail: string | null;
+}
+
+export async function probeLocalProcessSandboxCapability(input: {
+  command?: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  commandArgsPrefix?: string[];
+}): Promise<LocalProcessSandboxCapability> {
+  if (process.platform !== "linux") {
+    return { supported: false, reason: "probe_failed", detail: "Local process sandboxing is Linux-only." };
+  }
+  const command = input.command?.trim() || "bwrap";
+  const timeoutMs = input.timeoutMs ?? SANDBOX_PROBE_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    let settled = false;
+    let stderr = "";
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (result: LocalProcessSandboxCapability) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const child = spawn(command, [...(input.commandArgsPrefix ?? []),
+      "--die-with-parent",
+      "--new-session",
+      "--unshare-pid",
+      "--unshare-ipc",
+      "--unshare-uts",
+      "--ro-bind",
+      "/",
+      "/",
+      "--",
+      "/bin/true",
+    ], {
+      cwd: input.cwd,
+      env: input.env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      if (stderr.length < 8_192) stderr += chunk;
+    });
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      finish({
+        supported: false,
+        reason: error.code === "ENOENT" ? "command_unavailable" : "probe_failed",
+        detail: error.message,
+      });
+    });
+    child.once("close", (code) => {
+      const detail = stderr.trim() || (code === 0 ? null : `Bubblewrap capability probe exited with code ${code}.`);
+      if (code === 0) {
+        finish({ supported: true, reason: "supported", detail: null });
+        return;
+      }
+      const namespaceUnavailable = /(?:no permissions|operation not permitted).*?(?:namespace|userns)|(?:namespace|userns).*?(?:no permissions|operation not permitted)/i.test(detail ?? "");
+      finish({
+        supported: false,
+        reason: namespaceUnavailable ? "user_namespace_unavailable" : "probe_failed",
+        detail,
+      });
+    });
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({
+        supported: false,
+        reason: "probe_timeout",
+        detail: `Bubblewrap capability probe timed out after ${timeoutMs}ms.`,
+      });
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
 
 function normalizeAbsolutePath(candidate: string, label: string): string {
   const trimmed = candidate.trim();

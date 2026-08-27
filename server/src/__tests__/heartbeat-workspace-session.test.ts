@@ -1699,6 +1699,8 @@ describe("effective run execution workspace config freshness", () => {
       requestedExecutionWorkspaceId: "workspace-old",
       requestedShouldReuseExisting: true,
       existingExecutionWorkspaceAvailable: false,
+      explicitReuseRequested: true,
+      automaticSharedReuseRequested: false,
     });
 
     const metadata = buildWorkspaceConfigMetadata();
@@ -1742,6 +1744,8 @@ describe("effective run execution workspace config freshness", () => {
         requestedExecutionWorkspaceId: "workspace-old",
         requestedShouldReuseExisting: false,
         existingExecutionWorkspaceAvailable: false,
+        explicitReuseRequested: false,
+        automaticSharedReuseRequested: false,
       });
 
       const metadata = buildWorkspaceConfigMetadata();
@@ -1780,6 +1784,8 @@ describe("effective run execution workspace config freshness", () => {
       requestedExecutionWorkspaceId: "workspace-old",
       requestedShouldReuseExisting: true,
       existingExecutionWorkspaceAvailable: true,
+      explicitReuseRequested: true,
+      automaticSharedReuseRequested: false,
     });
   });
 
@@ -1802,6 +1808,112 @@ describe("effective run execution workspace config freshness", () => {
       realizeWorkspace,
     })).rejects.toThrow(/could not be restored/);
     expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("automatically reuses a compatible live shared workspace binding without pinning the issue preference", () => {
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-shared",
+      issueExecutionWorkspacePreference: null,
+      resolvedExecutionWorkspaceMode: "shared_workspace",
+      resolvedProjectId: "project-1",
+      existingExecutionWorkspaceStatus: "active",
+      existingExecutionWorkspaceClosedAt: null,
+      existingExecutionWorkspaceMode: "shared_workspace",
+      existingExecutionWorkspaceProjectId: "project-1",
+    })).toEqual({
+      requestedExecutionWorkspaceId: "workspace-shared",
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceAvailable: true,
+      explicitReuseRequested: false,
+      automaticSharedReuseRequested: true,
+    });
+  });
+
+  it.each([
+    {
+      name: "the project changed",
+      overrides: { existingExecutionWorkspaceProjectId: "project-2" },
+    },
+    {
+      name: "the existing workspace is isolated",
+      overrides: { existingExecutionWorkspaceMode: "isolated_workspace" },
+    },
+    {
+      name: "the existing workspace is closed",
+      overrides: { existingExecutionWorkspaceClosedAt: new Date("2026-08-09T12:00:00.000Z") },
+    },
+    {
+      name: "the existing workspace needs cleanup",
+      overrides: { existingExecutionWorkspaceStatus: "cleanup_failed" },
+    },
+  ])("creates a new default workspace when $name", ({ overrides }) => {
+    const result = resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-shared",
+      issueExecutionWorkspacePreference: null,
+      resolvedExecutionWorkspaceMode: "shared_workspace",
+      resolvedProjectId: "project-1",
+      existingExecutionWorkspaceStatus: "active",
+      existingExecutionWorkspaceClosedAt: null,
+      existingExecutionWorkspaceMode: "shared_workspace",
+      existingExecutionWorkspaceProjectId: "project-1",
+      ...overrides,
+    });
+
+    expect(result).toMatchObject({
+      requestedShouldReuseExisting: false,
+      existingExecutionWorkspaceAvailable: false,
+      explicitReuseRequested: false,
+      automaticSharedReuseRequested: false,
+    });
+  });
+
+  it("does not automatically reuse when both project IDs are null", () => {
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-shared",
+      issueExecutionWorkspacePreference: null,
+      resolvedExecutionWorkspaceMode: "shared_workspace",
+      resolvedProjectId: null,
+      existingExecutionWorkspaceStatus: "active",
+      existingExecutionWorkspaceClosedAt: null,
+      existingExecutionWorkspaceMode: "shared_workspace",
+      existingExecutionWorkspaceProjectId: null,
+    })).toMatchObject({
+      requestedShouldReuseExisting: false,
+      existingExecutionWorkspaceAvailable: false,
+      explicitReuseRequested: false,
+      automaticSharedReuseRequested: false,
+    });
+  });
+
+  it("lets replacement-class drift replace an automatically reused shared workspace", async () => {
+    const base = buildWorkspaceConfigMetadata({ mode: "shared_workspace" });
+    const next = buildWorkspaceConfigMetadata({
+      mode: "shared_workspace",
+      projectWorkspaceId: "workspace-2",
+    });
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+      nextMetadata: next,
+    });
+    const restoreExistingWorkspace = vi.fn(async () => ({ id: "workspace-old", warnings: [] }));
+    const realizeWorkspace = vi.fn(async () => ({ id: "workspace-new", warnings: [] }));
+
+    const result = await provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: true,
+      forceRestoreExisting: false,
+      existingExecutionWorkspaceId: "workspace-old",
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace,
+      realizeWorkspace,
+    });
+
+    expect(decision.action).toBe("replace");
+    expect(result.executionWorkspace.id).toBe("workspace-new");
+    expect(restoreExistingWorkspace).not.toHaveBeenCalled();
+    expect(realizeWorkspace).toHaveBeenCalledOnce();
   });
 
   it("formats a safe workspace operation payload for config drift decisions", () => {
@@ -2969,7 +3081,7 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
 });
 
 describe("parseSessionCompactionPolicy", () => {
-  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
+  it("uses native context management by default for Codex without a known model", () => {
     expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
@@ -2980,6 +3092,20 @@ describe("parseSessionCompactionPolicy", () => {
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
+      maxSessionAgeHours: 0,
+    });
+  });
+
+  it("rotates gpt-5.3-codex-spark before its context window is exhausted", () => {
+    expect(
+      parseSessionCompactionPolicy(
+        buildAgent("codex_local"),
+        { model: "gpt-5.3-codex-spark" },
+      ),
+    ).toEqual({
+      enabled: true,
+      maxSessionRuns: 0,
+      maxRawInputTokens: 91_750,
       maxSessionAgeHours: 0,
     });
   });

@@ -4,6 +4,7 @@ import {
   extractCodexRetryNotBefore,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
+  isCodexSessionResetRequiredError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
   parseCodexJsonl,
@@ -184,6 +185,17 @@ describe("isCodexUnknownSessionError", () => {
 
   it("does not classify unrelated Codex failures as stale sessions", () => {
     expect(isCodexUnknownSessionError("", "model overloaded")).toBe(false);
+  });
+});
+
+describe("isCodexSessionResetRequiredError", () => {
+  it("resets a resumed session when Codex reports an exhausted context window", () => {
+    expect(
+      isCodexSessionResetRequiredError(
+        "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.",
+        "",
+      ),
+    ).toBe(true);
   });
 });
 

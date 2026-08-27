@@ -23,6 +23,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdForUpdate: vi.fn(),
   getComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
+  getProposedDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
@@ -461,6 +462,12 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: [],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 0,
+    });
+    mockIssueService.getProposedDependencyReadiness.mockReset();
+    mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
       blockerIssueIds: [],
       isDependencyReady: false,
       unresolvedBlockerCount: 0,
@@ -2160,6 +2167,146 @@ describe("agent issue mutation checkout ownership", () => {
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
+    });
+
+    it("lets an authorized watchdog block an active review without impersonating its reviewer", async () => {
+      denyBaseBoundary();
+      const stageId = "66666666-6666-4666-8666-666666666666";
+      const executionPolicy = {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: ownerAgentId }],
+        }],
+      };
+      const executionState = {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: ownerAgentId },
+        returnAssignee: { type: "agent", agentId: "99999999-9999-4999-8999-999999999999" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      };
+      const reviewIssue = makeIssue({
+        status: "in_review",
+        assigneeAgentId: ownerAgentId,
+        executionPolicy,
+        executionState,
+      });
+      mockIssueService.getById.mockResolvedValue(reviewIssue);
+      mockIssueService.getDependencyReadiness.mockResolvedValue({
+        blockerIssueIds: ["88888888-8888-4888-8888-888888888888"],
+        isDependencyReady: false,
+        unresolvedBlockerCount: 1,
+      });
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...reviewIssue,
+        ...patch,
+      }));
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        status: "blocked",
+        assigneeAgentId: ownerAgentId,
+        executionPolicy,
+        executionState,
+      });
+      const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updatePatch).toMatchObject({ status: "blocked", actorAgentId: peerAgentId });
+      expect(updatePatch).not.toHaveProperty("executionPolicy");
+      expect(updatePatch).not.toHaveProperty("executionState");
+      expect(updatePatch).toMatchObject({
+        assigneeAgentId: ownerAgentId,
+        assigneeUserId: null,
+      });
+    });
+
+    it.each([
+      ["policy replacement", {
+        mode: "normal",
+        commentRequired: false,
+        stages: [{
+          id: "66666666-6666-4666-8666-666666666666",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: ownerAgentId }],
+        }],
+      }],
+      ["null policy", null],
+      ["current-stage removal", {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: "77777777-7777-4777-8777-777777777777",
+          type: "approval",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: peerAgentId }],
+        }],
+      }],
+      ["participant drift", {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: "66666666-6666-4666-8666-666666666666",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: peerAgentId }],
+        }],
+      }],
+    ])("rejects watchdog blocker normalization combined with %s", async (_label, requestedPolicy) => {
+      denyBaseBoundary();
+      const stageId = "66666666-6666-4666-8666-666666666666";
+      const executionPolicy = {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: ownerAgentId }],
+        }],
+      };
+      const executionState = {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: ownerAgentId },
+        returnAssignee: { type: "agent", agentId: "99999999-9999-4999-8999-999999999999" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      };
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "in_review",
+        assigneeAgentId: ownerAgentId,
+        executionPolicy,
+        executionState,
+      }));
+      mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
+        blockerIssueIds: ["88888888-8888-4888-8888-888888888888"],
+        isDependencyReady: false,
+        unresolvedBlockerCount: 1,
+      });
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        blockedByIssueIds: ["88888888-8888-4888-8888-888888888888"],
+        executionPolicy: requestedPolicy,
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error).toContain("executionPolicy cannot be changed while unresolved blockers suspend an active stage");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {

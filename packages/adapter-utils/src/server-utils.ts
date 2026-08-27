@@ -6,6 +6,7 @@ import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
+  probeLocalProcessSandboxCapability,
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
@@ -2489,13 +2490,60 @@ async function resolveSpawnTarget(
         `Local process confinement requires Bubblewrap, but "${requestedSandboxCommand}" was not found in PATH. Install bwrap or configure filesystemSandboxCommand.`,
       );
     }
+    const directCapability = await probeLocalProcessSandboxCapability({
+      command: sandboxCommand,
+      cwd,
+      env,
+    });
+    let sandboxLauncher: { command: string; argsPrefix: string[] } = {
+      command: sandboxCommand,
+      argsPrefix: [],
+    };
+    let sandboxSudoCommand: string | null = null;
+    if (!directCapability.supported) {
+      const sudoCommand = await resolveCommandPath("sudo", cwd, env);
+      if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
+        throw new Error("Scoped sudo Bubblewrap fallback requires a POSIX UID and GID.");
+      }
+      const privilegeDropArgs = ["--uid", String(process.getuid()), "--gid", String(process.getgid())];
+      const sudoArgsPrefix = ["-n", "--preserve-env", "--", sandboxCommand, ...privilegeDropArgs];
+      const sudoCapability = sudoCommand && directCapability.reason === "user_namespace_unavailable"
+        ? await probeLocalProcessSandboxCapability({
+            command: sudoCommand,
+            commandArgsPrefix: sudoArgsPrefix,
+            cwd,
+            env,
+          })
+        : null;
+      if (!sudoCommand || !sudoCapability?.supported) {
+        const sudoDetail = sudoCapability?.detail ? ` Scoped sudo fallback failed: ${sudoCapability.detail}` : "";
+        throw new Error(
+          `Local process confinement cannot start Bubblewrap (${directCapability.reason}): ${directCapability.detail ?? "no diagnostic available"}.${sudoDetail}`,
+        );
+      }
+      sandboxLauncher = {
+        command: sudoCommand,
+        argsPrefix: sudoArgsPrefix,
+      };
+      sandboxSudoCommand = sudoCommand;
+    }
     const sandboxTarget = await buildLocalProcessSandboxSpawnTarget({
       executable,
       args,
       cwd,
       options: options.localProcessSandbox,
     });
-    return { ...sandboxTarget, command: sandboxCommand };
+    if (sandboxSudoCommand) {
+      const chdirIndex = sandboxTarget.args.indexOf("--chdir");
+      if (chdirIndex < 0) throw new Error("Bubblewrap spawn target is missing --chdir.");
+      // Prevent the confined child from reusing Paperclip's narrowly scoped sudo rule to escape.
+      sandboxTarget.args.splice(chdirIndex, 0, "--ro-bind", "/dev/null", sandboxSudoCommand);
+    }
+    return {
+      ...sandboxTarget,
+      command: sandboxLauncher.command,
+      args: [...sandboxLauncher.argsPrefix, ...sandboxTarget.args],
+    };
   }
 
   if (process.platform !== "win32") {

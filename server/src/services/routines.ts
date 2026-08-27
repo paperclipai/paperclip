@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   activityLog,
+  builtInManagedResources,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -518,6 +519,7 @@ function createRoutineDispatchFingerprint(input: {
   executionWorkspaceSettings?: Record<string, unknown> | null;
   title: string;
   description: string | null;
+  modelProfile: "cheap" | null;
 }) {
   const canonical = JSON.stringify(normalizeRoutineDispatchFingerprintValue(input));
   return crypto.createHash("sha256").update(canonical).digest("hex");
@@ -535,6 +537,7 @@ function readManagedRoutineIssueTemplate(defaultsJson: Record<string, unknown> |
     surfaceVisibility: typeof value.surfaceVisibility === "string" ? value.surfaceVisibility : null,
     originId: typeof value.originId === "string" && value.originId.trim() ? value.originId.trim() : null,
     billingCode: typeof value.billingCode === "string" && value.billingCode.trim() ? value.billingCode.trim() : null,
+    modelProfile: value.modelProfile === "cheap" ? "cheap" as const : null,
   };
 }
 
@@ -698,7 +701,7 @@ export function routineService(
   }
 
   async function getManagedRoutineBinding(routine: typeof routines.$inferSelect) {
-    return db
+    const pluginBinding = await db
       .select({
         pluginKey: pluginManagedResources.pluginKey,
         defaultsJson: pluginManagedResources.defaultsJson,
@@ -714,6 +717,18 @@ export function routineService(
         ),
       )
       .then((rows) => rows[0] ?? null);
+    if (pluginBinding) return pluginBinding;
+    return db
+      .select({ defaultsJson: builtInManagedResources.defaultsJson })
+      .from(builtInManagedResources)
+      .where(and(
+        eq(builtInManagedResources.companyId, routine.companyId),
+        eq(builtInManagedResources.resourceKind, "routine"),
+        eq(builtInManagedResources.resourceId, routine.id),
+      ))
+      .then((rows) => rows[0]
+        ? { pluginKey: null, manifestJson: null, defaultsJson: rows[0].defaultsJson }
+        : null);
   }
 
   async function listManagedRoutineMetadata(routineIds: string[]) {
@@ -1748,11 +1763,12 @@ export function routineService(
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
-    const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
+    const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding?.pluginKey
       ? pluginOperationIssueOriginKind(managedRoutineBinding.pluginKey)
       : "routine_execution";
     const issueOriginId = managedIssueTemplate?.originId ?? input.routine.id;
     const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
+    const issueModelProfile = managedIssueTemplate?.modelProfile ?? null;
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
@@ -1765,6 +1781,7 @@ export function routineService(
       executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
       title,
       description,
+      modelProfile: issueModelProfile,
     });
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -1894,6 +1911,7 @@ export function routineService(
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
             billingCode: issueBillingCode,
+            assigneeAdapterOverrides: issueModelProfile ? { modelProfile: issueModelProfile } : null,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -2230,7 +2248,12 @@ export function routineService(
       return createdRoutine;
     },
 
-    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
+    update: async (
+      id: string,
+      patch: UpdateRoutine,
+      actor: Actor,
+      options: { replaceResponsibleUser?: boolean } = {},
+    ): Promise<Routine | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
@@ -2322,7 +2345,9 @@ export function routineService(
           activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
           variables: nextVariables,
           env: nextEnv,
-          responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
+          responsibleUserId: options.replaceResponsibleUser
+            ? responsibleUserId
+            : locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };

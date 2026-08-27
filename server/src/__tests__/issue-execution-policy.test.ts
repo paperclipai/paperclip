@@ -568,6 +568,86 @@ describe("issue execution policy transitions", () => {
         }),
       ).toThrow("Only the active reviewer or approver can advance");
     });
+    it("suspends and resumes the same pending stage without recording a blocker decision", () => {
+      const pendingState = {
+        status: "pending" as const,
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review" as const,
+        currentParticipant: { type: "agent" as const, agentId: qaAgentId },
+        returnAssignee: { type: "agent" as const, agentId: coderAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      };
+      const suspended = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: pendingState,
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        preservePendingStageOnBlocked: true,
+        allowNonParticipantPendingStageBlock: true,
+      });
+
+      expect(suspended.patch).toEqual({
+        status: "blocked",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+      });
+      expect(suspended.decision).toBeUndefined();
+
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: pendingState,
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        preservePendingStageOnBlocked: true,
+      })).toThrow("Only the active reviewer or approver can advance");
+
+      const resumed = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "blocked",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: pendingState,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "The blocker resolved; review now passes.",
+      });
+
+      expect(resumed.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "approved",
+      });
+      expect(resumed.patch).toMatchObject({
+        status: "in_review",
+        executionState: {
+          status: "pending",
+          completedStageIds: [reviewStageId],
+          currentStageType: "approval",
+        },
+      });
+    });
+
 
     it("board override can cancel an active review without recording an approval decision", () => {
       const result = applyIssueExecutionPolicyTransition({

@@ -1205,7 +1205,7 @@ Behavior:
 
 ## 11.5 Recovery Model Profiles
 
-The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).
+The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`). The built-in Summarizer refresh routine is the narrow reporting exception: its execution issue requests an enabled low-cost `cheap` profile, remains read-and-report only, and may mutate only summary revisions that its checked-out routine task first claimed through the company-scoped routine-refresh endpoint.
 
 Failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, and downstream source-work child/requeue/resume contexts must use the normal/original model lane. If cheap recovery repairs liveness while actual work remains, the next live continuation path must be a separate normal-model worker run with cheap hints scrubbed.
 

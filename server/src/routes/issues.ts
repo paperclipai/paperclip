@@ -155,7 +155,7 @@ import {
   resolveTaskWatchdogMutationScope,
   taskWatchdogScopeAllowsIssueMutation,
 } from "../services/task-watchdog-scope.js";
-import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
+import { loadTaskWatchdogSubtreeIssues, type TaskWatchdogServiceDeps, type taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
@@ -411,6 +411,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         includedIssueIds: [],
         stopFingerprint: "task_watchdog_stop:unavailable",
         stoppedLeaves: [],
+        terminalLeafSummaries: [],
         stopSnapshot: {
           version: 2,
           fingerprint: "task_watchdog_stop:unavailable",
@@ -6357,6 +6358,21 @@ export function issueRoutes(
     res.json(removed);
   });
 
+  const compactWatchdogSubtreeIssue = (
+    issue: Awaited<ReturnType<typeof loadTaskWatchdogSubtreeIssues>>[number],
+    readableIssueIds: ReadonlySet<string>,
+  ) => ({
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    status: issue.status,
+    parentId: issue.parentId && readableIssueIds.has(issue.parentId) ? issue.parentId : null,
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
+    originKind: issue.originKind,
+    updatedAt: issue.updatedAt,
+  });
+
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
@@ -6385,6 +6401,7 @@ export function issueRoutes(
       continuationSummary,
       currentExecutionWorkspace,
       activeRecoveryAction,
+      watchdogSubtreeIssues,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -6400,6 +6417,7 @@ export function issueRoutes(
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+        loadTaskWatchdogSubtreeIssues(db, issue.companyId, issue.id),
       ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -6440,6 +6458,8 @@ export function issueRoutes(
       issueId: issue.id,
       includeForIssueComment: wakeCommentId !== null,
     });
+    const readableWatchdogSubtreeIssues = await filterIssuesForActor(req, watchdogSubtreeIssues);
+    const readableWatchdogSubtreeIssueIds = new Set(readableWatchdogSubtreeIssues.map((row) => row.id));
 
     const response = {
       issue: {
@@ -6466,6 +6486,12 @@ export function issueRoutes(
         originId: issue.originId,
         updatedAt: issue.updatedAt,
       },
+      children: readableWatchdogSubtreeIssues
+        .filter((descendant) => descendant.id !== issue.id && descendant.parentId === issue.id)
+        .map((descendant) => compactWatchdogSubtreeIssue(descendant, readableWatchdogSubtreeIssueIds)),
+      descendants: readableWatchdogSubtreeIssues
+        .filter((descendant) => descendant.id !== issue.id)
+        .map((descendant) => compactWatchdogSubtreeIssue(descendant, readableWatchdogSubtreeIssueIds)),
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
         identifier: ancestor.identifier,
@@ -9643,6 +9669,49 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    const existingExecutionState = parseIssueExecutionState(existing.executionState);
+    const activeStageParticipant = existingExecutionState?.status === "pending"
+      ? existingExecutionState.currentParticipant
+      : null;
+    const actorIsActiveStageParticipant = activeStageParticipant?.type === "agent"
+      ? activeStageParticipant.agentId === actor.agentId
+      : activeStageParticipant?.type === "user" && actor.actorType === "user"
+        ? activeStageParticipant.userId === actor.actorId
+        : false;
+    const blockerMutationRequested = Array.isArray(req.body.blockedByIssueIds);
+    const activeStageBlockingDispositionRequested =
+      updateFields.status === "blocked" ||
+      (updateFields.status === "in_progress" && actorIsActiveStageParticipant);
+    let preservePendingStageOnBlocked = false;
+    let allowNonParticipantPendingStageBlock = req.actor.type === "board";
+    if (
+      activeStageParticipant &&
+      (blockerMutationRequested || activeStageBlockingDispositionRequested)
+    ) {
+      const requestedBlockerIds = blockerMutationRequested
+        ? [...new Set(req.body.blockedByIssueIds as string[])]
+        : null;
+      const hasUnresolvedBlocker = requestedBlockerIds
+        ? (await svc.getProposedDependencyReadiness(existing.id, requestedBlockerIds)).unresolvedBlockerCount > 0
+        : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
+      if (hasUnresolvedBlocker) {
+        if (req.body.executionPolicy !== undefined) {
+          throw unprocessable(
+            "executionPolicy cannot be changed while unresolved blockers suspend an active stage",
+          );
+        }
+        if (!actorIsActiveStageParticipant && req.actor.type === "agent") {
+          const actorWatchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+          allowNonParticipantPendingStageBlock = actorWatchdogScope.kind === "watchdog";
+        }
+        // Adding an unresolved dependency to an active stage is itself the
+        // server-owned blocked disposition. Likewise, translate the active
+        // participant's changes-requested status into that disposition: moving
+        // to in_progress cannot be valid until the blockers resolve.
+        updateFields.status = "blocked";
+        preservePendingStageOnBlocked = true;
+      }
+    }
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
@@ -9673,6 +9742,8 @@ export function issueRoutes(
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
+      preservePendingStageOnBlocked,
+      allowNonParticipantPendingStageBlock,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -9722,11 +9793,7 @@ export function issueRoutes(
         ? [...new Set(req.body.blockedByIssueIds as string[])]
         : null;
       const hasUnresolvedBlocker = requestedBlockerIds
-        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
-          eq(issueRows.companyId, existing.companyId),
-          inArray(issueRows.id, requestedBlockerIds),
-          notInArray(issueRows.status, ["done", "cancelled"]),
-        )).limit(1).then((rows) => rows.length > 0)
+        ? (await svc.getProposedDependencyReadiness(existing.id, requestedBlockerIds)).unresolvedBlockerCount > 0
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
       const [pendingInteraction, pendingApproval] = await Promise.all([
         db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -9746,7 +9813,6 @@ export function issueRoutes(
       }
     }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
-      const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
         if (reviewRequest !== null) {
           res.status(422).json({ error: "reviewRequest requires an active review or approval stage" });

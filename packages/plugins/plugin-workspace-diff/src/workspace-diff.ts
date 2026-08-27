@@ -660,6 +660,25 @@ async function resolveVerifiedGitRef(cwd: string, refName: string) {
   }
 }
 
+async function hasMergeBaseWithHead(cwd: string, baseRef: string) {
+  try {
+    await execFileAsync("git", ["-C", cwd, "merge-base", baseRef, "HEAD"], {
+      cwd,
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: 128 * 1024,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveDiffableGitRef(cwd: string, refName: string) {
+  const verifiedRef = await resolveVerifiedGitRef(cwd, refName);
+  if (!verifiedRef) return null;
+  return await hasMergeBaseWithHead(cwd, verifiedRef) ? verifiedRef : null;
+}
+
 async function resolveGitUpstreamRef(cwd: string) {
   try {
     const upstream = (await execFileAsync(
@@ -671,7 +690,7 @@ async function resolveGitUpstreamRef(cwd: string) {
         maxBuffer: 128 * 1024,
       },
     )).stdout.trim();
-    return upstream ? await resolveVerifiedGitRef(cwd, upstream) : null;
+    return upstream ? await resolveDiffableGitRef(cwd, upstream) : null;
   } catch {
     return null;
   }
@@ -683,7 +702,7 @@ async function resolveInferredDefaultBaseRef(cwd: string) {
 
   const candidates = ["origin/master", "origin/main", "master", "main"];
   const resolvedCandidates = await Promise.all(
-    candidates.map((candidate) => resolveVerifiedGitRef(cwd, candidate)),
+    candidates.map((candidate) => resolveDiffableGitRef(cwd, candidate)),
   );
   for (const resolved of resolvedCandidates) {
     if (resolved) return resolved;
@@ -693,7 +712,11 @@ async function resolveInferredDefaultBaseRef(cwd: string) {
 }
 
 async function resolveDefaultDiffBaseRef(cwd: string, workspace: WorkspaceDiffTarget) {
-  return workspace.baseRef?.trim() || await resolveInferredDefaultBaseRef(cwd);
+  const workspaceBaseRef = workspace.baseRef?.trim();
+  if (workspaceBaseRef && await resolveDiffableGitRef(cwd, workspaceBaseRef)) {
+    return workspaceBaseRef;
+  }
+  return await resolveInferredDefaultBaseRef(cwd);
 }
 
 async function resolveBaseRef(cwd: string, baseRef: string | null, workspace: WorkspaceDiffTarget) {
@@ -715,6 +738,13 @@ async function resolveBaseRef(cwd: string, baseRef: string | null, workspace: Wo
     throw workspaceDiffError(
       "base_ref_invalid",
       `Could not resolve baseRef "${resolvedBaseRef}" in this workspace`,
+      { workspaceId: workspace.id, baseRef: resolvedBaseRef },
+    );
+  }
+  if (!await hasMergeBaseWithHead(cwd, resolvedBaseRef)) {
+    throw workspaceDiffError(
+      "base_ref_unrelated",
+      `Base ref "${resolvedBaseRef}" has no merge base with HEAD in this workspace`,
       { workspaceId: workspace.id, baseRef: resolvedBaseRef },
     );
   }

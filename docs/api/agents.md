@@ -11,9 +11,21 @@ Manage AI agents (employees) within a company.
 GET /api/companies/{companyId}/agents
 ```
 
-Returns all agents in the company.
+Returns all non-terminated agents in the company by default.
 
-This route does not accept query filters. Unsupported query parameters return `400`.
+Use the optional `status` query filter to return agents in one or more states. Pass statuses as a
+comma-separated list, repeat the parameter, or combine both forms:
+
+```
+GET /api/companies/{companyId}/agents?status=idle,running
+GET /api/companies/{companyId}/agents?status=idle&status=running,terminated
+```
+
+Allowed values are `active`, `pending_approval`, `idle`, `running`, `paused`, `error`, and
+`terminated`. If `status` is omitted, the endpoint preserves the existing unfiltered list behavior
+and excludes terminated agents by default. Requesting `terminated` includes terminated agents in the
+candidate list before applying the filter. Invalid status values and unsupported query parameters
+return `400`.
 
 ## Get Agent
 

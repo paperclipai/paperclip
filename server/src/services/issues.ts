@@ -1336,6 +1336,48 @@ async function listUnresolvedBlockerIssueIds(
     )
     .then((rows) => rows.map((row) => row.id));
 }
+
+async function getProposedIssueDependencyReadiness(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+  blockerIssueIds: string[],
+) {
+  const readiness = createIssueDependencyReadiness(issueId);
+  const uniqueBlockerIssueIds = [...new Set(blockerIssueIds.filter(Boolean))];
+  if (uniqueBlockerIssueIds.length === 0) return readiness;
+
+  const blockerRows = await dbOrTx
+    .select({
+      blockerIssueId: issues.id,
+      blockerStatus: issues.status,
+      blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, uniqueBlockerIssueIds)));
+  const pendingFinalizeBlockerIssueIds = await listPendingFinalizeBlockerIssueIds(
+    dbOrTx,
+    companyId,
+    blockerRows.flatMap((row) =>
+      row.blockerStatus === "done" && row.blockerExecutionWorkspaceId
+        ? [{ blockerIssueId: row.blockerIssueId, executionWorkspaceId: row.blockerExecutionWorkspaceId }]
+        : []),
+  );
+
+  for (const row of blockerRows) {
+    readiness.blockerIssueIds.push(row.blockerIssueId);
+    const pendingFinalize = pendingFinalizeBlockerIssueIds.has(row.blockerIssueId);
+    if (row.blockerStatus !== "done" || pendingFinalize) {
+      readiness.unresolvedBlockerIssueIds.push(row.blockerIssueId);
+      readiness.unresolvedBlockerCount += 1;
+      readiness.allBlockersDone = false;
+      readiness.isDependencyReady = false;
+      if (pendingFinalize) readiness.pendingFinalizeBlockerIssueIds.push(row.blockerIssueId);
+    }
+  }
+  return readiness;
+}
+
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
@@ -6530,6 +6572,25 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       const readiness = await listIssueDependencyReadinessMap(dbOrTx, issue.companyId, [issueId]);
       return readiness.get(issueId) ?? createIssueDependencyReadiness(issueId);
+    },
+
+    getProposedDependencyReadiness: async (
+      issueId: string,
+      blockerIssueIds: string[],
+      dbOrTx: any = db,
+    ) => {
+      const issue = await dbOrTx
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      return getProposedIssueDependencyReadiness(
+        dbOrTx,
+        issue.companyId,
+        issue.id,
+        blockerIssueIds,
+      );
     },
 
     listDependencyReadiness: async (companyId: string, issueIds: string[], dbOrTx: any = db) => {

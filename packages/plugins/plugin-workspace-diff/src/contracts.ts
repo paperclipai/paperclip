@@ -18,6 +18,7 @@ export const workspaceDiffPatchKindSchema = z.enum(["staged", "unstaged", "head"
 export const workspaceDiffWarningCodeSchema = z.enum([
   "base_ref_missing",
   "base_ref_invalid",
+  "base_ref_unrelated",
   "binary_file",
   "file_count_truncated",
   "file_oversized",

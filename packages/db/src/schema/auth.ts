@@ -25,6 +25,7 @@ export const authAccounts = pgTable("account", {
   id: text("id").primaryKey(),
   accountId: text("account_id").notNull(),
   providerId: text("provider_id").notNull(),
+  issuer: text("issuer").notNull(),
   userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
   accessToken: text("access_token"),
   refreshToken: text("refresh_token"),

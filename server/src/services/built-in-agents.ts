@@ -117,6 +117,9 @@ export interface BuiltInAgentBundleDefinition {
     priority: "critical" | "high" | "medium" | "low";
     concurrencyPolicy: "always_enqueue" | "coalesce_if_active" | "skip_if_active";
     catchUpPolicy: "enqueue_missed_with_cap" | "skip_missed";
+    issueTemplate?: {
+      modelProfile?: "cheap";
+    };
     variables: RoutineVariable[];
     triggers: Array<{
       kind: "schedule";
@@ -143,6 +146,7 @@ export interface RequiredBuiltInAgent {
 }
 
 const BUILT_IN_AGENT_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
+const LEGACY_BUILT_IN_BUNDLE_USER_ID = "built-in-bundles";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -417,9 +421,18 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     defaultAdapterConfig: {
       model: "claude-haiku-4-5",
     },
+    defaultRuntimeConfig: {
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Cheap",
+          adapterConfig: { model: "claude-haiku-4-5" },
+        },
+      },
+    },
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-08-02",
+      stockVersion: "2026-08-12",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -443,6 +456,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        issueTemplate: { modelProfile: "cheap" },
         variables: [
           { name: "staleAfterHours", label: "Refresh slots older than (hours)", type: "number", defaultValue: 24, required: true, options: [] },
           { name: "maxSlots", label: "Max slots to refresh per run", type: "number", defaultValue: 10, required: true, options: [] },
@@ -736,6 +750,35 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
     permissions: definition.defaultPermissions ?? {},
     budgetMonthlyCents: input.budgetMonthlyCents ?? definition.defaultBudgetMonthlyCents ?? 0,
   };
+}
+
+function mergeBuiltInRuntimeDefaults(
+  current: Record<string, unknown> | null | undefined,
+  defaults: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const next = { ...(current ?? {}) };
+  if (!defaults) return next;
+  const defaultProfiles = isPlainRecord(defaults.modelProfiles) ? defaults.modelProfiles : {};
+  const currentProfiles = isPlainRecord(next.modelProfiles) ? next.modelProfiles : {};
+  const mergedProfiles = { ...currentProfiles };
+  for (const [key, value] of Object.entries(defaultProfiles)) {
+    const defaultProfile = isPlainRecord(value) ? value : null;
+    const currentProfile = isPlainRecord(mergedProfiles[key]) ? mergedProfiles[key] as Record<string, unknown> : null;
+    if (!currentProfile || !defaultProfile) {
+      if (!Object.prototype.hasOwnProperty.call(mergedProfiles, key)) mergedProfiles[key] = value;
+      continue;
+    }
+    mergedProfiles[key] = {
+      ...defaultProfile,
+      ...currentProfile,
+      ...(defaultProfile.enabled === true ? { enabled: true } : {}),
+      adapterConfig: isPlainRecord(currentProfile.adapterConfig)
+        ? currentProfile.adapterConfig
+        : defaultProfile.adapterConfig,
+    };
+  }
+  if (Object.keys(mergedProfiles).length > 0) next.modelProfiles = mergedProfiles;
+  return next;
 }
 
 async function assertKnownBuiltInAgentModel(
@@ -1284,7 +1327,10 @@ export function builtInAgentService(db: Db) {
 
   async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
     const routine = definition.bundle!.routine;
-    const actor = { agentId: null, userId: "built-in-bundles" };
+    // Bundle reconciliation is a system mutation. Leaving userId null makes the
+    // routine service resolve the company's real responsible user instead of
+    // persisting the audit actor label as an on-behalf-of user.
+    const actor = { agentId: null, userId: null };
     const nextRoutine = existing
       ? await routineSvc.update(existing.id, {
         title: routine.title,
@@ -1295,7 +1341,9 @@ export function builtInAgentService(db: Db) {
         concurrencyPolicy: routine.concurrencyPolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
-      }, actor)
+      }, actor, {
+        replaceResponsibleUser: existing.responsibleUserId === LEGACY_BUILT_IN_BUNDLE_USER_ID,
+      })
       : await routineSvc.create(agent.companyId, {
         title: routine.title,
         description: routine.description,
@@ -1379,7 +1427,8 @@ export function builtInAgentService(db: Db) {
     const shouldWrite =
       mode === "reset"
       || currentState.stockStatus === "missing"
-      || currentState.stockStatus === "stock_update_available";
+      || currentState.stockStatus === "stock_update_available"
+      || routine?.responsibleUserId === LEGACY_BUILT_IN_BUNDLE_USER_ID;
     const nextRoutine = shouldWrite
       ? await createOrResetRoutine(agent, definition, routine, mode)
       : routine!;
@@ -1395,6 +1444,7 @@ export function builtInAgentService(db: Db) {
         title: bundle.routine.title,
         status: bundle.routine.status,
         triggerCount: bundle.routine.triggers.length,
+        ...(bundle.routine.issueTemplate ? { issueTemplate: bundle.routine.issueTemplate } : {}),
       },
     });
     const next = await getRoutineByBinding(agent.companyId, definition);
@@ -1619,6 +1669,13 @@ export function builtInAgentService(db: Db) {
       const patch: Partial<typeof agents.$inferInsert> = {
         metadata: builtInMetadata(definition, existing.metadata),
       };
+      const runtimeConfig = mergeBuiltInRuntimeDefaults(
+        existing.runtimeConfig,
+        definition.defaultRuntimeConfig,
+      );
+      if (stableJson(runtimeConfig) !== stableJson(existing.runtimeConfig ?? {})) {
+        patch.runtimeConfig = runtimeConfig;
+      }
       if (
         !existingPendingApproval
         && (resolvedInput.adapterType !== undefined || resolvedInput.adapterConfig !== undefined)
