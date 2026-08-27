@@ -7597,10 +7597,10 @@ describeEmbeddedPostgres("tool access service", () => {
       { name: "list_zaps", description: "List", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
     ]);
 
-    const connected = await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+    const connected = await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, () =>
       service.connectGalleryApp(company.id, {
-        galleryKey: "zapier",
-        name: "Personal Zapier reconnect",
+        galleryKey: "github",
+        name: "Personal GitHub reconnect",
         grantKind: "user",
         credentialValues: { "credentials.authorization": "old-personal-secret" },
       }, { actorType: "user", actorId: userId }));
@@ -7613,7 +7613,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(beforeGrants.grants.some((grant) => grant.kind === "organization")).toBe(false);
     const beforeSecretId = beforePersonalGrant.credentialSecretRefs[0]!.secretId;
 
-    await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+    await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, () =>
       service.reconnectGalleryApp(
         connected.connectionId,
         company.id,
@@ -7634,11 +7634,11 @@ describeEmbeddedPostgres("tool access service", () => {
       company.id,
       { actorType: "user", actorId: userId },
     );
-    const revived = await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+    const revived = await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, () =>
       service.connectGalleryApp(company.id, {
         applicationId: connected.application.id,
-        galleryKey: "zapier",
-        name: "Personal Zapier reconnect",
+        galleryKey: "github",
+        name: "Personal GitHub reconnect",
         // No grantKind is sent on reconnect: the retained connection owns that
         // decision and must reactivate this same grant rather than insert a new
         // one or fall back to an organization credential.
