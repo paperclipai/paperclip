@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
+  ToolApplication,
   ToolConnection,
   ToolPolicy,
   ToolProfileWithDetails,
@@ -31,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
 import { UnverifiedServerBadge } from "./UnverifiedServerBadge";
 import {
+  appApplicationSourceSlug,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
@@ -84,6 +86,11 @@ export function AppDetail() {
     queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId && activeTab === "setup",
+  });
+  const applicationsQuery = useQuery({
+    queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listApplications(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!activeTab,
   });
   const installsQuery = useQuery({
     queryKey: queryKeys.tools.connectionInstalls(connectionId),
@@ -143,15 +150,19 @@ export function AppDetail() {
   });
 
   const connection = connectionQuery.data;
+  const application = connection
+    ? (applicationsQuery.data?.applications ?? []).find((candidate) => candidate.id === connection.applicationId)
+    : undefined;
   const composioChildConnectionCount = (connectionsQuery.data?.connections ?? []).filter(
     (candidate) => candidate.status !== "archived"
       && candidate.config?.provider === "composio"
       && candidate.config?.parentConnectionId === connectionId,
   ).length;
   const logoEntry = useMemo(
-    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
-    [galleryQuery.data, connection],
+    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection, application),
+    [galleryQuery.data, connection, application],
   );
+  const brandKey = appApplicationSourceSlug(application) ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
   const userProfileById = useMemo(
     () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
     [userDirectoryQuery.data],
@@ -579,6 +590,7 @@ export function AppDetail() {
         appName={appName}
         connection={connection}
         logoEntry={logoEntry}
+        brandKey={brandKey}
         status={status}
         actionCount={actionCount}
         owner={owner}
@@ -750,6 +762,7 @@ function AppDetailHeader({
   appName,
   connection,
   logoEntry,
+  brandKey,
   status,
   actionCount,
   owner,
@@ -764,6 +777,7 @@ function AppDetailHeader({
   appName: string;
   connection: ToolConnection;
   logoEntry: AppGalleryDisplayEntry | null;
+  brandKey: string | null;
   status: StatusInfo;
   actionCount: number | null;
   owner: ConnectionOwnerProfile | null;
@@ -781,7 +795,7 @@ function AppDetailHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex items-center gap-3">
-        <AppLogo name={appName} logoUrl={appDefinitionLogoUrl(logoEntry)} size={44} />
+        <AppLogo name={appName} brandKey={brandKey} logoUrl={appDefinitionLogoUrl(logoEntry)} size={44} />
         <div>
           {renaming ? (
             <form
@@ -977,8 +991,14 @@ function accessFrom(
 function galleryEntryFor(
   apps: AppGalleryDisplayEntry[],
   connection: ToolConnection | undefined,
+  application: ToolApplication | undefined,
 ): AppGalleryDisplayEntry | null {
   if (!connection) return null;
+  const sourceSlug = appApplicationSourceSlug(application);
+  if (sourceSlug) {
+    const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
+    if (keyed) return keyed;
+  }
   const name = connection.name.toLowerCase();
   return apps.find((app) => appDefinitionName(app).toLowerCase() === name) ??
     apps.find((app) => appDefinitionSlug(app) === name) ??

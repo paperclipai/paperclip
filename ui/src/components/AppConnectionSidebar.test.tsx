@@ -51,6 +51,12 @@ vi.mock("@/api/tools", () => ({
   toolsApi: mockToolsApi,
 }));
 
+vi.mock("@/pages/apps/AppLogo", () => ({
+  AppLogo: ({ name, brandKey }: { name: string; brandKey?: string | null }) => (
+    <span data-app-logo={name} data-brand-key={brandKey ?? ""} />
+  ),
+}));
+
 vi.mock("./SidebarNavItem", () => ({
   SidebarNavItem: (props: {
     to: string;
@@ -93,6 +99,7 @@ async function flushReact() {
 function connection(overrides: Record<string, unknown> = {}) {
   return {
     id: "conn-1",
+    applicationId: "app-1",
     name: "GitHub",
     transport: "mcp_remote",
     status: "active",
@@ -183,6 +190,14 @@ describe("AppConnectionSidebar", () => {
 
     expect(container.querySelector('[data-to="/apps/conn-1/permissions"]')?.getAttribute("data-active")).toBe("true");
     expect(container.querySelector('[data-to="/apps/conn-1/setup"]')?.getAttribute("data-active")).toBe("false");
+  });
+
+  it("uses the application key for a customized connection display name", async () => {
+    mockToolsApi.getConnection.mockResolvedValue(connection({ name: "Dotta's GitHub" }));
+
+    await renderSidebar();
+
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-brand-key")).toBe("github");
   });
 
   it("renders application-mode tabs under the not-connected app route", async () => {

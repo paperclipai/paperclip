@@ -18,6 +18,7 @@ import {
 import { isComposioBrokerConnection } from "@/pages/apps/composio-services";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import {
+  appApplicationSourceSlug,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
@@ -41,7 +42,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
   const applicationsQuery = useQuery({
     queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listApplications(selectedCompanyId!),
-    enabled: props.kind === "application" && !!selectedCompanyId,
+    enabled: !!selectedCompanyId,
   });
   const connectionsQuery = useQuery({
     queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
@@ -62,9 +63,8 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
 
   const connection = connectionQuery.data;
   const isBroker = isComposioBrokerConnection(connection);
-  const application = props.kind === "application"
-    ? (applicationsQuery.data?.applications ?? []).find((app) => app.id === props.applicationId)
-    : null;
+  const applicationId = props.kind === "application" ? props.applicationId : connection?.applicationId;
+  const application = (applicationsQuery.data?.applications ?? []).find((app) => app.id === applicationId) ?? null;
   const appConnections = props.kind === "application"
     ? (connectionsQuery.data?.connections ?? []).filter((candidate) => candidate.applicationId === props.applicationId)
     : [];
@@ -75,6 +75,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     connection,
     application ?? undefined,
   );
+  const brandKey = appApplicationSourceSlug(application) ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
   const reviewConnectionId = connection?.id ?? previousConnection?.id ?? null;
   const attentionItem = reviewConnectionId
     ? attentionQuery.data?.apps.find((app) => app.connection.id === reviewConnectionId)
@@ -97,7 +98,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
           <span className="truncate">All apps</span>
         </Link>
         <div className="flex min-w-0 items-center gap-2 px-2 py-1">
-          <AppLogo name={appName} logoUrl={appDefinitionLogoUrl(logoEntry)} size={28} />
+          <AppLogo name={appName} brandKey={brandKey} logoUrl={appDefinitionLogoUrl(logoEntry)} size={28} />
           <span className="flex-1 truncate text-sm font-bold text-foreground">{appName}</span>
         </div>
       </div>
@@ -142,8 +143,9 @@ function galleryEntryFor(
   connection: ToolConnection | undefined,
   application: ToolApplication | undefined,
 ): AppGalleryDisplayEntry | null {
-  if (application?.applicationKey) {
-    const keyed = apps.find((app) => appDefinitionSlug(app) === application.applicationKey);
+  const sourceSlug = appApplicationSourceSlug(application);
+  if (sourceSlug) {
+    const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
     if (keyed) return keyed;
   }
   const name = (connection?.name ?? application?.name)?.toLowerCase();
