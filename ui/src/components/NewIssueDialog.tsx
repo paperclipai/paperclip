@@ -1,7 +1,6 @@
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
-import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
@@ -1418,19 +1417,8 @@ export function NewIssueDialog() {
             <Popover open={companyOpen} onOpenChange={setCompanyOpen}>
               <PopoverTrigger asChild>
                 <button
-                  className={cn(
-                    "px-1.5 py-0.5 rounded text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity",
-                    !dialogCompany?.brandColor && "bg-muted",
-                  )}
+                  className="px-1.5 py-0.5 rounded bg-muted text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity"
                   disabled={isSubIssueMode}
-                  style={
-                    dialogCompany?.brandColor
-                      ? {
-                          backgroundColor: dialogCompany.brandColor,
-                          color: pickTextColorForSolidBg(dialogCompany.brandColor),
-                        }
-                      : undefined
-                  }
                 >
                   {dialogCompany?.issuePrefix ?? ""}
                 </button>
@@ -1448,20 +1436,7 @@ export function NewIssueDialog() {
                       setCompanyOpen(false);
                     }}
                   >
-                    <span
-                      className={cn(
-                        "px-1 py-0.5 rounded text-(length:--text-nano) font-semibold leading-none",
-                        !c.brandColor && "bg-muted",
-                      )}
-                      style={
-                        c.brandColor
-                          ? {
-                              backgroundColor: c.brandColor,
-                              color: pickTextColorForSolidBg(c.brandColor),
-                            }
-                          : undefined
-                      }
-                    >
+                    <span className="px-1 py-0.5 rounded bg-muted text-(length:--text-nano) font-semibold leading-none">
                       {c.issuePrefix}
                     </span>
                     <span className="truncate">{c.name}</span>

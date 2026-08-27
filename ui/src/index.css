@@ -1991,13 +1991,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    NOT converted to tokens — each also carries an inline
    `token-extraction: allowlisted` comment at the site):
    - pages/CompanyEnvironments.tsx — xterm.js terminal theme config; functional JS values, third-party.
-   - pages/CompanySettings.tsx — <input type="color"> value; functional form control, not a rendered value.
+   - pages/CompanySettings.tsx — <input type="color"> value; functional form control, not a rendered value. REMOVED: the company brand-color setting was deleted, so the control no longer exists.
    - components/issue-properties/IssueProperties.tsx (newLabelColor) — color-picker seed persisted into label-create payload.
    - pages/CompanySkills.tsx (DISCOVERY_ACCENTS) — persisted/compared skill.color JS data, not just rendered.
    - components/IssueColumns.tsx (accentColor fallback) — also feeds pickTextColorForPillBg() contrast math.
    - components/CompanyPatternIcon.tsx — canvas fillStyle computed at runtime from numeric props, not a static literal.
+   - pages/InviteUxLab.tsx (brandColor prop, x2) — demo/showcase-only prop feeding CompanyPatternIcon's hexToHue() color math, not a rendered CSS value. REMOVED: the brandColor prop was deleted, so the props no longer exist.
    - components/FileViewerSheet.tsx — half-migrated var(--paperclip-code-highlight-*, fallback) pattern at the time of Batch 1; RESOLVED in Batch 4 via *-resolved wrapper tokens (see the Batch 4 MISC token block below) — no longer allowlisted.
-   - pages/InviteUxLab.tsx (brandColor prop, x2) — demo/showcase-only prop feeding CompanyPatternIcon's hexToHue() color math, not a rendered CSS value.
 */
 :root {
   --hex-959596: #959596; /* Muted feed actor/verb/title text (ActivityFeed.tsx, FeedCard.tsx) — PRIOR-ART-flagged gap cluster, no existing token match. */
@@ -2436,12 +2436,10 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    allowlisted concern. Paths are matched by the gate script as a substring
    of the file being checked (repo-relative, POSIX-style).
    * allow ui/src/pages/CompanyEnvironments.tsx — xterm.js terminal theme config (background/foreground/cursor/cursorAccent/selectionBackground hex, fontSize: 12); functional third-party option object, not a rendered CSS value
-   * allow ui/src/pages/CompanySettings.tsx — <input type="color"> value; the DOM color-picker control requires a real hex string
    * allow ui/src/components/issue-properties/IssueProperties.tsx — newLabelColor color-picker seed state persisted into the label-create payload sent to the backend; a var() string would corrupt that payload
    * allow ui/src/pages/CompanySkills.tsx — DISCOVERY_ACCENTS palette array feeds skill.color, persisted/compared JS data (SkillCreateDraft), not just a rendered value; also fontSize: Math.round(size * 0.42), computed at runtime from a prop, not a static literal
    * allow ui/src/components/IssueColumns.tsx — accentColor fallback also feeds pickTextColorForPillBg() contrast math (lib/color-contrast.ts), which needs a real hex string to compute luminance
    * allow ui/src/components/CompanyPatternIcon.tsx — canvas 2D fillStyle built from a runtime-computed template literal, not a static literal at all
-   * allow ui/src/pages/InviteUxLab.tsx — brandColor prop (x2) feeds CompanyPatternIcon's hexToHue() color math via the same canvas-fill code path; demo/showcase-only prop, not a rendered CSS value
    * allow ui/src/components/ui/scroll-area.tsx — rounded-[inherit] is a CSS keyword, not a literal value; nothing to extract
    * allow ui/src/components/ui/dialog.tsx — tw-animate-css plugin utilities (zoom-in-[0.97], zoom-out-[0.97], slide-in-from-top-[1%], slide-out-to-top-[1%], animate-in, animate-out, fade-in-0, fade-out-0) are dead/no-op classes today (the tw-animate-css plugin is not installed and no matching @utility exists in this file; confirmed via grep of the built storybook-static CSS — none of these class names emit any rule); nothing to tokenize without visually changing a currently-inert class
    * allow ui/src/components/ui/alert-dialog.tsx — same tw-animate-css dead-class situation as dialog.tsx (zoom-out-[0.97], zoom-in-[0.97])
@@ -2468,15 +2466,14 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    * allow ui/src/components/IssueProperties.test.tsx — mock label/project color fixtures
    * allow ui/src/components/MarkdownBody.test.tsx — mock project color fed through a mention-href builder
    * allow ui/src/components/MarkdownEditor.test.tsx — mock projectColor mention fixture
-   * allow ui/src/components/NewIssueDialog.test.tsx — mock brandColor/label color fixtures
+   * allow ui/src/components/NewIssueDialog.test.tsx — mock label color fixtures
    * allow ui/src/components/ProjectTile.test.tsx — mock project color prop
    * allow ui/src/components/RoutineRunVariablesDialog.test.tsx — mock label color fixture
-   * allow ui/src/components/SidebarCompanyMenu.test.tsx — mock brandColor company fixtures
    * allow ui/src/components/SidebarProjects.test.tsx — mock project color fixture
    * allow ui/src/components/SidebarStarredProjects.test.tsx — mock project color fixture
    * allow ui/src/pages/CompanyEnvironments.test.tsx — xterm.js theme-mock assertion values (mirrors the allowlisted xterm.js config in the CompanyEnvironments.tsx source above)
    * allow ui/src/pages/ExecutionWorkspaceDetail.test.tsx — mock project color fixture
-   * allow ui/src/pages/InviteLanding.test.tsx — mock companyBrandColor fixtures
+   * allow ui/src/pages/InviteLanding.test.tsx — "#NNNN" pull-request references inside explanatory comments, not color literals
    * allow ui/src/pages/IssueDetail.test.tsx — mock project color fixture
    * allow ui/src/pages/ProjectDetail.test.tsx — mock project color fixture
    * allow ui/src/pages/ProjectWorkspaceDetail.test.tsx — mock project color fixture

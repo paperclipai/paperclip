@@ -196,12 +196,10 @@ function InviteSummaryPanel({
 }) {
   return (
     <>
-      {/* token-extraction: allowlisted — brandColor feeds CompanyPatternIcon's hexToHue() color math via a canvas fill; demo/showcase-only prop, not a rendered CSS value. */}
       <div className="flex items-start gap-4">
         <CompanyPatternIcon
           companyName="Acme Robotics"
           logoUrl="/api/invites/pcp_invite_test/logo"
-          brandColor="#114488"
           className="h-16 w-16 rounded-none border border-zinc-800"
         />
         <div className="min-w-0">
@@ -413,7 +411,6 @@ function InviteResultPreview({
         <CompanyPatternIcon
           companyName="Acme Robotics"
           logoUrl="/api/invites/pcp_invite_test/logo"
-          brandColor="#114488"
           className="h-12 w-12 rounded-none border border-zinc-800"
         />
         <h3 className="text-lg font-semibold">{title}</h3>
