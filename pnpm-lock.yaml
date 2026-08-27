@@ -1065,7 +1065,7 @@ importers:
         version: 13.6.29
     devDependencies:
       '@sentry/browser':
-        specifier: ^10.71.0
+        specifier: 10.71.0
         version: 10.71.0
       '@storybook/addon-a11y':
         specifier: 10.5.10
