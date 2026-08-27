@@ -18486,23 +18486,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_dependencies_blocked",
-            payload: {
-              ...(payload ?? {}),
-              issueId,
-              unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
-            },
-            status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
-          });
+          // Dependency resolution owns the durable wake path. Persisting a
+          // skipped assignment request here makes the scheduler insert one row
+          // per blocked issue on every reconciliation tick without changing any
+          // runnable state.
           return { kind: "skipped" as const };
         }
 

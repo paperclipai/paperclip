@@ -178,6 +178,11 @@ export {
 } from "./workspace-git-operation-scheduler.js";
 export { workProductService } from "./work-products.js";
 export {
+  wakeupRequestRetentionService,
+  WAKEUP_REQUEST_RETENTION_BATCH_SIZE,
+  WAKEUP_REQUEST_TERMINAL_RETENTION_MS,
+} from "./wakeup-request-retention.js";
+export {
   logActivity,
   persistActivity,
   publishActivity,

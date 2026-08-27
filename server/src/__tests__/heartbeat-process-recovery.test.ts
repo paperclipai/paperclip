@@ -5061,6 +5061,46 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("does not persist dependency-blocked assignment skips across recovery scheduler ticks", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Open prerequisite",
+      status: "todo",
+      priority: "high",
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    for (let tick = 0; tick < 3; tick += 1) {
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.assignmentDispatched).toBe(0);
+      expect(result.skipped).toBeGreaterThanOrEqual(1);
+    }
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+      ));
+    expect(wakeups).toHaveLength(0);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
     await db.insert(agentWakeupRequests).values({

@@ -65,6 +65,7 @@ import {
   routineService,
   statusCardService,
   toolAccessService,
+  wakeupRequestRetentionService,
   workspaceOperationService,
 } from "./services/index.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
@@ -1132,6 +1133,37 @@ export async function startServer(): Promise<StartedServer> {
     trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
 
+  const wakeupRequestRetention = wakeupRequestRetentionService(db as any);
+  let wakeupRequestRetentionRunning = false;
+  const runWakeupRequestRetentionSweep = async (drainBacklog: boolean) => {
+    if (wakeupRequestRetentionRunning) return;
+    wakeupRequestRetentionRunning = true;
+    let deleted = 0;
+    try {
+      do {
+        const result = await wakeupRequestRetention.pruneTerminalRequests();
+        deleted += result.deleted;
+        if (!drainBacklog || !result.hasMore || heartbeatSchedulerStopped) break;
+        await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+      } while (true);
+      if (deleted > 0) {
+        logger.info({ deleted }, "agent wakeup request retention sweep pruned terminal rows");
+      }
+    } finally {
+      wakeupRequestRetentionRunning = false;
+    }
+  };
+  const scheduleWakeupRequestRetentionSweep = (drainBacklog = false) => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(runWakeupRequestRetentionSweep(drainBacklog).catch((err) => {
+      logger.error({ err }, "agent wakeup request retention sweep failed");
+    }));
+  };
+
+  // Drain historical skipped/coalesced rows without delaying server startup.
+  // Later scheduler ticks keep the table inside the same retention bound.
+  scheduleWakeupRequestRetentionSweep(true);
+
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
@@ -1438,6 +1470,7 @@ export async function startServer(): Promise<StartedServer> {
         trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
           logger.error({ err }, "decision retention sweep failed");
         }));
+        scheduleWakeupRequestRetentionSweep();
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(
@@ -1613,6 +1646,7 @@ export async function startServer(): Promise<StartedServer> {
     startHeartbeatSchedulerInterval(() => {
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
+      scheduleWakeupRequestRetentionSweep();
     });
   }
   

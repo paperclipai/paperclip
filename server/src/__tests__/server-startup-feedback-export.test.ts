@@ -32,6 +32,7 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  wakeupRequestRetentionServiceFactoryMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
@@ -109,6 +110,13 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
+  const wakeupRequestRetentionServiceFactoryMock = vi.fn(() => ({
+    pruneTerminalRequests: vi.fn(async () => ({
+      deleted: 0,
+      hasMore: false,
+      cutoff: new Date(0),
+    })),
+  }));
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -148,6 +156,7 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    wakeupRequestRetentionServiceFactoryMock,
   };
 });
 
@@ -312,6 +321,7 @@ vi.mock("../services/index.js", () => ({
       failed: 0,
     })),
   })),
+  wakeupRequestRetentionService: wakeupRequestRetentionServiceFactoryMock,
 }));
 
 vi.mock("../services/secret-proposals.js", () => ({
