@@ -202,6 +202,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  type IssuePostCommitAction,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
@@ -211,7 +212,6 @@ import { redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import {
   deliverNativeQuestionResponse,
-  nativeQuestionRunIdsToCancelForIssue,
   nativeQuestionRunToCancel,
   validateNativeQuestionResponseInput,
 } from "../services/native-runtime/native-question-bridge.js";
@@ -2863,21 +2863,12 @@ export function issueRoutes(
     heartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db, interaction),
   });
-
-  const cancelExpiredNativeQuestionRuns = async (
-    issue: { id: string; companyId: string },
-    status: string,
-  ) => {
-    const runIds = await nativeQuestionRunIdsToCancelForIssue(db, issue);
-    for (const runId of runIds) {
-      await heartbeat.cancelRun(runId, "Task closed while waiting for operator input", {
-        resultJson: {
-          cancelledByIssueStatus: status,
-          cancelledIssueId: issue.id,
-        },
-      });
-    }
+  const flushIssuePostCommitActions = async (actions: readonly IssuePostCommitAction[]) => {
+    if (actions.length === 0) return;
+    const { executeIssuePostCommitActions } = await import("../services/issues.js");
+    await executeIssuePostCommitActions(db, actions);
   };
+
   const memoizeIssueRead = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof svc.getById>>>({
     shouldCache: (issue) => issue !== null,
   });
@@ -6898,6 +6889,7 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const postCommitActivityPublications: ActivityPublication[] = [];
+    const postCommitIssueActions: IssuePostCommitAction[] = [];
     const result = await db.transaction(async (tx) => {
       const lockedIssue = await tx
         .select()
@@ -7027,6 +7019,7 @@ export function issueRoutes(
           },
           tx,
           postCommitActivityPublications,
+          postCommitIssueActions,
         );
         if (!updatedIssue) throw notFound("Issue not found");
         issue = updatedIssue;
@@ -7057,6 +7050,7 @@ export function issueRoutes(
       return { issue, recoveryAction };
     });
     for (const publication of postCommitActivityPublications) publishActivity(publication);
+    await flushIssuePostCommitActions(postCommitIssueActions);
 
     await routinesSvc.syncRunStatusForIssue(result.issue.id);
 
@@ -9874,6 +9868,7 @@ export function issueRoutes(
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
     const postCommitActivityPublications: ActivityPublication[] = [];
+    const postCommitIssueActions: IssuePostCommitAction[] = [];
     const issueUpdateData = {
       ...updateFields,
       actorAgentId: actor.agentId ?? null,
@@ -9884,12 +9879,12 @@ export function issueRoutes(
     const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
       if (tx) {
         return shouldCollectCompletionPublication
-          ? svc.update(id, issueUpdateData, tx, postCommitActivityPublications)
-          : svc.update(id, issueUpdateData, tx);
+          ? svc.update(id, issueUpdateData, tx, postCommitActivityPublications, postCommitIssueActions)
+          : svc.update(id, issueUpdateData, tx, undefined, postCommitIssueActions);
       }
       return shouldCollectCompletionPublication
-        ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
-        : svc.update(id, issueUpdateData);
+        ? svc.update(id, issueUpdateData, db, postCommitActivityPublications, postCommitIssueActions)
+        : svc.update(id, issueUpdateData, db, undefined, postCommitIssueActions);
     };
     const assertLockedReviewPolicyAllowsMutation = async (
       tx: Parameters<typeof svc.update>[2],
@@ -10055,6 +10050,7 @@ export function issueRoutes(
       return;
     }
     for (const publication of postCommitActivityPublications) publishActivity(publication);
+    await flushIssuePostCommitActions(postCommitIssueActions);
 
     if (enteringBlocked) {
       const blockedIssue = issue;
@@ -10890,7 +10886,6 @@ export function issueRoutes(
           actor,
           source: "issue.status_transition.issue_closed",
         });
-        await cancelExpiredNativeQuestionRuns(issue, issue.status);
         await destroyReusableSandboxLeasesForTerminalIssue(issue);
       }
       if (becameTerminal && issue.parentId) {
@@ -12495,6 +12490,7 @@ export function issueRoutes(
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
       const postCommitActivityPublications: ActivityPublication[] = [];
+      const postCommitIssueActions: IssuePostCommitAction[] = [];
       try {
         txResult = await db.transaction(async (tx) => {
           const insertedComment = await svc.addComment(
@@ -12510,8 +12506,8 @@ export function issueRoutes(
             tx,
           );
           const updated = actor.actorType === "user" && currentIssue.status !== "done"
-            ? await svc.update(id, updatePatch, tx, postCommitActivityPublications)
-            : await svc.update(id, updatePatch, tx);
+            ? await svc.update(id, updatePatch, tx, postCommitActivityPublications, postCommitIssueActions)
+            : await svc.update(id, updatePatch, tx, undefined, postCommitIssueActions);
           // Throw (not return null) so drizzle rolls back the inserted comment when the issue
           // has been concurrently deleted between the initial fetch and the in-transaction update.
           if (!updated) throw new AutoApprovalIssueMissingError();
@@ -12541,6 +12537,7 @@ export function issueRoutes(
         throw err;
       }
       for (const publication of postCommitActivityPublications) publishActivity(publication);
+      await flushIssuePostCommitActions(postCommitIssueActions);
       comment = txResult.comment;
       currentIssue = txResult.issue;
       // Mirror the normal status-change audit trail: every other in_review -> done path
@@ -12888,7 +12885,6 @@ export function issueRoutes(
           actor,
           source: "issue.status_transition.issue_closed",
         });
-        await cancelExpiredNativeQuestionRuns(currentIssue, currentIssue.status);
         await destroyReusableSandboxLeasesForTerminalIssue(currentIssue);
       }
       if (becameTerminal && currentIssue.parentId) {

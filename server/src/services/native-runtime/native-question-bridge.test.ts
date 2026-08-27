@@ -23,12 +23,16 @@ import {
   deliverNativeQuestionResponse,
   flushNativeQuestionResponses,
   nativeQuestionBridgeInternals,
-  nativeQuestionRunIdsToCancelForIssue,
   nativeQuestionRunToCancel,
   projectNativeRuntimeRequest,
   registerNativeQuestionCommandTarget,
   validateNativeQuestionResponseInput,
 } from "./native-question-bridge.js";
+import {
+  executeIssuePostCommitActions,
+  issueService,
+  type IssuePostCommitAction,
+} from "../issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -278,19 +282,60 @@ describeEmbeddedPostgres("native question bridge", () => {
     expect(await db.select().from(activityLog)).toHaveLength(1);
   });
 
-  it("identifies the active native run after its unanswered card expires", async () => {
+  it("cancels the active native run when the shared issue service expires its question", async () => {
     await seed();
     const interaction = await projectNativeRuntimeRequest({
       db,
       binding: binding(),
       event: runtimeRequestEvent(),
     });
-    await db.update(issueThreadInteractions)
-      .set({ status: "expired", resolvedAt: new Date() })
-      .where(eq(issueThreadInteractions.id, interaction!.id));
+    await issueService(db).update(issueId, { status: "cancelled" });
 
-    await expect(nativeQuestionRunIdsToCancelForIssue(db, { id: issueId, companyId }))
-      .resolves.toEqual([runId]);
+    const [persistedInteraction] = await db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction!.id));
+    const [persistedRun] = await db.select({
+      status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(persistedInteraction?.status).toBe("expired");
+    expect(persistedRun).toMatchObject({
+      status: "cancelled",
+      resultJson: {
+        cancelledByIssueStatus: "cancelled",
+        cancelledIssueId: issueId,
+      },
+    });
+  });
+
+  it("defers native cancellation until an external issue transaction commits", async () => {
+    await seed();
+    await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    const postCommitActions: IssuePostCommitAction[] = [];
+    await db.transaction(async (tx) => {
+      await issueService(db).update(
+        issueId,
+        { status: "done" },
+        tx,
+        undefined,
+        postCommitActions,
+      );
+      const [runInsideTransaction] = await tx.select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(runInsideTransaction?.status).toBe("running");
+    });
+
+    expect(postCommitActions).toHaveLength(1);
+    await executeIssuePostCommitActions(db, postCommitActions);
+    const [persistedRun] = await db.select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(persistedRun?.status).toBe("cancelled");
   });
 
   it("removes the UI-only marker from a canonical custom response", async () => {

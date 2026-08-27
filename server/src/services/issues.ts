@@ -131,6 +131,7 @@ import {
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import type { NativeQuestionAuthorizationIdentity } from "./native-runtime/native-question-bridge.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -163,6 +164,37 @@ const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_R
 const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
+
+export type IssuePostCommitAction = {
+  type: "cancel_native_question_run";
+  interaction: NativeQuestionAuthorizationIdentity;
+  issueStatus: string;
+};
+
+/** Execute side effects that must never run before the issue transaction commits. */
+export async function executeIssuePostCommitActions(
+  db: Db,
+  actions: readonly IssuePostCommitAction[],
+): Promise<void> {
+  if (actions.length === 0) return;
+  const [{ heartbeatService }, { nativeQuestionRunToCancel }] = await Promise.all([
+    import("./heartbeat.js"),
+    import("./native-runtime/native-question-bridge.js"),
+  ]);
+  const heartbeat = heartbeatService(db);
+  const cancelledRunIds = new Set<string>();
+  for (const action of actions) {
+    const runId = await nativeQuestionRunToCancel(db, action.interaction);
+    if (!runId || cancelledRunIds.has(runId)) continue;
+    cancelledRunIds.add(runId);
+    await heartbeat.cancelRun(runId, "Task closed while waiting for operator input", {
+      resultJson: {
+        cancelledByIssueStatus: action.issueStatus,
+        cancelledIssueId: action.interaction.issueId,
+      },
+    });
+  }
+}
 
 function wakeRequestTargetsIssue(issueId: string) {
   return sql`(
@@ -7661,9 +7693,12 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
+      postCommitActions?: IssuePostCommitAction[],
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
+      const ownedPostCommitActions: IssuePostCommitAction[] = [];
+      const queuedPostCommitActions = postCommitActions ?? ownedPostCommitActions;
       const existing = await dbOrTx
         .select()
         .from(issues)
@@ -7910,7 +7945,25 @@ export function issueService(db: Db) {
               updated,
               { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
             );
+            const { nativeQuestionCancellationIdentity } = await import(
+              "./native-runtime/native-question-bridge.js"
+            );
             for (const interaction of expiredInteractions) {
+              if (interaction.kind === "ask_user_questions") {
+                const nativeQuestion = nativeQuestionCancellationIdentity(interaction);
+                if (nativeQuestion) {
+                  if (dbOrTx !== db && !postCommitActions) {
+                    throw new Error(
+                      "Terminal native question updates in an external transaction require a post-commit action queue",
+                    );
+                  }
+                  queuedPostCommitActions.push({
+                    type: "cancel_native_question_run",
+                    interaction: nativeQuestion,
+                    issueStatus: updated.status,
+                  });
+                }
+              }
               await logActivity(tx as unknown as Db, {
                 companyId: updated.companyId,
                 actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
@@ -8071,6 +8124,9 @@ export function issueService(db: Db) {
       const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
       if (dbOrTx === db && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications) publishActivity(publication);
+      }
+      if (dbOrTx === db && !postCommitActions) {
+        await executeIssuePostCommitActions(db, ownedPostCommitActions);
       }
       return result;
     },

@@ -49,11 +49,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 const mockNativeQuestionRunToCancel = vi.hoisted(() => vi.fn(async () => null as string | null));
-const mockNativeQuestionRunIdsToCancelForIssue = vi.hoisted(() => vi.fn(async () => [] as string[]));
 
 vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
-  nativeQuestionRunIdsToCancelForIssue: mockNativeQuestionRunIdsToCancelForIssue,
   nativeQuestionRunToCancel: mockNativeQuestionRunToCancel,
   validateNativeQuestionResponseInput: vi.fn(),
 }));
@@ -301,7 +299,6 @@ describe.sequential("issue thread interaction routes", () => {
     mockInteractionService.getForIssue.mockReset();
     mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
     mockNativeQuestionRunToCancel.mockResolvedValue(null);
-    mockNativeQuestionRunIdsToCancelForIssue.mockResolvedValue([]);
     mockResolveTaskWatchdogMutationScope.mockReset();
     mockResolveCoreTrustPreset.mockReset();
     mockAccessDecide.mockReset();

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueThreadInteractions } from "@paperclipai/db";
@@ -48,7 +48,7 @@ interface NativeQuestionIdentity {
   payload: unknown;
 }
 
-interface NativeQuestionAuthorizationIdentity extends NativeQuestionIdentity {
+export interface NativeQuestionAuthorizationIdentity extends NativeQuestionIdentity {
   companyId: string;
   issueId: string;
 }
@@ -376,41 +376,18 @@ export async function nativeQuestionRunToCancel(
   return run && ["queued", "running"].includes(run.status) ? run.id : null;
 }
 
-/** Find active native runs whose question cards became terminal with no answer. */
-export async function nativeQuestionRunIdsToCancelForIssue(
-  db: Db,
-  issue: { id: string; companyId: string },
-): Promise<string[]> {
-  // Terminal transitions may already have expired the cards inside the issue
-  // service transaction. Read only the native-question identity fields here;
-  // using listForIssue would also hydrate the entire thread and issue status,
-  // coupling every legacy terminal update to unrelated query capabilities.
-  const selected = await db
-    .select({
-      companyId: issueThreadInteractions.companyId,
-      issueId: issueThreadInteractions.issueId,
-      sourceRunId: issueThreadInteractions.sourceRunId,
-      payload: issueThreadInteractions.payload,
-      idempotencyKey: issueThreadInteractions.idempotencyKey,
-    })
-    .from(issueThreadInteractions)
-    .where(and(
-      eq(issueThreadInteractions.companyId, issue.companyId),
-      eq(issueThreadInteractions.issueId, issue.id),
-      eq(issueThreadInteractions.kind, "ask_user_questions"),
-      inArray(issueThreadInteractions.status, ["cancelled", "expired"]),
-    ));
-  // Some legacy route tests intentionally provide a partial query-builder
-  // double because they exercise issue behavior without interaction storage.
-  // A real Drizzle query always resolves to an array; treat an incomplete
-  // double as an empty result instead of introducing background rejections.
-  const interactions = Array.isArray(selected) ? selected : [];
-  const runIds = new Set<string>();
-  for (const interaction of interactions) {
-    const runId = await nativeQuestionRunToCancel(db, interaction);
-    if (runId) runIds.add(runId);
-  }
-  return [...runIds];
+/** Capture the minimum bound identity needed to cancel after the issue transaction commits. */
+export function nativeQuestionCancellationIdentity(
+  interaction: NativeQuestionAuthorizationIdentity,
+): NativeQuestionAuthorizationIdentity | null {
+  if (!requestIdForInteraction(interaction)) return null;
+  return {
+    companyId: interaction.companyId,
+    issueId: interaction.issueId,
+    sourceRunId: interaction.sourceRunId,
+    payload: interaction.payload,
+    idempotencyKey: interaction.idempotencyKey,
+  };
 }
 
 export const nativeQuestionBridgeInternals = {
