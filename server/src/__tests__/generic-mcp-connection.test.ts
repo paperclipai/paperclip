@@ -437,6 +437,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     const response = await request(app)
       .get("/api/tools/oauth/client-metadata")
+      .set("Host", "paperclip.example.test")
       .expect(422);
 
     expect(response.body).toMatchObject({
