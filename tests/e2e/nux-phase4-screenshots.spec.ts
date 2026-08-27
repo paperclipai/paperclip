@@ -71,7 +71,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.getByPlaceholder("e.g. Northwind Labs").fill("QA Robotics");
     await page.screenshot({ path: shot("02-create-name.png") });
 
-    await page.getByRole("button", { name: /^Next/ }).click();
+    await page.getByRole("button", { name: /^Continue/ }).click();
     // Step 1's "Next" creates the company and goes straight to the team lead.
     // The mission screenshot that sat here is gone with the step it captured.
     await page.waitForSelector("#onboarding-agent-name", {
@@ -114,7 +114,7 @@ test.describe("NUX Phase 4 visual QA", () => {
       page.getByRole("heading", { name: "What is the name of your organization?" }),
     ).toBeVisible({ timeout: 10_000 });
     await page.getByPlaceholder("e.g. Northwind Labs").fill("QA Robotics Grow");
-    await page.getByRole("button", { name: /^Next/ }).click();
+    await page.getByRole("button", { name: /^Continue/ }).click();
     await expect(
       page.getByRole("heading", { name: /Tell us about your team/ }),
     ).toBeVisible({ timeout: 10_000 });

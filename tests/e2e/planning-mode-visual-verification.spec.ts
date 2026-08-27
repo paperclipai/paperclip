@@ -57,7 +57,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "What is the name of your organization?" })).toBeVisible({ timeout: 15_000 });
 
   await page.locator('input[placeholder="e.g. Northwind Labs"]').fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
+  await page.getByRole("button", { name: /^Continue/ }).click();
 
   // Naming the company creates it and goes straight to the agent step.
 
@@ -69,7 +69,10 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await page.getByRole("button", { name: /^Next/ }).click();
   await page.getByRole("button", { name: /^Connect$/ }).click();
 
-  await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
+  // The review step names the agent rather than the step.
+  await expect(
+    page.getByRole("heading", { name: "Let's get started..." }),
+  ).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Get started/ }).click();
   // The wizard now drops the user straight onto the first task's detail page,
   // and must not bounce through the dashboard (PAP-404).
