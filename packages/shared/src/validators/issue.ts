@@ -1011,6 +1011,14 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+const requestConfirmationReviewEscalationPayloadSchema = z.object({
+  version: z.literal(1),
+  decisionId: z.string().guid(),
+  stageId: z.string().guid(),
+  reviewerAgentId: z.string().guid(),
+  responsibleUserId: z.string().trim().min(1).max(255),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -1025,6 +1033,7 @@ export const requestConfirmationPayloadSchema = z.object({
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
   secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
+  reviewEscalation: requestConfirmationReviewEscalationPayloadSchema.optional(),
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({

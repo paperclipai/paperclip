@@ -2523,7 +2523,21 @@ export function buildHostServices(
           assigneeAgentId: issue.assigneeAgentId,
           status: issue.status,
         };
-        if (params.action === "accept") {
+        if (current.kind === "request_confirmation" && current.payload.reviewEscalation) {
+          const result = await interactions.resolveReviewEscalation({
+            issue: { id: issue.id, companyId },
+            interactionId: params.interactionId,
+            outcome: params.action === "accept" ? "approved" : "changes_requested",
+            reason: params.reason ?? undefined,
+            actor,
+          });
+          resolved = result.interaction as typeof current;
+          continuationTarget = {
+            id: result.issue.id,
+            assigneeAgentId: result.issue.assigneeAgentId,
+            status: result.issue.status,
+          };
+        } else if (params.action === "accept") {
           const result = await interactions.acceptInteraction(
             {
               id: issue.id,

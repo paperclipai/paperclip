@@ -35,6 +35,7 @@ const mockInteractionService = vi.hoisted(() => ({
   acceptSuggestedTasks: vi.fn(),
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
+  resolveReviewEscalation: vi.fn(),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   expirePendingInteractionsForTerminalIssue: vi.fn(),
   answerQuestions: vi.fn(),
@@ -712,6 +713,30 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
+  it("rejects client-supplied capped-review escalation metadata", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve this review?",
+          reviewEscalation: {
+            version: 1,
+            decisionId: "11111111-1111-4111-8111-111111111111",
+            stageId: "22222222-2222-4222-8222-222222222222",
+            reviewerAgentId: CREATED_AGENT_ID,
+            responsibleUserId: "local-board",
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("server-owned metadata");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+  });
+
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
     const app = await createApp();
 
@@ -1017,6 +1042,109 @@ describe.sequential("issue thread interaction routes", () => {
     );
     expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.payload).not.toHaveProperty("toolAction");
     expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.contextSnapshot).not.toHaveProperty("toolAction");
+  });
+
+  it("returns a capped review to the executor and wakes that agent", async () => {
+    const interaction = {
+      id: "interaction-review-cap",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "request_confirmation" as const,
+      status: "pending" as const,
+      continuationPolicy: "wake_assignee" as const,
+      requestedResolverPolicy: "human_only" as const,
+      effectiveResolverPolicy: "human_only" as const,
+      payload: {
+        version: 1 as const,
+        prompt: "The review round limit was reached.",
+        rejectRequiresReason: true,
+        reviewEscalation: {
+          version: 1 as const,
+          decisionId: "11111111-1111-4111-8111-111111111111",
+          stageId: "22222222-2222-4222-8222-222222222222",
+          reviewerAgentId: CREATED_AGENT_ID,
+          responsibleUserId: "local-board",
+        },
+      },
+      result: null,
+    };
+    mockInteractionService.getForIssue.mockResolvedValue(interaction);
+    mockInteractionService.resolveReviewEscalation.mockResolvedValue({
+      interaction: {
+        ...interaction,
+        status: "rejected",
+        result: { version: 1, outcome: "rejected", reason: "Preserve audit records." },
+      },
+      issue: {
+        id: ISSUE_ID,
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        status: "in_progress",
+      },
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/${interaction.id}/reject`)
+      .send({ reason: "Preserve audit records." });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.resolveReviewEscalation).toHaveBeenCalledWith(expect.objectContaining({
+      issue: { id: ISSUE_ID, companyId: "company-1" },
+      interactionId: interaction.id,
+      outcome: "changes_requested",
+      reason: "Preserve audit records.",
+      actor: expect.objectContaining({ userId: "local-board" }),
+    }));
+    expect(mockInteractionService.rejectInteraction).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ interactionId: interaction.id, interactionStatus: "rejected" }),
+      }),
+    );
+  });
+
+  it("approves a capped review through the real review decision resolver", async () => {
+    const interaction = {
+      id: "interaction-review-cap-approve",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "request_confirmation" as const,
+      status: "pending" as const,
+      continuationPolicy: "wake_assignee" as const,
+      requestedResolverPolicy: "human_only" as const,
+      effectiveResolverPolicy: "human_only" as const,
+      payload: {
+        version: 1 as const,
+        prompt: "The review round limit was reached.",
+        reviewEscalation: {
+          version: 1 as const,
+          decisionId: "11111111-1111-4111-8111-111111111111",
+          stageId: "22222222-2222-4222-8222-222222222222",
+          reviewerAgentId: CREATED_AGENT_ID,
+          responsibleUserId: "local-board",
+        },
+      },
+      result: null,
+    };
+    mockInteractionService.getForIssue.mockResolvedValue(interaction);
+    mockInteractionService.resolveReviewEscalation.mockResolvedValue({
+      interaction: { ...interaction, status: "accepted", result: { version: 1, outcome: "accepted" } },
+      issue: { id: ISSUE_ID, assigneeAgentId: null, assigneeUserId: "local-board", status: "done" },
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/${interaction.id}/accept`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.resolveReviewEscalation).toHaveBeenCalledWith(expect.objectContaining({
+      issue: { id: ISSUE_ID, companyId: "company-1" },
+      interactionId: interaction.id,
+      outcome: "approved",
+      actor: expect.objectContaining({ userId: "local-board" }),
+    }));
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
   it("executes an accepted tool-action confirmation through the gateway callback", async () => {
