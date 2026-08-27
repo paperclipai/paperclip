@@ -9906,19 +9906,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    *
    * ⛔ BOUNDED HARD, because the naive version of this is a churn generator, and churn is what
    * most of this week went into removing:
-   *   - idle for >= IDLE_PICKUP_MIN_AGE_MS (24h), so live work is never poked
+   *   - idle for >= IDLE_PICKUP_MIN_AGE_MS (8h), so live work is never poked
    *   - todo/backlog only: in_progress and in_review are already somebody's problem
    *   - agent-owned only (assigneeUserId null) — an operator's card is not agent work
    *   - skips monitored cards, cards with a queued/running run, cards with a pending ask,
    *     and anything not dependency-ready
    *   - oldest-first, MAX IDLE_PICKUP_MAX_PER_TICK enqueued per tick across the whole fleet
    *
+   * 2026-08-27: lowered 24h -> 8h on operator instruction. The bucket in the idempotency key
+   * is derived from this same constant, so the dedup window narrows with it: a card can now
+   * receive at most one idle wake per 8h rather than per 24h. Watch the wake rate against the
+   * candidate pool — if the pool stops draining while wake count climbs, the sweep has started
+   * re-poking the same cards instead of starting new ones.
+   *
    * Dedup is the wake's own `idempotencyKey`, bucketed per idle period — deliberately NOT a
    * touch of `issues.updatedAt`. Bumping updatedAt would give a free cooldown, but it would
    * also make every stale-card report go quiet while nothing had actually shipped: the fix
    * would erase the evidence that it is needed. Staleness stays honest; the wake dedups itself.
    */
-  const IDLE_PICKUP_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+  const IDLE_PICKUP_MIN_AGE_MS = 8 * 60 * 60 * 1000;
   const IDLE_PICKUP_SCAN_LIMIT = 40;
   const IDLE_PICKUP_MAX_PER_TICK = 5;
   const IDLE_ACTIONABLE_WAKE_REASON = "idle_actionable_work";

@@ -148,6 +148,28 @@ describeEmbeddedPostgres("heartbeat tickIdleActionableWork", () => {
     expect(await idleWakes(issueId)).toHaveLength(1);
   });
 
+  // Pins the 8h threshold itself (lowered from 24h on 2026-08-27): 7h must not be swept, 9h must.
+  it("pins the idle threshold at 8h", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const tooFresh = await insertIssue({
+      companyId,
+      assigneeAgentId: agentId,
+      updatedAt: new Date(NOW.getTime() - 7 * 60 * 60 * 1000),
+      title: "Idle 7h — inside the window",
+    });
+    const oldEnough = await insertIssue({
+      companyId,
+      assigneeAgentId: agentId,
+      updatedAt: new Date(NOW.getTime() - 9 * 60 * 60 * 1000),
+      title: "Idle 9h — past the window",
+    });
+
+    await heartbeatService(db).tickTimers(NOW);
+
+    expect(await idleWakes(tooFresh)).toHaveLength(0);
+    expect(await idleWakes(oldEnough)).toHaveLength(1);
+  });
+
   it("leaves live work alone — a card touched inside the idle window is not poked", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = await insertIssue({
