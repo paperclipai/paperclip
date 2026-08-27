@@ -364,6 +364,46 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       await expect(fs.stat(capturedHostTempDir)).rejects.toThrow();
     });
 
+    it("reports the sync as successful when the post-promotion `.zst` cleanup fails (PAP-5408)", async () => {
+      const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
+      const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
+      const sourcePath = path.join(hostDir, "workspace-upload.tar");
+      await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
+      const targetPath = path.posix.join(remoteDir, "target.bin");
+
+      // Put a stand-in `rm` first on PATH. It always exits 1, so the promote
+      // script's OWN `.zst` cleanup fails, the same way a real transient
+      // cleanup error would. The other commands the script runs (`mv`, `zstd`,
+      // `chmod`) still resolve to the real binaries later on PATH.
+      const fakeBinDir = await mkTempDir("paperclip-daytona-zstd-fakebin-");
+      const fakeRmPath = path.join(fakeBinDir, "rm");
+      await fs.writeFile(fakeRmPath, "#!/bin/sh\nexit 1\n");
+      await fs.chmod(fakeRmPath, 0o755);
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeBinDir}${path.delimiter}${originalPath}`;
+
+      try {
+        const { sandbox } = createRealExecSandbox();
+        const operations: PluginSyncOperation[] = [{
+          operationId: "sync-op-1",
+          files: [{ sourcePath, targetPath, kind: "file" }],
+        }];
+
+        // Every target file is already installed by the time the `.zst`
+        // cleanup runs, so a failing cleanup must never turn into a sync
+        // failure.
+        await performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 });
+
+        expect(await sha256OfFile(targetPath)).toBe(await sha256OfFile(sourcePath));
+        // The forced `rm` failure left the `.zst` scratch behind — proof the
+        // fake `rm` actually ran and failed, not that cleanup was skipped.
+        const remaining = await fs.readdir(remoteDir);
+        expect(remaining.some((name) => name.endsWith(".zst"))).toBe(true);
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    });
+
     it("never promotes a partial file when decompression fails, and sweeps all reserved scratch", async () => {
       const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");

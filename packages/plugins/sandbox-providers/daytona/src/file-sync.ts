@@ -826,7 +826,11 @@ async function syncInFileMappings(input: {
       );
       if (plan.compressed) {
         // Clean up the `.zst` scratch after a successful promotion (C2/step 7).
-        renameScript.push(`rm -f ${shellQuote(plan.compressed.zstdScratch)};`);
+        // `|| true` keeps a cleanup failure from becoming the promote script's
+        // own exit status — every target file is already in place by this
+        // point, so a stray `.zst` scratch must never read back as a sync
+        // failure.
+        renameScript.push(`rm -f ${shellQuote(plan.compressed.zstdScratch)} || true;`);
       }
     }
     // `promote` span: atomically move the staged temp onto its target via a
