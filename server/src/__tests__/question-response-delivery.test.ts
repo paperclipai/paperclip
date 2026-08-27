@@ -504,6 +504,51 @@ describeEmbeddedPostgres("question response delivery", () => {
     expect(wakeup).not.toHaveBeenCalled();
   });
 
+  it("recovers a completed wake when receipt finalization was interrupted", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const [wakeRequest] = await db.insert(agentWakeupRequests).values({
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      status: "completed",
+      idempotencyKey: `question-response:${seeded.interaction.id}`,
+      finishedAt: new Date(),
+    }).returning();
+    const [wakeRun] = await db.insert(heartbeatRuns).values({
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "automation",
+      status: "succeeded",
+      runtimeMode: "legacy",
+      wakeupRequestId: wakeRequest!.id,
+      contextSnapshot: { issueId: seeded.issueId },
+      finishedAt: new Date(),
+    }).returning();
+    await db.update(agentWakeupRequests).set({ runId: wakeRun!.id })
+      .where(eq(agentWakeupRequests.id, wakeRequest!.id));
+    const wakeup = vi.fn();
+
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer: vi.fn(),
+    }).deliver(seeded.interaction.id);
+
+    expect(outcome).toMatchObject({
+      status: "fallback_queued",
+      mode: "wake_fallback",
+      targetRunId: wakeRun!.id,
+    });
+    expect(wakeup).not.toHaveBeenCalled();
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "fallback_queued",
+      errorCount: 0,
+      targetRunId: wakeRun!.id,
+    });
+  });
+
   it("keeps a long wake claim leased while the side effect is active", async () => {
     const seeded = await seed({ sourceStatus: "running" });
     let releaseWake!: (value: null) => void;

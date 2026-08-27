@@ -40,6 +40,7 @@ const DURABLE_WAKE_REQUEST_STATUSES = [
   "claimed",
   "running",
   "succeeded",
+  "completed",
   "coalesced",
   "deferred_issue_execution",
   "retrying",
