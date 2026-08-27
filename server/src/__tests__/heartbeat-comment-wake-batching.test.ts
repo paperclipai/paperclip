@@ -995,14 +995,28 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
         const runs = await db
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.companyId, companyId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return runs.length === 1 && runs[0]?.status === "succeeded";
       }, 90_000);
+      await waitFor(async () => {
+        const deferred = await db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, mentionedAgentId),
+              eq(agentWakeupRequests.status, "skipped"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return deferred?.status === "skipped";
+      }, 90_000);
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
 
       const issueAfterPromotion = await db
         .select({
@@ -1018,22 +1032,6 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toBeUndefined();
-      const secondWake = parseWakePayloadFromMessage(secondPayload.message);
-      expect(secondWake).toMatchObject({
-        reason: "issue_comment_mentioned",
-        commentIds: [comment.id],
-        latestCommentId: comment.id,
-        issue: {
-          id: issueId,
-          identifier: `${issuePrefix}-1`,
-          title: "Do not reopen from agent mention",
-          status: "done",
-          priority: "medium",
-        },
-      });
-      expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -1177,17 +1175,28 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      // The deferred wake still promotes (so the agent gets the message), but
-      // the issue must remain `done` because the only referenced comment is
-      // self-authored by the run that is now ending.
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
         const runs = await db
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return runs.length === 1 && runs[0]?.status === "succeeded";
       }, 90_000);
+      await waitFor(async () => {
+        const deferred = await db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "skipped"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return deferred?.status === "skipped";
+      }, 90_000);
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
 
       const issueAfterPromotion = await db
         .select({

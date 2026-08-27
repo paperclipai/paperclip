@@ -14129,6 +14129,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        const deferredResumeIntent =
+          promotedContextSeed.resumeIntent === true || promotedContextSeed.followUpRequested === true;
+        if (
+          (issue.status === "done" || issue.status === "cancelled") &&
+          deferredCommentIds.length > 0 &&
+          !shouldReopenDeferredCommentWake &&
+          !deferredResumeIntent
+        ) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "skipped",
+              finishedAt: new Date(),
+              error: "Deferred comment wake suppressed because the issue reached terminal status without a valid reopen trigger",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
