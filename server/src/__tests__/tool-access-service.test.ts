@@ -3403,23 +3403,32 @@ describeEmbeddedPostgres("tool access service", () => {
       canSetCompanyInstall: true,
       companyInstallReason: null,
     });
-    expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual([
-      "zapier",
-      "github",
-      "slack",
+    expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual(expect.arrayContaining([
+      "jira",
+      "airtable",
+      "asana",
       "notion",
       "posthog",
+      "sentry",
+      "zapier",
       "linear",
-      "google-sheets",
-      "context7",
-      "composio",
       "gmail",
-    ]);
-    expect(res.body.apps.find((app: { slug: string }) => app.slug === "gmail").availability).toEqual({
-      available: false,
-      reason: "Gmail is not available on this Paperclip instance yet.",
+      "google-drive",
+      "google-docs",
+      "google-sheets",
+      "google-slides",
+      "google-calendar",
+      "google-chat",
+      "google-people",
+      "google-workspace-search",
+    ]));
+    expect(res.body.apps).toHaveLength(58);
+    expect(res.body.apps.find((app: { slug: string }) => app.slug === "gmail").ownershipAvailability).toEqual({
+      platform_shared: false,
+      platform_provisioned: false,
+      customer: true,
+      dcr: true,
     });
-    expect(res.body.apps.map((app: { slug: string }) => app.slug)).not.toContain("google-drive");
     expect(res.body.apps).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -3448,14 +3457,16 @@ describeEmbeddedPostgres("tool access service", () => {
           slug: "zapier",
           methods: expect.arrayContaining([
             expect.objectContaining({
-              credentialFields: [expect.objectContaining({ key: "authorization" })],
-              keyPlacement: expect.objectContaining({ location: "header", name: "Authorization" }),
+              key: "generated-url",
+              auth: "none",
             }),
           ]),
         }),
         expect.objectContaining({
           slug: "google-sheets",
-          availability: expect.objectContaining({ available: false }),
+          methods: expect.arrayContaining([
+            expect.objectContaining({ key: "local", transport: "local_stdio" }),
+          ]),
         }),
       ]),
     );
@@ -3908,12 +3919,14 @@ describeEmbeddedPostgres("tool access service", () => {
 
     await service.connectGalleryApp(companyB.id, {
       galleryKey: "google-sheets",
+      connectionMethodKey: "local",
       name: "Company B sheets",
       configValues: { allowedSpreadsheetIds: ["shared-sheet"] },
     }, { actorType: "user", actorId: "board-b" });
 
     await expect(service.connectGalleryApp(companyA.id, {
       galleryKey: "google-sheets",
+      connectionMethodKey: "local",
       name: "Company A sheets",
       configValues: { allowedSpreadsheetIds: ["shared-sheet"] },
     }, { actorType: "user", actorId: "board-a" })).rejects.toMatchObject({
@@ -3936,6 +3949,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const connect = await service.connectGalleryApp(company.id, {
       galleryKey: "google-sheets",
+      connectionMethodKey: "local",
       name: "Company sheets",
       configValues: { allowedSpreadsheetIds: ["sheet-with-inputs"] },
     }, { actorType: "user", actorId: "board" });
@@ -4003,11 +4017,13 @@ describeEmbeddedPostgres("tool access service", () => {
 
     await service.connectGalleryApp(companyB.id, {
       galleryKey: "google-sheets",
+      connectionMethodKey: "local",
       name: "Company B sheets",
       configValues: { allowedSpreadsheetIds: ["company-b-sheet"] },
     }, { actorType: "user", actorId: "board-b" });
     const companyAConnection = await service.connectGalleryApp(companyA.id, {
       galleryKey: "google-sheets",
+      connectionMethodKey: "local",
       name: "Company A sheets",
       configValues: { allowedSpreadsheetIds: ["company-a-sheet"] },
     }, { actorType: "user", actorId: "board-a" });
@@ -4088,11 +4104,13 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const first = await service.connectGalleryApp(company.id, {
       galleryKey: "google-sheets",
+      connectionMethodKey: "local",
       name: "First sheets",
       configValues: { allowedSpreadsheetIds: ["same-company-sheet"] },
     }, { actorType: "user", actorId: "board" });
     const second = await service.connectGalleryApp(company.id, {
       galleryKey: "google-sheets",
+      connectionMethodKey: "local",
       name: "Second sheets",
       configValues: { allowedSpreadsheetIds: ["same-company-sheet"] },
     }, { actorType: "user", actorId: "board" });
@@ -6264,10 +6282,10 @@ describeEmbeddedPostgres("tool access service", () => {
       runtimeConfig: {},
     }).returning();
 
-    const connect = await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+    const connect = await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, () =>
       service.connectGalleryApp(company.id, {
-        galleryKey: "zapier",
-        name: "Zapier workspace",
+        galleryKey: "github",
+        name: "GitHub workspace",
         credentialValues: { "credentials.authorization": "zap-secret" },
       }, { actorType: "user", actorId: "board" }));
 
@@ -6281,11 +6299,11 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(connect.connection).toMatchObject({
       status: "draft",
       enabled: false,
-      config: expect.objectContaining({ sourceTemplateKey: "zapier", quarantineNewEntries: false }),
+      config: expect.objectContaining({ sourceTemplateKey: "github", quarantineNewEntries: false }),
       credentialSecretRefs: [
         expect.objectContaining({
           configPath: "credentials.authorization",
-          label: "Zapier MCP token",
+          label: "GitHub token",
         }),
       ],
     });
@@ -6655,11 +6673,12 @@ describeEmbeddedPostgres("tool access service", () => {
       runtimeConfig: {},
     }).returning();
 
-    const connect = await service.connectGalleryApp(company.id, {
-      galleryKey: "zapier",
-      name: "Zapier rollback",
-      credentialValues: { "credentials.authorization": "zap-secret" },
-    }, { actorType: "user", actorId: "board" });
+    const connect = await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, () =>
+      service.connectGalleryApp(company.id, {
+        galleryKey: "github",
+        name: "GitHub rollback",
+        credentialValues: { "credentials.authorization": "github-secret" },
+      }, { actorType: "user", actorId: "board" }));
     const listEntry = connect.catalog.find((entry) => entry.toolName === "list_zaps")!;
     const updateEntry = connect.catalog.find((entry) => entry.toolName === "update_zap")!;
     const firstFinish = await service.finishGalleryAppConnection(company.id, connect.connectionId, {
@@ -6729,10 +6748,10 @@ describeEmbeddedPostgres("tool access service", () => {
       { name: "update_zap", description: "Update", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: false } },
     ]);
 
-    const connect = await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+    const connect = await withGalleryServerUrl("github", PUBLIC_MCP_FIXTURE_URL, () =>
       service.connectGalleryApp(company.id, {
-        galleryKey: "zapier",
-        name: "Zapier reconnect",
+        galleryKey: "github",
+        name: "GitHub reconnect",
         credentialValues: { "credentials.authorization": "old-secret" },
       }, { actorType: "user", actorId: "board" }));
 
@@ -8672,7 +8691,7 @@ describe("normalizeConnectionMethodConfig", () => {
     expect(() => normalizeConnectionMethodConfig(apiKeyMethod, {
       projectId: "not-a-project",
       features: "insights",
-    })).toThrow("Project ID has an invalid value");
+    })).toThrow("Pin to project ID has an invalid value");
     expect(() => normalizeConnectionMethodConfig(apiKeyMethod, {
       projectId: "12345",
       features: "insights",
