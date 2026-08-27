@@ -64,6 +64,7 @@ type AppRow = {
   application: ToolApplication;
   connection: ToolConnection | null;
   displayName: string;
+  brandKey: string;
   owner: ConnectionOwnerProfile | null;
   remainingAgentAvailableConnectionCount: number;
   status: AppStatus;
@@ -230,9 +231,11 @@ export function Connections() {
   const rows = useMemo<AppRow[]>(() => {
     return applications.flatMap((application): AppRow[] => {
       const appConnections = connectionsByApplication.get(application.id) ?? [];
-      const galleryEntry = logoByKey.get(appApplicationSourceSlug(application) ?? "");
-      const logoUrl = appDefinitionLogoUrl(galleryEntry) ??
-        appDefinitionLogoUrl(logoByName.get(application.name.toLowerCase()));
+      const appSourceSlug = appApplicationSourceSlug(application);
+      const galleryEntry = logoByKey.get(appSourceSlug ?? "") ??
+        logoByName.get(application.name.toLowerCase());
+      const logoUrl = appDefinitionLogoUrl(galleryEntry);
+      const brandKey = appSourceSlug ?? application.name;
       const agentAvailableConnectionCount = appConnections.filter(
         (connection) => connection.status === "active" && connection.enabled,
       ).length;
@@ -241,6 +244,7 @@ export function Connections() {
           application,
           connection: null,
           displayName: application.name,
+          brandKey,
           owner: null,
           remainingAgentAvailableConnectionCount: 0,
           status: statusFor(application, []),
@@ -255,6 +259,7 @@ export function Connections() {
           application,
           connection,
           displayName: connectionDisplayNameForOwner(connection, application.name, owner),
+          brandKey,
           owner,
           remainingAgentAvailableConnectionCount: Math.max(
             0,
@@ -401,6 +406,7 @@ export function Connections() {
                         <div className="flex items-center gap-3">
                           <AppLogo
                             name={row.displayName}
+                            brandKey={row.brandKey}
                             logoUrl={row.logoUrl}
                             size={32}
                           />

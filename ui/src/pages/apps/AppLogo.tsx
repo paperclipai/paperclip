@@ -21,6 +21,7 @@ function colorFor(seed: string): string {
 
 interface AppLogoProps {
   name: string;
+  brandKey?: string | null;
   logoUrl?: string | null;
   size?: number;
   className?: string;
@@ -31,27 +32,35 @@ interface AppLogoProps {
  * favicon when available, falling back to a coloured letter tile (deterministic
  * colour per app name) when the image is missing or fails to load.
  */
-export function AppLogo({ name, logoUrl, size = 36, className }: AppLogoProps) {
+export function AppLogo({ name, brandKey, logoUrl, size = 36, className }: AppLogoProps) {
   const [failed, setFailed] = useState(false);
-  const [localAssets, setLocalAssets] = useState<LocalAppBrandAssets | null>(null);
+  const lookupKey = brandKey?.trim() || name;
+  const [localAssetResult, setLocalAssetResult] = useState<{
+    lookupKey: string;
+    assets: LocalAppBrandAssets | null;
+  } | null>(null);
+  const localLookupComplete = localAssetResult?.lookupKey === lookupKey;
+  const localAssets = localLookupComplete ? localAssetResult.assets : null;
   const letter = (name.trim()[0] ?? "?").toUpperCase();
   const dimension = { width: size, height: size };
-  const resolvedLogoUrl = localAssets?.light ?? logoUrl;
+  // Do not expose a remote caller URL until the local manifest has had a
+  // chance to resolve this provider. Otherwise the browser requests the
+  // remote asset during the first render even when a bundled mark exists.
+  const resolvedLogoUrl = localLookupComplete ? localAssets?.light ?? logoUrl : null;
 
   useEffect(() => {
     let active = true;
-    setLocalAssets(null);
-    void loadLocalAppBrandAssets(name)
+    void loadLocalAppBrandAssets(lookupKey)
       .then((assets) => {
-        if (active) setLocalAssets(assets);
+        if (active) setLocalAssetResult({ lookupKey, assets });
       })
       .catch(() => {
-        if (active) setLocalAssets(null);
+        if (active) setLocalAssetResult({ lookupKey, assets: null });
       });
     return () => {
       active = false;
     };
-  }, [name]);
+  }, [lookupKey]);
 
   useEffect(() => {
     setFailed(false);
