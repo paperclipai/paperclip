@@ -4,6 +4,7 @@ import {
   connectionMethodSupportsAutomaticOAuth,
   getAvailableConnectionMethods,
   getAppStoreDefinition,
+  getConnectableAppDefinition,
 } from "@paperclipai/shared";
 
 export const MCP_DIRECT_OAUTH_CONNECT_SLUGS = APP_STORE_DEFINITIONS
@@ -42,6 +43,11 @@ export function resolveAppsConnectRouteKey(input: {
 
 export function canEnterAppsConnect(searchParams: URLSearchParams): boolean {
   if (searchParams.get("byo") === "1") return true;
-  const entry = getAppStoreDefinition(searchParams.get("source") ?? "");
+  const source = searchParams.get("source") ?? "";
+  const entry = getAppStoreDefinition(source);
+  // A retained connection may belong to a provider hidden from fresh catalog
+  // setup. Admit only known providers here; the setup flow then proves the
+  // exact reconnect target is visible to the selected company before rendering.
+  if (getConnectableAppDefinition(source) && searchParams.get("reconnect")?.trim()) return true;
   return appSupportsCatalogSetup(entry);
 }

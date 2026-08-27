@@ -1113,6 +1113,20 @@ export function ConnectionSetupFlow({
     );
   }
 
+  if (reconnectConnectionId && connectionsQuery.isFetchedAfterMount && !reconnectConnection) {
+    return (
+      <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+        <h2 className="text-lg font-semibold text-foreground">This connection can’t be reconnected</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          The retained connection no longer exists or is not available to this company.
+        </p>
+        <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
+          Back to apps
+        </Button>
+      </div>
+    );
+  }
+
   if (resumeConnectionId && (
     !connectionsQuery.isFetchedAfterMount
     || galleryQuery.isLoading
@@ -1121,6 +1135,19 @@ export function ConnectionSetupFlow({
   )) {
     return (
       <div className="mx-auto max-w-xl space-y-4" aria-label="Loading saved connection setup">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-40 w-full rounded-xl" />
+      </div>
+    );
+  }
+
+  if (reconnectConnectionId && (
+    !connectionsQuery.isFetchedAfterMount
+    || galleryQuery.isLoading
+    || !entry
+  )) {
+    return (
+      <div className="mx-auto max-w-xl space-y-4" aria-label="Loading retained connection setup">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-40 w-full rounded-xl" />
       </div>
