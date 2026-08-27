@@ -75,9 +75,11 @@ export function accessService(db: Db) {
     const ownedSecretIds = ownedSecrets.map((secret) => secret.id);
     const ownedSecretSet = new Set(ownedSecretIds);
     const retainedSecretIds = new Set<string>();
+    const sharedConnectionSecretIds = new Set<string>();
     let grantRefs: Array<{
       id: string;
       connectionId: string;
+      kind: typeof connectionGrants.$inferSelect.kind;
       status: typeof connectionGrants.$inferSelect.status;
       credentialSecretRefs: typeof connectionGrants.$inferSelect.credentialSecretRefs;
     }> = [];
@@ -108,6 +110,7 @@ export function accessService(db: Db) {
         tx.select({
           id: connectionGrants.id,
           connectionId: connectionGrants.connectionId,
+          kind: connectionGrants.kind,
           status: connectionGrants.status,
           credentialSecretRefs: connectionGrants.credentialSecretRefs,
         }).from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
@@ -132,9 +135,18 @@ export function accessService(db: Db) {
         }
       }
       for (const grant of grantRefs) {
-        if (ownedGrantIds.has(grant.id) || affectedConnections.has(grant.connectionId)) continue;
+        if (ownedGrantIds.has(grant.id)) continue;
         for (const ref of grant.credentialSecretRefs) {
-          if (ownedSecretSet.has(ref.secretId)) retainedSecretIds.add(ref.secretId);
+          if (!ownedSecretSet.has(ref.secretId)) continue;
+          if (!affectedConnections.has(grant.connectionId)) {
+            retainedSecretIds.add(ref.secretId);
+          } else if (grant.kind === "user") {
+            // A connection may temporarily carry separate user grants that
+            // reference the same credential. Removing its owner must not
+            // destroy the surviving member's still-active grant.
+            retainedSecretIds.add(ref.secretId);
+            sharedConnectionSecretIds.add(ref.secretId);
+          }
         }
       }
       for (const connection of connectionRefs) {
@@ -145,6 +157,9 @@ export function accessService(db: Db) {
       }
     }
     const secretIdsToDelete = ownedSecretIds.filter((secretId) => !retainedSecretIds.has(secretId));
+    const connectionSecretIdsToRemove = new Set(
+      ownedSecretIds.filter((secretId) => !sharedConnectionSecretIds.has(secretId)),
+    );
     const removedDelegations = grantIds.length === 0 ? [] : await tx
       .delete(connectionGrantDelegations)
       .where(and(
@@ -168,8 +183,9 @@ export function accessService(db: Db) {
     if (ownedSecretIds.length > 0) {
       for (const grant of grantRefs) {
         if (!ownedGrantIds.has(grant.id) && !affectedConnections.has(grant.connectionId)) continue;
+        const refsToRemove = ownedGrantIds.has(grant.id) ? ownedSecretSet : connectionSecretIdsToRemove;
         const credentialSecretRefs = grant.credentialSecretRefs.filter(
-          (ref) => !ownedSecretSet.has(ref.secretId),
+          (ref) => !refsToRemove.has(ref.secretId),
         );
         if (credentialSecretRefs.length !== grant.credentialSecretRefs.length) {
           await tx.update(connectionGrants).set({
@@ -189,10 +205,10 @@ export function accessService(db: Db) {
       for (const connection of connectionRefs) {
         if (!affectedConnections.has(connection.id)) continue;
         const credentialRefs = connection.credentialRefs.filter(
-          (ref) => !ownedSecretSet.has(ref.secretId),
+          (ref) => !connectionSecretIdsToRemove.has(ref.secretId),
         );
         const credentialSecretRefs = connection.credentialSecretRefs.filter(
-          (ref) => !ownedSecretSet.has(ref.secretId),
+          (ref) => !connectionSecretIdsToRemove.has(ref.secretId),
         );
         if (
           credentialRefs.length !== connection.credentialRefs.length ||
@@ -211,12 +227,12 @@ export function accessService(db: Db) {
             .where(eq(toolConnections.id, connection.id));
         }
       }
-      if (affectedConnectionIds.length > 0) {
+      if (affectedConnectionIds.length > 0 && connectionSecretIdsToRemove.size > 0) {
         await tx.delete(companySecretBindings).where(and(
           eq(companySecretBindings.companyId, companyId),
           eq(companySecretBindings.targetType, "tool_connection"),
           inArray(companySecretBindings.targetId, affectedConnectionIds),
-          inArray(companySecretBindings.secretId, ownedSecretIds),
+          inArray(companySecretBindings.secretId, [...connectionSecretIdsToRemove]),
         ));
       }
       if (secretIdsToDelete.length > 0) {

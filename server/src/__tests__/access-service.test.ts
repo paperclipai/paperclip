@@ -413,6 +413,92 @@ describeEmbeddedPostgres("access service", () => {
       .toHaveLength(1);
   });
 
+  it("retains a personal credential while another member grant still uses it", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const [departing, surviving] = await db.insert(companyMemberships).values([
+      {
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId: `departing-${randomUUID()}`,
+        status: "active" as const,
+        membershipRole: "member" as const,
+      },
+      {
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId: `surviving-${randomUUID()}`,
+        status: "active" as const,
+        membershipRole: "member" as const,
+      },
+    ]).returning();
+    const application = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `shared-personal-${randomUUID()}`,
+      name: "Shared personal app",
+      type: "mcp",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Shared personal connection",
+      uid: `shared-personal-${randomUUID()}`,
+      connectionKind: "managed",
+      ownership: "customer",
+      transport: "mcp_remote",
+      authKind: "oauth",
+      credentialPolicy: "per_user",
+      status: "active",
+      enabled: true,
+    }).returning().then((rows) => rows[0]!);
+    const definition = await db.insert(userSecretDefinitions).values({
+      companyId: company.id,
+      key: `shared-personal-${randomUUID()}`,
+      name: "Shared personal token",
+    }).returning().then((rows) => rows[0]!);
+    const secret = await db.insert(companySecrets).values({
+      companyId: company.id,
+      scope: "user",
+      ownerUserId: departing!.principalId,
+      userSecretDefinitionId: definition.id,
+      key: `shared-personal-${randomUUID()}`,
+      name: "Shared personal token",
+    }).returning().then((rows) => rows[0]!);
+    const credentialSecretRefs = [{ secretId: secret.id, configPath: "oauth.access_token" }];
+    await db.update(toolConnections).set({ credentialSecretRefs }).where(eq(toolConnections.id, connection.id));
+    const [departingGrant, survivingGrant] = await db.insert(connectionGrants).values([
+      {
+        companyId: company.id,
+        connectionId: connection.id,
+        kind: "user" as const,
+        subjectUserId: departing!.principalId,
+        status: "active" as const,
+        credentialSecretRefs,
+      },
+      {
+        companyId: company.id,
+        connectionId: connection.id,
+        kind: "user" as const,
+        subjectUserId: surviving!.principalId,
+        status: "active" as const,
+        credentialSecretRefs,
+      },
+    ]).returning();
+
+    await accessService(db).archiveMember(company.id, departing!.id, {
+      reassignment: { assigneeUserId: owner.principalId },
+    });
+
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))
+      .toHaveLength(1);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, departingGrant!.id)))
+      .toEqual([expect.objectContaining({ status: "revoked", credentialSecretRefs: [] })]);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, survivingGrant!.id)))
+      .toEqual([expect.objectContaining({ status: "active", credentialSecretRefs })]);
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
+      .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
+  });
+
   it("revokes delegated personal connection access when membership is suspended", async () => {
     const { company } = await createCompanyWithOwner(db);
     const member = await db.insert(companyMemberships).values({
