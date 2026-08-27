@@ -166,5 +166,29 @@ RUN set -eu; \
     test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
   done
 
+# The hosted image variant ships server-side Sentry error monitoring
+# pre-installed, so a managed tenant gets error reports with no separate
+# install step. The self-hosted image stays on the opt-in contract: it never
+# runs this stage, so `@sentry/node` stays a true optional peer dependency
+# that a self-hosted operator installs by hand (see doc/observability.md).
+#
+# The install happens in its own isolated directory, not inside
+# `server/`'s own workspace install, so the self-hosted target above never
+# gains this package. Read the version from `server/package.json`'s declared
+# optional peer instead of a second hardcoded copy, so the two values can
+# never drift.
+FROM build AS cloud-server-deps
+WORKDIR /cloud-server-deps
+RUN set -eu; \
+  version="$(node -e "process.stdout.write(require('/app/server/package.json').peerDependencies['@sentry/node'])")"; \
+  test -n "$version" || { echo "ERROR: server/package.json declares no @sentry/node peer version" >&2; exit 1; }; \
+  echo '{"name":"paperclip-cloud-server-deps","private":true}' > package.json; \
+  pnpm add "@sentry/node@${version}" --ignore-workspace --no-lockfile
+
 FROM production AS cloud
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
+# Land the isolated install inside the server's own `node_modules`, the
+# directory Node's module resolution walks up to from `/app/server` for
+# both a CommonJS `require.resolve` and an ECMAScript `import` — an entry
+# on `NODE_PATH` would satisfy only the first and silently fail the second.
+COPY --chown=node:node --from=cloud-server-deps /cloud-server-deps/node_modules /app/server/node_modules
