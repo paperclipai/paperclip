@@ -77,7 +77,7 @@ export function accessService(db: Db) {
     const retainedSecretIds = new Set<string>();
     const sharedConnectionSecretIds = new Set<string>();
     let grantMemberRefs: Array<{ grantId: string; subjectId: string }> = [];
-    let restorableMemberUserIds = new Set<string>();
+    let existingMemberUserIds = new Set<string>();
     let grantRefs: Array<{
       id: string;
       connectionId: string;
@@ -100,7 +100,7 @@ export function accessService(db: Db) {
         allGrantRefs,
         allConnectionRefs,
         allGrantMemberRefs,
-        restorableMembershipRefs,
+        membershipRefs,
       ] = await Promise.all([
         tx.select({
           secretId: companySecretBindings.secretId,
@@ -138,14 +138,13 @@ export function accessService(db: Db) {
         tx.select({ userId: companyMemberships.principalId }).from(companyMemberships).where(and(
           eq(companyMemberships.companyId, companyId),
           eq(companyMemberships.principalType, "user"),
-          ne(companyMemberships.status, "archived"),
           ne(companyMemberships.principalId, userId),
         )),
       ]);
       grantRefs = allGrantRefs;
       connectionRefs = allConnectionRefs;
       grantMemberRefs = allGrantMemberRefs;
-      restorableMemberUserIds = new Set(restorableMembershipRefs.map((row) => row.userId));
+      existingMemberUserIds = new Set(membershipRefs.map((row) => row.userId));
 
       for (const binding of bindingRefs) {
         if (binding.targetType !== "tool_connection" || !affectedConnections.has(binding.targetId)) {
@@ -165,8 +164,8 @@ export function accessService(db: Db) {
           && grant.status === "active"
           && (
             grantAudience.length === 0
-              ? restorableMemberUserIds.size > 0
-              : grantAudience.some((member) => restorableMemberUserIds.has(member.subjectId))
+              ? existingMemberUserIds.size > 0
+              : grantAudience.some((member) => existingMemberUserIds.has(member.subjectId))
           );
         for (const ref of grant.credentialSecretRefs) {
           if (!ownedSecretSet.has(ref.secretId)) continue;
@@ -175,9 +174,9 @@ export function accessService(db: Db) {
           } else if (grant.kind === "user" || hasSurvivingOrganizationAudience) {
             // A connection may temporarily carry separate user grants that
             // reference the same credential, or an organization grant may
-            // still have another non-archived audience member. Suspended and
-            // pending memberships are intentionally included so reactivation
-            // restores access without forcing organization reauthorization.
+            // still have another persisted audience member. Pending,
+            // suspended, and archived memberships are intentionally included
+            // because company access can reactivate each of them later.
             retainedSecretIds.add(ref.secretId);
             sharedConnectionSecretIds.add(ref.secretId);
           }
