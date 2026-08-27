@@ -455,6 +455,39 @@ describe("IssueBlockedNotice", () => {
     expect(node.textContent).not.toContain("moved back to todo");
   });
 
+  it("renders aggregate-child coverage when the API retains covered relationship summaries", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[
+          {
+            id: "covered-child-edge",
+            identifier: "TASK-3",
+            title: "Active sub-task",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_child",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-3",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-testid="issue-blocked-notice-active-child"]')).not.toBeNull();
+    expect(node.textContent).toContain("Active sub-task work is in progress");
+    expect(node.textContent).not.toContain("Work on this task is blocked by the linked task");
+  });
+
   it("sorts same-status live-work steps with numeric identifier ordering", () => {
     const node = render(
       <IssueBlockedNotice

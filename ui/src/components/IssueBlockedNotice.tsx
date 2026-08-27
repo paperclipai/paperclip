@@ -586,19 +586,18 @@ export function IssueBlockedNotice({
   const aggregateChildWorkIsLive =
     !showSuccessfulRunHandoff
     && issueStatus === "blocked"
-    && blockerAttention?.reason === "active_child"
-    && blockers.length === 0;
+    && blockerAttention?.reason === "active_child";
 
   if (aggregateChildWorkIsLive) {
     return (
       <div
         data-blocker-attention-state={blockerAttention?.state}
         data-testid="issue-blocked-notice-active-child"
-        className="mb-3 rounded-md border border-blue-300/70 bg-blue-50/90 px-3 py-2.5 text-sm text-blue-950 shadow-sm dark:border-blue-500/40 dark:bg-blue-500/10 dark:text-blue-100"
+        className="mb-3 rounded-md border border-border bg-card px-3 py-2.5 text-sm text-foreground shadow-sm"
       >
         <div className="flex items-start gap-2">
           <span className="mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
-            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" />
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-primary" />
           </span>
           <div className="min-w-0 space-y-1">
             <p className="font-medium leading-5">Active sub-task work is in progress</p>
