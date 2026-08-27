@@ -257,7 +257,7 @@ describeEmbeddedPostgres("question response delivery", () => {
     expect(steer).not.toHaveBeenCalled();
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
-      idempotencyKey: `interaction:${seeded.interaction.id}:answered`,
+      idempotencyKey: `question-response:${seeded.interaction.id}`,
       contextSnapshot: {
         interactionId: seeded.interaction.id,
         interactionStatus: "answered",
@@ -378,6 +378,95 @@ describeEmbeddedPostgres("question response delivery", () => {
     });
   });
 
+  it("enforces one durable wake per question-response idempotency key", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const idempotencyKey = `question-response:${seeded.interaction.id}`;
+    const request = {
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      idempotencyKey,
+    } as const;
+
+    await db.insert(agentWakeupRequests).values({ ...request, status: "queued" });
+    await expect(db.insert(agentWakeupRequests).values({
+      ...request,
+      status: "coalesced",
+    })).rejects.toMatchObject({ cause: { code: "23505" } });
+
+    // Suppression receipts are intentionally outside the fence so the outbox
+    // can retry after scheduling is enabled again.
+    await expect(db.insert(agentWakeupRequests).values({
+      ...request,
+      status: "skipped",
+      finishedAt: new Date(),
+    })).resolves.toBeDefined();
+  });
+
+  it("reuses the winning wake when a concurrent insert hits the idempotency fence", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const fallbackRunId = randomUUID();
+    const wakeup = vi.fn().mockImplementation(async (
+      _agentId: string,
+      options: { idempotencyKey?: string | null },
+    ) => {
+      const request = {
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        idempotencyKey: options.idempotencyKey,
+      } as const;
+      const [winner] = await db.insert(agentWakeupRequests).values({
+        ...request,
+        status: "queued",
+      }).returning();
+      await db.insert(heartbeatRuns).values({
+        id: fallbackRunId,
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        invocationSource: "automation",
+        status: "queued",
+        runtimeMode: "legacy",
+        driverKind: "codex",
+        wakeupRequestId: winner!.id,
+        contextSnapshot: { issueId: seeded.issueId },
+      });
+      await db.update(agentWakeupRequests).set({ runId: fallbackRunId })
+        .where(eq(agentWakeupRequests.id, winner!.id));
+
+      // Model the losing claimant reaching the same transactional insert after
+      // the winner commits. The service must recover the winner's receipt.
+      await db.insert(agentWakeupRequests).values({
+        ...request,
+        status: "coalesced",
+      });
+      throw new Error("unreachable");
+    });
+
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer: vi.fn(),
+    }).deliver(seeded.interaction.id);
+
+    expect(outcome).toMatchObject({
+      status: "fallback_queued",
+      mode: "wake_fallback",
+      targetRunId: fallbackRunId,
+    });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "fallback_queued",
+      attemptCount: 1,
+      errorCount: 0,
+      targetRunId: fallbackRunId,
+    });
+  });
+
   it("reuses a durable wake receipt instead of issuing a duplicate continuation", async () => {
     const seeded = await seed({ sourceStatus: "running" });
     const [wakeRequest] = await db.insert(agentWakeupRequests).values({
@@ -387,7 +476,7 @@ describeEmbeddedPostgres("question response delivery", () => {
       triggerDetail: "system",
       reason: "issue_commented",
       status: "queued",
-      idempotencyKey: `interaction:${seeded.interaction.id}:answered`,
+      idempotencyKey: `question-response:${seeded.interaction.id}`,
     }).returning();
     const [wakeRun] = await db.insert(heartbeatRuns).values({
       companyId: seeded.companyId,
@@ -531,7 +620,7 @@ describeEmbeddedPostgres("question response delivery", () => {
       expect(steer).not.toHaveBeenCalled();
       expect(wakeup).toHaveBeenCalledTimes(1);
       expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
-        idempotencyKey: `interaction:${seeded.interaction.id}:answered`,
+        idempotencyKey: `question-response:${seeded.interaction.id}`,
         contextSnapshot: {
           issueId: seeded.issueId,
           interactionId: seeded.interaction.id,

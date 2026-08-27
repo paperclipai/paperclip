@@ -15,6 +15,7 @@ import type {
 import type {
   PaperclipQuestionResponse,
 } from "../vendor/paperclip-runner/index.js";
+import { isUniqueViolation } from "../db-errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
@@ -25,6 +26,8 @@ const DELIVERY_CLAIM_STALE_MS = 30_000;
 const DELIVERY_CLAIM_REFRESH_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const DELIVERY_CORRELATION_PREFIX = "question-response:";
+const QUESTION_RESPONSE_WAKE_IDEMPOTENCY_CONSTRAINT =
+  "agent_wakeup_requests_question_response_delivery_idempotency_uq";
 
 class DeliveryClaimUnavailableError extends Error {
   constructor() {
@@ -34,6 +37,7 @@ class DeliveryClaimUnavailableError extends Error {
 }
 const DURABLE_WAKE_REQUEST_STATUSES = [
   "queued",
+  "claimed",
   "running",
   "succeeded",
   "coalesced",
@@ -602,7 +606,10 @@ export function questionResponseDeliveryService(
     }
 
     const actor = actorForInteraction(interaction);
-    const wakeIdempotencyKey = `interaction:${interaction.id}:${interaction.status}`;
+    // This is a new, migration-fenced namespace. The partial unique index on
+    // agent_wakeup_requests makes the wake transaction itself idempotent, so a
+    // reclaimed stale worker cannot create a second continuation run.
+    const wakeIdempotencyKey = `question-response:${interaction.id}`;
     try {
       const existingWake = await findDurableWakeRequest({
         companyId: interaction.companyId,
@@ -666,6 +673,29 @@ export function questionResponseDeliveryService(
       });
     } catch (error) {
       if (error instanceof DeliveryClaimUnavailableError) return terminalOutcome(interactionId);
+      if (isUniqueViolation(error, QUESTION_RESPONSE_WAKE_IDEMPOTENCY_CONSTRAINT)) {
+        // A concurrent claimant won the transactional wake fence after our
+        // preflight lookup. Reuse its committed receipt instead of consuming
+        // an error retry or issuing another continuation.
+        const durableWake = await findDurableWakeRequest({
+          companyId: interaction.companyId,
+          agentId: assigneeAgentId,
+          idempotencyKey: wakeIdempotencyKey,
+        });
+        if (durableWake) {
+          const targetRun = durableWake.run ?? queuedSuccessor ?? null;
+          const coalesced = Boolean(queuedSuccessor && targetRun?.id === queuedSuccessor.id);
+          return recordTerminal({
+            delivery: claimed,
+            interaction,
+            status: coalesced ? "delivered" : "fallback_queued",
+            mode: coalesced ? "coalesced" : "wake_fallback",
+            targetRunId: targetRun?.id ?? null,
+            adapter: targetRun?.driverKind ?? adapter,
+            errorCode: steeringErrorCode,
+          });
+        }
+      }
       const errorCode = error instanceof Error && compactLine(error.message)
         ? compactLine(error.message)!.slice(0, 160)
         : "question_response_wake_failed";

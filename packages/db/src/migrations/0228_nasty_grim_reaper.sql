@@ -29,4 +29,6 @@ ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_
 CREATE UNIQUE INDEX "issue_question_response_deliveries_interaction_uq" ON "issue_question_response_deliveries" USING btree ("interaction_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "issue_question_response_deliveries_correlation_uq" ON "issue_question_response_deliveries" USING btree ("correlation_id");--> statement-breakpoint
 CREATE INDEX "issue_question_response_deliveries_pending_idx" ON "issue_question_response_deliveries" USING btree ("status","created_at");--> statement-breakpoint
-CREATE INDEX "issue_question_response_deliveries_company_issue_idx" ON "issue_question_response_deliveries" USING btree ("company_id","issue_id","created_at");
+CREATE INDEX "issue_question_response_deliveries_company_issue_idx" ON "issue_question_response_deliveries" USING btree ("company_id","issue_id","created_at");--> statement-breakpoint
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: This partial index covers a new question-response key prefix, so existing deployments have no matching rows; Drizzle applies migrations transactionally and cannot use CONCURRENTLY.
+CREATE UNIQUE INDEX "agent_wakeup_requests_question_response_delivery_idempotency_uq" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'question-response:%' AND "agent_wakeup_requests"."status" NOT IN ('skipped', 'failed', 'cancelled');
