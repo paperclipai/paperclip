@@ -41,6 +41,7 @@ describe("connection grants phase 4 migration", () => {
     expect(migrationSql).toContain(`count(DISTINCT g."subject_user_id") AS "owner_count"`);
     expect(migrationSql).toContain(`organization_grant."kind" <> 'user'`);
     expect(migrationSql).toContain(`FROM "company_secret_bindings" binding`);
+    expect(migrationSql).toContain(`FROM "routine_triggers" routine_trigger`);
     expect(migrationSql).toContain(`"status" = 'needs_reauthorization'`);
     expect(migrationSql).toContain(`"health_status" = 'missing_secret'`);
   });
@@ -65,6 +66,7 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
       includeOrganizationGrant?: boolean;
       includeConnectionReference?: boolean;
       includeCompanyBinding?: boolean;
+      includeRoutineTrigger?: boolean;
     }) {
       const companyId = randomUUID();
       const applicationId = randomUUID();
@@ -120,6 +122,17 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
           )
         `;
       }
+      if (input.includeRoutineTrigger) {
+        const routineId = randomUUID();
+        await sql`
+          INSERT INTO "routines" ("id", "company_id", "title")
+          VALUES (${routineId}, ${companyId}, ${`Routine ${routineId}`})
+        `;
+        await sql`
+          INSERT INTO "routine_triggers" ("company_id", "routine_id", "kind", "secret_id")
+          VALUES (${companyId}, ${routineId}, 'webhook', ${secretId})
+        `;
+      }
       return { companyId, connectionId, secretId, ownerUserId: input.ownerUserIds[0]! };
     }
 
@@ -152,6 +165,37 @@ describeEmbeddedPostgres("connection grants phase 4 executable migration", () =>
         SELECT "scope", "owner_user_id"
         FROM "company_secrets"
         WHERE "id" = ${bound.secretId}
+      `).toEqual([{ scope: "company", owner_user_id: null }]);
+
+      const routine = await seedLegacyCredential({
+        ownerUserIds: ["routine-owner"],
+        includeRoutineTrigger: true,
+      });
+      await rewindMigration();
+      await applyPendingMigrations(database.connectionString);
+      expect(await sql<{ scope: string; owner_user_id: string | null }[]>`
+        SELECT "scope", "owner_user_id"
+        FROM "company_secrets"
+        WHERE "id" = ${routine.secretId}
+      `).toEqual([{ scope: "company", owner_user_id: null }]);
+      expect(await sql<{ status: string; credential_secret_refs: unknown[] }[]>`
+        SELECT "status", "credential_secret_refs"
+        FROM "connection_grants"
+        WHERE "company_id" = ${routine.companyId} AND "kind" = 'user'
+      `).toEqual([{ status: "needs_reauthorization", credential_secret_refs: [] }]);
+      expect(await sql<{ secret_id: string }[]>`
+        SELECT "secret_id"
+        FROM "routine_triggers"
+        WHERE "company_id" = ${routine.companyId}
+      `).toEqual([{ secret_id: routine.secretId }]);
+
+      // Replaying also preserves the direct routine-trigger reference.
+      await rewindMigration();
+      await applyPendingMigrations(database.connectionString);
+      expect(await sql<{ scope: string; owner_user_id: string | null }[]>`
+        SELECT "scope", "owner_user_id"
+        FROM "company_secrets"
+        WHERE "id" = ${routine.secretId}
       `).toEqual([{ scope: "company", owner_user_id: null }]);
       expect(await sql<{ status: string; credential_secret_refs: unknown[] }[]>`
         SELECT "status", "credential_secret_refs"

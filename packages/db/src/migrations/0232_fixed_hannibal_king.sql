@@ -121,6 +121,12 @@ WITH personal_secret_owners AS (
 				FROM "company_secret_bindings" binding
 				WHERE binding."company_id" = owners."company_id"
 					AND binding."secret_id" = owners."secret_id"
+			)
+			OR EXISTS (
+				SELECT 1
+				FROM "routine_triggers" routine_trigger
+				WHERE routine_trigger."company_id" = owners."company_id"
+					AND routine_trigger."secret_id" = owners."secret_id"
 			);
 --> statement-breakpoint
 WITH ambiguous_secrets AS (
