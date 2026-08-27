@@ -100,6 +100,23 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+# rtk (github.com/rtk-ai/rtk): token-compressing CLI proxy for the harness
+# CLIs above. Version-pinned in its own layer so it never rides the weekly
+# epoch bust; the installer verifies the release checksum. `init` seeds
+# /paperclip with the Claude Code Bash auto-rewrite hook and the Codex
+# AGENTS.md instructions. The seed reaches a deployment only when /paperclip
+# starts as a fresh named volume (Docker copies image content into new
+# volumes); an existing volume — or a settings.json bind mount over it —
+# keeps its own files, so those deployments wire the hook themselves and get
+# just the binary from this layer.
+ARG RTK_VERSION=v0.46.0
+RUN curl -fsSL "https://raw.githubusercontent.com/rtk-ai/rtk/${RTK_VERSION}/install.sh" \
+    | RTK_VERSION="${RTK_VERSION}" RTK_INSTALL_DIR=/usr/local/bin sh \
+  && mkdir -p /paperclip/.claude \
+  && HOME=/paperclip rtk init -g --auto-patch \
+  && HOME=/paperclip rtk init -g --codex \
+  && chown -R node:node /paperclip
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
@@ -120,7 +137,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
   OPENCODE_ALLOW_ALL_MODELS=true \
-  GEMINI_SANDBOX=false
+  GEMINI_SANDBOX=false \
+  RTK_TELEMETRY_DISABLED=1
 
 EXPOSE 3100
 
