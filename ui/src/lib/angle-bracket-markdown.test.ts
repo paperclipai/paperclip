@@ -198,6 +198,28 @@ describe("unescapeAngleBracketEscapes", () => {
     expect(unescapeAngleBracketEscapes("a \\\\\\<name> b")).toBe("a \\\\<name> b");
   });
 
+  it("keeps an escape that would otherwise open an autolink", () => {
+    // `\<https://example.com>` renders as the literal text `<https://example.com>`.
+    // Dropping the backslash would publish a link the author escaped on purpose,
+    // and the escape half never escapes an autolink, so there is nothing to undo.
+    expect(unescapeAngleBracketEscapes("See \\<https://example.com> here")).toBe(
+      "See \\<https://example.com> here",
+    );
+    expect(unescapeAngleBracketEscapes("Mail \\<a.b@example.com> now")).toBe(
+      "Mail \\<a.b@example.com> now",
+    );
+  });
+
+  it("keeps an escape that would otherwise open a pointed link destination", () => {
+    expect(unescapeAngleBracketEscapes("[a](\\<my file.md>)")).toBe("[a](\\<my file.md>)");
+  });
+
+  it("still unescapes a tag that only looks like an autolink", () => {
+    expect(unescapeAngleBracketEscapes("\\<notascheme>")).toBe("<notascheme>");
+    // The scheme needs at least two characters, so this is not an autolink.
+    expect(unescapeAngleBracketEscapes("\\<x:y>")).toBe("<x:y>");
+  });
+
   it("skips code spans and code blocks", () => {
     expect(unescapeAngleBracketEscapes("Use `\\<name>` here")).toBe("Use `\\<name>` here");
     expect(unescapeAngleBracketEscapes("```\n\\<name>\n```\n\\<after>")).toBe(
@@ -239,6 +261,9 @@ describe("angle bracket escape round trip", () => {
     "para\n    more <name> here",
     "a `one\ntwo <x>` b <y>",
     "plain prose with no brackets",
+    // An author's escaped autolink must survive an edit as literal text.
+    "See \\<https://example.com> here",
+    "Mail \\<a.b@example.com> now",
     "",
   ];
 

@@ -107,6 +107,31 @@ function findCodeSpanEnd(text: string, contentStart: number, runLength: number):
 }
 
 /**
+ * The non-HTML constructs a `<` can open: an autolink, or a pointed-bracket
+ * link destination. Returns the whole construct, or null when the `<` opens
+ * neither.
+ *
+ * Both modes consult this one definition on purpose. Escape mode leaves these
+ * brackets bare, so unescape mode must refuse to *create* one — otherwise the
+ * pair is not an inverse, and an author's escaped `\<https://x>` would silently
+ * become a live link the first time the document is edited.
+ *
+ * `rest` starts at the `<`. `emitted` is the output so far, whose tail is what
+ * identifies a link destination.
+ */
+function matchProtectedConstruct(rest: string, emitted: string): string | null {
+  const autolink = AUTOLINK_URI_RE.exec(rest) ?? AUTOLINK_EMAIL_RE.exec(rest);
+  if (autolink) return autolink[0];
+
+  if (emitted.endsWith("](")) {
+    const destination = POINTED_DESTINATION_RE.exec(rest);
+    if (destination) return destination[0];
+  }
+
+  return null;
+}
+
+/**
  * Walk one run of inline content (one or more consecutive non-code lines) and
  * rewrite the angle brackets the parser would treat as HTML.
  */
@@ -134,7 +159,12 @@ function transformInlineChunk(text: string, mode: Mode): string {
     }
 
     if (char === "\\") {
-      if (mode === "unescape" && text[i + 1] === "<" && isHtmlOpener(text[i + 2])) {
+      if (
+        mode === "unescape"
+        && text[i + 1] === "<"
+        && isHtmlOpener(text[i + 2])
+        && matchProtectedConstruct(text.slice(i + 1), out) === null
+      ) {
         out += "<";
         i += 2;
         continue;
@@ -149,22 +179,11 @@ function transformInlineChunk(text: string, mode: Mode): string {
     }
 
     if (mode === "escape" && char === "<" && isHtmlOpener(text[i + 1])) {
-      const rest = text.slice(i);
-
-      const autolink = AUTOLINK_URI_RE.exec(rest) ?? AUTOLINK_EMAIL_RE.exec(rest);
-      if (autolink) {
-        out += autolink[0];
-        i += autolink[0].length;
+      const protectedConstruct = matchProtectedConstruct(text.slice(i), out);
+      if (protectedConstruct) {
+        out += protectedConstruct;
+        i += protectedConstruct.length;
         continue;
-      }
-
-      if (out.endsWith("](")) {
-        const destination = POINTED_DESTINATION_RE.exec(rest);
-        if (destination) {
-          out += destination[0];
-          i += destination[0].length;
-          continue;
-        }
       }
 
       out += "\\<";
@@ -286,7 +305,11 @@ export function escapeUnsupportedAngleBrackets(markdown: string): string {
 /**
  * The inverse of {@link escapeUnsupportedAngleBrackets}: drop the backslash
  * from `\<` wherever it only exists to hide an HTML construct from the parser.
- * Idempotent.
+ *
+ * An escape is kept when removing it would open an autolink or a pointed link
+ * destination, because those are constructs the escape half deliberately leaves
+ * bare — unescaping one would turn an author's literal `\<https://x>` into a
+ * live link rather than reversing anything. Idempotent.
  */
 export function unescapeAngleBracketEscapes(markdown: string): string {
   if (!markdown.includes("\\<")) return markdown;
