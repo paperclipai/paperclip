@@ -79,9 +79,9 @@ values for either.
 6. For OAuth, continue through browser consent. For API-key setup, create a
    personal API key using PostHog's **MCP Server** preset and paste it into
    Paperclip. Never put the key in connection configuration or a URL.
-7. Review discovered actions. Known writes ask first, destructive or nested
-   execution tools remain quarantined, and unknown PostHog tools default to
-   write risk until reviewed.
+7. Review discovered actions. Known writes and destructive actions default to
+   **Ask first**, and unknown PostHog tools default to write risk so they inherit
+   that approval gate unless the operator changes the selection.
 
 Paperclip sends the project scope as the `x-posthog-project-id` managed header.
 It sends configured `readonly`, `features`, `tools`, and `mode` values as query

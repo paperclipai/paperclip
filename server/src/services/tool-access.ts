@@ -3153,15 +3153,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     connection: typeof toolConnections.$inferSelect;
     newCatalogEntryIds: string[];
     activeCatalogEntryIds: string[];
+    restoreDraftDefaults?: boolean;
     actor?: ActorInfo;
   }) {
     // Catalog discovery also runs while the setup wizard is still a draft.
     // Access is not granted until the operator finishes that wizard, so a
     // draft refresh must never manufacture a profile or company-wide binding.
     // Active legacy connections may still need the managed profile created on
-    // their first refresh, which is why the guard is on lifecycle state rather
-    // than profile existence.
-    if (input.connection.status !== "active") return;
+    // their first refresh. A reconnect is the one draft exception: removal
+    // deliberately clears the old selections, so reconnecting restores the
+    // documented defaults without activating the connection itself.
+    if (input.connection.status !== "active" && !input.restoreDraftDefaults) return;
     const profileKey = `app:${input.connection.id}`;
     let [profile] = await db
       .select()
@@ -4220,7 +4222,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function refreshCatalog(
     connectionId: string,
     actor?: ActorInfo,
-    refreshOptions: { enableAllByDefault?: boolean } = {},
+    refreshOptions: { enableAllByDefault?: boolean; restoreDraftDefaults?: boolean } = {},
   ): Promise<ToolCatalogRefreshResult> {
     const connection = await getConnectionRow(connectionId);
     const refreshedAt = now();
@@ -4379,6 +4381,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           })
           .map((entry) => entry.id),
       activeCatalogEntryIds: activeEntries.map((entry) => entry.id),
+      restoreDraftDefaults: refreshOptions.restoreDraftDefaults,
       actor,
     });
     await audit({
@@ -6540,10 +6543,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
-          // PostHog's documented safe default keeps reads available while new
-          // write/destructive actions wait for review. Other curated apps keep
-          // the all-tools default selected by the setup wizard.
-          quarantineNewEntries: galleryEntry.slug === "posthog",
+          // Grant-backed setup keeps the full discovered catalog selectable;
+          // the wizard projects the app's ask-first defaults into policies at
+          // finish time instead of using catalog quarantine as access state.
+          quarantineNewEntries: false,
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
         }
       : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
@@ -6848,7 +6851,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
         throw error;
       }
-      const refresh = await refreshCatalog(connectionRow.id, actor, { enableAllByDefault: true });
+      const restoreDraftDefaults = Boolean(revivedConnectionPrevious);
+      const refresh = await refreshCatalog(connectionRow.id, actor, {
+        enableAllByDefault: restoreDraftDefaults,
+        restoreDraftDefaults,
+      });
       const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
       return {
         connectionId: refresh.connection.id,
