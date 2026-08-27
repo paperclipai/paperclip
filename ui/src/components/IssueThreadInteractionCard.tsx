@@ -41,6 +41,7 @@ import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 import { ProposalJustification } from "../pages/secrets/proposal-review";
+import { ConnectionIntentInteractionBody } from "./ConnectionIntentInteractionBody";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -4168,12 +4169,11 @@ export function IssueThreadInteractionCard({
               externalReferences={externalReferences}
             />
           ) : interaction.kind === "connection_intent" ? (
-            <div className="space-y-2 rounded-md border border-border bg-muted/30 p-4 text-sm">
-              <div className="font-medium text-foreground">{interaction.payload.serviceName}</div>
-              <div className="text-muted-foreground">
-                This connection request can be completed from the Apps setup flow.
-              </div>
-            </div>
+            <ConnectionIntentInteractionBody
+              interaction={interaction}
+              currentUserId={currentUserId}
+              addresseeLabel={addresseeLabel ?? "the addressed person"}
+            />
           ) : (
             <RequestConfirmationCard
               interaction={interaction}

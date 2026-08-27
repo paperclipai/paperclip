@@ -47,6 +47,7 @@ import {
   humanOnlyRequestConfirmationInteraction,
   companyCappedRequestConfirmationInteraction,
   legacyRestrictedRequestConfirmationInteraction,
+  pendingConnectionIntentInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -107,6 +108,28 @@ afterEach(() => {
 });
 
 describe("IssueThreadInteractionCard", () => {
+  it("offers connection resolution actions to the addressed user", () => {
+    const host = renderCard({
+      interaction: pendingConnectionIntentInteraction,
+      currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    });
+
+    expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeTruthy();
+    expect(host.textContent).toContain("Connect / Use existing");
+    expect(host.textContent).toContain("Not now");
+  });
+
+  it("keeps connection resolution controls exclusive to the addressed user", () => {
+    const host = renderCard({
+      interaction: pendingConnectionIntentInteraction,
+      currentUserId: "another-user",
+    });
+
+    expect(host.querySelector('[data-testid="connection-intent-waiting"]')).toBeTruthy();
+    expect(host.textContent).not.toContain("Connect / Use existing");
+    expect(host.textContent).not.toContain("Not now");
+  });
+
   it("exposes pending question options as selectable radio and checkbox controls", () => {
     const host = renderCard({
       interaction: pendingAskUserQuestionsInteraction,

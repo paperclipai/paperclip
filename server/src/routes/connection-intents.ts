@@ -156,7 +156,7 @@ export async function wakeConnectionIntentAfterResolution(
   },
 ) {
   const agentId = input.loaded.issue.assigneeAgentId;
-  if (!agentId || input.loaded.issue.status === "done" || input.loaded.issue.status === "cancelled") return;
+  if (!agentId || input.loaded.issue.status !== "in_progress") return;
   await heartbeat.wakeup(agentId, {
     source: "automation",
     triggerDetail: "system",

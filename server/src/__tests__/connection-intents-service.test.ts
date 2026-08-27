@@ -239,6 +239,30 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toThrow("is not available");
   });
 
+  it("revalidates the responsible user's active write membership for every token use", async () => {
+    const service = connectionIntentService(db);
+    try {
+      await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(
+        companyMemberships.principalId,
+        claims.responsible_user_id,
+      ));
+      await expect(service.search(claims, "notion"))
+        .rejects.toThrow("no longer authorized for company write access");
+
+      await db.update(companyMemberships).set({ membershipRole: "member", status: "inactive" }).where(eq(
+        companyMemberships.principalId,
+        claims.responsible_user_id,
+      ));
+      await expect(service.request(claims, "notion"))
+        .rejects.toThrow("no longer authorized for company write access");
+    } finally {
+      await db.update(companyMemberships).set({ membershipRole: "member", status: "active" }).where(eq(
+        companyMemberships.principalId,
+        claims.responsible_user_id,
+      ));
+    }
+  });
+
   it("rejects cross-company claims and tokens after the run ends", async () => {
     const service = connectionIntentService(db);
     await expect(service.search({ ...claims, company_id: randomUUID() }, "notion"))

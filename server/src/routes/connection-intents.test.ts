@@ -89,8 +89,8 @@ describe("connection intent continuation wake contract", () => {
     },
   );
 
-  it.each(["done", "cancelled"])(
-    "does not wake a %s task",
+  it.each(["backlog", "todo", "in_review", "done", "blocked", "cancelled"])(
+    "does not wake a parked or closed %s task",
     async (issueStatus) => {
       const wakeup = vi.fn().mockResolvedValue(undefined);
 

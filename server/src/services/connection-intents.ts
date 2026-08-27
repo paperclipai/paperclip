@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companyMemberships,
   heartbeatRuns,
   issueThreadInteractions,
   issues,
@@ -77,7 +78,7 @@ export function connectionIntentService(db: Db) {
     const snapshot = record(run.contextSnapshot);
     const issueId = text(snapshot?.issueId) ?? text(snapshot?.taskId);
     if (!issueId) throw unprocessable("Connection requests require a task-bound heartbeat run");
-    const [issue, agent] = await Promise.all([
+    const [issue, agent, responsibleMembership] = await Promise.all([
       db.select({
         id: issues.id,
         companyId: issues.companyId,
@@ -88,8 +89,24 @@ export function connectionIntentService(db: Db) {
         .from(agents)
         .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
         .then((rows) => rows[0] ?? null),
+      db.select({
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, run.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, run.responsibleUserId!),
+      )).then((rows) => rows[0] ?? null),
     ]);
     if (!issue || !agent) throw notFound("Runtime task or agent was not found");
+    if (
+      !responsibleMembership
+      || responsibleMembership.status !== "active"
+      || !responsibleMembership.membershipRole
+      || responsibleMembership.membershipRole === "viewer"
+    ) {
+      throw forbidden("Responsible user is no longer authorized for company write access");
+    }
     if (issue.status === "done" || issue.status === "cancelled") {
       throw conflict("Connection requests cannot be created on a closed task");
     }
