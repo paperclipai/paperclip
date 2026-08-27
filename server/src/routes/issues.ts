@@ -7010,17 +7010,20 @@ export function issueRoutes(
           }
         }
 
-        const updatedIssue = await svc.update(
-          id,
-          {
-            ...updateFields,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-          },
-          tx,
-          postCommitActivityPublications,
-          postCommitIssueActions,
-        );
+        const issueUpdate = {
+          ...updateFields,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        };
+        const updatedIssue = sourceIssueStatus === "done" || sourceIssueStatus === "cancelled"
+          ? await svc.update(
+              id,
+              issueUpdate,
+              tx,
+              postCommitActivityPublications,
+              postCommitIssueActions,
+            )
+          : await svc.update(id, issueUpdate, tx, postCommitActivityPublications);
         if (!updatedIssue) throw notFound("Issue not found");
         issue = updatedIssue;
       }
@@ -9876,11 +9879,16 @@ export function issueRoutes(
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
+    const shouldCollectTerminalIssueActions =
+      updateFields.status === "done" || updateFields.status === "cancelled";
     const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
       if (tx) {
-        return shouldCollectCompletionPublication
-          ? svc.update(id, issueUpdateData, tx, postCommitActivityPublications, postCommitIssueActions)
-          : svc.update(id, issueUpdateData, tx, undefined, postCommitIssueActions);
+        if (shouldCollectCompletionPublication) {
+          return svc.update(id, issueUpdateData, tx, postCommitActivityPublications, postCommitIssueActions);
+        }
+        return shouldCollectTerminalIssueActions
+          ? svc.update(id, issueUpdateData, tx, undefined, postCommitIssueActions)
+          : svc.update(id, issueUpdateData, tx);
       }
       return shouldCollectCompletionPublication
         ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
