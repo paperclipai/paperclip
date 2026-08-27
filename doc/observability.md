@@ -157,13 +157,7 @@ dynamically only when `SENTRY_DSN` is set. `server/package.json` declares
 this exact version; installing a different version defeats the audit, so
 the server checks the installed version against the declared one at
 startup and logs one diagnostic instead of enabling error monitoring on a
-mismatch (see "Server request data" below). The check fails closed: it
-also refuses to enable monitoring when it cannot read the declared
-version at all — a missing or malformed `server/package.json`, or a
-manifest with no `@sentry/node` peer entry — instead of treating that as
-"no version to check." The server always resolves the checked package and
-the loaded package from the same location, so the version the check reads
-can never differ from the code the server actually runs.
+mismatch (see "Server request data" below).
 
 ```bash
 pnpm add @sentry/node@10.71.0
