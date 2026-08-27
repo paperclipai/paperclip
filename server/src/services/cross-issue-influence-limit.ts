@@ -34,6 +34,51 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
+/**
+ * Belt-and-suspenders: bind the calling actor's own run's source issue at
+ * checkout time when it is still null, rather than waiting for the run's
+ * first comment/PATCH to trigger the bind-on-first-write path in
+ * `observeCrossIssueInfluence`. Checkout does not read or write
+ * `contextSnapshot` for the *calling* actor's own run today (it only does so
+ * for a *spawned* wakeup belonging to a different actor), so most
+ * unscoped-wake runs would otherwise reach their first write still unbound.
+ *
+ * Best-effort: this never blocks or fails the checkout response. A run whose
+ * context is still unbound after this call is still safely covered by the
+ * bind-on-first-write fallback in `observeCrossIssueInfluence`.
+ */
+export async function bindCheckoutRunSourceIssueIfUnset(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string; issueId: string },
+): Promise<void> {
+  if (!isUuidLike(input.runId)) return;
+  try {
+    await db.transaction(async (tx) => {
+      const run = await tx
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!run || readRunSourceIssueId(run.contextSnapshot)) return;
+
+      await tx.update(heartbeatRuns)
+        .set({ contextSnapshot: { issueId: input.issueId, source: "issue.checkout" } })
+        .where(and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+        ));
+    });
+  } catch (err) {
+    logger.warn({ err, runId: input.runId, issueId: input.issueId }, "failed to bind run source issue at checkout");
+  }
+}
+
 function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
@@ -110,7 +155,24 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      // Bind-on-first-write: a run with no persisted source issue cannot have
+      // had a prior cross-issue write to compare against, so its very first
+      // write legitimately defines "home". Persist the bind inside this same
+      // row-locked transaction so a retried run (e.g. process-lost/retry
+      // reusing the run id) inherits the bound source issue instead of
+      // re-triggering this branch. This is not a fallback that trusts the
+      // header or a prior successful checkout — it only fires once, the
+      // first time this specific locked run attempts any write at all.
+      await tx.update(heartbeatRuns)
+        .set({ contextSnapshot: { issueId: input.targetIssueId, source: "first_write_bind" } })
+        .where(and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+        ));
+      return null;
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
