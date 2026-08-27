@@ -323,6 +323,7 @@ describe("company portability", () => {
       priority: input.priority ?? "medium",
       status: input.status ?? "active",
       concurrencyPolicy: input.concurrencyPolicy ?? "coalesce_if_active",
+      lifecyclePolicy: input.lifecyclePolicy ?? "independent",
       catchUpPolicy: input.catchUpPolicy ?? "skip_missed",
       createdByAgentId: null,
       createdByUserId: null,
@@ -2279,6 +2280,7 @@ describe("company portability", () => {
         priority: "high",
         status: "paused",
         concurrencyPolicy: "always_enqueue",
+        lifecyclePolicy: "latest_success_wins",
         catchUpPolicy: "enqueue_missed_with_cap",
         createdByAgentId: null,
         createdByUserId: null,
@@ -2369,6 +2371,7 @@ describe("company portability", () => {
         priority: "high",
         routine: expect.objectContaining({
           concurrencyPolicy: "always_enqueue",
+          lifecyclePolicy: "latest_success_wins",
           catchUpPolicy: "enqueue_missed_with_cap",
           triggers: expect.arrayContaining([
             expect.objectContaining({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "America/Chicago" }),
@@ -2556,6 +2559,7 @@ describe("company portability", () => {
         '    status: "paused"',
         '    priority: "high"',
         '    concurrencyPolicy: "always_enqueue"',
+        '    lifecyclePolicy: "latest_success_wins"',
         '    catchUpPolicy: "enqueue_missed_with_cap"',
         "    triggers:",
         "      - kind: schedule",
@@ -2600,6 +2604,7 @@ describe("company portability", () => {
       priority: "high",
       status: "paused",
       concurrencyPolicy: "always_enqueue",
+      lifecyclePolicy: "latest_success_wins",
       catchUpPolicy: "enqueue_missed_with_cap",
     }), expect.any(Object));
     expect(result.warnings).not.toContain(

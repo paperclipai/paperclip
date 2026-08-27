@@ -250,6 +250,7 @@ const manifest: PaperclipPluginManifestV1 = {
       assigneeRef: { resourceKind: "agent", resourceKey: WIKI_MAINTAINER_AGENT_KEY },
       projectRef: { resourceKind: "project", resourceKey: WIKI_PROJECT_KEY },
       concurrencyPolicy: "skip_if_active",
+      lifecyclePolicy: "independent",
       catchUpPolicy: "skip_missed",
       triggers: [
         {
@@ -277,6 +278,7 @@ const manifest: PaperclipPluginManifestV1 = {
       assigneeRef: { resourceKind: "agent", resourceKey: WIKI_MAINTAINER_AGENT_KEY },
       projectRef: { resourceKind: "project", resourceKey: WIKI_PROJECT_KEY },
       concurrencyPolicy: "skip_if_active",
+      lifecyclePolicy: "independent",
       catchUpPolicy: "skip_missed",
       triggers: [
         {
@@ -304,6 +306,7 @@ const manifest: PaperclipPluginManifestV1 = {
       assigneeRef: { resourceKind: "agent", resourceKey: WIKI_MAINTAINER_AGENT_KEY },
       projectRef: { resourceKind: "project", resourceKey: WIKI_PROJECT_KEY },
       concurrencyPolicy: "skip_if_active",
+      lifecyclePolicy: "independent",
       catchUpPolicy: "skip_missed",
       triggers: [
         {

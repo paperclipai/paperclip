@@ -45,6 +45,7 @@ describe("routine validators", () => {
     expect(parsed.triggers[0]?.publicId).toBe("routine_webhook_123");
     expect(parsed.routine.activityGatePolicy).toBe("always");
     expect(parsed.routine.activityGateScope).toBe("company");
+    expect(parsed.routine.lifecyclePolicy).toBe("independent");
   });
 
   it("rejects secret-bearing trigger fields in routine revision snapshots", () => {
@@ -98,6 +99,13 @@ describe("routine validators", () => {
 
     expect(() => updateRoutineSchema.parse({ activityGatePolicy: "when_busy" })).toThrow();
     expect(() => updateRoutineSchema.parse({ activityGateScope: "agent" })).toThrow();
+  });
+
+  it("validates explicit routine instance lifecycle values", () => {
+    expect(updateRoutineSchema.parse({ lifecyclePolicy: "latest_success_wins" })).toEqual({
+      lifecyclePolicy: "latest_success_wins",
+    });
+    expect(() => updateRoutineSchema.parse({ lifecyclePolicy: "infer_from_concurrency" })).toThrow();
   });
 
   it("accepts date variables with valid YYYY-MM-DD defaults", () => {

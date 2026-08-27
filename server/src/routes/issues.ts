@@ -2376,6 +2376,7 @@ function toCompactIssue(issue: any): CompactIssue {
     originKind: issue.originKind,
     originId: issue.originId,
     originRunId: issue.originRunId,
+    supersededByIssueId: issue.supersededByIssueId,
     requestDepth: issue.requestDepth,
     billingCode: issue.billingCode,
     executionWorkspaceId: issue.executionWorkspaceId,

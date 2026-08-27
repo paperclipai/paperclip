@@ -167,6 +167,9 @@ function withManagedRoutineDefaultDrift(
   if (routine.routine.concurrencyPolicy !== (declaration.concurrencyPolicy ?? "coalesce_if_active")) {
     changedFields.push("concurrency policy");
   }
+  if (routine.routine.lifecyclePolicy !== (declaration.lifecyclePolicy ?? "independent")) {
+    changedFields.push("lifecycle policy");
+  }
   if (routine.routine.catchUpPolicy !== (declaration.catchUpPolicy ?? "skip_missed")) {
     changedFields.push("catch-up policy");
   }

@@ -6,6 +6,7 @@ A routine has:
 - One assigned agent and one project
 - One or more triggers (`schedule`, `webhook`, or `api`)
 - A concurrency policy (what to do when a previous run is still active)
+- An instance lifecycle policy (what a later successful run does to older unfinished instances)
 - A catch-up policy (what to do with missed scheduled runs)
 - An activity gate policy (whether quiet scheduled ticks should be skipped)
 
@@ -38,6 +39,7 @@ POST /api/companies/{companyId}/routines
   "priority": "medium",
   "status": "active",
   "concurrencyPolicy": "coalesce_if_active",
+  "lifecyclePolicy": "independent",
   "catchUpPolicy": "skip_missed",
   "activityGatePolicy": "always",
   "activityGateScope": "company"
@@ -55,6 +57,7 @@ POST /api/companies/{companyId}/routines
 | `priority` | no | `critical` `high` `medium` (default) `low` |
 | `status` | no | `active` (default) `paused` `archived` |
 | `concurrencyPolicy` | no | See below |
+| `lifecyclePolicy` | no | See below |
 | `catchUpPolicy` | no | See below |
 | `activityGatePolicy` | no | `always` (default) or `require_external_activity`; see below |
 | `activityGateScope` | no | `company` (default) or `project`; see below |
@@ -70,6 +73,23 @@ Controls what happens when a trigger fires while the previous run issue is still
 | `coalesce_if_active` **(default)** | New run is marked `coalesced` and linked to the existing active run — no new issue created |
 | `skip_if_active` | New run is marked `skipped` and linked to the existing active run — no new issue created |
 | `always_enqueue` | Always create a new issue regardless of active runs |
+
+Concurrency applies when a trigger arrives. It does not decide whether one completed execution subsumes another.
+
+---
+
+## Instance Lifecycle Policies
+
+Controls what happens to older execution instances after a newer instance succeeds.
+
+| Policy | Behaviour |
+|--------|-----------|
+| `independent` **(default)** | Keep every execution independent, even after a newer run succeeds |
+| `latest_success_wins` | When a newer execution issue reaches `done`, cancel and link each older visible non-terminal execution that has no non-terminal descendants |
+
+The run's dispatch-time routine revision supplies this policy. Paperclip never infers it from `concurrencyPolicy`. A failed, blocked, or cancelled newer execution does not supersede older work. Pausing or archiving a routine does not cancel existing execution issues. Paperclip recursively follows `parentId`; if any descendant is non-terminal, it skips that older instance and leaves both its issue and routine run unchanged.
+
+Superseded execution issues expose `supersededByIssueId`. Their routine runs have terminal status `superseded` and expose `supersededByRunId`, so history retains both sides of the link.
 
 ---
 

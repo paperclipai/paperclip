@@ -55,6 +55,19 @@ const concurrencyPolicyOptions = [
   },
 ];
 
+const lifecyclePolicyOptions = [
+  {
+    value: "independent",
+    title: "Independent",
+    description: "Keep every execution instance separate, regardless of later results.",
+  },
+  {
+    value: "latest_success_wins",
+    title: "Latest success wins",
+    description: "When a newer instance succeeds, cancel older unfinished instances unless they own live descendant work.",
+  },
+];
+
 const catchUpPolicyOptions = [
   {
     value: "skip_missed",
@@ -712,6 +725,22 @@ export function DeliverySection() {
           }
           options={concurrencyPolicyOptions}
         />
+      </div>
+      <div className="space-y-3">
+        <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
+          Instance lifecycle
+        </p>
+        <RadioCardGroup
+          ariaLabel="Instance lifecycle policy"
+          value={editDraft.lifecyclePolicy}
+          onValueChange={(lifecyclePolicy) =>
+            setEditDraft((current) => ({ ...current, lifecyclePolicy }))
+          }
+          options={lifecyclePolicyOptions}
+        />
+        <p className="text-sm text-muted-foreground">
+          Lifecycle applies after a successful run. Concurrency controls what happens when a trigger arrives.
+        </p>
       </div>
       <div className="space-y-3">
         <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">

@@ -176,6 +176,7 @@ export function RoutineDetail() {
     assigneeAgentId: "",
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
+    lifecyclePolicy: "independent",
     catchUpPolicy: "skip_missed",
     activityGatePolicy: "always",
     activityGateScope: "company",
@@ -270,6 +271,7 @@ export function RoutineDetail() {
             assigneeAgentId: routine.assigneeAgentId ?? "",
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
+            lifecyclePolicy: routine.lifecyclePolicy,
             catchUpPolicy: routine.catchUpPolicy,
             activityGatePolicy: routine.activityGatePolicy,
             activityGateScope: routine.activityGateScope,
@@ -297,6 +299,9 @@ export function RoutineDetail() {
     }
     if (editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy) {
       result.push({ key: "concurrencyPolicy", label: "the concurrency policy" });
+    }
+    if (editDraft.lifecyclePolicy !== routineDefaults.lifecyclePolicy) {
+      result.push({ key: "lifecyclePolicy", label: "the instance lifecycle policy" });
     }
     if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
       result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
@@ -662,6 +667,7 @@ export function RoutineDetail() {
         assigneeAgentId: response.routine.assigneeAgentId ?? "",
         priority: response.routine.priority,
         concurrencyPolicy: response.routine.concurrencyPolicy,
+        lifecyclePolicy: response.routine.lifecyclePolicy,
         catchUpPolicy: response.routine.catchUpPolicy,
         activityGatePolicy: response.routine.activityGatePolicy,
         activityGateScope: response.routine.activityGateScope,

@@ -25,6 +25,7 @@ import type {
   RoutineActivityGatePolicy,
   RoutineActivityGateScope,
   RoutineConcurrencyPolicy,
+  RoutineLifecyclePolicy,
   RoutineStatus,
   IssueSurfaceVisibility,
 } from "../constants.js";
@@ -395,6 +396,8 @@ export interface PluginManagedRoutineDeclaration {
   priority?: IssuePriority;
   /** Suggested concurrency behavior. Defaults to core routine default. */
   concurrencyPolicy?: RoutineConcurrencyPolicy;
+  /** Suggested instance lifecycle behavior. Defaults to independent instances. */
+  lifecyclePolicy?: RoutineLifecyclePolicy;
   /** Suggested missed-trigger behavior. Defaults to core routine default. */
   catchUpPolicy?: RoutineCatchUpPolicy;
   /** Suggested external-activity gate behavior. Defaults to `always`. */

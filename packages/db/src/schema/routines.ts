@@ -35,6 +35,7 @@ export const routines = pgTable(
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
+    lifecyclePolicy: text("lifecycle_policy").notNull().default("independent"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
     activityGatePolicy: text("activity_gate_policy").notNull().default("always"),
     activityGateScope: text("activity_gate_scope").notNull().default("company"),
@@ -155,6 +156,10 @@ export const routineRuns = pgTable(
     dispatchFingerprint: text("dispatch_fingerprint"),
     linkedIssueId: uuid("linked_issue_id").references(() => issues.id, { onDelete: "set null" }),
     coalescedIntoRunId: uuid("coalesced_into_run_id"),
+    supersededByRunId: uuid("superseded_by_run_id").references(
+      (): AnyPgColumn => routineRuns.id,
+      { onDelete: "set null" },
+    ),
     failureReason: text("failure_reason"),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -171,6 +176,7 @@ export const routineRuns = pgTable(
     triggerIdx: index("routine_runs_trigger_idx").on(table.triggerId, table.createdAt),
     dispatchFingerprintIdx: index("routine_runs_dispatch_fingerprint_idx").on(table.routineId, table.dispatchFingerprint),
     linkedIssueIdx: index("routine_runs_linked_issue_idx").on(table.linkedIssueId),
+    supersededByRunIdx: index("routine_runs_superseded_by_run_idx").on(table.supersededByRunId),
     idempotencyIdx: index("routine_runs_trigger_idempotency_idx").on(table.triggerId, table.idempotencyKey),
   }),
 );

@@ -36,6 +36,15 @@ describe("runRowSubtitle", () => {
     expect(subtitle).toBe("Cron timed out");
   });
 
+  it("links superseded runs to the newer successful run", () => {
+    expect(runRowSubtitle({
+      status: "superseded",
+      supersededByRunId: "12345678-1234-4123-8123-123456789abc",
+      failureReason: null,
+      triggerPayload: null,
+    }, variables)).toBe("Superseded by run 12345678");
+  });
+
   it("falls back to a generic label when a failed run has no reason", () => {
     const subtitle = runRowSubtitle(
       { status: "failed", failureReason: null, triggerPayload: null },

@@ -66,11 +66,16 @@ import {
 } from "../components/folders/FolderControls";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
+const lifecyclePolicies = ["independent", "latest_success_wins"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "If a run is already active, keep just one follow-up run queued.",
   always_enqueue: "Queue every trigger occurrence, even if the routine is already running.",
   skip_if_active: "Drop new trigger occurrences while a run is still active.",
+};
+const lifecyclePolicyDescriptions: Record<string, string> = {
+  independent: "Keep every execution instance separate, even after a newer run succeeds.",
+  latest_success_wins: "After a newer run succeeds, cancel older unfinished instances unless they own live descendant work.",
 };
 const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
@@ -144,6 +149,7 @@ function buildRoutineMutationPayload(input: {
   assigneeAgentId: string;
   priority: string;
   concurrencyPolicy: string;
+  lifecyclePolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
 }) {
@@ -348,6 +354,7 @@ export function Routines() {
     assigneeAgentId: string;
     priority: string;
     concurrencyPolicy: string;
+    lifecyclePolicy: string;
     catchUpPolicy: string;
     variables: RoutineVariable[];
   }>({
@@ -358,6 +365,7 @@ export function Routines() {
     assigneeAgentId: "",
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
+    lifecyclePolicy: "independent",
     catchUpPolicy: "skip_missed",
     variables: [],
   });
@@ -447,6 +455,7 @@ export function Routines() {
         assigneeAgentId: "",
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
+        lifecyclePolicy: "independent",
         catchUpPolicy: "skip_missed",
         variables: [],
       });
@@ -1173,6 +1182,23 @@ export function Routines() {
                         </SelectContent>
                       </Select>
                       <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Instance lifecycle</p>
+                      <Select
+                        value={draft.lifecyclePolicy}
+                        onValueChange={(lifecyclePolicy) => setDraft((current) => ({ ...current, lifecyclePolicy }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {lifecyclePolicies.map((value) => (
+                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">{lifecyclePolicyDescriptions[draft.lifecyclePolicy]}</p>
                     </div>
                     <div className="space-y-2">
                       <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Catch-up</p>

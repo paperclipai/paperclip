@@ -814,6 +814,7 @@ export interface Issue {
   originId?: string | null;
   originRunId?: string | null;
   originFingerprint?: string | null;
+  supersededByIssueId?: string | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
@@ -897,6 +898,7 @@ export type CompactIssue = Pick<
   | "originKind"
   | "originId"
   | "originRunId"
+  | "supersededByIssueId"
   | "requestDepth"
   | "billingCode"
   | "executionWorkspaceId"

@@ -189,6 +189,7 @@ cat > /tmp/drafting-routine.json <<JSON
   "priority": "medium",
   "status": "active",
   "concurrencyPolicy": "always_enqueue",
+  "lifecyclePolicy": "independent",
   "catchUpPolicy": "skip_missed"
   ${DRAFTING_AGENT_ID:+, "assigneeAgentId": "$DRAFTING_AGENT_ID"}
 }

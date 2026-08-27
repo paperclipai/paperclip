@@ -440,7 +440,7 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 
 - Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
 - Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
-- Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
+- Control trigger-time concurrency, success-time instance lifecycle, and catch-up behaviour with `concurrencyPolicy`, `lifecyclePolicy`, and `catchUpPolicy`.
 
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`

@@ -52,6 +52,7 @@ import {
   PROJECT_STATUSES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
+  ROUTINE_LIFECYCLE_POLICIES,
   ROUTINE_STATUSES,
   ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
@@ -1251,6 +1252,7 @@ function normalizeRoutineExtension(value: unknown): CompanyPortabilityIssueRouti
     : null;
   const routine = {
     concurrencyPolicy: asString(value.concurrencyPolicy),
+    lifecyclePolicy: asString(value.lifecyclePolicy),
     catchUpPolicy: asString(value.catchUpPolicy),
     variables,
     triggers,
@@ -1261,6 +1263,7 @@ function normalizeRoutineExtension(value: unknown): CompanyPortabilityIssueRouti
 function buildRoutineManifestFromLiveRoutine(routine: RoutineLike): CompanyPortabilityIssueRoutineManifestEntry {
   return {
     concurrencyPolicy: routine.concurrencyPolicy,
+    lifecyclePolicy: routine.lifecyclePolicy,
     catchUpPolicy: routine.catchUpPolicy,
     variables: routine.variables,
     triggers: routine.triggers.map((trigger) => ({
@@ -1771,12 +1774,14 @@ function resolvePortableRoutineDefinition(
   const routine = issue.routine
     ? {
       concurrencyPolicy: issue.routine.concurrencyPolicy,
+      lifecyclePolicy: issue.routine.lifecyclePolicy,
       catchUpPolicy: issue.routine.catchUpPolicy,
       variables: issue.routine.variables ?? null,
       triggers: [...issue.routine.triggers],
     }
     : {
       concurrencyPolicy: null,
+      lifecyclePolicy: null,
       catchUpPolicy: null,
       variables: null,
       triggers: [] as CompanyPortabilityIssueRoutineTriggerManifestEntry[],
@@ -1784,6 +1789,9 @@ function resolvePortableRoutineDefinition(
 
   if (routine.concurrencyPolicy && !ROUTINE_CONCURRENCY_POLICIES.includes(routine.concurrencyPolicy as any)) {
     errors.push(`Recurring task ${issue.slug} uses unsupported routine concurrencyPolicy "${routine.concurrencyPolicy}".`);
+  }
+  if (routine.lifecyclePolicy && !ROUTINE_LIFECYCLE_POLICIES.includes(routine.lifecyclePolicy as any)) {
+    errors.push(`Recurring task ${issue.slug} uses unsupported routine lifecyclePolicy "${routine.lifecyclePolicy}".`);
   }
   if (routine.catchUpPolicy && !ROUTINE_CATCH_UP_POLICIES.includes(routine.catchUpPolicy as any)) {
     errors.push(`Recurring task ${issue.slug} uses unsupported routine catchUpPolicy "${routine.catchUpPolicy}".`);
@@ -4568,6 +4576,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         status: routine.status !== "active" ? routine.status : undefined,
         priority: routine.priority !== "medium" ? routine.priority : undefined,
         concurrencyPolicy: routine.concurrencyPolicy !== "coalesce_if_active" ? routine.concurrencyPolicy : undefined,
+        lifecyclePolicy: routine.lifecyclePolicy !== "independent" ? routine.lifecyclePolicy : undefined,
         catchUpPolicy: routine.catchUpPolicy !== "skip_missed" ? routine.catchUpPolicy : undefined,
         variables: (routine.variables ?? []).length > 0 ? routine.variables : undefined,
         triggers: routine.triggers.map((trigger) => stripEmptyValues({
@@ -5973,6 +5982,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(...resolvedRoutine.warnings);
             const routineDefinition = resolvedRoutine.routine ?? {
               concurrencyPolicy: null,
+              lifecyclePolicy: null,
               catchUpPolicy: null,
               variables: null,
               triggers: [],
@@ -5996,6 +6006,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 routineDefinition.concurrencyPolicy && ROUTINE_CONCURRENCY_POLICIES.includes(routineDefinition.concurrencyPolicy as any)
                   ? routineDefinition.concurrencyPolicy as typeof ROUTINE_CONCURRENCY_POLICIES[number]
                   : "coalesce_if_active",
+              lifecyclePolicy:
+                routineDefinition.lifecyclePolicy && ROUTINE_LIFECYCLE_POLICIES.includes(routineDefinition.lifecyclePolicy as any)
+                  ? routineDefinition.lifecyclePolicy as typeof ROUTINE_LIFECYCLE_POLICIES[number]
+                  : "independent",
               catchUpPolicy:
                 routineDefinition.catchUpPolicy && ROUTINE_CATCH_UP_POLICIES.includes(routineDefinition.catchUpPolicy as any)
                   ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]

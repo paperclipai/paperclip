@@ -50,9 +50,15 @@ const SKIP_REASON_LABELS: Record<string, string> = {
  * Returns an empty string when there is nothing meaningful to show.
  */
 export function runRowSubtitle(
-  run: Pick<RoutineRunSummary, "status" | "failureReason" | "triggerPayload">,
+  run: Pick<RoutineRunSummary, "status" | "failureReason" | "triggerPayload">
+    & Partial<Pick<RoutineRunSummary, "supersededByRunId">>,
   variables: readonly RoutineVariable[] | null | undefined,
 ): string {
+  if (run.status === "superseded") {
+    return run.supersededByRunId
+      ? `Superseded by run ${run.supersededByRunId.slice(0, 8)}`
+      : "Superseded by a newer successful run";
+  }
   if (run.status === "failed") {
     return run.failureReason?.trim() || "Run failed";
   }

@@ -116,6 +116,7 @@ export interface BuiltInAgentBundleDefinition {
     status: "active" | "paused";
     priority: "critical" | "high" | "medium" | "low";
     concurrencyPolicy: "always_enqueue" | "coalesce_if_active" | "skip_if_active";
+    lifecyclePolicy: "independent" | "latest_success_wins";
     catchUpPolicy: "enqueue_missed_with_cap" | "skip_missed";
     variables: RoutineVariable[];
     triggers: Array<{
@@ -370,6 +371,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
         status: "paused",
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
+        lifecyclePolicy: "independent",
         catchUpPolicy: "skip_missed",
         variables: [
           { name: "lookbackDays", label: "Lookback days", type: "number", defaultValue: 7, required: true, options: [] },
@@ -442,6 +444,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
         status: "paused",
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
+        lifecyclePolicy: "independent",
         catchUpPolicy: "skip_missed",
         variables: [
           { name: "staleAfterHours", label: "Refresh slots older than (hours)", type: "number", defaultValue: 24, required: true, options: [] },
@@ -1168,7 +1171,7 @@ export function builtInAgentService(db: Db) {
   function routineDefaultsHash(
     routine: Pick<
       BuiltInAgentBundleDefinition["routine"],
-      "title" | "description" | "priority" | "concurrencyPolicy" | "catchUpPolicy" | "variables"
+      "title" | "description" | "priority" | "concurrencyPolicy" | "lifecyclePolicy" | "catchUpPolicy" | "variables"
     >,
     triggers: Array<{
       kind: string;
@@ -1182,6 +1185,7 @@ export function builtInAgentService(db: Db) {
       description: routine.description ?? "",
       priority: routine.priority,
       concurrencyPolicy: routine.concurrencyPolicy,
+      lifecyclePolicy: routine.lifecyclePolicy,
       catchUpPolicy: routine.catchUpPolicy,
       variables: normalizeRoutineVariablesForHash(routine),
       triggers: normalizeRoutineTriggersForHash(triggers),
@@ -1293,6 +1297,7 @@ export function builtInAgentService(db: Db) {
         priority: routine.priority,
         status: routine.status,
         concurrencyPolicy: routine.concurrencyPolicy,
+        lifecyclePolicy: routine.lifecyclePolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
       }, actor)
@@ -1303,6 +1308,7 @@ export function builtInAgentService(db: Db) {
         priority: routine.priority,
         status: routine.status,
         concurrencyPolicy: routine.concurrencyPolicy,
+        lifecyclePolicy: routine.lifecyclePolicy,
         catchUpPolicy: routine.catchUpPolicy,
         variables: routine.variables,
       }, actor);
@@ -1364,6 +1370,7 @@ export function builtInAgentService(db: Db) {
       description: routine.description ?? "",
       priority: routine.priority as "critical" | "high" | "medium" | "low",
       concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active",
+      lifecyclePolicy: routine.lifecyclePolicy as "independent" | "latest_success_wins",
       catchUpPolicy: routine.catchUpPolicy as "enqueue_missed_with_cap" | "skip_missed",
       variables: routine.variables ?? [],
     }, triggers) : null;
@@ -1439,6 +1446,7 @@ export function builtInAgentService(db: Db) {
       description: routine.description ?? "",
       priority: routine.priority as "critical" | "high" | "medium" | "low",
       concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active",
+      lifecyclePolicy: routine.lifecyclePolicy as "independent" | "latest_success_wins",
       catchUpPolicy: routine.catchUpPolicy as "enqueue_missed_with_cap" | "skip_missed",
       variables: routine.variables ?? [],
     }, triggers) : null;

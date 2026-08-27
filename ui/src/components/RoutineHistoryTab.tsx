@@ -558,6 +558,12 @@ function RevisionPreview({
       differs: !!currentSnapshot && currentSnapshot.concurrencyPolicy !== snapshot.concurrencyPolicy,
     },
     {
+      key: "lifecyclePolicy",
+      label: "Instance lifecycle",
+      value: snapshot.lifecyclePolicy.replaceAll("_", " "),
+      differs: !!currentSnapshot && currentSnapshot.lifecyclePolicy !== snapshot.lifecyclePolicy,
+    },
+    {
       key: "catchUpPolicy",
       label: "Catch-up",
       value: snapshot.catchUpPolicy.replaceAll("_", " "),
@@ -1072,6 +1078,7 @@ function computeFieldChanges(
     resolveProjectName(newRoutine.projectId, projects),
   );
   compareScalar("concurrencyPolicy", "Concurrency", oldRoutine.concurrencyPolicy, newRoutine.concurrencyPolicy);
+  compareScalar("lifecyclePolicy", "Instance lifecycle", oldRoutine.lifecyclePolicy, newRoutine.lifecyclePolicy);
   compareScalar("catchUpPolicy", "Catch-up", oldRoutine.catchUpPolicy, newRoutine.catchUpPolicy);
   compareScalar("status", "Status", oldRoutine.status, newRoutine.status);
   if (JSON.stringify(oldRoutine.variables) !== JSON.stringify(newRoutine.variables)) {

@@ -8,6 +8,7 @@ assigneeRef:
 status: paused
 priority: medium
 concurrencyPolicy: coalesce_if_active
+lifecyclePolicy: independent
 catchUpPolicy: skip_missed
 variables:
   - name: lookbackDays

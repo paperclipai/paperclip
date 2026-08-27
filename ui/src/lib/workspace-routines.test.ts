@@ -20,6 +20,7 @@ function createRoutine(overrides: Partial<RoutineListItem> = {}): RoutineListIte
     priority: "medium",
     status: "active",
     concurrencyPolicy: "coalesce_if_active",
+    lifecyclePolicy: "independent",
     catchUpPolicy: "skip_missed",
     activityGatePolicy: "always",
     activityGateScope: "company",

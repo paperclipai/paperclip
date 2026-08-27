@@ -639,6 +639,9 @@ export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];
 export const ROUTINE_CONCURRENCY_POLICIES = ["coalesce_if_active", "always_enqueue", "skip_if_active"] as const;
 export type RoutineConcurrencyPolicy = (typeof ROUTINE_CONCURRENCY_POLICIES)[number];
 
+export const ROUTINE_LIFECYCLE_POLICIES = ["independent", "latest_success_wins"] as const;
+export type RoutineLifecyclePolicy = (typeof ROUTINE_LIFECYCLE_POLICIES)[number];
+
 export const ROUTINE_CATCH_UP_POLICIES = ["skip_missed", "enqueue_missed_with_cap"] as const;
 export type RoutineCatchUpPolicy = (typeof ROUTINE_CATCH_UP_POLICIES)[number];
 
@@ -664,6 +667,7 @@ export const ROUTINE_RUN_STATUSES = [
   "issue_created",
   "completed",
   "failed",
+  "superseded",
  ] as const;
 export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 

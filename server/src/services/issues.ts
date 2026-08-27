@@ -3223,6 +3223,7 @@ const issueListSelect = {
   originKind: issues.originKind,
   originId: issues.originId,
   originRunId: issues.originRunId,
+  supersededByIssueId: issues.supersededByIssueId,
   originFingerprint: issues.originFingerprint,
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
@@ -4454,6 +4455,62 @@ export function issueService(db: Db) {
 
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  async function lockAndValidateIssueAncestors(
+    tx: any,
+    companyId: string,
+    parentId: string,
+    descendantIssueId?: string,
+  ) {
+    // Lock the complete ancestor chain so create and reparent operations both
+    // conflict with a supersession sweep's root FOR UPDATE lock. When this
+    // mutation wins, it commits before the sweep proceeds and the sweep's fresh
+    // READ COMMITTED descendant snapshot sees the child.
+    const ancestors = Array.from(await tx.execute(sql`
+      with recursive ancestor_ids(id, parent_id, depth) as (
+        select ${issues.id}, ${issues.parentId}, 0
+        from ${issues}
+        where ${issues.companyId} = ${companyId}
+          and ${issues.id} = ${parentId}
+        union all
+        select ancestor_issue.id, ancestor_issue.parent_id, ancestor_ids.depth + 1
+        from ${issues} ancestor_issue
+        join ancestor_ids on ancestor_issue.id = ancestor_ids.parent_id
+        where ancestor_issue.company_id = ${companyId}
+      )
+      select ancestor_issue.id,
+             ancestor_issue.status as issue_status,
+             ancestor_issue.superseded_by_issue_id
+      from ${issues} ancestor_issue
+      join ancestor_ids on ancestor_ids.id = ancestor_issue.id
+      where ancestor_issue.company_id = ${companyId}
+      order by ancestor_ids.depth desc
+      for key share of ancestor_issue
+    `)) as Array<{
+      id: string;
+      issue_status: string;
+      superseded_by_issue_id: string | null;
+    }>;
+    const parent = ancestors.find((ancestor) => ancestor.id === parentId) ?? null;
+    if (!parent) throw notFound("Parent issue not found");
+    if (descendantIssueId && ancestors.some((ancestor) => ancestor.id === descendantIssueId)) {
+      throw unprocessable("Issue parent cannot be the issue or one of its descendants", {
+        issueId: descendantIssueId,
+        parentIssueId: parentId,
+      });
+    }
+    const supersededAncestor = ancestors.find(
+      (ancestor) => ancestor.issue_status === "cancelled" && ancestor.superseded_by_issue_id,
+    );
+    if (supersededAncestor) {
+      throw conflict("Cannot place a descendant issue under a superseded issue", {
+        parentIssueId: parent.id,
+        ancestorIssueId: supersededAncestor.id,
+        supersededByIssueId: supersededAncestor.superseded_by_issue_id,
+      });
+    }
+    return ancestors;
   }
 
   async function getIssueByUuid(id: string) {
@@ -7144,6 +7201,10 @@ export function issueService(db: Db) {
           return withRelations;
         }
 
+        if (issueData.parentId) {
+          await lockAndValidateIssueAncestors(tx, companyId, issueData.parentId);
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -7815,6 +7876,18 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (
+          issueData.parentId !== undefined &&
+          issueData.parentId !== receiptExisting.parentId &&
+          issueData.parentId !== null
+        ) {
+          await lockAndValidateIssueAncestors(
+            tx,
+            receiptExisting.companyId,
+            issueData.parentId,
+            receiptExisting.id,
+          );
+        }
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])

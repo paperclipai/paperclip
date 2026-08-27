@@ -34,6 +34,7 @@ POST /api/companies/{companyId}/routines
   "priority": "medium",
   "status": "active",
   "concurrencyPolicy": "coalesce_if_active",
+  "lifecyclePolicy": "independent",
   "catchUpPolicy": "skip_missed"
 }
 ```
@@ -53,6 +54,7 @@ Fields:
 | `priority` | no | `critical`, `high`, `medium` (default), `low` |
 | `status` | no | `active` (default), `paused`, `archived` |
 | `concurrencyPolicy` | no | Behaviour when a run fires while a previous one is still active |
+| `lifecyclePolicy` | no | Whether a later successful execution supersedes older unfinished executions |
 | `catchUpPolicy` | no | Behaviour for missed scheduled runs |
 
 **Concurrency policies:**
@@ -62,6 +64,17 @@ Fields:
 | `coalesce_if_active` (default) | Incoming run is immediately finalised as `coalesced` and linked to the active run — no new issue is created |
 | `skip_if_active` | Incoming run is immediately finalised as `skipped` and linked to the active run — no new issue is created |
 | `always_enqueue` | Always create a new run regardless of active runs |
+
+Concurrency is a dispatch-time rule. It determines whether a trigger creates a new execution while another execution is active.
+
+**Instance lifecycle policies:**
+
+| Value | Behaviour |
+|-------|-----------|
+| `independent` (default) | Every execution remains independent, including older unfinished executions after a newer success |
+| `latest_success_wins` | After a newer execution reaches `done`, cancel and link older visible non-terminal executions that have no non-terminal descendants |
+
+Lifecycle is a completion-time rule. It does not change trigger dispatch, and it is never inferred from `concurrencyPolicy`. Failed, blocked, or cancelled newer executions do not supersede anything. Pausing or archiving a routine also leaves existing executions untouched. If an older instance has any transitively non-terminal descendant through `parentId`, Paperclip leaves that instance and its routine run unchanged so delegated work stays owned and inspectable.
 
 **Catch-up policies:**
 
@@ -192,7 +205,7 @@ Fires a webhook trigger from an external system. Requires a valid `Authorization
 GET /api/routines/{routineId}/runs?limit=50
 ```
 
-Returns recent run history for the routine. Defaults to 50 most recent runs.
+Returns recent run history for the routine. Defaults to 50 most recent runs. Superseded runs have status `superseded` and `supersededByRunId`; their execution issues expose `supersededByIssueId`.
 
 ## Agent Access Rules
 

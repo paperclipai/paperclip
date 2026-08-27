@@ -125,6 +125,7 @@ export interface CompanyPortabilityIssueRoutineTriggerManifestEntry {
 
 export interface CompanyPortabilityIssueRoutineManifestEntry {
   concurrencyPolicy: string | null;
+  lifecyclePolicy: string | null;
   catchUpPolicy: string | null;
   variables?: RoutineVariable[] | null;
   triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];

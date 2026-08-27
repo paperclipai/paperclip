@@ -194,6 +194,7 @@ routine_payload="$(jq -cn --arg agentId "$agent_id" '{
   priority: "medium",
   status: "active",
   concurrencyPolicy: "always_enqueue",
+  lifecyclePolicy: "independent",
   catchUpPolicy: "skip_missed"
 } + (if $agentId != "" then { assigneeAgentId: $agentId } else {} end)')"
 routine="$(pc_json routine create --payload-json "$routine_payload")"

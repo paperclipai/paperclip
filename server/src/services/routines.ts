@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -175,6 +175,7 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
+type RoutineHeartbeatDeps = IssueAssignmentWakeupDeps & Partial<Pick<ReturnType<typeof heartbeatService>, "cancelRun">>;
 
 const ROUTINE_DESCRIPTION_DOCUMENT_KEY = "description" as const;
 
@@ -556,6 +557,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     priority: routine.priority as RoutineRevisionSnapshotV1["routine"]["priority"],
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
+    lifecyclePolicy: routine.lifecyclePolicy as RoutineRevisionSnapshotV1["routine"]["lifecyclePolicy"],
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
     activityGatePolicy: routine.activityGatePolicy as RoutineRevisionSnapshotV1["routine"]["activityGatePolicy"],
     activityGateScope: routine.activityGateScope as RoutineRevisionSnapshotV1["routine"]["activityGateScope"],
@@ -614,7 +616,7 @@ function routineCurrentFieldsMatch(left: RoutineRow, right: RoutineRow) {
 function mapRoutineRevision(row: typeof routineRevisions.$inferSelect): RoutineRevision {
   return {
     ...row,
-    snapshot: row.snapshot as RoutineRevisionSnapshotV1,
+    snapshot: routineRevisionSnapshotSchema.parse(row.snapshot) as RoutineRevisionSnapshotV1,
   };
 }
 
@@ -657,7 +659,7 @@ function mapRoutineDescriptionDocument(row: {
 export function routineService(
   db: Db,
   deps: {
-    heartbeat?: IssueAssignmentWakeupDeps;
+    heartbeat?: RoutineHeartbeatDeps;
     pluginWorkerManager?: PluginWorkerManager;
     runtimeEnv?: Record<string, string | undefined>;
   } = {},
@@ -666,9 +668,11 @@ export function routineService(
   const secretsSvc = secretService(db);
   const instanceSettings = instanceSettingsService(db);
   const runtimeEnv = deps.runtimeEnv ?? process.env;
-  const heartbeat = deps.heartbeat ?? heartbeatService(db, {
+  const defaultHeartbeat = heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
+  const heartbeat = deps.heartbeat ?? defaultHeartbeat;
+  const cancelHeartbeatRun = deps.heartbeat?.cancelRun ?? defaultHeartbeat.cancelRun;
 
   async function getRoutineById(id: string) {
     return db
@@ -1075,6 +1079,7 @@ export function routineService(
         routineRevisionId: routineRuns.routineRevisionId,
         linkedIssueId: routineRuns.linkedIssueId,
         coalescedIntoRunId: routineRuns.coalescedIntoRunId,
+        supersededByRunId: routineRuns.supersededByRunId,
         failureReason: routineRuns.failureReason,
         completedAt: routineRuns.completedAt,
         createdAt: routineRuns.createdAt,
@@ -1085,6 +1090,7 @@ export function routineService(
         issueTitle: issues.title,
         issueStatus: issues.status,
         issuePriority: issues.priority,
+        issueSupersededByIssueId: issues.supersededByIssueId,
         issueUpdatedAt: issues.updatedAt,
       })
       .from(routineRuns)
@@ -1109,6 +1115,7 @@ export function routineService(
         routineRevisionId: row.routineRevisionId,
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
+        supersededByRunId: row.supersededByRunId,
         failureReason: row.failureReason,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
@@ -1120,6 +1127,7 @@ export function routineService(
             title: row.issueTitle ?? "Routine execution",
             status: row.issueStatus ?? "todo",
             priority: row.issuePriority ?? "medium",
+            supersededByIssueId: row.issueSupersededByIssueId,
             updatedAt: row.issueUpdatedAt ?? row.updatedAt,
           }
           : null,
@@ -1562,6 +1570,330 @@ export function routineService(
       .where(eq(routineRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function supersedeOlderRoutineExecutions(input: {
+    issueId: string;
+    companyId: string;
+    routineId: string;
+    runId: string;
+  }) {
+    const heartbeatRunIds = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(sql`
+        select id
+        from ${routines}
+        where ${routines.companyId} = ${input.companyId}
+          and ${routines.id} = ${input.routineId}
+        for update
+      `);
+
+      const currentRun = await txDb
+        .select({
+          id: routineRuns.id,
+          companyId: routineRuns.companyId,
+          routineId: routineRuns.routineId,
+          status: routineRuns.status,
+          routineRevisionId: routineRuns.routineRevisionId,
+          triggeredAt: routineRuns.triggeredAt,
+          createdAt: routineRuns.createdAt,
+        })
+        .from(routineRuns)
+        .where(
+          and(
+            eq(routineRuns.id, input.runId),
+            eq(routineRuns.companyId, input.companyId),
+            eq(routineRuns.routineId, input.routineId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!currentRun || currentRun.status !== "completed" || !currentRun.routineRevisionId) return [];
+
+      const revision = await txDb
+        .select({ snapshot: routineRevisions.snapshot })
+        .from(routineRevisions)
+        .where(
+          and(
+            eq(routineRevisions.id, currentRun.routineRevisionId),
+            eq(routineRevisions.companyId, input.companyId),
+            eq(routineRevisions.routineId, input.routineId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      const parsedRevision = routineRevisionSnapshotSchema.safeParse(revision?.snapshot);
+      if (!parsedRevision.success || parsedRevision.data.routine.lifecyclePolicy !== "latest_success_wins") {
+        return [];
+      }
+
+      const olderRunCondition = or(
+        lt(routineRuns.triggeredAt, currentRun.triggeredAt),
+        and(
+          eq(routineRuns.triggeredAt, currentRun.triggeredAt),
+          lt(routineRuns.createdAt, currentRun.createdAt),
+        ),
+        and(
+          eq(routineRuns.triggeredAt, currentRun.triggeredAt),
+          eq(routineRuns.createdAt, currentRun.createdAt),
+          lt(routineRuns.id, currentRun.id),
+        ),
+      );
+      const candidates = await txDb
+        .select({
+          issueId: issues.id,
+          issueIdentifier: issues.identifier,
+          issueStatus: issues.status,
+          supersededByIssueId: issues.supersededByIssueId,
+          executionRunId: issues.executionRunId,
+          routineRunId: routineRuns.id,
+        })
+        .from(issues)
+        .innerJoin(
+          routineRuns,
+          and(
+            sql`${routineRuns.id}::text = ${issues.originRunId}`,
+            eq(routineRuns.companyId, issues.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, input.companyId),
+            eq(issues.originKind, "routine_execution"),
+            eq(issues.originId, input.routineId),
+            or(
+              inArray(issues.status, OPEN_ISSUE_STATUSES),
+              and(eq(issues.status, "cancelled"), isNotNull(issues.supersededByIssueId)),
+            ),
+            visibleIssueCondition(),
+            eq(routineRuns.routineId, input.routineId),
+            ne(routineRuns.id, currentRun.id),
+            olderRunCondition,
+          ),
+        )
+        .orderBy(asc(routineRuns.triggeredAt), asc(routineRuns.createdAt), asc(routineRuns.id))
+        .for("update", { of: issues });
+
+      if (candidates.length === 0) return [];
+
+      const rootValues = sql.join(
+        candidates.map((candidate) => sql`(${candidate.issueId}::uuid)`),
+        sql`, `,
+      );
+      const liveStatusValues = sql.join(OPEN_ISSUE_STATUSES.map((status) => sql`${status}`), sql`, `);
+      // Keep this as a statement after the candidate locks. Under READ
+      // COMMITTED, a child transaction that held KEY SHARE first must commit
+      // before those locks are granted, and this new snapshot sees that child.
+      const liveDescendants = Array.from(await txDb.execute(sql`
+          with recursive roots(root_id) as (
+            values ${rootValues}
+          ),
+          descendants(root_id, id, status) as (
+            select roots.root_id, child.id, child.status
+            from roots
+            join ${issues} child
+              on child.parent_id = roots.root_id
+             and child.company_id = ${input.companyId}
+            union
+            select descendants.root_id, child.id, child.status
+            from descendants
+            join ${issues} child
+              on child.parent_id = descendants.id
+             and child.company_id = ${input.companyId}
+          )
+          select root_id, id as descendant_id
+          from descendants
+          where status in (${liveStatusValues})
+          order by root_id, id
+        `)) as Array<{ root_id: string; descendant_id: string }>;
+      const liveDescendantIssueIdsByRoot = new Map<string, string[]>();
+      for (const descendant of liveDescendants) {
+        const descendantIssueIds = liveDescendantIssueIdsByRoot.get(descendant.root_id) ?? [];
+        descendantIssueIds.push(descendant.descendant_id);
+        liveDescendantIssueIdsByRoot.set(descendant.root_id, descendantIssueIds);
+      }
+
+      for (const candidate of candidates) {
+        if (!liveDescendantIssueIdsByRoot.has(candidate.issueId)) continue;
+        const descendantIssueIds = liveDescendantIssueIdsByRoot.get(candidate.issueId);
+        if (!descendantIssueIds) continue;
+
+        const existingDeferredActivity = await txDb
+          .select({ id: activityLog.id })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, input.companyId),
+              eq(activityLog.action, "issue.supersession_deferred"),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, candidate.issueId),
+              sql`${activityLog.details} ->> 'supersedingRunId' = ${currentRun.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existingDeferredActivity) continue;
+
+        await logActivity(txDb, {
+          companyId: input.companyId,
+          actorType: "system",
+          actorId: "routine-supersession",
+          action: "issue.supersession_deferred",
+          entityType: "issue",
+          entityId: candidate.issueId,
+          issueId: candidate.issueId,
+          details: {
+            issueIdentifier: candidate.issueIdentifier,
+            routineId: input.routineId,
+            deferredRunId: candidate.routineRunId,
+            supersedingIssueId: input.issueId,
+            supersedingRunId: currentRun.id,
+            descendantIssueIds,
+          },
+        });
+      }
+
+      const eligibleCandidates = candidates.filter(
+        (candidate) => !liveDescendantIssueIdsByRoot.has(candidate.issueId),
+      );
+
+      const now = new Date();
+      const appliedCandidates: typeof candidates = [];
+      for (const candidate of eligibleCandidates) {
+        if (candidate.supersededByIssueId === input.issueId) continue;
+        if (candidate.supersededByIssueId) {
+          const existingSupersedingRun = await txDb
+            .select({
+              id: routineRuns.id,
+              triggeredAt: routineRuns.triggeredAt,
+              createdAt: routineRuns.createdAt,
+            })
+            .from(routineRuns)
+            .where(
+              and(
+                eq(routineRuns.companyId, input.companyId),
+                eq(routineRuns.routineId, input.routineId),
+                eq(routineRuns.linkedIssueId, candidate.supersededByIssueId),
+                eq(routineRuns.status, "completed"),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+          const existingSupersederIsNewer = existingSupersedingRun
+            && (
+              existingSupersedingRun.triggeredAt.getTime() > currentRun.triggeredAt.getTime()
+              || (
+                existingSupersedingRun.triggeredAt.getTime() === currentRun.triggeredAt.getTime()
+                && existingSupersedingRun.createdAt.getTime() > currentRun.createdAt.getTime()
+              )
+              || (
+                existingSupersedingRun.triggeredAt.getTime() === currentRun.triggeredAt.getTime()
+                && existingSupersedingRun.createdAt.getTime() === currentRun.createdAt.getTime()
+                && existingSupersedingRun.id.localeCompare(currentRun.id) >= 0
+              )
+            );
+          if (existingSupersederIsNewer) continue;
+        }
+
+        const updatedIssue = await issueSvc.update(
+          candidate.issueId,
+          candidate.issueStatus === "cancelled"
+            ? { supersededByIssueId: input.issueId }
+            : { status: "cancelled", supersededByIssueId: input.issueId },
+          tx,
+        );
+        if (!updatedIssue) continue;
+        appliedCandidates.push(candidate);
+
+        await txDb
+          .update(routineRuns)
+          .set({
+            status: "superseded",
+            supersededByRunId: currentRun.id,
+            failureReason: null,
+            completedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(routineRuns.id, candidate.routineRunId),
+              eq(routineRuns.companyId, input.companyId),
+              eq(routineRuns.routineId, input.routineId),
+            ),
+          );
+
+        await logActivity(txDb, {
+          companyId: input.companyId,
+          actorType: "system",
+          actorId: "routine-supersession",
+          action: "issue.superseded",
+          entityType: "issue",
+          entityId: candidate.issueId,
+          issueId: candidate.issueId,
+          details: {
+            issueIdentifier: candidate.issueIdentifier,
+            routineId: input.routineId,
+            supersededRunId: candidate.routineRunId,
+            previousSupersedingIssueId: candidate.supersededByIssueId,
+            supersedingIssueId: input.issueId,
+            supersedingRunId: currentRun.id,
+          },
+        });
+      }
+
+      const supersededIssues = await txDb
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, input.companyId),
+            eq(issues.originKind, "routine_execution"),
+            eq(issues.originId, input.routineId),
+            eq(issues.supersededByIssueId, input.issueId),
+          ),
+        );
+      const supersededIssueIds = supersededIssues.map((row) => row.id);
+      if (supersededIssueIds.length === 0) return [];
+
+      const directHeartbeatRunIds = appliedCandidates
+        .map((candidate) => candidate.executionRunId)
+        .filter((runId): runId is string => Boolean(runId));
+      const heartbeatConditions = [
+        inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, supersededIssueIds),
+      ];
+      if (directHeartbeatRunIds.length > 0) {
+        heartbeatConditions.push(inArray(heartbeatRuns.id, directHeartbeatRunIds));
+      }
+      return txDb
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
+            or(...heartbeatConditions),
+          ),
+        )
+        .then((rows) => [...new Set(rows.map((row) => row.id))]);
+    });
+
+    for (const heartbeatRunId of heartbeatRunIds) {
+      await cancelHeartbeatRun(
+        heartbeatRunId,
+        "Cancelled because a newer successful routine execution superseded this instance",
+        {
+          errorCode: "routine_instance_superseded",
+          resultJson: {
+            routineId: input.routineId,
+            supersedingIssueId: input.issueId,
+            supersedingRunId: input.runId,
+          },
+          eventMessage: "Routine execution superseded",
+          eventPayload: {
+            routineId: input.routineId,
+            supersedingIssueId: input.issueId,
+            supersedingRunId: input.runId,
+          },
+        },
+      );
+    }
   }
 
   async function createWebhookSecret(
@@ -2089,6 +2421,7 @@ export function routineService(
             routineRevisionId: routineRuns.routineRevisionId,
             linkedIssueId: routineRuns.linkedIssueId,
             coalescedIntoRunId: routineRuns.coalescedIntoRunId,
+            supersededByRunId: routineRuns.supersededByRunId,
             failureReason: routineRuns.failureReason,
             completedAt: routineRuns.completedAt,
             createdAt: routineRuns.createdAt,
@@ -2099,6 +2432,7 @@ export function routineService(
             issueTitle: issues.title,
             issueStatus: issues.status,
             issuePriority: issues.priority,
+            issueSupersededByIssueId: issues.supersededByIssueId,
             issueUpdatedAt: issues.updatedAt,
           })
           .from(routineRuns)
@@ -2122,6 +2456,7 @@ export function routineService(
               routineRevisionId: run.routineRevisionId,
               linkedIssueId: run.linkedIssueId,
               coalescedIntoRunId: run.coalescedIntoRunId,
+              supersededByRunId: run.supersededByRunId,
               failureReason: run.failureReason,
               completedAt: run.completedAt,
               createdAt: run.createdAt,
@@ -2133,6 +2468,7 @@ export function routineService(
                   title: run.issueTitle ?? "Routine execution",
                   status: run.issueStatus ?? "todo",
                   priority: run.issuePriority ?? "medium",
+                  supersededByIssueId: run.issueSupersededByIssueId,
                   updatedAt: run.issueUpdatedAt ?? run.updatedAt,
                 }
                 : null,
@@ -2202,6 +2538,7 @@ export function routineService(
             priority: input.priority,
             status,
             concurrencyPolicy: input.concurrencyPolicy,
+            lifecyclePolicy: input.lifecyclePolicy,
             catchUpPolicy: input.catchUpPolicy,
             activityGatePolicy: input.activityGatePolicy ?? "always",
             activityGateScope: input.activityGateScope ?? "company",
@@ -2317,6 +2654,7 @@ export function routineService(
           priority: patch.priority ?? locked.priority,
           status: nextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
+          lifecyclePolicy: patch.lifecyclePolicy ?? locked.lifecyclePolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           activityGatePolicy: patch.activityGatePolicy ?? locked.activityGatePolicy,
           activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
@@ -2382,6 +2720,7 @@ export function routineService(
             priority: candidate.priority,
             status: candidate.status,
             concurrencyPolicy: candidate.concurrencyPolicy,
+            lifecyclePolicy: candidate.lifecyclePolicy,
             catchUpPolicy: candidate.catchUpPolicy,
             activityGatePolicy: candidate.activityGatePolicy,
             activityGateScope: candidate.activityGateScope,
@@ -2720,6 +3059,7 @@ export function routineService(
             priority: routineSnapshot.priority,
             status: routineSnapshot.status,
             concurrencyPolicy: routineSnapshot.concurrencyPolicy,
+            lifecyclePolicy: routineSnapshot.lifecyclePolicy,
             catchUpPolicy: routineSnapshot.catchUpPolicy,
             activityGatePolicy: routineSnapshot.activityGatePolicy,
             activityGateScope: routineSnapshot.activityGateScope,
@@ -2989,6 +3329,7 @@ export function routineService(
           routineRevisionId: routineRuns.routineRevisionId,
           linkedIssueId: routineRuns.linkedIssueId,
           coalescedIntoRunId: routineRuns.coalescedIntoRunId,
+          supersededByRunId: routineRuns.supersededByRunId,
           failureReason: routineRuns.failureReason,
           completedAt: routineRuns.completedAt,
           createdAt: routineRuns.createdAt,
@@ -2999,6 +3340,7 @@ export function routineService(
           issueTitle: issues.title,
           issueStatus: issues.status,
           issuePriority: issues.priority,
+          issueSupersededByIssueId: issues.supersededByIssueId,
           issueUpdatedAt: issues.updatedAt,
         })
         .from(routineRuns)
@@ -3022,6 +3364,7 @@ export function routineService(
         routineRevisionId: row.routineRevisionId,
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
+        supersededByRunId: row.supersededByRunId,
         failureReason: row.failureReason,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
@@ -3033,6 +3376,7 @@ export function routineService(
             title: row.issueTitle ?? "Routine execution",
             status: row.issueStatus ?? "todo",
             priority: row.issuePriority ?? "medium",
+            supersededByIssueId: row.issueSupersededByIssueId,
             updatedAt: row.issueUpdatedAt ?? row.updatedAt,
           }
           : null,
@@ -3169,8 +3513,10 @@ export function routineService(
       const issue = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           originKind: issues.originKind,
+          originId: issues.originId,
           originRunId: issues.originRunId,
         })
         .from(issues)
@@ -3180,6 +3526,8 @@ export function routineService(
       const run = await db
         .select({
           id: routineRuns.id,
+          companyId: routineRuns.companyId,
+          routineId: routineRuns.routineId,
           status: routineRuns.status,
           failureReason: routineRuns.failureReason,
           triggerPayload: routineRuns.triggerPayload,
@@ -3188,11 +3536,12 @@ export function routineService(
         .where(eq(routineRuns.id, issue.originRunId))
         .then((rows) => rows[0] ?? null);
       if (!run) return null;
+      if (run.status === "superseded") return run;
       if (issue.status === "done") {
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
-        return finalizeRun(issue.originRunId, {
+        const completedRun = await finalizeRun(issue.originRunId, {
           status: "completed",
           failureReason: null,
           completedAt: new Date(),
@@ -3210,6 +3559,20 @@ export function routineService(
             }
             : {}),
         });
+        if (
+          completedRun
+          && issue.originId
+          && run.companyId === issue.companyId
+          && run.routineId === issue.originId
+        ) {
+          await supersedeOlderRoutineExecutions({
+            issueId: issue.id,
+            companyId: issue.companyId,
+            routineId: issue.originId,
+            runId: run.id,
+          });
+        }
+        return completedRun;
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
         const failureReason = executionIssueTransientFailureReason(issue.status);

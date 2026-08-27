@@ -5,6 +5,7 @@ import type {
   RoutineActivityGateScope,
   RoutineCatchUpPolicy,
   RoutineConcurrencyPolicy,
+  RoutineLifecyclePolicy,
   RoutineStatus,
   RoutineTriggerKind,
   RoutineTriggerSigningMode,
@@ -53,6 +54,7 @@ export interface RoutineIssueSummary {
   title: string;
   status: string;
   priority: string;
+  supersededByIssueId?: string | null;
   updatedAt: Date;
 }
 
@@ -82,6 +84,7 @@ export interface Routine {
   priority: string;
   status: string;
   concurrencyPolicy: string;
+  lifecyclePolicy: string;
   catchUpPolicy: string;
   activityGatePolicy: string;
   activityGateScope: string;
@@ -127,6 +130,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   priority: IssuePriority;
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
+  lifecyclePolicy: RoutineLifecyclePolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
   activityGatePolicy: RoutineActivityGatePolicy;
   activityGateScope: RoutineActivityGateScope;
@@ -212,6 +216,7 @@ export interface RoutineRun {
   dispatchFingerprint: string | null;
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
+  supersededByRunId: string | null;
   failureReason: string | null;
   completedAt: Date | null;
   createdAt: Date;
