@@ -9458,13 +9458,6 @@
           "notNull": true,
           "default": 0
         },
-        "error_count": {
-          "name": "error_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
         "last_attempt_at": {
           "name": "last_attempt_at",
           "type": "timestamp with time zone",
@@ -21175,6 +21168,13 @@
         },
         "attempt_count": {
           "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "error_count": {
+          "name": "error_count",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
