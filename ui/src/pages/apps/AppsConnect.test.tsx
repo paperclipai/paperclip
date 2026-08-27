@@ -1033,7 +1033,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
 
     await render();
-    expect(container.textContent).toContain("Finish connecting Notion");
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Finish connecting Notion");
+    });
     expect(container.textContent).toContain("identity and agent access will stay the same");
     expect(container.textContent).not.toContain("Choose access before sign-in");
     expect(buttonByText("Continue to sign in")).toBeUndefined();
