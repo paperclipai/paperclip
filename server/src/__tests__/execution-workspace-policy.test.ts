@@ -793,6 +793,42 @@ describe("execution workspace policy helpers", () => {
       expect(warning).not.toContain("agent home fallback");
     });
 
+    // Restore is not limited to the two isolating modes. `executionWorkspacesSvc.create` persists a
+    // row for every mode a run lands in — `shared_workspace` and `adapter_managed` included — so a
+    // reuse binding can restore one of those just as readily. Here the run restored a persisted
+    // shared checkout while this run's own anchor resolved to the agent's home directory: naming
+    // the anchor would send the operator to a directory the adapter never opened.
+    it("names the restored workspace when the run reused a persisted shared checkout", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: {
+          mode: "agent_default",
+          source: "agent_home",
+          baseCwdFallback: false,
+          restoredWorkspaceMode: "shared_workspace",
+        },
+      });
+      expect(warning).toContain("the shared project workspace, restored from an earlier run");
+      expect(warning).not.toContain("the agent's own workspace");
+    });
+
+    // The mirror image, and the one the anchor gets backwards most confidently: an
+    // `adapter_managed` (or `cloud_sandbox`) row maps to `agent_default`, so the run reopened the
+    // agent's own directory while the anchor still reads as the project's shared checkout.
+    it("names the restored workspace when the run reused a persisted agent-default checkout", () => {
+      const warning = describeSuppressed({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        resolvedWorkspace: {
+          mode: "shared_workspace",
+          source: "project_primary",
+          baseCwdFallback: false,
+          restoredWorkspaceMode: "agent_default",
+        },
+      });
+      expect(warning).toContain("the agent's own workspace, restored from an earlier run");
+      expect(warning).not.toContain("the shared project workspace");
+    });
+
     // The suppressed warning has to survive the exact round trip the dispatch path takes:
     // the persisted JSON is parsed first, and only the parsed policy reaches the gate.
     it("describes a policy parsed straight from the persisted project column", () => {

@@ -258,6 +258,22 @@ export type ResolvedRunWorkspaceDescriptor = {
 };
 
 /**
+ * Wording for a workspace this run restored, one entry per mode a persisted workspace can carry.
+ *
+ * Typed as a total `Record` on purpose: `executionWorkspacesSvc.create` persists a row for whichever
+ * mode a run landed in, so restore is not limited to the isolating modes, and a mode without its own
+ * wording would silently fall through to the anchor — naming the shared checkout for a run that
+ * reopened the agent's own directory, and the reverse. A new mode fails to compile until it is
+ * answered here.
+ */
+const RESTORED_RUN_WORKSPACE_DESCRIPTIONS: Record<ParsedExecutionWorkspaceMode, string> = {
+  isolated_workspace: "an isolated workspace restored from an earlier run",
+  operator_branch: "an operator branch workspace restored from an earlier run",
+  agent_default: "the agent's own workspace, restored from an earlier run",
+  shared_workspace: "the shared project workspace, restored from an earlier run",
+};
+
+/**
  * Describe where the run actually landed, for an operator diagnosing where their work went.
  *
  * Driven by resolution rather than by the requested mode, because the two disagree often enough to
@@ -267,11 +283,8 @@ export type ResolvedRunWorkspaceDescriptor = {
 function describeResolvedRunWorkspace(workspace: ResolvedRunWorkspaceDescriptor): string {
   // A restored workspace outranks every anchor signal below, including the fallback: the anchor is
   // what this run *would* have used, and restoring moved the adapter somewhere else entirely.
-  if (workspace.restoredWorkspaceMode === "isolated_workspace") {
-    return "an isolated workspace restored from an earlier run";
-  }
-  if (workspace.restoredWorkspaceMode === "operator_branch") {
-    return "an operator branch workspace restored from an earlier run";
+  if (workspace.restoredWorkspaceMode !== null) {
+    return RESTORED_RUN_WORKSPACE_DESCRIPTIONS[workspace.restoredWorkspaceMode];
   }
   // `source` stays "project_primary" for a fallback anchor, so this flag has to be read first.
   if (workspace.baseCwdFallback) {
