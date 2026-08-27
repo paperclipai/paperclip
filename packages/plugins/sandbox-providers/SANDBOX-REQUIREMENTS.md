@@ -8,33 +8,99 @@ This document states requirements. It does not state build steps.
 
 ## Security boundary
 
-The sandbox is the security boundary. One run owns one sandbox. Code inside a
-sandbox can change any file inside that sandbox. Paperclip protects the host,
-the cluster, and the network. Paperclip does not protect sandbox code from
-other sandbox code that shares the same sandbox.
+A sandbox is an untrusted execution environment. Paperclip assumes that a
+sandbox process can read or change all accessible data.
 
-This section states the controls for two paths that cross the boundary
-between a sandbox and the host:
+Paperclip does not protect sandbox files, processes, credentials, or code from
+other code in the same sandbox. Internal sandbox controls are not part of the
+Paperclip sandbox-to-host security boundary.
 
-- Outbound workspace synchronization copies files from the sandbox to the
-  host.
-- The application programming interface bridge carries requests from the
-  sandbox to the host.
+### Provider isolation assumption
 
-Other paths also cross the boundary. These paths include command execution,
-an optional bidirectional session channel, and a persistent process session.
-This section does not state the controls for those other paths.
+The sandbox provider must isolate the sandbox from the host and the provider
+control plane. The provider must isolate these items from direct sandbox access:
 
-Both boundary-crossing paths named above must keep every applicable host,
-cluster, mount, network, and host-import control that they have today. Later
-changes must not weaken or remove those controls.
+- Host files
+- Host credentials
+- Cluster credentials
+- Management sockets
+- Provider management interfaces
 
-A sandbox provider must keep every host, cluster, mount, network, and
-host-import control that it has today.
+The provider must use isolated sandbox storage for each sandbox path that
+synchronization uses. This includes workspace paths and staging paths.
+Paperclip cannot verify this requirement for externally supplied sandboxes.
 
-**Mount duty.** A provider must not map a host path into a sandbox
-synchronization path. This is a duty of the provider. No code in this
-repository enforces the duty today.
+The provider and the operator control general internet access. Paperclip does
+not enforce this policy inside the sandbox.
+
+### Sandbox-to-host surfaces
+
+Paperclip gives sandbox code only two controlled methods to write host files or
+call the Paperclip API.
+
+1. **Outbound workspace synchronization**
+
+   Paperclip copies sandbox files to host paths that the Paperclip orchestrator
+   selects.
+
+   The synchronization implementation must:
+
+   - Accept only source and destination mappings that the orchestrator supplies.
+   - Keep sandbox sources in the specified synchronization roots.
+   - Keep host destinations in the specified host workspace or asset roots.
+   - Reject path traversal and escaping symbolic links.
+   - Handle sandbox file contents only as data during synchronization.
+   - Validate archive member paths and link targets before extraction on the host.
+   - Use atomic replacement for each single-file mapping.
+   - Transfer file data with bounded memory.
+
+   Native synchronization hooks and the command fallback must meet the same
+   requirements.
+
+2. **Paperclip HTTP bridge**
+
+   The HTTP bridge is the only approved method that sandbox code can use to call
+   the Paperclip API.
+
+   The bridge must:
+
+   - Accept only requests that have valid bridge authentication.
+   - Limit bridge authentication to bridge access.
+   - Use only the run agent's API authority for each request.
+   - Permit only approved HTTP methods and routes.
+   - Forward only approved request headers.
+   - Add the correct run identity to each request.
+   - Limit request size, response size, and request time.
+
+   The file-queue transport must limit the queue length. The bidirectional
+   channel must limit the number of concurrent requests.
+
+   All other HTTP bridge requirements apply to both transports.
+
+### What is not a separate boundary surface
+
+Paperclip sends commands from the host to the sandbox. Command execution can
+return output to the host. This output does not give sandbox code authority to
+write host files or call the Paperclip API.
+
+A persistent process session stays in the sandbox. A bidirectional channel is a
+transport. Sandbox authority stays limited to outbound workspace synchronization
+and the HTTP bridge.
+
+A change creates a new security-boundary surface in either of these conditions:
+
+- The change lets sandbox code write host files outside workspace synchronization.
+- The change lets sandbox code call the Paperclip API outside the HTTP bridge.
+
+The developer must update this contract before the change is released. The
+change must receive a security review.
+
+If the provider isolation assumption stays true, a change needs a
+sandbox-boundary hardening review only if the change modifies one of these
+items:
+
+- The transfer of sandbox data to host files
+- The API authority of sandbox code
 
 ## Required on PATH
 
