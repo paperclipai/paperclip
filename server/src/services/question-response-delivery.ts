@@ -379,9 +379,13 @@ export function questionResponseDeliveryService(
     };
   }
 
-  async function releaseForRetry(delivery: DeliveryRow, errorCode: string) {
+  async function releaseForRetry(
+    delivery: DeliveryRow,
+    errorCode: string,
+    options: { bounded: boolean } = { bounded: true },
+  ) {
     const at = now();
-    const exhausted = delivery.attemptCount >= MAX_DELIVERY_ATTEMPTS;
+    const exhausted = options.bounded && delivery.attemptCount >= MAX_DELIVERY_ATTEMPTS;
     if (!exhausted) {
       await db.update(issueQuestionResponseDeliveries).set({
         status: "pending",
@@ -642,17 +646,11 @@ export function questionResponseDeliveryService(
       }));
       if (!wakeRun && !durableWake) {
         const errorCode = "question_response_wake_skipped";
-        const exhausted = await releaseForRetry(claimed, errorCode);
-        if (!exhausted) return null;
-        return recordTerminal({
-          delivery: claimed,
-          interaction,
-          status: "failed",
-          mode: null,
-          targetRunId: null,
-          adapter,
-          errorCode,
-        });
+        // Scheduling suppression is an availability state, not a delivery
+        // failure. Keep the durable receipt retryable until the suppression is
+        // lifted; the bounded limit remains reserved for actual wake errors.
+        await releaseForRetry(claimed, errorCode, { bounded: false });
+        return null;
       }
       const targetRun = wakeRun ?? durableWake?.run ?? queuedSuccessor ?? null;
       const coalesced = Boolean(queuedSuccessor && targetRun?.id === queuedSuccessor.id);

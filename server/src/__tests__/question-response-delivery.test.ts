@@ -287,6 +287,47 @@ describeEmbeddedPostgres("question response delivery", () => {
     });
   });
 
+  it("delivers after wake suppression outlasts the bounded error retry limit", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const fallbackRunId = randomUUID();
+    let wakeAttempts = 0;
+    const wakeup = vi.fn().mockImplementation(async () => {
+      wakeAttempts += 1;
+      if (wakeAttempts <= 5) return null;
+      return db.insert(heartbeatRuns).values({
+        id: fallbackRunId,
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        invocationSource: "automation",
+        status: "queued",
+        runtimeMode: "legacy",
+        driverKind: "codex",
+        contextSnapshot: { issueId: seeded.issueId },
+      }).returning().then((rows) => rows[0]!);
+    });
+    const service = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer: vi.fn(),
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await expect(service.deliver(seeded.interaction.id)).resolves.toBeNull();
+    }
+    const delivered = await service.deliver(seeded.interaction.id);
+
+    expect(delivered).toMatchObject({
+      status: "fallback_queued",
+      mode: "wake_fallback",
+      targetRunId: fallbackRunId,
+    });
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "fallback_queued",
+      attemptCount: 6,
+      targetRunId: fallbackRunId,
+    });
+  });
+
   it("reuses a durable wake receipt instead of issuing a duplicate continuation", async () => {
     const seeded = await seed({ sourceStatus: "running" });
     const [wakeRequest] = await db.insert(agentWakeupRequests).values({
