@@ -19,7 +19,6 @@ export type {
   PaperclipSemanticToolCall,
   PaperclipSemanticToolDefinition,
   PaperclipSemanticToolResult,
-  PaperclipQuestionResponse,
   PaperclipQuestionSet,
   PaperclipRuntimeInputRequest,
   PrpEvent,

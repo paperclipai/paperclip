@@ -21,6 +21,7 @@ import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { questionResponseDeliveryService } from "../question-response-delivery.js";
 import type { NativeRunStoreBinding } from "./native-run-coordinator-store.js";
 
 const QUESTION_KEY_PREFIX = "paperclip-runner-question:";
@@ -55,7 +56,10 @@ function requestIdForInteraction(
   const expectedPrefix = `${QUESTION_KEY_PREFIX}${interaction.sourceRunId}:`;
   if (!key?.startsWith(expectedPrefix)) return null;
   const requestId = key.slice(expectedPrefix.length);
-  return REQUEST_ID_PATTERN.test(requestId) ? requestId : null;
+  if (!REQUEST_ID_PATTERN.test(requestId)) return null;
+  return interaction.payload.runtimeRequestId && interaction.payload.runtimeRequestId !== requestId
+    ? null
+    : requestId;
 }
 
 function uniqueSyntheticOptionId(existing: readonly string[], preferred: string): string {
@@ -68,7 +72,7 @@ function uniqueSyntheticOptionId(existing: readonly string[], preferred: string)
   throw new Error("native_question_synthetic_option_exhausted");
 }
 
-function toInteractionPayload(questionSet: PaperclipQuestionSet) {
+function toInteractionPayload(questionSet: PaperclipQuestionSet, runtimeRequestId: string) {
   return {
     version: 1 as const,
     ...(questionSet.title ? { title: questionSet.title.slice(0, 240) } : {}),
@@ -110,6 +114,7 @@ function toInteractionPayload(questionSet: PaperclipQuestionSet) {
       };
     }),
     questionSet: questionSet as PaperclipQuestionSetPayload,
+    runtimeRequestId,
   };
 }
 
@@ -224,7 +229,7 @@ export async function projectNativeRuntimeRequest(input: {
       continuationPolicy: "none",
       ...(questionSet.title ? { title: questionSet.title.slice(0, 240) } : {}),
       ...(typeof request.prompt === "string" ? { summary: request.prompt.slice(0, 1000) } : {}),
-      payload: toInteractionPayload(questionSet),
+      payload: toInteractionPayload(questionSet, request.requestId),
     },
     { agentId: input.binding.agentId, runId: input.binding.runId },
   ) as AskUserQuestionsInteraction;
@@ -247,7 +252,7 @@ export async function projectNativeRuntimeRequest(input: {
     });
   }
   if (interaction.status === "answered") {
-    await deliverNativeQuestionResponse(input.db, interaction);
+    await deliverNativeQuestionResponseDurably(input.db, interaction);
   }
   return interaction;
 }
@@ -304,6 +309,20 @@ export async function deliverNativeQuestionResponse(
   }
 }
 
+async function deliverNativeQuestionResponseDurably(
+  db: Db,
+  interaction: AskUserQuestionsInteraction,
+): Promise<void> {
+  await questionResponseDeliveryService(db, {
+    heartbeat: {
+      wakeup: async () => {
+        throw new Error("native_question_wake_unreachable");
+      },
+    } as never,
+    resolveNativeQuestion: (candidate) => deliverNativeQuestionResponse(db, candidate),
+  }).deliver(interaction.id);
+}
+
 export async function flushNativeQuestionResponses(
   db: Db,
   runId: string,
@@ -317,7 +336,7 @@ export async function flushNativeQuestionResponses(
       && interaction.sourceRunId === runId
       && interaction.status === "answered"
     ) {
-      await deliverNativeQuestionResponse(db, interaction);
+      await deliverNativeQuestionResponseDurably(db, interaction);
     }
   }
 }

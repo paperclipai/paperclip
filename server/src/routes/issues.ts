@@ -2860,6 +2860,7 @@ export function issueRoutes(
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const questionResponseDeliveries = questionResponseDeliveryService(db, {
     heartbeat,
+    resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db, interaction),
   });
   const memoizeIssueRead = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof svc.getById>>>({
     shouldCache: (issue) => issue !== null,

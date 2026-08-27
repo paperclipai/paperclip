@@ -326,6 +326,10 @@ vi.mock("../services/question-response-delivery.js", () => ({
   })),
 }));
 
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+}));
+
 vi.mock("../services/secret-proposals.js", () => ({
   createSecretProposalsService: vi.fn(() => ({
     sweepExpired: vi.fn(async () => 0),

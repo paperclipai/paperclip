@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -185,6 +186,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       continuationPolicy: "none",
       effectiveResolverPolicy: "human_only",
       payload: {
+        runtimeRequestId: "request-1",
         questionSet: { schema: "paperclip.question_set.v1" },
         questions: [{
           id: "color",
@@ -226,9 +228,16 @@ describeEmbeddedPostgres("native question bridge", () => {
       },
       `question_${interaction!.id}`,
     );
+    expect(queueCommand).toHaveBeenCalledTimes(1);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      interactionId: interaction!.id,
+      status: "delivered",
+      deliveryMode: "steered",
+      targetRunId: runId,
+    });
     expect(answered.kind).toBe("ask_user_questions");
     if (answered.kind !== "ask_user_questions") throw new Error("expected question interaction");
-    await expect(deliverNativeQuestionResponse(db, answered)).resolves.toBe("queued");
     await expect(nativeQuestionRunToCancel(db, answered)).resolves.toBe(runId);
     release();
   });
