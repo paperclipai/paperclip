@@ -1177,7 +1177,20 @@ health_serves_candidate() {
           const values = [health.version, health.serverVersion, health.gitSha, health.commitSha]
             .filter((value) => typeof value === "string")
             .map((value) => value.toLowerCase());
-          const matches = values.some((value) => value === candidate || value.includes(`.git.${candidate}`));
+          // Health labels conventionally carry an abbreviated git SHA
+          // (`...git.d15b55b0e`), whereas deployment receipts retain the full
+          // candidate. Treat a SHA prefix as the same revision, but only when
+          // it is a seven-or-more-character hexadecimal prefix to avoid a
+          // coincidental version-string match authorising a deploy.
+          const shaMatchesCandidate = (reported) => {
+            if (!/^[0-9a-f]{7,64}$/.test(reported)) return false;
+            return candidate === reported || candidate.startsWith(reported) || reported.startsWith(candidate);
+          };
+          const matches = values.some((value) => {
+            if (shaMatchesCandidate(value)) return true;
+            const gitSha = value.match(/(?:^|\.git\.)([0-9a-f]{7,64})(?:\b|$)/)?.[1];
+            return Boolean(gitSha && shaMatchesCandidate(gitSha));
+          });
           process.exit(matches ? 0 : 1);
         } catch { process.exit(1); }
       });

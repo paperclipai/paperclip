@@ -813,16 +813,22 @@ test("restart continuity wait adapts to load and probes served candidate before 
     assert.equal(override.stdout.trim(), "17", "operator timeout override stays authoritative");
 
     const probe = 'source "$1"; curl() { printf "%s" "$HEALTH_BODY"; }; health_serves_candidate http://unused "$2"';
-    const served = sh("bash", ["-c", probe, "--", PROMOTE, "d15b55b0e"], {
+    const candidateSha = "d15b55b0ee7203a44f04ced495844c993088df0a";
+    const served = sh("bash", ["-c", probe, "--", PROMOTE, candidateSha], {
       ...common,
       HEALTH_BODY: '{"version":"2026.722.0+1278.git.d15b55b0e"}',
     });
     assert.equal(served.status, 0, served.stderr);
-    const stale = sh("bash", ["-c", probe, "--", PROMOTE, "d15b55b0e"], {
+    const stale = sh("bash", ["-c", probe, "--", PROMOTE, candidateSha], {
       ...common,
       HEALTH_BODY: '{"version":"2026.722.0+1278.git.other"}',
     });
     assert.notEqual(stale.status, 0, "a health response for another commit must not verify continuity");
+    const shortNonSha = sh("bash", ["-c", probe, "--", PROMOTE, candidateSha], {
+      ...common,
+      HEALTH_BODY: '{"version":"2026.722.0+1278.git.d15b"}',
+    });
+    assert.notEqual(shortNonSha.status, 0, "an unsafe short prefix must not verify continuity");
   } finally {
     rmSync(state, { recursive: true, force: true });
   }
