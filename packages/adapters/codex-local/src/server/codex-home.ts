@@ -7,6 +7,13 @@ import { readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
+// Copied into managed homes like COPIED_SHARED_FILES, but excluded from the
+// sandbox sync allowlist below. AGENTS.md and RTK.md carry the rtk usage
+// instructions (see the rtk layer in the root Dockerfile); the rtk binary
+// ships in this image but not in the agent-runtime sandbox images, so staging
+// these files into a sandbox would instruct Codex to call a binary that does
+// not exist there.
+const LOCAL_ONLY_COPIED_SHARED_FILES = ["AGENTS.md", "RTK.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
@@ -20,6 +27,8 @@ const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
  * stock upstream `codex` binary writes at runtime (`*.sqlite`, `*-wal`,
  * `plugins/`, `cache/`, `sessions/`, `shell_snapshots/`, …) is intentionally
  * excluded — it is large host-local runtime state the sandbox run never needs.
+ * `LOCAL_ONLY_COPIED_SHARED_FILES` is also excluded on purpose: those files
+ * reference the container-local rtk binary, which sandbox images do not ship.
  */
 export const CODEX_SYNC_ALLOWLIST = [
   ...COPIED_SHARED_FILES,
@@ -672,7 +681,7 @@ export async function seedManagedCodexHome(
       await ensureSymlink(path.join(targetHome, name), source);
     }
 
-    for (const name of COPIED_SHARED_FILES) {
+    for (const name of [...COPIED_SHARED_FILES, ...LOCAL_ONLY_COPIED_SHARED_FILES]) {
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
       await ensureCopiedFile(path.join(targetHome, name), source);

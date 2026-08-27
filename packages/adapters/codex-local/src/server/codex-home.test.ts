@@ -384,6 +384,24 @@ describe("seedManagedCodexHome", () => {
     }
   });
 
+  it("copies AGENTS.md and RTK.md from the shared source into the managed home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-rtk-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const agentHome = path.join(root, "agent-home");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(path.join(sharedCodexHome, "AGENTS.md"), "@/paperclip/.codex/RTK.md\n", "utf8");
+      await fs.writeFile(path.join(sharedCodexHome, "RTK.md"), "# RTK\n", "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      expect(await fs.readFile(path.join(agentHome, "AGENTS.md"), "utf8")).toBe("@/paperclip/.codex/RTK.md\n");
+      expect(await fs.readFile(path.join(agentHome, "RTK.md"), "utf8")).toBe("# RTK\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes an API-key auth.json into the home when an apiKey is supplied", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-"));
     try {
@@ -935,6 +953,12 @@ describe("stageCodexHomeForSync", () => {
     await fs.mkdir(path.join(home, "skills"), { recursive: true });
     await fs.symlink(skillSource, path.join(home, "skills", "demo.md"));
 
+    // Local-only copies: seeded into the managed home but excluded from the
+    // sandbox sync (the rtk binary they reference does not exist in sandbox
+    // runtime images).
+    await fs.writeFile(path.join(home, "AGENTS.md"), "@/paperclip/.codex/RTK.md\n", "utf8");
+    await fs.writeFile(path.join(home, "RTK.md"), "# RTK\n", "utf8");
+
     // Decoys: large runtime state the 4-name denylist missed.
     await fs.writeFile(path.join(home, "logs_2.sqlite"), "x", "utf8");
     await fs.writeFile(path.join(home, "state_5.sqlite"), "x", "utf8");
@@ -959,7 +983,7 @@ describe("stageCodexHomeForSync", () => {
       expect(entries).toEqual([...CODEX_SYNC_ALLOWLIST].sort());
 
       // Decoys must be absent.
-      for (const decoy of ["logs_2.sqlite", "state_5.sqlite", "plugins", "sessions", "tmp"]) {
+      for (const decoy of ["logs_2.sqlite", "state_5.sqlite", "plugins", "sessions", "tmp", "AGENTS.md", "RTK.md"]) {
         expect(entries).not.toContain(decoy);
       }
 

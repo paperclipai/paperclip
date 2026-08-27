@@ -102,20 +102,37 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 
 # rtk (github.com/rtk-ai/rtk): token-compressing CLI proxy for the harness
 # CLIs above. Version-pinned in its own layer so it never rides the weekly
-# epoch bust; the installer verifies the release checksum. `init` seeds
-# /paperclip with the Claude Code Bash auto-rewrite hook and the Codex
-# AGENTS.md instructions. The seed reaches a deployment only when /paperclip
-# starts as a fresh named volume (Docker copies image content into new
-# volumes); an existing volume — or a settings.json bind mount over it —
-# keeps its own files, so those deployments wire the hook themselves and get
-# just the binary from this layer.
+# epoch bust. The release tarball is verified against the per-arch SHA-256
+# pinned below (no remote installer script runs; bump the hashes together
+# with RTK_VERSION). `init --hook-only` seeds the Claude Code Bash
+# auto-rewrite hook and `init --codex` the Codex AGENTS.md instructions into
+# /paperclip. The seed reaches a deployment only when /paperclip starts as a
+# fresh named volume (Docker copies image content into new volumes); an
+# existing volume — or a settings.json bind mount over it — keeps its own
+# files, so those deployments wire the hook themselves and get just the
+# binary from this layer. Scope: the hook rewrites commands only where this
+# image's binary exists — managed remote/sandbox Claude settings strip hooks
+# (claude-config.ts) and the codex sandbox sync allowlist excludes the rtk
+# files (codex-home.ts), so sandbox runs are untouched — and rtk defers to
+# Claude Code deny rules before rewriting, so permission gates keep matching
+# the original command.
+ARG TARGETARCH
 ARG RTK_VERSION=v0.46.0
-RUN curl -fsSL "https://raw.githubusercontent.com/rtk-ai/rtk/${RTK_VERSION}/install.sh" \
-    | RTK_VERSION="${RTK_VERSION}" RTK_INSTALL_DIR=/usr/local/bin sh \
-  && mkdir -p /paperclip/.claude \
-  && HOME=/paperclip rtk init -g --auto-patch \
-  && HOME=/paperclip rtk init -g --codex \
-  && chown -R node:node /paperclip
+RUN set -eu; \
+  case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
+    amd64) rtk_target=x86_64-unknown-linux-musl; rtk_sha256=79aa5b89c69566bbfeceb66c8a27cfbe52237fc7ee3e683115f43745a3262d21 ;; \
+    arm64) rtk_target=aarch64-unknown-linux-gnu; rtk_sha256=e8c2e1787f46017ea7c5a711b2bc6a7f7cf61c7ad69385b4c1e4daff1135dcd1 ;; \
+    *) echo "unsupported TARGETARCH for rtk: ${TARGETARCH}" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL -o /tmp/rtk.tar.gz "https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/rtk-${rtk_target}.tar.gz"; \
+  echo "${rtk_sha256}  /tmp/rtk.tar.gz" | sha256sum -c -; \
+  tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin rtk; \
+  rm /tmp/rtk.tar.gz; \
+  chmod 0755 /usr/local/bin/rtk; \
+  mkdir -p /paperclip/.claude; \
+  HOME=/paperclip rtk init -g --hook-only --auto-patch; \
+  HOME=/paperclip rtk init -g --codex; \
+  chown -R node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
