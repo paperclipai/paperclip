@@ -953,7 +953,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
       },
     ]);
-    const approval = await approvalService(db).create(companyId, {
+    const { approval } = await approvalService(db).create(companyId, {
       type: "hire_agent",
       requestedByAgentId: null,
       requestedByUserId: null,
@@ -964,7 +964,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       decidedAt: null,
       updatedAt: new Date(),
     });
-    return { olderId, newerId, approvalId: approval!.id };
+    return { olderId, newerId, approvalId: approval.id };
   }
 
   it("self-heals duplicate active instances, keeping the oldest and cancelling the newer's approval", async () => {

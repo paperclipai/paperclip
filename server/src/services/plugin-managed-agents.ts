@@ -427,7 +427,7 @@ export function pluginManagedAgentService(
 
     let approvalId: string | null = null;
     if (requiresApproval) {
-      const approval = await approvalSvc.create(companyId, {
+      const { approval } = await approvalSvc.create(companyId, {
         type: "hire_agent",
         requestedByAgentId: null,
         requestedByUserId: null,

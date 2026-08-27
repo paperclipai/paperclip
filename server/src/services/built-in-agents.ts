@@ -1789,7 +1789,7 @@ export function builtInAgentService(db: Db) {
       throw error;
     }
 
-    const approval = await approvalSvc.create(companyId, {
+    const { approval } = await approvalSvc.create(companyId, {
       type: "hire_agent",
       requestedByAgentId: actor.requestedByAgentId ?? null,
       requestedByUserId: actor.requestedByUserId ?? null,
@@ -1815,9 +1815,9 @@ export function builtInAgentService(db: Db) {
       decidedByUserId: null,
       decidedAt: null,
       updatedAt: new Date(),
-    }) as Approval;
+    });
 
-    return { state: await state(definition, pending), approval };
+    return { state: await state(definition, pending), approval: approval as Approval };
   }
 
   async function list(companyId: string) {

@@ -7,6 +7,7 @@ export const createApprovalSchema = z.object({
   requestedByAgentId: z.string().uuid().optional().nullable(),
   payload: z.record(z.string(), z.unknown()),
   issueIds: z.array(z.string().uuid()).optional(),
+  idempotencyKey: z.string().min(1).max(512).optional().nullable(),
 });
 
 export type CreateApproval = z.infer<typeof createApprovalSchema>;

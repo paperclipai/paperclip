@@ -242,7 +242,7 @@ export function approvalRoutes(
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
-    const approval = await svc.create(companyId, {
+    const { approval, created } = await svc.create(companyId, {
       ...approvalInput,
       payload: normalizedPayload,
       requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -262,18 +262,20 @@ export function approvalRoutes(
       });
     }
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "approval.created",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { type: approval.type, issueIds: uniqueIssueIds },
-    });
+    if (created) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.created",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { type: approval.type, issueIds: uniqueIssueIds },
+      });
+    }
 
-    res.status(201).json(redactApprovalPayload(approval));
+    res.status(created ? 201 : 200).json(redactApprovalPayload(approval));
   });
 
   router.get("/approvals/:id/issues", async (req, res) => {

@@ -3058,7 +3058,7 @@ export function agentRoutes(
         redactEventPayload(
           ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
         ) ?? {};
-      approval = await approvalsSvc.create(companyId, {
+      ({ approval } = await approvalsSvc.create(companyId, {
         type: "hire_agent",
         requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
         requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -3092,7 +3092,7 @@ export function agentRoutes(
         decidedByUserId: null,
         decidedAt: null,
         updatedAt: new Date(),
-      });
+      }));
 
       if (sourceIssueIds.length > 0) {
         await issueApprovalsSvc.linkManyForApproval(approval.id, sourceIssueIds, {

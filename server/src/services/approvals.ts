@@ -8,6 +8,15 @@ import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
+const APPROVAL_IDEMPOTENCY_CONSTRAINT = "approvals_company_idempotency_uq";
+
+function isApprovalIdempotencyConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = err.constraint ?? err.constraint_name;
+  return err.code === "23505" && constraint === APPROVAL_IDEMPOTENCY_CONSTRAINT;
+}
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
@@ -114,12 +123,50 @@ export function approvalService(db: Db) {
       return rows[0] ?? null;
     },
 
-    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
-        .insert(approvals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0]),
+    create: async (
+      companyId: string,
+      data: Omit<typeof approvals.$inferInsert, "companyId">,
+    ): Promise<{ approval: typeof approvals.$inferSelect; created: boolean }> => {
+      const idempotencyKey = data.idempotencyKey ?? null;
+
+      if (idempotencyKey) {
+        const existing = await db
+          .select()
+          .from(approvals)
+          .where(
+            and(
+              eq(approvals.companyId, companyId),
+              eq(approvals.idempotencyKey, idempotencyKey),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (existing) return { approval: existing, created: false };
+      }
+
+      try {
+        const approval = await db
+          .insert(approvals)
+          .values({ ...data, companyId, idempotencyKey })
+          .returning()
+          .then((rows) => rows[0]);
+        return { approval, created: true };
+      } catch (error) {
+        if (idempotencyKey && isApprovalIdempotencyConflict(error)) {
+          const existing = await db
+            .select()
+            .from(approvals)
+            .where(
+              and(
+                eq(approvals.companyId, companyId),
+                eq(approvals.idempotencyKey, idempotencyKey),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+          if (existing) return { approval: existing, created: false };
+        }
+        throw error;
+      }
+    },
 
     // Cancel an open (pending/revision_requested) approval without a board
     // decision — e.g. when its paired agent is terminated during duplicate
