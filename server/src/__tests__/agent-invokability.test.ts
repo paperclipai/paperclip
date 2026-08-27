@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateAgentInvokability,
   listInvalidOrgChainDescendantIds,
+  shouldCancelRunsForNonInvokableAgent,
   type AgentOrgRow,
 } from "../services/agent-invokability.ts";
 
@@ -65,5 +66,17 @@ describe("agent invokability", () => {
     ];
 
     expect(listInvalidOrgChainDescendantIds("ceo", rows).sort()).toEqual(["coder", "cto"]);
+  });
+
+  it("treats pause as a cancellation boundary instead of a deferred queue", () => {
+    const paused = [agent({ id: "coder", status: "paused" })];
+    const pendingApproval = [agent({ id: "candidate", status: "pending_approval" })];
+
+    expect(shouldCancelRunsForNonInvokableAgent(
+      evaluateAgentInvokability(paused[0], paused),
+    )).toBe(true);
+    expect(shouldCancelRunsForNonInvokableAgent(
+      evaluateAgentInvokability(pendingApproval[0], pendingApproval),
+    )).toBe(false);
   });
 });

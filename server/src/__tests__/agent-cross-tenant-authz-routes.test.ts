@@ -439,6 +439,32 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(mockAgentService.clearError).not.toHaveBeenCalled();
   });
 
+  it("cancels queued and running work after an API pause", async () => {
+    const pausedAgent = {
+      ...baseAgent,
+      status: "paused",
+      pauseReason: "manual",
+      pausedAt: new Date("2026-04-11T00:06:00.000Z"),
+    };
+    mockAgentService.pause.mockResolvedValue(pausedAgent);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/pause`).send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("paused");
+    expect(mockAgentService.pause).toHaveBeenCalledWith(agentId);
+    expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(agentId);
+  });
+
   it("preserves board resume access", async () => {
     const pausedAgent = { ...baseAgent, status: "paused", pauseReason: "manual", pausedAt: new Date() };
     mockAgentService.getById.mockResolvedValue(pausedAgent);

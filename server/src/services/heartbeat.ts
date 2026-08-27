@@ -14018,7 +14018,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
         if (shouldCancelRunsForNonInvokableAgent(invokability)) {
-          await cancelActiveForAgentInternal(agentId, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+          await cancelActiveForAgentInternal(
+            agentId,
+            `Cancelled because the agent is not invokable: ${invokability.reason}`,
+            invokability.reason === "paused" ? "agent_paused" : "cancelled",
+          );
         }
         return [];
       }
