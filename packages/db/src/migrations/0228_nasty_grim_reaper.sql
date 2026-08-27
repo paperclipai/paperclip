@@ -1,4 +1,4 @@
-CREATE TABLE "issue_question_response_deliveries" (
+CREATE TABLE IF NOT EXISTS "issue_question_response_deliveries" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"issue_id" uuid NOT NULL,
@@ -21,14 +21,39 @@ CREATE TABLE "issue_question_response_deliveries" (
 	CONSTRAINT "issue_question_response_deliveries_mode_check" CHECK ("issue_question_response_deliveries"."delivery_mode" IS NULL OR "issue_question_response_deliveries"."delivery_mode" IN ('steered', 'coalesced', 'wake_fallback'))
 );
 --> statement-breakpoint
-ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_interaction_id_issue_thread_interactions_id_fk" FOREIGN KEY ("interaction_id") REFERENCES "public"."issue_thread_interactions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_source_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("source_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_target_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("target_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "issue_question_response_deliveries_interaction_uq" ON "issue_question_response_deliveries" USING btree ("interaction_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "issue_question_response_deliveries_correlation_uq" ON "issue_question_response_deliveries" USING btree ("correlation_id");--> statement-breakpoint
-CREATE INDEX "issue_question_response_deliveries_pending_idx" ON "issue_question_response_deliveries" USING btree ("status","created_at");--> statement-breakpoint
-CREATE INDEX "issue_question_response_deliveries_company_issue_idx" ON "issue_question_response_deliveries" USING btree ("company_id","issue_id","created_at");--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_issue_id_issues_id_fk" FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_interaction_id_issue_thread_interactions_id_fk" FOREIGN KEY ("interaction_id") REFERENCES "public"."issue_thread_interactions"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_source_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("source_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "issue_question_response_deliveries" ADD CONSTRAINT "issue_question_response_deliveries_target_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("target_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "issue_question_response_deliveries_interaction_uq" ON "issue_question_response_deliveries" USING btree ("interaction_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "issue_question_response_deliveries_correlation_uq" ON "issue_question_response_deliveries" USING btree ("correlation_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issue_question_response_deliveries_pending_idx" ON "issue_question_response_deliveries" USING btree ("status","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issue_question_response_deliveries_company_issue_idx" ON "issue_question_response_deliveries" USING btree ("company_id","issue_id","created_at");--> statement-breakpoint
 -- paperclip:migration-safety-ignore large-create-index-not-concurrently: This partial index covers a new question-response key prefix, so existing deployments have no matching rows; Drizzle applies migrations transactionally and cannot use CONCURRENTLY.
-CREATE UNIQUE INDEX "agent_wakeup_requests_question_response_delivery_idempotency_uq" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'question-response:%' AND "agent_wakeup_requests"."status" NOT IN ('skipped', 'failed', 'cancelled');
+CREATE UNIQUE INDEX IF NOT EXISTS "agent_wakeup_requests_question_response_delivery_idempotency_uq" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'question-response:%' AND "agent_wakeup_requests"."status" NOT IN ('skipped', 'failed', 'cancelled');
