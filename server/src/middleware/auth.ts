@@ -12,7 +12,7 @@ import {
   heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
-import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { inspectLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
@@ -310,7 +310,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
+      const inspection = inspectLocalAgentJwt(token);
+      if (inspection?.expired) {
+        next(unauthorized("Agent run token has expired", { code: "expired_run_token" }));
+        return;
+      }
+      const claims = inspection?.claims ?? null;
       if (!claims) {
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
