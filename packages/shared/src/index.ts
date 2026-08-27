@@ -2518,6 +2518,15 @@ export {
   type HideableSettingKey,
   type ParsedHiddenSettings,
 } from "./settings-visibility.js";
+export {
+  DEFAULTABLE_GENERAL_SETTINGS,
+  SETTING_DEFAULTS_ENV_KEY,
+  applyOperatorGeneralDefaults,
+  parseSettingDefaults,
+  type DefaultableGeneralSetting,
+  type OperatorSettingDefaults,
+  type ParsedSettingDefaults,
+} from "./setting-defaults.js";
 
 // --- Runtime exposure (opt-in Tailscale HTTPS for managed branch runtimes) ---
 // PAP-17049 plan, PAP-17050 threat-model verdict. Contract shared across DB,

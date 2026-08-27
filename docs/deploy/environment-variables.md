@@ -20,6 +20,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Paperclip for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
+| `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 
 ### Hiding settings surfaces
 
@@ -54,7 +55,27 @@ All environment variables that Paperclip uses for server configuration.
 Unknown keys are logged and ignored, so one list can be rolled across a fleet
 of mixed app versions. With the variable unset nothing is hidden and behavior
 is identical to earlier releases. Hiding a toggle does not change its value;
-pair hiding with the desired default where it matters.
+pair hiding with the desired default where it matters (for general settings,
+see [Operator setting defaults](#operator-setting-defaults)).
+
+### Operator setting defaults
+
+`PAPERCLIP_SETTING_DEFAULTS` takes a JSON object whose fields come from the
+registry in `packages/shared/src/setting-defaults.ts` (currently
+`feedbackDataSharingPreference`). The operator value substitutes for the
+schema default at read time: any field whose effective value is still the
+schema default resolves to the operator value, while an explicit non-default
+user choice always wins. The overlay is never persisted, so unsetting the
+variable restores stock behavior wherever a user has not chosen otherwise.
+
+Example: `PAPERCLIP_SETTING_DEFAULTS='{"feedbackDataSharingPreference":"allowed"}'`
+defaults AI feedback sharing to allowed; pairing it with
+`instance.general.feedbackDataSharingPreference` in `PAPERCLIP_HIDDEN_SETTINGS`
+also hides the control and floors value-changing writes.
+
+Unknown field names are logged and ignored (mixed-version fleet safe).
+Malformed JSON or an invalid value for a known field refuses startup — policy
+configuration fails closed.
 
 ## Secrets
 

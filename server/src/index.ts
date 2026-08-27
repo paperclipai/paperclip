@@ -39,6 +39,7 @@ import {
   getManagedInstanceConfig,
   type ManagedInstanceConfig,
 } from "./services/managed-config.js";
+import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
@@ -685,6 +686,22 @@ export async function startServer(): Promise<StartedServer> {
     }
   } catch (err) {
     logger.error({ err }, "invalid PAPERCLIP_MANAGED_CONFIG; refusing to start (fail closed)");
+    throw err;
+  }
+
+  // Operator setting defaults (PAPERCLIP_SETTING_DEFAULTS). Same fail-closed
+  // posture as the managed-config parse above: malformed JSON or an invalid
+  // value for a known field refuses startup; unknown field names only warn.
+  try {
+    const operatorDefaults = getOperatorSettingDefaults();
+    if (operatorDefaults && Object.keys(operatorDefaults).length > 0) {
+      logger.warn(
+        { defaultedSettings: Object.keys(operatorDefaults).sort() },
+        "operator setting defaults active",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "invalid PAPERCLIP_SETTING_DEFAULTS; refusing to start (fail closed)");
     throw err;
   }
 
