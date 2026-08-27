@@ -66,8 +66,9 @@ export async function bindCheckoutRunSourceIssueIfUnset(
         .then((rows) => rows[0] ?? null);
       if (!run || readRunSourceIssueId(run.contextSnapshot)) return;
 
+      const priorSnapshot = mergeableContextSnapshot(run.contextSnapshot);
       await tx.update(heartbeatRuns)
-        .set({ contextSnapshot: { issueId: input.issueId, source: "issue.checkout" } })
+        .set({ contextSnapshot: { ...priorSnapshot, issueId: input.issueId, source: "issue.checkout" } })
         .where(and(
           eq(heartbeatRuns.id, input.runId),
           eq(heartbeatRuns.companyId, input.companyId),
@@ -77,6 +78,11 @@ export async function bindCheckoutRunSourceIssueIfUnset(
   } catch (err) {
     logger.warn({ err, runId: input.runId, issueId: input.issueId }, "failed to bind run source issue at checkout");
   }
+}
+
+function mergeableContextSnapshot(contextSnapshot: unknown): Record<string, unknown> {
+  if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return {};
+  return contextSnapshot as Record<string, unknown>;
 }
 
 function readRunSourceIssueId(contextSnapshot: unknown) {
@@ -164,8 +170,9 @@ export async function observeCrossIssueInfluence(
       // re-triggering this branch. This is not a fallback that trusts the
       // header or a prior successful checkout — it only fires once, the
       // first time this specific locked run attempts any write at all.
+      const priorSnapshot = mergeableContextSnapshot(run.contextSnapshot);
       await tx.update(heartbeatRuns)
-        .set({ contextSnapshot: { issueId: input.targetIssueId, source: "first_write_bind" } })
+        .set({ contextSnapshot: { ...priorSnapshot, issueId: input.targetIssueId, source: "first_write_bind" } })
         .where(and(
           eq(heartbeatRuns.id, input.runId),
           eq(heartbeatRuns.companyId, input.companyId),
