@@ -20,6 +20,10 @@ Two paths cross the boundary between a sandbox and the host:
 - The application programming interface bridge carries requests from the
   sandbox to the host.
 
+Both boundary-crossing paths must keep every applicable host, cluster, mount,
+network, and host-import control that they have today. Later changes must not
+weaken or remove those controls.
+
 A sandbox provider must keep every host, cluster, mount, network, and
 host-import control that it has today.
 
