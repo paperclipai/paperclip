@@ -9883,8 +9883,8 @@ export function issueRoutes(
           : svc.update(id, issueUpdateData, tx, undefined, postCommitIssueActions);
       }
       return shouldCollectCompletionPublication
-        ? svc.update(id, issueUpdateData, db, postCommitActivityPublications, postCommitIssueActions)
-        : svc.update(id, issueUpdateData, db, undefined, postCommitIssueActions);
+        ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
+        : svc.update(id, issueUpdateData);
     };
     const assertLockedReviewPolicyAllowsMutation = async (
       tx: Parameters<typeof svc.update>[2],
