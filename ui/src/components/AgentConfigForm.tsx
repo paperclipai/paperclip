@@ -282,7 +282,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [pendingProposals, editAgentId],
   );
   const proposalReview = useProposalReview(selectedCompanyId, []);
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isFetched: experimentalSettingsLoaded } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
@@ -293,6 +293,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // execution-engine choice. Declared here because the field gates below and
   // the adapter field props both read it.
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+  // The gate the host-path fields use. It fails closed while the settings query
+  // is in flight: an unresolved policy reads as "not managed", which would flash
+  // a stored working directory or instructions-file path on the first render.
+  const hideHostPaths = !experimentalSettingsLoaded || managedSandboxOnly;
 
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
@@ -459,7 +463,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // inert while every run happens in the platform-managed environment.
   const showLegacyWorkingDirectoryField =
     isLocal
-    && !managedSandboxOnly
+    && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const supportedEnvironmentDrivers = useMemo(
@@ -749,8 +753,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // Resolve the effective instructions-file gate once. The instructions file
     // is an absolute host path, so the managed-sandbox-only policy hides it for
     // every adapter without a per-adapter edit.
-    hideInstructionsFile: hideInstructionsFile || managedSandboxOnly,
-    managedSandboxOnly,
+    hideInstructionsFile: hideInstructionsFile || hideHostPaths,
+    managedSandboxOnly: hideHostPaths,
   };
 
   // Section toggle state — advanced always starts collapsed
@@ -1661,9 +1665,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 `adapterConfig.command` stays as it is and the server does not
                 reject one, because an import carries adapter configuration
                 written on another instance; rejecting it would break that flow.
-                The value is inert while the policy is on.
+                The value is inert while the policy is on. The field also stays
+                hidden until the policy is known, so a stored command never
+                flashes on a managed instance.
               */}
-              {!managedSandboxOnly && (
+              {!hideHostPaths && (
                 <Field label="Command" hint={help.localCommand}>
                   <DraftInput
                     value={

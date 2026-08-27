@@ -184,14 +184,17 @@ export function IssueProperties({
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isFetched: experimentalSettingsLoaded } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   // Managed-sandbox-only policy: the workspace folder is a host filesystem
-  // path, so the Folder row disappears. The Branch row above it stays.
-  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+  // path, so the Folder row disappears. The Branch row above it stays. The gate
+  // fails closed while the settings query is in flight, because an unresolved
+  // policy reads as "not managed" and would flash the folder on first render.
+  const hideHostPaths =
+    !experimentalSettingsLoaded || experimentalSettings?.enableManagedSandboxOnly === true;
   // Classic Task Interface: gate the Properties | Plans | Artifacts tab shell.
   // Flag ON renders the legacy stacked sections verbatim (no Tabs wrapper);
   // flag OFF — including while settings load — renders the chat-style tab
@@ -2485,7 +2488,7 @@ export function IssueProperties({
               />
             </PropertyRow>
           )}
-          {issue.currentExecutionWorkspace?.cwd && !managedSandboxOnly && (
+          {issue.currentExecutionWorkspace?.cwd && !hideHostPaths && (
             <PropertyRow label="Folder">
               <TruncatedCopyable
                 value={issue.currentExecutionWorkspace.cwd}

@@ -210,15 +210,18 @@ export function IssueWorkspaceCard({
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
 
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isFetched: experimentalSettingsLoaded } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
 
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed-sandbox-only policy: the workspace path is a host filesystem path,
-  // so the card omits it and keeps branch, repo, and environment.
-  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+  // so the card omits it and keeps branch, repo, and environment. The gate fails
+  // closed while the settings query is in flight, because an unresolved policy
+  // reads as "not managed" and would flash the path on the first render.
+  const hideHostPaths =
+    !experimentalSettingsLoaded || experimentalSettings?.enableManagedSandboxOnly === true;
   const policyEnabled = experimentalSettings?.enableIsolatedWorkspaces === true
     && Boolean(project?.executionWorkspacePolicy?.enabled);
 
@@ -406,7 +409,7 @@ export function IssueWorkspaceCard({
               <CopyableInline value={workspace.branchName} mono />
             </div>
           )}
-          {workspace?.cwd && !managedSandboxOnly && (
+          {workspace?.cwd && !hideHostPaths && (
             <div className="flex items-center gap-1.5">
               <FolderOpen className="h-3 w-3 text-muted-foreground shrink-0" />
               <CopyableInline value={workspace.cwd} mono />

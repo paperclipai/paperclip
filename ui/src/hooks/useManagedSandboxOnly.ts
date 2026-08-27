@@ -11,8 +11,10 @@ import { queryKeys } from "@/lib/queryKeys";
  * must not render one. Callers that already read the experimental settings keep
  * their own read; this hook exists for the components that do not.
  *
- * `loaded` reports whether the settings query has settled. Gates that redirect
- * or that would otherwise flash a path must wait for it.
+ * `enabled` is the policy itself and `loaded` reports whether the settings query
+ * has settled. Gate a host-path surface on `hideHostPaths`, never on `enabled`:
+ * a cold cache resolves `enabled` to false for the first render, which would
+ * flash the path the policy exists to hide.
  */
 export function useManagedSandboxOnly() {
   const query = useQuery({
@@ -20,8 +22,19 @@ export function useManagedSandboxOnly() {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
 
+  const enabled = query.data?.enableManagedSandboxOnly === true;
+  const loaded = query.isFetched;
+
   return {
-    enabled: query.data?.enableManagedSandboxOnly === true,
-    loaded: query.isFetched,
+    enabled,
+    loaded,
+    /**
+     * The gate for any surface that shows a host filesystem path or an
+     * execution-engine choice. It fails closed while the policy is unknown, so
+     * nothing renders until the query settles. After that it is exactly
+     * `enabled`. A query that settles with an error counts as settled, so a
+     * failed settings read does not hide these surfaces forever.
+     */
+    hideHostPaths: !loaded || enabled,
   };
 }

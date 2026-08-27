@@ -34,9 +34,10 @@ function act(callback: () => void) {
 /**
  * The command rows read the managed-sandbox-only policy through the shared
  * instance-settings query, so every render needs a query client. Renders here
- * are synchronous, so a test that needs a resolved policy primes the cache.
+ * are synchronous and the guard fails closed until the policy resolves, so the
+ * cache is primed by default. Pass `null` to render with the policy unresolved.
  */
-function withQueryClient(node: ReactNode, experimentalSettings?: Record<string, unknown>) {
+function withQueryClient(node: ReactNode, experimentalSettings: Record<string, unknown> | null = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (experimentalSettings) {
     queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
@@ -314,6 +315,33 @@ describe("WorkspaceRuntimeControls", () => {
     });
 
     expect(container.textContent).toContain("/srv/repo");
+    expect(container.textContent).toContain("pnpm dev");
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the service working directory hidden while the policy is still loading", () => {
+    // A cold cache resolves the policy to false on the first render. The guard
+    // fails closed so a managed instance never flashes the execution-host path.
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev", cwd: "." }],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running", cwd: "/srv/repo" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <WorkspaceRuntimeControls sections={sections} onAction={vi.fn()} />,
+        null,
+      ));
+    });
+
+    expect(container.textContent).not.toContain("/srv/repo");
     expect(container.textContent).toContain("pnpm dev");
 
     act(() => root.unmount());

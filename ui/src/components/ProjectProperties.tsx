@@ -272,7 +272,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isFetched: experimentalSettingsLoaded } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
@@ -343,6 +343,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   // Defense in depth alongside the server's managed-sandbox-only read
   // filter: a cached environments list may still carry the local row.
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+  // The gate for the host-path surfaces below. It fails closed while the
+  // settings query is in flight: an unresolved policy reads as "not managed",
+  // which would flash the local folder the policy exists to hide.
+  const hideHostPaths = !experimentalSettingsLoaded || managedSandboxOnly;
   const runSelectableEnvironments = filterManagedSandboxSelectableEnvironments(
     environments ?? [],
     managedSandboxOnly,
@@ -712,7 +716,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top">
-                {managedSandboxOnly
+                {hideHostPaths
                   ? "Repo identifies the source of truth. Agents check it out in the platform-managed environment."
                   : "Repo identifies the source of truth. Local folder is the default place agents write code."}
               </TooltipContent>
@@ -790,7 +794,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               its one-line label so the codebase still reads as accounted for,
               but never renders the path itself.
             */}
-            {managedSandboxOnly ? (
+            {hideHostPaths ? (
               codebase.origin === "managed_checkout" ? (
                 <div className="text-(length:--text-micro) text-muted-foreground">Paperclip-managed folder.</div>
               ) : null
@@ -898,7 +902,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             ) : null}
           </div>
-          {!managedSandboxOnly && workspaceMode === "local" && (
+          {!hideHostPaths && workspaceMode === "local" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
                 <input

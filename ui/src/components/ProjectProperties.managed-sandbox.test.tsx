@@ -83,9 +83,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(project: Project, experimentalSettings: Record<string, unknown>) {
+/** Pass `null` for `experimentalSettings` to render with the policy unresolved. */
+function render(project: Project, experimentalSettings: Record<string, unknown> | null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  if (experimentalSettings) {
+    client.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  }
   act(() => {
     root.render(
       <QueryClientProvider client={client}>
@@ -139,6 +142,16 @@ describe("ProjectProperties — local folder under the managed-sandbox-only poli
     expect(container.textContent).not.toContain(MANAGED_FOLDER);
     expect(container.querySelector(".font-mono")?.textContent).not.toBe(MANAGED_FOLDER);
     expect(buttonLabels()).not.toContain("Set local folder");
+  });
+
+  it("keeps the folder path hidden while the policy is still loading", () => {
+    // A cold cache resolves the policy to false on the first render. The guard
+    // fails closed so a managed instance never flashes the execution-host path.
+    render(makeProject(makeCodebase()), null);
+
+    expect(container.textContent).not.toContain("Local folder");
+    expect(container.textContent).not.toContain(LOCAL_FOLDER);
+    expect(container.textContent).toContain("Repo");
   });
 
   it("never opens the absolute-path edit panel when the policy is on", () => {

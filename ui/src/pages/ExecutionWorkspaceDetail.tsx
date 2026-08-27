@@ -806,7 +806,7 @@ export function ExecutionWorkspaceDetail() {
   const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { enabled: managedSandboxOnly } = useManagedSandboxOnly();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -1287,9 +1287,10 @@ export function ExecutionWorkspaceDetail() {
                   Both fields name a path on the execution host. Under the
                   managed-sandbox-only policy every agent runs in the
                   platform-managed environment, which owns the paths, so the
-                  whole group and its separator disappear.
+                  whole group and its separator disappear, and stay hidden
+                  until that policy is known.
                 */}
-                {!managedSandboxOnly && (
+                {!hideHostPaths && (
                   <>
                     <div className="space-y-4">
                       <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
@@ -1320,9 +1321,10 @@ export function ExecutionWorkspaceDetail() {
                   Every lifecycle command runs a shell on the execution host and
                   its placeholder names a host script path. The platform-managed
                   environment owns that lifecycle, so the managed-sandbox-only
-                  policy hides the group and its separator.
+                  policy hides the group and its separator, and keeps them
+                  hidden until that policy is known.
                 */}
-                {!managedSandboxOnly && (
+                {!hideHostPaths && (
                   <>
                     <div className="space-y-4">
                       <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>

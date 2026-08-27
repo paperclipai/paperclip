@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, type ComponentType } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -26,7 +26,7 @@ const ACP_CONFIG = {
 };
 
 function renderFields(
-  Component: (props: AdapterConfigFieldsProps) => JSX.Element,
+  Component: ComponentType<AdapterConfigFieldsProps>,
   overrides: Partial<AdapterConfigFieldsProps> = {},
 ) {
   const container = document.createElement("div");

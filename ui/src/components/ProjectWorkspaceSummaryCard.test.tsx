@@ -32,9 +32,10 @@ vi.mock("./IssuesQuicklook", () => ({
 /**
  * The card reads the managed-sandbox-only policy through the shared
  * instance-settings query, so every render needs a query client. Renders here
- * are synchronous, so a test that needs a resolved policy primes the cache.
+ * are synchronous and the path guard fails closed until the policy resolves, so
+ * the cache is primed by default. Pass `null` to leave the policy unresolved.
  */
-function withQueryClient(node: ReactNode, experimentalSettings?: Record<string, unknown>) {
+function withQueryClient(node: ReactNode, experimentalSettings: Record<string, unknown> | null = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (experimentalSettings) {
     queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
@@ -144,6 +145,32 @@ describe("ProjectWorkspaceSummaryCard", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("keeps the path row hidden while the policy is still loading", () => {
+    // A cold cache resolves the policy to false on the first render. The guard
+    // fails closed so a managed instance never flashes the execution-host path.
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary()}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+        null,
+      ));
+    });
+
+    expect(container.textContent).not.toContain("Path");
+    expect(container.textContent).toContain("Branch");
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("drops the path row when the instance runs agents only in the platform-managed environment", () => {

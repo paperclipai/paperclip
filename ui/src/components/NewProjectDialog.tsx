@@ -51,7 +51,7 @@ export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
-  const { enabled: managedSandboxOnly } = useManagedSandboxOnly();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
@@ -307,9 +307,10 @@ export function NewProjectDialog() {
             The local folder is an absolute path on the execution host. Under
             the managed-sandbox-only policy every agent runs in the
             platform-managed environment, so the field and its folder picker
-            never render and the create request carries no cwd.
+            never render and the create request carries no cwd. The field also
+            stays hidden until the policy is known.
           */}
-          {!managedSandboxOnly && (
+          {!hideHostPaths && (
             <div>
               <div className="mb-1 flex items-center gap-1.5">
                 <label className="block text-xs text-muted-foreground">Local folder</label>

@@ -2807,6 +2807,24 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     expect(labels).toContain("ACP non-interactive permissions");
   });
 
+  it("keeps the host-path fields hidden while the policy is still loading", async () => {
+    // A cold cache resolves the policy to false on the first render. The gate
+    // fails closed so a managed instance never flashes a stored host path.
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Working directory (deprecated)");
+    expect(labels).not.toContain("Command");
+    expect(labels).not.toContain("Execution engine");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
   it("hides the command field and forces the instructions-file gate for codex_local when the policy is on", async () => {
     setManagedSandboxOnly(true);
     const result = await renderForm(

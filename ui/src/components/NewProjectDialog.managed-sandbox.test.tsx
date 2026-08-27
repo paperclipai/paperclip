@@ -54,9 +54,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(experimentalSettings: Record<string, unknown>) {
+/** Pass `null` for `experimentalSettings` to render with the policy unresolved. */
+function render(experimentalSettings: Record<string, unknown> | null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  if (experimentalSettings) {
+    client.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  }
   act(() => {
     root.render(
       <QueryClientProvider client={client}>
@@ -87,6 +90,16 @@ describe("NewProjectDialog — local folder under the managed-sandbox-only polic
       (button) => button.textContent?.trim() === "Choose",
     );
     expect(chooseButtons.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the local folder field hidden while the policy is still loading", () => {
+    // A cold cache resolves the policy to false on the first render. The guard
+    // fails closed so a managed instance never flashes the field.
+    render(null);
+
+    expect(documentText()).not.toContain("Local folder");
+    expect(localPathInput()).toBeNull();
+    expect(documentText()).toContain("Repo URL");
   });
 
   it("hides the local folder field and its picker when the policy is on", () => {

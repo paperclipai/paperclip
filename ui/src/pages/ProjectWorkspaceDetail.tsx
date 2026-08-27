@@ -256,7 +256,7 @@ export function ProjectWorkspaceDetail() {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { enabled: managedSandboxOnly } = useManagedSandboxOnly();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
@@ -540,7 +540,7 @@ export function ProjectWorkspaceDetail() {
                 platform-managed environment, so neither the field nor the
                 folder picker renders; the server refuses a cwd write anyway.
               */}
-              {!managedSandboxOnly && (
+              {!hideHostPaths && (
                 <div className="grid gap-4 md:grid-cols-(--gtc-13)">
                   <Field label="Local path">
                     <input
@@ -686,7 +686,7 @@ export function ProjectWorkspaceDetail() {
             <DetailRow label="Workspace ID">
               <span className="break-all font-mono text-xs">{workspace.id}</span>
             </DetailRow>
-            {managedSandboxOnly ? null : (
+            {hideHostPaths ? null : (
               <DetailRow label="Local path">
                 <span className="break-all font-mono text-xs">{workspace.cwd ?? "None"}</span>
               </DetailRow>

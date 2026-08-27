@@ -64,7 +64,7 @@ export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
-  const { enabled: managedSandboxOnly } = useManagedSandboxOnly();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
   const { data: plugin, isLoading: pluginLoading } = useQuery({
@@ -155,8 +155,9 @@ export function PluginSettings() {
   // A plugin local folder is an absolute path on the execution host. Under the
   // managed-sandbox-only policy the platform-managed environment owns the
   // filesystem, so the whole section disappears and the Settings tab falls back
-  // to whatever else the plugin declares.
-  const hasLocalFolders = localFolderDeclarations.length > 0 && !managedSandboxOnly;
+  // to whatever else the plugin declares. The section also stays hidden until
+  // the policy is known.
+  const hasLocalFolders = localFolderDeclarations.length > 0 && !hideHostPaths;
   const environmentDriverNames = environmentDrivers
     .map((driver) => driver.displayName?.trim() || driver.driverKey)
     .filter((name, index, values) => values.indexOf(name) === index);

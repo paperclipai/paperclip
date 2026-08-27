@@ -35,10 +35,12 @@ export interface AdapterConfigFieldsProps {
   /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
   hideInstructionsFile?: boolean;
   /**
-   * When true, the instance runs agents only in the platform-managed
-   * environment (`enableManagedSandboxOnly`). Adapters must then hide every
-   * host filesystem path field and every execution-engine choice. Non-path
-   * behavior toggles stay visible.
+   * When true, the adapter must hide every host filesystem path field and every
+   * execution-engine choice. Non-path behavior toggles stay visible.
+   *
+   * The form sets this from the instance managed-sandbox-only policy
+   * (`enableManagedSandboxOnly`), and also while that policy is still loading,
+   * so a stored path never flashes before the policy resolves.
    */
   managedSandboxOnly?: boolean;
 }
