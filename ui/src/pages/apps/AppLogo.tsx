@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { loadLocalAppBrandAssets, type LocalAppBrandAssets } from "@/lib/app-brand-assets";
 import { cn } from "@/lib/utils";
 
 const TILE_COLORS = [
@@ -32,23 +33,65 @@ interface AppLogoProps {
  */
 export function AppLogo({ name, logoUrl, size = 36, className }: AppLogoProps) {
   const [failed, setFailed] = useState(false);
+  const [localAssets, setLocalAssets] = useState<LocalAppBrandAssets | null>(null);
   const letter = (name.trim()[0] ?? "?").toUpperCase();
   const dimension = { width: size, height: size };
+  const resolvedLogoUrl = localAssets?.light ?? logoUrl;
 
-  if (logoUrl && !failed) {
+  useEffect(() => {
+    let active = true;
+    setLocalAssets(null);
+    void loadLocalAppBrandAssets(name)
+      .then((assets) => {
+        if (active) setLocalAssets(assets);
+      })
+      .catch(() => {
+        if (active) setLocalAssets(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [name]);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [resolvedLogoUrl, localAssets?.dark]);
+
+  if (resolvedLogoUrl && !failed) {
     return (
       <span
         className={cn("inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted", className)}
         style={dimension}
       >
-        <img
-          src={logoUrl}
-          alt=""
-          width={size}
-          height={size}
-          className="h-full w-full object-contain"
-          onError={() => setFailed(true)}
-        />
+        {localAssets?.dark ? (
+          <>
+            <img
+              src={resolvedLogoUrl}
+              alt=""
+              width={size}
+              height={size}
+              className="h-full w-full object-contain dark:hidden"
+              onError={() => setFailed(true)}
+            />
+            <img
+              src={localAssets.dark}
+              alt=""
+              width={size}
+              height={size}
+              className="hidden h-full w-full object-contain dark:block"
+              onError={() => setFailed(true)}
+            />
+          </>
+        ) : (
+          <img
+            src={resolvedLogoUrl}
+            alt=""
+            width={size}
+            height={size}
+            className="h-full w-full object-contain"
+            onError={() => setFailed(true)}
+          />
+        )}
       </span>
     );
   }
