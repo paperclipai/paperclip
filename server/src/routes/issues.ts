@@ -1636,6 +1636,7 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
+        blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
         blockedBy: relationsWithRecoveryActions.blockedBy,
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
@@ -1753,6 +1754,7 @@ export function issueRoutes(
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
       activeRecoveryAction,
+      blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
@@ -3062,6 +3064,7 @@ export function issueRoutes(
       ? issueReferencesSvc.diffIssueReferenceSummary(updateReferenceSummaryBefore, updateReferenceSummaryAfter)
       : null;
     let issueResponse: typeof issue & {
+      blockedByIssueIds?: string[];
       blockedBy?: unknown;
       blocks?: unknown;
       relatedWork?: Awaited<ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>>;
@@ -3072,6 +3075,7 @@ export function issueRoutes(
       updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
+        blockedByIssueIds: updatedRelations.blockedBy.map((relation) => relation.id),
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };
