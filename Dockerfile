@@ -166,42 +166,61 @@ RUN set -eu; \
     test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
   done
 
-# The hosted image variant ships server-side Sentry error monitoring
-# pre-installed, so a managed tenant gets error reports with no separate
-# install step. The self-hosted image stays on the opt-in contract: it never
-# runs this stage, so `@sentry/node` stays a true optional peer dependency
-# that a self-hosted operator installs by hand (see doc/observability.md).
+# The hosted image variant ships selected optional peer packages
+# pre-installed. A managed tenant then needs no separate install step.
+# The self-hosted image stays on the opt-in contract: it never runs this
+# stage, so a package like `@sentry/node` stays a true optional peer
+# dependency. A self-hosted operator installs it by hand (see
+# doc/observability.md).
+#
+# CLOUD_BUNDLED_SERVER_DEPS names the optional peer packages to install.
+# The value is a space-separated list, the same shape as
+# CLOUD_BUNDLED_PLUGINS above. The stage reads each package's version
+# from the `peerDependencies` block of `server/package.json` at build
+# time, so the version has one committed home.
+#
+# The stage fails the build in three cases:
+# - the argument is empty
+# - server/package.json declares no version for a named package
+# - the named package is not an optional peer
+#
+# This check keeps the argument limited to packages the server already
+# treats as optional.
 #
 # The install happens in its own isolated directory, not inside
-# `server/`'s own workspace install, so the self-hosted target above never
-# gains this package. The directory sits under `/app` (not `server/`, and
-# excluded from the pnpm workspace by `--ignore-workspace` below) so pnpm
-# still finds the `packageManager` pin in the repo's own `package.json` by
-# walking up from the working directory — the same pnpm version the rest of
-# the build uses, not whatever version a bare directory outside `/app`
-# would fall back to.
+# `server`'s own workspace install. The self-hosted target above never
+# gains these packages this way. The directory sits under `/app`, not
+# `server/`, and `--ignore-workspace` below excludes it from the pnpm
+# workspace. From that directory, pnpm still finds the `packageManager`
+# pin in the repo's own `package.json` by walking up — the same pnpm
+# version the rest of the build uses.
 #
-# `docker/cloud-server-deps/package.json` and its committed `pnpm-lock.yaml`
-# pin every package in the Sentry dependency tree, direct and transitive, to
-# an exact resolved version and integrity hash. A build reads that lockfile
-# with `--frozen-lockfile`, so it installs the same tree every time and
-# fails loudly if the lockfile and the package.json ever disagree. This
-# replaces an earlier install that read only the top-level version and
-# re-resolved the rest of the tree fresh on every build, so the image could
-# silently ship different transitive Sentry dependencies from one build to
-# the next. The committed package.json's pinned version must match
-# `server/package.json`'s declared optional peer; the check below fails the
-# build if they drift apart, so the two values cannot go out of sync
-# unnoticed.
+# The install writes no lock file (`--no-lockfile`, the same flag the
+# `cloud-plugins` stage above uses). Two builds of the same commit can
+# therefore install different transitive versions of a named package.
+# Three facts make this an accepted trade-off:
+# - the `cloud-plugins` stage above already has the same property, with
+#   the same flag
+# - the direct version of each named package comes from one exact,
+#   single-sourced place: the `peerDependencies` block of
+#   `server/package.json`
+# - an automated check asserts the installed direct version after every
+#   build, so a transitive drift that breaks the package still fails the
+#   build
 FROM build AS cloud-server-deps
 WORKDIR /app/.cloud-server-deps
-COPY docker/cloud-server-deps/package.json docker/cloud-server-deps/pnpm-lock.yaml docker/cloud-server-deps/.npmrc ./
+ARG CLOUD_BUNDLED_SERVER_DEPS="@sentry/node"
 RUN set -eu; \
-  peer_version="$(node -e "process.stdout.write(require('/app/server/package.json').peerDependencies['@sentry/node'])")"; \
-  test -n "$peer_version" || { echo "ERROR: server/package.json declares no @sentry/node peer version" >&2; exit 1; }; \
-  pinned_version="$(node -e "process.stdout.write(require('./package.json').dependencies['@sentry/node'])")"; \
-  test "$peer_version" = "$pinned_version" || { echo "ERROR: docker/cloud-server-deps/package.json pins @sentry/node@${pinned_version}, but server/package.json declares @sentry/node@${peer_version} as its optional peer. Update docker/cloud-server-deps/package.json to match, then regenerate docker/cloud-server-deps/pnpm-lock.yaml (cd docker/cloud-server-deps && pnpm install --ignore-workspace --lockfile-only)." >&2; exit 1; }; \
-  pnpm install --frozen-lockfile --ignore-workspace
+  test -n "$CLOUD_BUNDLED_SERVER_DEPS" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS is empty; name at least one optional peer package to install" >&2; exit 1; }; \
+  echo '{"name":"paperclip-cloud-server-deps","private":true}' > package.json; \
+  specifiers=""; \
+  for name in $CLOUD_BUNDLED_SERVER_DEPS; do \
+    version="$(node -e "const pkg=require('/app/server/package.json'); const name=process.argv[1]; const version=(pkg.peerDependencies||{})[name]; if(!version){console.error('ERROR: server/package.json declares no peerDependencies version for '+JSON.stringify(name));process.exit(1);} const meta=(pkg.peerDependenciesMeta||{})[name]; if(!meta||meta.optional!==true){console.error('ERROR: '+JSON.stringify(name)+' is not declared as an optional peer dependency in server/package.json; CLOUD_BUNDLED_SERVER_DEPS may name only optional peer packages');process.exit(1);} process.stdout.write(version);" "$name")"; \
+    test -n "$version" || { echo "ERROR: could not resolve a version for '$name'" >&2; exit 1; }; \
+    specifiers="$specifiers ${name}@${version}"; \
+  done; \
+  test -n "$specifiers" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS names no package" >&2; exit 1; }; \
+  pnpm add --ignore-workspace --no-lockfile $specifiers
 
 FROM production AS cloud
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers

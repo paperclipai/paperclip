@@ -373,8 +373,12 @@ jobs:
           target: cloud
           # Space-separated sandbox-provider directory names to build into
           # the variant; add here when managed deployments need another.
+          # CLOUD_BUNDLED_SERVER_DEPS names the optional peer packages the
+          # variant installs from server/package.json's declared version;
+          # add another name there when a managed tenant needs it.
           build-args: |
             CLOUD_BUNDLED_PLUGINS=daytona
+            CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
