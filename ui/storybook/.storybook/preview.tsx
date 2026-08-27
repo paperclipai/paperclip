@@ -130,6 +130,23 @@ function installStorybookApiFixtures() {
       });
     }
 
+    if (url.pathname === "/api/instance/settings") {
+      return Response.json({});
+    }
+
+    // The onboarding wizard's connect step reads these. An empty environment
+    // list is the cloud-tenant shape — agents run in a managed sandbox rather
+    // than a configured environment — and it is also the state that produces
+    // the "no managed sandbox environment is available" notice, which is worth
+    // being able to look at rather than only meeting it on a live stack.
+    if (/^\/api\/companies\/[^/]+\/environments$/.test(url.pathname)) {
+      return Response.json([]);
+    }
+
+    if (/^\/api\/companies\/[^/]+\/adapters\/[^/]+\/models$/.test(url.pathname)) {
+      return Response.json([]);
+    }
+
     if (url.pathname === "/api/adapters") {
       return Response.json([
         {
