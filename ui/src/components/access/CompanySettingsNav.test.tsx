@@ -31,7 +31,7 @@ vi.mock("@/components/PageTabBar", () => ({
     return (
       <div>
         <div data-testid="active-tab">{props.value}</div>
-        <button type="button" onClick={() => props.onValueChange?.("invites")}>
+        <button type="button" onClick={() => props.onValueChange?.("secrets")}>
           switch-tab
         </button>
       </div>
@@ -77,7 +77,7 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/PAP/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/company/settings/access")).toBe("members");
     expect(getCompanySettingsTab("/PAP/company/settings/access")).toBe("members");
-    expect(getCompanySettingsTab("/company/settings/invites")).toBe("invites");
+    expect(getCompanySettingsTab("/company/settings/invites")).toBe("members");
     expect(getCompanySettingsTab("/PAP/company/settings/secrets")).toBe("secrets");
     expect(getCompanySettingsTab("/company/settings/instance/profile")).toBe("instance-profile");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("general");
@@ -126,7 +126,6 @@ describe("CompanySettingsNav", () => {
           { value: "export", label: "Export" },
           { value: "import", label: "Import" },
           { value: "members", label: "Members" },
-          { value: "invites", label: "Invites" },
           { value: "secrets", label: "Secrets" },
           { value: "instance-profile", label: "Profile" },
           { value: "instance-environments", label: "Environments" },
@@ -146,7 +145,7 @@ describe("CompanySettingsNav", () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(navigateMock).toHaveBeenCalledWith("/company/settings/invites");
+    expect(navigateMock).toHaveBeenCalledWith("/company/settings/secrets");
 
     await act(async () => {
       root.unmount();
@@ -169,7 +168,6 @@ describe("CompanySettingsNav", () => {
       "export",
       "import",
       "members",
-      "invites",
       "secrets",
       "instance-profile",
       "instance-environments",
@@ -198,7 +196,6 @@ describe("CompanySettingsNav", () => {
     expect(renderedValues).not.toContain("secrets");
     expect(renderedValues).toContain("export");
     expect(renderedValues).toContain("members");
-    expect(renderedValues).toContain("invites");
 
     await act(async () => {
       root.unmount();

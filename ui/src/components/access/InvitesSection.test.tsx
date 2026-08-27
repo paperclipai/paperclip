@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyInvites } from "./CompanyInvites";
+import { InvitesSection } from "./InvitesSection";
 import { queryKeys } from "@/lib/queryKeys";
 
 const listInvitesMock = vi.hoisted(() => vi.fn());
@@ -49,7 +49,7 @@ async function flushReact() {
   });
 }
 
-describe("CompanyInvites", () => {
+describe("InvitesSection", () => {
   let container: HTMLDivElement;
   const inviteHistory = Array.from({ length: 25 }, (_, index) => {
     const inviteNumber = 25 - index;
@@ -128,7 +128,7 @@ describe("CompanyInvites", () => {
       root.render(
         <MemoryRouter>
           <QueryClientProvider client={queryClient}>
-            <CompanyInvites />
+            <InvitesSection />
           </QueryClientProvider>
         </MemoryRouter>,
       );
@@ -136,7 +136,6 @@ describe("CompanyInvites", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Company Invites");
     expect(container.textContent).toContain("Invite a person");
     expect(container.textContent).not.toContain("Invite an agent");
     expect(container.textContent).not.toContain("Generate agent onboarding prompt");
@@ -262,7 +261,7 @@ describe("CompanyInvites", () => {
       root.render(
         <MemoryRouter>
           <QueryClientProvider client={queryClient}>
-            <CompanyInvites />
+            <InvitesSection />
           </QueryClientProvider>
         </MemoryRouter>,
       );
@@ -305,7 +304,7 @@ describe("CompanyInvites", () => {
       root.render(
         <MemoryRouter>
           <QueryClientProvider client={queryClient}>
-            <CompanyInvites />
+            <InvitesSection />
           </QueryClientProvider>
         </MemoryRouter>,
       );

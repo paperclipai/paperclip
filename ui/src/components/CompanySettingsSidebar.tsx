@@ -6,7 +6,6 @@ import {
   Download,
   FlaskConical,
   KeyRound,
-  MailPlus,
   MonitorCog,
   Puzzle,
   Shield,
@@ -129,9 +128,6 @@ export function CompanySettingsSidebar() {
                 end
               />
             ))}
-          {showPage("company.invites") && (
-            <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
-          )}
           {showPage("company.secrets") && (
             <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
           )}

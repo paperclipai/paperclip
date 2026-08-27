@@ -68,7 +68,6 @@ import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
-import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
@@ -123,8 +122,13 @@ function boardRoutes() {
         <Route path="company/settings/members" element={<CompanyAccess />} />
         <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
       </Route>
+      {/* Invites moved into the Members page; the old URL redirects (and stays
+          gated so a hidden Invites surface never round-trips through it). */}
       <Route element={<HiddenSettingsPageGate pageKey="company.invites" />}>
-        <Route path="company/settings/invites" element={<CompanyInvites />} />
+        <Route
+          path="company/settings/invites"
+          element={<Navigate to="/company/settings/members?tab=invites" replace />}
+        />
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="company.export" />}>
         <Route
