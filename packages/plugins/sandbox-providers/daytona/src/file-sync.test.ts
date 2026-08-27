@@ -516,7 +516,21 @@ describe("daytona file-sync inbound zstd transport compression", () => {
       const targetNoMode = path.posix.join(remoteDir, "no-mode.bin");
       const targetWithMode = path.posix.join(remoteDir, "with-mode.bin");
 
-      const { sandbox } = createRealExecSandbox();
+      // `zstd -d -o` inherits the mode of its INPUT (the uploaded `.zst`
+      // scratch), not the process umask alone. Widen every `.zst` scratch to
+      // 0644 here, standing in for a Daytona upload that does not preserve a
+      // host-side 0600 origin, so a pass on the no-mode assertion below proves
+      // the promote script's OWN `umask 077` forces 0600 — not that the
+      // scratch happened to arrive owner-only already.
+      const { sandbox } = createRealExecSandbox({
+        uploadOverride: async (uploads) => {
+          for (const upload of uploads) {
+            await fs.copyFile(upload.source, upload.destination);
+            if (upload.destination.endsWith(".zst")) await fs.chmod(upload.destination, 0o644);
+          }
+          return true;
+        },
+      });
       const operations: PluginSyncOperation[] = [{
         operationId: "sync-op-1",
         files: [
@@ -527,11 +541,12 @@ describe("daytona file-sync inbound zstd transport compression", () => {
 
       await performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 });
 
-      // Only the explicit mode is asserted: the code applies `chmod` on the raw
-      // scratch when the mapping sets `mode`. A mapping with no `mode` gets no
-      // `chmod` call — this test does not assert what permissions the file ends
-      // up with in that case.
-      await fs.stat(targetNoMode); // the no-mode mapping still lands
+      // A mapping with no `mode` still lands owner-only (0600): the promote
+      // script's `umask 077` makes the decompressed file 0600 the moment it
+      // is created, before any `chmod` runs — even though its `.zst` scratch
+      // arrived at 0644 above. A mapping with an explicit `mode` gets that
+      // mode instead, applied by `chmod` after creation.
+      expect((await fs.stat(targetNoMode)).mode & 0o777).toBe(0o600);
       expect((await fs.stat(targetWithMode)).mode & 0o777).toBe(0o640);
     });
 

@@ -769,13 +769,18 @@ async function syncInFileMappings(input: {
     const renameScript: string[] = [];
     for (const plan of plans) {
       if (plan.compressed) {
-        const modeCommand =
-          typeof plan.mapping.mode === "number"
-            ? `chmod ${toOctalModeString(plan.mapping.mode)} ${shellQuote(plan.rawScratch)} || { echo "chmod failed"; exit 50; };`
-            : "";
+        // `zstd -d -o` copies the mode of its INPUT (the uploaded `.zst`
+        // scratch) onto its output with its own `chmod` call, which runs
+        // AFTER creation and so overrides any `umask` in effect — a mapping
+        // with no explicit `mode` must not rely on the scratch file's mode
+        // being owner-only already. Always `chmod` the decompressed file
+        // right after decompression: to the mapping's `mode` when set, or to
+        // owner-only (0600) — the same default the raw (uncompressed) path
+        // and the pre-refactor decompression step both used — otherwise.
+        const targetMode = typeof plan.mapping.mode === "number" ? plan.mapping.mode : 0o600;
         renameScript.push(
           `zstd -d -o ${shellQuote(plan.rawScratch)} ${shellQuote(plan.compressed.zstdScratch)} || { echo "decompress failed"; exit 49; };`,
-          modeCommand,
+          `chmod ${toOctalModeString(targetMode)} ${shellQuote(plan.rawScratch)} || { echo "chmod failed"; exit 50; };`,
         );
       }
       renameScript.push(
