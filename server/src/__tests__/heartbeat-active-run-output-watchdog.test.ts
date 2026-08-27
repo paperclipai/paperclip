@@ -429,7 +429,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, seeded.companyId))).toHaveLength(0);
   });
 
-  it("does not fold or create review work for a terminal source without same-run evidence", async () => {
+  it("auto-terminates an orphaned run when source is done without same-run evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const seeded = await seedRunningRun({
       now,
@@ -438,15 +438,53 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     const { enqueueWakeup, recovery } = createRecovery();
 
-    await expect(recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId }))
-      .resolves.toMatchObject({ created: 0, folded: 0, skipped: 1 });
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
-    expect(run?.status).toBe("running");
+    const result = await recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId });
+    expect(result).toMatchObject({ created: 0, folded: 0, terminated: 1, skipped: 0 });
     expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run?.status).toBe("succeeded");
+    expect(run?.finishedAt).not.toBeNull();
+    expect(run?.resultJson).toMatchObject({
+      terminalSourceOrphanedRunCleanup: {
+        sourceIssueId: seeded.issueId,
+        sourceIssueStatus: "done",
+        evaluationIssueId: null,
+        cleanup: { outcome: "no_process_metadata" },
+      },
+    });
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(source?.executionRunId).toBeNull();
+
     expect(await db.select().from(issues).where(and(
       eq(issues.companyId, seeded.companyId),
       eq(issues.originKind, "stale_active_run_evaluation"),
     ))).toHaveLength(0);
+
+    const [logEntry] = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, seeded.companyId),
+      eq(activityLog.runId, seeded.runId),
+      eq(activityLog.action, "heartbeat.output_stale_terminal_source_terminated"),
+    ));
+    expect(logEntry).toBeTruthy();
+  });
+
+  it("auto-terminates an orphaned run when source is cancelled without same-run evidence", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seeded = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      sourceStatus: "cancelled",
+    });
+    const { recovery } = createRecovery();
+
+    const result = await recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId });
+    expect(result).toMatchObject({ terminated: 1, folded: 0 });
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run?.status).toBe("cancelled");
+    expect(run?.finishedAt).not.toBeNull();
   });
 
   it("folds existing legacy evaluation and recovery rows idempotently", async () => {

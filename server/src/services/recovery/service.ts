@@ -1727,6 +1727,126 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
   }
 
+  async function terminateOrphanedRunForTerminalSource(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect;
+    existingEvaluation: Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>;
+    silenceAgeMs: number | null;
+    now: Date;
+  }) {
+    const cleanup = await cleanupSourceResolvedRunProcess({ run: input.run, runningAgent: input.runningAgent });
+    const finalRunStatus = input.sourceIssue.status === "cancelled" ? "cancelled" : "succeeded";
+    const terminationData = {
+      sourceIssueId: input.sourceIssue.id,
+      sourceIssueIdentifier: input.sourceIssue.identifier,
+      sourceIssueStatus: input.sourceIssue.status,
+      silenceAgeMs: input.silenceAgeMs,
+      evaluationIssueId: input.existingEvaluation?.id ?? null,
+      evaluationIssueIdentifier: input.existingEvaluation?.identifier ?? null,
+      cleanup,
+    };
+    const resultJson = {
+      ...parseObject(input.run.resultJson),
+      terminalSourceOrphanedRunCleanup: terminationData,
+    };
+    const finalizedRun = await db.transaction(async (tx) => {
+      const [updatedRun] = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: finalRunStatus,
+          finishedAt: input.now,
+          error: `Source issue is ${input.sourceIssue.status}; watchdog auto-terminated orphaned run`,
+          errorCode: null,
+          resultJson,
+          updatedAt: input.now,
+        })
+        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId), eq(heartbeatRuns.status, "running")))
+        .returning();
+      if (!updatedRun) return null;
+
+      if (input.run.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: finalRunStatus === "succeeded" ? "completed" : "cancelled",
+            finishedAt: input.now,
+            error: null,
+            updatedAt: input.now,
+          })
+          .where(and(eq(agentWakeupRequests.id, input.run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.run.companyId)));
+      }
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.sourceIssue.id),
+            eq(issues.companyId, input.run.companyId),
+            eq(issues.executionRunId, input.run.id),
+          ),
+        );
+
+      return updatedRun;
+    });
+    if (!finalizedRun) return { kind: "skipped" as const };
+
+    if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
+      await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
+      await issuesSvc.addComment(input.existingEvaluation.id, [
+        "Watchdog auto-terminated orphaned run; source issue is terminal.",
+        "",
+        `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id} (${input.sourceIssue.status})`,
+        `- Run: \`${input.run.id}\``,
+      ].join("\n"), { runId: input.run.id });
+    }
+
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(input.run.companyId, input.sourceIssue.id);
+    if (activeRecoveryAction?.kind === "active_run_watchdog") {
+      await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: input.run.companyId,
+        sourceIssueId: input.sourceIssue.id,
+        actionId: activeRecoveryAction.id,
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: "source_terminal",
+      });
+    }
+
+    await appendRecoveryRunEvent(finalizedRun, {
+      level: cleanup.outcome === "failed" ? "warn" : "info",
+      message: "Watchdog auto-terminated orphaned run; source issue is terminal",
+      payload: terminationData,
+    });
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_terminal_source_terminated",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        sourceIssueId: input.sourceIssue.id,
+        sourceIssueIdentifier: input.sourceIssue.identifier,
+        sourceIssueStatus: input.sourceIssue.status,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        silenceAgeMs: input.silenceAgeMs,
+        cleanup,
+      },
+    });
+    await finalizeAgentAfterSourceResolvedRun(finalizedRun, finalRunStatus);
+    return { kind: "terminated" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
+  }
+
   async function inspectSilentActiveRun(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -1763,6 +1883,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           now: input.now,
         });
       }
+      // Source marked terminal by an external agent/user (no same-run evidence). The run is
+      // orphaned — terminate it rather than creating or keeping a stale evaluation issue.
+      return terminateOrphanedRunForTerminalSource({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        existingEvaluation: existing,
+        silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+        now: input.now,
+      });
     }
 
     // Blocked source work can be intentionally quiet. The issue state already carries
@@ -1821,6 +1951,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       existing: 0,
       escalated: 0,
       folded: 0,
+      terminated: 0,
       snoozed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
@@ -1839,6 +1970,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
       if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "terminated") result.terminated += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
