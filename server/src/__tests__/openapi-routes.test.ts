@@ -186,6 +186,10 @@ describe("openapi routes", () => {
     expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
     expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
+    expect(
+      res.body.paths["/api/issues/{id}"].patch.requestBody.content["application/json"].schema.properties
+        .executionWorkspaceId,
+    ).toMatchObject({ type: "string", format: "uuid", nullable: true });
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
       properties: {
