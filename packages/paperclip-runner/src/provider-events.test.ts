@@ -86,6 +86,16 @@ describe("provider-neutral events", () => {
     expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
   });
 
+  it("bounds Codex plan explanations before they enter PRP", () => {
+    const event = canonicalProviderEventsFromCodex("turn/plan/updated", {
+      turnId: "turn-1",
+      explanation: "x".repeat(5000),
+      plan: [{ step: "Ship it", status: "inProgress" }],
+    })[0]!;
+    expect(event.payload.explanation).toBe("x".repeat(4000));
+    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+  });
+
   it("marks a turn plan complete when every native step is complete", () => {
     const event = canonicalProviderEventsFromCodex("turn/plan/updated", {
       turnId: "turn-1",

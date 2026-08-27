@@ -276,7 +276,7 @@ function turnPlanPayload(params: Record<string, unknown>): Record<string, unknow
     schema: "paperclip.plan.updated.v1",
     planId,
     revision: Number.isSafeInteger(params.revision) ? Number(params.revision) : 1,
-    explanation: text(params.explanation) || null,
+    explanation: text(params.explanation).slice(0, 4000) || null,
     steps,
     complete: planComplete,
     syncStatus: "not_applicable",

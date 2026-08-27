@@ -29,6 +29,45 @@
   },
   "allOf": [
     {
+      "oneOf": [
+        {
+          "properties": {
+            "provider": { "const": "codex" },
+            "driver": { "const": "codex_app_server" },
+            "executionKind": { "const": "local_process" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "opencode" },
+            "driver": { "const": "opencode_server" },
+            "executionKind": { "const": "local_process" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "claude_managed" },
+            "driver": { "const": "claude_managed_agents_api" },
+            "executionKind": { "const": "remote_service" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "aws_agentcore" },
+            "driver": { "const": "aws_agentcore_harness_api" },
+            "executionKind": { "const": "remote_service" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "acpx" },
+            "driver": { "const": "acpx_runtime" },
+            "executionKind": { "const": "local_process" }
+          }
+        }
+      ]
+    },
+    {
       "if": { "properties": { "executionKind": { "const": "remote_service" } } },
       "then": {
         "required": ["service"],
