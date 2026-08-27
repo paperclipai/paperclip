@@ -175,6 +175,7 @@ function boardRoutes() {
         <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       </Route>
       <Route path="company/settings/instance/general" element={<Navigate to="/company/settings" replace />} />
+      <Route path="company/settings/instance/heartbeats" element={<Navigate to="/company/settings" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="instance.environments" />}>
         <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
         <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
