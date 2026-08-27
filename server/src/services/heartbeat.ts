@@ -130,6 +130,7 @@ import {
   classifyEquivalentFailure,
   classifyRepeatedResourceCeiling,
   EQUIVALENT_FAILURE_WINDOW_MS,
+  RESOURCE_CEILING_ERROR_CODES,
   type FailureObservation,
 } from "./recovery/equivalent-failure.js";
 import {
@@ -9968,15 +9969,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .filter((issueId): issueId is string => Boolean(issueId)),
     );
 
-    // ⛔ The sweep starts work that has NEVER RUN, or whose last attempt ended cleanly. It must
-    // never re-run a card whose last attempt failed.
+    // ⛔ The sweep must not re-run a card whose last attempt genuinely FAILED — but "failed" is
+    // an error code, not a run status.
     //
-    // Caught by heartbeat-retry-scheduling: the first version of this tick re-woke a card whose
-    // queued retries the equivalent-failure circuit breaker had just cancelled — the sweep
-    // quietly undoing the breaker one tick later. The same hole would have re-woken every
-    // ceiling-bricked card every 24h forever, each wake rejected before dispatch: a perpetual
-    // retry storm dressed up as progress. A card that tried and failed needs a re-cut or human
-    // judgement (TSKB0493), not another identical wake.
+    // The first version keyed on status alone (failed / timed_out / cancelled / interrupted).
+    // Two problems, one caught by a test and one by production:
+    //
+    //  - It re-woke a card whose queued retries the equivalent-failure circuit breaker had just
+    //    cancelled, undoing the breaker a tick later (heartbeat-retry-scheduling caught this).
+    //  - It was TOO BROAD the other way. Measured over 7 days: of ~10k terminal non-success runs,
+    //    the majority are routine lifecycle events, not task failures — server_shutdown_interrupted
+    //    (305, a deploy restart), orphaned_running_run (232), issue_assignee_changed (403),
+    //    lock_released_on_reassignment (222), batch_issue_pickup_absorbed (176),
+    //    superseded_by_fresh_issue_assignment (165). Blocking on those strands a card forever
+    //    because the control plane restarted under it. That is exactly the class the standing law
+    //    names: transient faults must not latch terminal state. It bit a real card the hour this
+    //    was written — TSMC-21378 lost its run to the very deploy that shipped this sweep.
+    //
+    // So: a genuine task failure (failed / timed_out) blocks, and a cancellation blocks only when
+    // its error code says retrying is the wrong move — a generation ceiling (needs a re-cut, not a
+    // wake: TSKB0493), an open breaker, a deliberate operator stop, or a lane that cannot be
+    // invoked at all. Everything else is eligible again.
+    const DO_NOT_RETRY_ERROR_CODES = new Set<string>([
+      ...RESOURCE_CEILING_ERROR_CODES,
+      "equivalent_failure_circuit_open",
+      "operator_interrupted",
+      "agent_not_invokable",
+      "resource_ceiling_retry_bounded",
+      "hung_run_watchdog",
+    ]);
     const failedLastAttemptIssueIds = new Set<string>();
     {
       const seen = new Set<string>();
@@ -9984,6 +10005,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .select({
           contextSnapshot: heartbeatRuns.contextSnapshot,
           status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
         })
         .from(heartbeatRuns)
         .where(inArray(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, candidateIds))
@@ -9993,9 +10015,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const issueId = readNonEmptyString(parseObject(row.contextSnapshot).issueId);
         if (!issueId || seen.has(issueId)) continue;
         seen.add(issueId);
-        if (row.status === "failed" || row.status === "timed_out" || row.status === "cancelled" || row.status === "interrupted") {
-          failedLastAttemptIssueIds.add(issueId);
-        }
+        const errorCode = readNonEmptyString(row.errorCode);
+        const isTaskFailure = row.status === "failed" || row.status === "timed_out";
+        const isDoNotRetry = Boolean(errorCode && DO_NOT_RETRY_ERROR_CODES.has(errorCode));
+        if (isTaskFailure || isDoNotRetry) failedLastAttemptIssueIds.add(issueId);
       }
     }
 

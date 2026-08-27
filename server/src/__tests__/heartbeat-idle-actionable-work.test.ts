@@ -111,6 +111,26 @@ describeEmbeddedPostgres("heartbeat tickIdleActionableWork", () => {
     return id;
   }
 
+  async function insertRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    status: string;
+    errorCode?: string | null;
+  }) {
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: input.status as never,
+      invocationSource: "automation",
+      errorCode: input.errorCode ?? null,
+      contextSnapshot: { issueId: input.issueId },
+      createdAt: DAYS_AGO(1),
+      updatedAt: DAYS_AGO(1),
+    } as never);
+  }
+
   async function idleWakes(issueId: string) {
     return db
       .select({ id: agentWakeupRequests.id, reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
@@ -228,27 +248,50 @@ describeEmbeddedPostgres("heartbeat tickIdleActionableWork", () => {
 
   // Regression: the first version of this sweep re-woke a card whose queued retries the
   // equivalent-failure circuit breaker had just cancelled, quietly undoing the breaker. The same
-  // hole would re-wake every ceiling-bricked card every 24h forever.
-  it("never re-runs a card whose last attempt failed", async () => {
+  // hole would re-wake every ceiling-bricked card every 8h forever.
+  it("never re-runs a card whose last attempt genuinely failed", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
-    const issueId = await insertIssue({ companyId, assigneeAgentId: agentId, updatedAt: DAYS_AGO(14) });
-    for (const status of ["failed", "cancelled", "timed_out", "interrupted"]) {
-      await db.delete(heartbeatRuns);
-      await db.delete(agentWakeupRequests);
-      await db.insert(heartbeatRuns).values({
-        id: randomUUID(),
-        companyId,
-        agentId,
-        status: status as never,
-        invocationSource: "automation",
-        contextSnapshot: { issueId },
-        createdAt: DAYS_AGO(1),
-        updatedAt: DAYS_AGO(1),
-      } as never);
+    const blocking: Array<[string, string | null]> = [
+      ["failed", null],
+      ["timed_out", null],
+      ["cancelled", "issue_generation_ceiling_exceeded"],
+      ["cancelled", "equivalent_failure_circuit_open"],
+      ["cancelled", "operator_interrupted"],
+      ["cancelled", "max_turns_exhausted"],
+    ];
+    for (const [status, errorCode] of blocking) {
+      // A fresh card per case: the wake mutates the card it lands on, so reusing one issue
+      // makes later iterations test the mutation rather than the rule.
+      const issueId = await insertIssue({ companyId, assigneeAgentId: agentId, updatedAt: DAYS_AGO(14) });
+      await insertRun({ companyId, agentId, issueId, status, errorCode });
 
       await heartbeatService(db).tickTimers(NOW);
 
-      expect(await idleWakes(issueId), `last attempt ${status} must not be re-run`).toHaveLength(0);
+      expect(await idleWakes(issueId), `${status}/${errorCode ?? "-"} must not be re-run`).toHaveLength(0);
+    }
+  });
+
+  // The other half, and the one that bit production: a run lost to a deploy restart is
+  // infrastructure, not a task failure. Blocking on it would strand the card forever — the
+  // "transient faults latch terminal state" class. TSMC-21378 lost its run to the very deploy
+  // that shipped this sweep.
+  it("still picks up a card whose last run ended for infrastructure or lifecycle reasons", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const eligible: Array<[string, string]> = [
+      ["interrupted", "server_shutdown_interrupted"],
+      ["interrupted", "orphaned_running_run"],
+      ["cancelled", "issue_assignee_changed"],
+      ["cancelled", "lock_released_on_reassignment"],
+      ["cancelled", "batch_issue_pickup_absorbed"],
+      ["cancelled", "superseded_by_fresh_issue_assignment"],
+    ];
+    for (const [status, errorCode] of eligible) {
+      const issueId = await insertIssue({ companyId, assigneeAgentId: agentId, updatedAt: DAYS_AGO(14) });
+      await insertRun({ companyId, agentId, issueId, status, errorCode });
+
+      await heartbeatService(db).tickTimers(NOW);
+
+      expect(await idleWakes(issueId), `${status}/${errorCode} must stay eligible`).toHaveLength(1);
     }
   });
 
