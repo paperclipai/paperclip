@@ -3948,7 +3948,7 @@ describe("IssueAssigneePausedNotice", () => {
       );
     });
 
-    expect(container.textContent).toContain("arrived paused from a company import");
+    expect(container.textContent).toContain("arrived paused from an organization import");
     const resumeButton = container.querySelector(
       '[data-testid="issue-assignee-paused-resume"]',
     ) as HTMLButtonElement | null;

@@ -94,7 +94,7 @@ export function AppNotConnected() {
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
       { label: appName, href: appApplicationTabHref(applicationId, "setup") },
       { label: appTabLabel(activeTab) },

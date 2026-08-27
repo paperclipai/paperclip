@@ -630,7 +630,7 @@ export function StepAssign({
           getDescription={(agent) => {
             const context = contextByAgent.get(agent.id) ?? [];
             const bits = [...context];
-            if (defaultProfileName) bits.push("company default");
+            if (defaultProfileName) bits.push("organization default");
             return bits.length > 0 ? `already has: ${bits.join(" · ")}` : "no profiles yet";
           }}
         />

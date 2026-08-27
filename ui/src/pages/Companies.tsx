@@ -119,7 +119,7 @@ export function Companies() {
       </div>
 
       <div className="h-6">
-        {loading && <p className="text-sm text-muted-foreground">Loading companies...</p>}
+        {loading && <p className="text-sm text-muted-foreground">Loading organizations...</p>}
         {error && <p className="text-sm text-destructive">{error.message}</p>}
       </div>
 

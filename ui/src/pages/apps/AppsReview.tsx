@@ -19,7 +19,7 @@ export function AppsReview() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
       { label: "Review" },
     ]);

@@ -1787,7 +1787,7 @@ export function Secrets() {
 
   if (!selectedCompanyId) {
     return (
-      <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
+      <div className="p-6 text-sm text-muted-foreground">Select an organization to manage secrets.</div>
     );
   }
 
@@ -2141,7 +2141,7 @@ export function Secrets() {
                           {row.kind === "company" ? (
                             <>
                               <MetaChip>
-                                <ShieldCheck className="h-3 w-3" /> Company
+                                <ShieldCheck className="h-3 w-3" /> Organization
                               </MetaChip>
                               <SecretProviderIndicator
                                 secret={row.secret}
@@ -2253,7 +2253,7 @@ export function Secrets() {
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   <MetaChip>
-                    <ShieldCheck className="h-3 w-3" /> Company
+                    <ShieldCheck className="h-3 w-3" /> Organization
                   </MetaChip>
                   <MetaChip>{modeLabel(selectedSecret.managedMode)}</MetaChip>
                   <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
@@ -3351,7 +3351,7 @@ function SecretsFiltersPopover({
               <div className="space-y-0.5">
                 {[
                   { value: "all" as const, label: "All sources" },
-                  { value: "company" as const, label: "Company" },
+                  { value: "company" as const, label: "Organization" },
                   { value: "user" as const, label: "Each user" },
                 ].map((option) => (
                   <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -4619,7 +4619,7 @@ function SecretDetailsTab({
       <DetailRow label="Description">
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
-      <DetailRow label="Provided by">Company</DetailRow>
+      <DetailRow label="Provided by">Organization</DetailRow>
       <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
       <DetailRow label="Provider">{providerLabel(providers, secret.provider)}</DetailRow>
       <DetailRow label="Provider vault">{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>

@@ -180,7 +180,7 @@ export function CompanySettings() {
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
+        No organization selected. Select an organization from the switcher above.
       </div>
     );
   }
@@ -217,13 +217,13 @@ export function CompanySettings() {
           </Field>
           <Field
             label="Description"
-            hint="Optional description shown in the company profile."
+            hint="Optional description shown in the organization profile."
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder="Optional organization description"
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -289,7 +289,7 @@ export function CompanySettings() {
               </Field>
               <Field
                 label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+                hint="Sets the hue for the organization icon. Leave empty for auto-generated color."
               >
                 <div className="flex items-center gap-2">
                   {/* token-extraction: allowlisted — <input type="color"> value must be a real hex string, not a var() reference. */}
@@ -453,7 +453,7 @@ export function CompanySettings() {
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : "Failed to archive organization"}
               </span>
             )}
           </div>

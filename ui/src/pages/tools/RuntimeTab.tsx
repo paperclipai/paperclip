@@ -94,7 +94,7 @@ function howItRuns(slot: ToolRuntimeSlot): string {
 function scopeLabel(scope: string | null | undefined): string {
   switch (scope) {
     case "company":
-      return "Whole company";
+      return "Whole organization";
     case "project":
     case "project_workspace":
       return "This project";

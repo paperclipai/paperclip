@@ -119,7 +119,7 @@ export function AppDetail() {
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
       { label: appName, href: appTabHref(connectionId, "setup") },
       { label: appTabLabel(activeTab) },

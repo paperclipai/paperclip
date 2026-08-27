@@ -321,7 +321,7 @@ type SourceFilter = "all" | "company" | "bundled" | "optional" | "external";
 
 const SOURCE_FILTER_LABELS: Record<SourceFilter, string> = {
   all: "All",
-  company: "Company",
+  company: "Organization",
   bundled: "Bundled",
   optional: "Optional",
   external: "External",
@@ -654,7 +654,7 @@ function categorySetKey(categories: string[]) {
 }
 
 function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "sharingScope">) {
-  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: company";
+  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: organization";
   const categories = skill.categories.length ? `Categories: ${skill.categories.join(", ")}` : "Categories: none";
   return `${sharing} | ${categories}`;
 }
@@ -1644,7 +1644,7 @@ function NewSkillWizard({
             <span className="text-muted-foreground">Slug</span>
             <span className="font-mono">{effectiveSlug || "skill"}</span>
             <span className="text-muted-foreground">Scope</span>
-            <span>{draft.sharingScope === "private" ? "Private" : "Company"}</span>
+            <span>{draft.sharingScope === "private" ? "Private" : "Organization"}</span>
             <span className="text-muted-foreground">Categories</span>
             <span>{draft.categories.length ? draft.categories.join(", ") : "none"}</span>
           </div>
@@ -2175,7 +2175,7 @@ export function InstallPreviewDialog({
             <div className="rounded-md border border-border p-3">
               <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">Enable for agents</div>
               <p className="mb-2 text-xs text-muted-foreground">
-                Installing adds the skill to the company library. Agents can only use it once it is enabled for them.
+                Installing adds the skill to the organization library. Agents can only use it once it is enabled for them.
               </p>
               <AgentMultiSelect
                 agents={agents}
@@ -2185,7 +2185,7 @@ export function InstallPreviewDialog({
                   setSelectedAgentIds(next);
                 }}
                 showSelectionPreview={false}
-                emptyMessage="No agents in this company support skills yet."
+                emptyMessage="No agents in this organization support skills yet."
                 isAgentDisabled={(agent) => {
                   const option = agent as AttachAgentOption;
                   return option.required || !option.supportsSkills;
@@ -2315,7 +2315,7 @@ function AttachAgentsPopover({
           </select>
         </div>
       ) : null}
-      emptyMessage={eligible.length === 0 ? "No agents in this company support skills yet." : "No agents yet."}
+      emptyMessage={eligible.length === 0 ? "No agents in this organization support skills yet." : "No agents yet."}
       isAgentDisabled={(agent) => {
         const option = agent as AttachAgentOption;
         return option.required || !option.supportsSkills;
@@ -3367,7 +3367,7 @@ export function SkillDetailPage({
                     <span className="hidden sm:inline">{detail.attachedAgentCount === 1 ? "install" : "installs"}</span>
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>Agents in this company that currently have this skill installed.</TooltipContent>
+                <TooltipContent>Agents in this organization that currently have this skill installed.</TooltipContent>
               </Tooltip>
               <button
                 type="button"
@@ -3624,7 +3624,7 @@ export function SkillDetailPage({
                 disabled={updateSettingsPending}
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
               >
-                <option value="company">Company — visible inside this company</option>
+                <option value="company">Organization — visible inside this organization</option>
                 <option value="private">Private — only visible in your library</option>
               </select>
               <p className="text-xs text-muted-foreground">Public link sharing is coming later.</p>
@@ -5107,7 +5107,7 @@ export function CompanySkills() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
+    return <EmptyState icon={Boxes} message="Select an organization to manage skills." />;
   }
 
   function handleAddSkillSource() {
@@ -5275,7 +5275,7 @@ export function CompanySkills() {
           <DialogHeader>
             <DialogTitle>Import a skill</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command to import a skill into this company.
+              Paste a local path, GitHub URL, or `skills.sh` command to import a skill into this organization.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

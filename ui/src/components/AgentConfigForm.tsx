@@ -323,7 +323,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: () => {
@@ -334,7 +334,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to upload images");
+      if (!selectedCompanyId) throw new Error("Select an organization to upload images");
       return assetsApi.uploadImage(selectedCompanyId, file, namespace);
     },
   });
@@ -711,7 +711,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["agents", "none", "detect-model", adapterType],
     queryFn: () => {
       if (!selectedCompanyId) {
-        throw new Error("Select a company to detect the model");
+        throw new Error("Select an organization to detect the model");
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
@@ -867,7 +867,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
-        throw new Error("Select a company to test adapter environment");
+        throw new Error("Select an organization to test adapter environment");
       }
       const flushedEnv = flushEnvironmentDraft();
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
@@ -1052,7 +1052,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     (!loginNeedsPty || providerSupportsLoginPty);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
-      throw new Error("Select a company to test adapter environment");
+      throw new Error("Select an organization to test adapter environment");
     }
     setTestActionPending(true);
     setTestActionError(null);

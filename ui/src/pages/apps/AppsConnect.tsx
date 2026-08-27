@@ -197,7 +197,7 @@ export function AppsConnect() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
       { label: "Connect an app" },
     ]);
@@ -443,7 +443,7 @@ export function AppsConnect() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to connect apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select an organization to connect apps.</div>;
   }
 
   if (directOAuthEntry && step === "key") {

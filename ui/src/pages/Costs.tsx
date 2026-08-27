@@ -529,7 +529,7 @@ export function Costs() {
   }), [budgetPolicies]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
+    return <EmptyState icon={DollarSign} message="Select an organization to view costs." />;
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
@@ -908,7 +908,7 @@ export function Costs() {
                   return (
                     <section key={scopeType} className="space-y-3">
                       <div>
-                        <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
+                        <h2 className="text-lg font-semibold capitalize">{scopeType === "company" ? "organization" : scopeType} budgets</h2>
                         <p className="text-sm text-muted-foreground">
                           {scopeType === "company"
                             ? "Organization-wide monthly policy."
@@ -940,7 +940,7 @@ export function Costs() {
                 {budgetPolicies.length === 0 ? (
                   <Card>
                     <CardContent className="px-5 py-8 text-sm text-muted-foreground">
-                      No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control.
+                      No budget policies yet. Set agent and project budgets from their detail pages, or use the existing organization monthly budget control.
                     </CardContent>
                   </Card>
                 ) : null}

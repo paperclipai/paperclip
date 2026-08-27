@@ -16,7 +16,7 @@ const inviteRoleOptions = [
   {
     value: "viewer",
     label: "Viewer",
-    description: "Can view company work and follow along.",
+    description: "Can view organization work and follow along.",
     gets: "View-only organization membership.",
   },
   {
@@ -34,7 +34,7 @@ const inviteRoleOptions = [
   {
     value: "owner",
     label: "Owner",
-    description: "Full company access, including membership management.",
+    description: "Full organization access, including membership management.",
     gets: "Everything in Admin, plus managing members.",
   },
 ] as const;
@@ -90,7 +90,7 @@ export function CompanyInvites() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
       { label: "Invites" },
     ]);
@@ -160,7 +160,7 @@ export function CompanyInvites() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage invites.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to manage invites.</div>;
   }
 
   if (invitesQuery.isLoading) {
@@ -170,7 +170,7 @@ export function CompanyInvites() {
   if (invitesQuery.error) {
     const message =
       invitesQuery.error instanceof ApiError && invitesQuery.error.status === 403
-        ? "You do not have permission to manage company invites."
+        ? "You do not have permission to manage organization invites."
         : invitesQuery.error instanceof Error
           ? invitesQuery.error.message
           : "Failed to load invites.";

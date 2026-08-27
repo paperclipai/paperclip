@@ -1299,7 +1299,7 @@ function TeamInstallerDialog({
                 <p className="font-medium">Install failed</p>
                 <p className="mt-0.5 text-xs">{applyError}</p>
                 <p className="mt-1 text-xs opacity-80">
-                  Partial state is not rolled back. Review the company activity log before retrying.
+                  Partial state is not rolled back. Review the organization activity log before retrying.
                 </p>
               </div>
             </div>
@@ -1461,7 +1461,7 @@ export function StepTargetManager({
             checked={fullCompany}
             onChange={(e) => onToggleFullCompany(e.target.checked)}
           />
-          Use this team as a full-company package (no target manager)
+          Use this team as a full-organization package (no target manager)
         </label>
       )}
     </div>
@@ -2299,7 +2299,7 @@ export function TeamCatalog() {
   if (!selectedCompanyId) {
     return (
       <div className="p-8">
-        <EmptyState icon={Users2} message="Select a company to browse the team catalog." />
+        <EmptyState icon={Users2} message="Select an organization to browse the team catalog." />
       </div>
     );
   }

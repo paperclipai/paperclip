@@ -236,7 +236,7 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Update company role and membership status");
+    expect(document.body.textContent).toContain("Update organization role and membership status");
     expect(document.body.textContent).not.toContain("Implicit grants from role");
     expect(document.body.textContent).not.toContain("permissionKey");
 

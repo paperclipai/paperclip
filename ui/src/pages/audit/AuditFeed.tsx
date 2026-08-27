@@ -40,7 +40,7 @@ const ACTION_DOMAINS: { value: string; label: string }[] = [
   { value: "goal.", label: "Goals" },
   { value: "tool_gateway.", label: "Tools" },
   { value: "cost.", label: "Costs" },
-  { value: "company.", label: "Company" },
+  { value: "company.", label: "Organization" },
 ];
 
 /** Entity types offered in the filter (server does an exact match). */
@@ -50,7 +50,7 @@ const ENTITY_TYPES: { value: string; label: string }[] = [
   { value: "agent", label: "Agent" },
   { value: "project", label: "Project" },
   { value: "goal", label: "Goal" },
-  { value: "company", label: "Company" },
+  { value: "company", label: "Organization" },
 ];
 
 /**

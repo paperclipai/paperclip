@@ -5170,7 +5170,7 @@ export function Learnings() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={BookOpenText} message="Select a company to view learnings." />;
+    return <EmptyState icon={BookOpenText} message="Select an organization to view learnings." />;
   }
 
   if (learningsQuery.isLoading && !learningsQuery.data) {

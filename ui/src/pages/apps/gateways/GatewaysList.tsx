@@ -39,7 +39,7 @@ export function GatewaysList() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
       { label: "Gateways" },
     ]);
