@@ -127,6 +127,7 @@ async function seedValidWorktreeSource(
       id: "credential-existing",
       accountId: "existing@paperclip.ing",
       providerId: "credential",
+      issuer: "local:credential",
       userId,
       password: "fixture-password-hash",
       createdAt: now,
