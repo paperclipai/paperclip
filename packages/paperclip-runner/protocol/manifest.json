@@ -30,7 +30,7 @@
     {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "d69ac4acfd9cd265f9dcb6a6580e949a67a50347093d0a7c12c2000a2da6d482"
+      "sha256": "e9827a7c31f004ae91388964a96b4ddf6ab40b85f29bf3922683d5dcf64f2559"
     },
     {
       "path": "schemas/fixture.schema.json",
@@ -45,12 +45,12 @@
     {
       "path": "schemas/provider-descriptor.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json",
-      "sha256": "26e8af9314f1ca49578bfbacdcc111332225b422ea4ff68918a25ddac59129a6"
+      "sha256": "ae30c978591e7251dfe8cb05d98ac51ac860914c26e9c218e7149ec93317e33b"
     },
     {
       "path": "schemas/provider-event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json",
-      "sha256": "84521ea87ae782a7c07d1ef68b70f87fc4c436e79951a8076b7ba55e923fa88b"
+      "sha256": "e0ffb95cbde4afb65783106f471c5154cbcc59055461f96838cd8a5239e5ec56"
     },
     {
       "path": "schemas/question-adapter-fixture.schema.json",
