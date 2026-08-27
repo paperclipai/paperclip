@@ -387,7 +387,9 @@ function isZstdCompressionSupported(): boolean {
  * The caller removes the returned directory (on the accept path, after the
  * upload; on every reject/error path, immediately) — this function only
  * removes it on its OWN failure, so a caller never has to distinguish a
- * partial directory from a finished one.
+ * partial directory from a finished one. The cleanup scope covers every
+ * step after the directory create, including the post-compression size
+ * stat, so a throw there does not leave the directory behind.
  */
 async function compressFileToHostTemp(sourcePath: string): Promise<{ dir: string; path: string; bytesOut: number }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-zstd-"));
@@ -398,12 +400,12 @@ async function compressFileToHostTemp(sourcePath: string): Promise<{ dir: string
       zlib.createZstdCompress({ params: { [zlib.constants.ZSTD_c_compressionLevel]: ZSTD_COMPRESSION_LEVEL } }),
       createWriteStream(tempPath, { flags: "wx", mode: 0o600 }),
     );
+    const bytesOut = (await fs.stat(tempPath)).size;
+    return { dir, path: tempPath, bytesOut };
   } catch (error) {
     await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
-  const bytesOut = (await fs.stat(tempPath)).size;
-  return { dir, path: tempPath, bytesOut };
 }
 
 /**

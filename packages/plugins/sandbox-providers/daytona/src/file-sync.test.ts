@@ -763,6 +763,44 @@ describe("daytona file-sync inbound zstd transport compression (PAP-5387)", () =
       }
     });
 
+    it("removes the private host temp directory when the post-compression size stat throws (PAP-5400)", async () => {
+      const realStat = fs.stat.bind(fs);
+      const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (targetPath, ...rest) => {
+        if (typeof targetPath === "string" && path.basename(targetPath) === "artifact.zst") {
+          throw new Error("simulated post-compression stat failure");
+        }
+        return (realStat as typeof fs.stat)(targetPath, ...(rest as []));
+      });
+      try {
+        const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
+        const sourcePath = path.join(hostDir, "big.tar");
+        await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
+        const uploadedSources: string[] = [];
+        const uploadedDestinations: string[] = [];
+        const sandbox = createRecordingSandbox({
+          probeReportsZstd: true,
+          uploadedSources,
+          uploadedDestinations,
+          commands: [],
+        });
+        const operations: PluginSyncOperation[] = [{
+          operationId: "op-1",
+          files: [{ sourcePath, targetPath: "/workspace/target.bin", kind: "file" }],
+        }];
+        const before = (await fs.readdir(os.tmpdir())).filter((name) => name.startsWith("paperclip-daytona-zstd-"));
+
+        await performSyncIn({ sandbox: sandbox as never, operations, remoteDir: "/workspace", timeoutSeconds: 30 });
+
+        // The post-compression stat failed, so the candidate falls back to the raw path.
+        expect(uploadedSources).toEqual([sourcePath]);
+        expect(uploadedDestinations.some((dest) => dest.endsWith(".zst"))).toBe(false);
+        const after = (await fs.readdir(os.tmpdir())).filter((name) => name.startsWith("paperclip-daytona-zstd-"));
+        expect(after).toEqual(before); // the stat failure did not leak the private host temp directory
+      } finally {
+        statSpy.mockRestore();
+      }
+    });
+
     it("removes the host compressed temp file and sweeps sandbox scratch when the upload itself is rejected (cancellation)", async () => {
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
       const sourcePath = path.join(hostDir, "big.tar");
