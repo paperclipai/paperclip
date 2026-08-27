@@ -21,8 +21,11 @@ const finishAppMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
+const listUserDirectoryMock = vi.hoisted(() => vi.fn());
+const getSessionMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "setup" as string | undefined }));
+const mockSearchParams = vi.hoisted(() => ({ value: new URLSearchParams() }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 
@@ -51,6 +54,18 @@ vi.mock("@/api/tools", () => ({
   },
 }));
 
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    listUserDirectory: (companyId: string) => listUserDirectoryMock(companyId),
+  },
+}));
+
+vi.mock("@/api/auth", () => ({
+  authApi: {
+    getSession: () => getSessionMock(),
+  },
+}));
+
 vi.mock("@/api/agents", () => ({
   agentsApi: {
     list: vi.fn().mockResolvedValue([
@@ -66,7 +81,7 @@ vi.mock("@/lib/browserNavigation", () => ({
 vi.mock("@/lib/router", () => ({
   useParams: () => mockParams,
   useNavigate: () => mockNavigate,
-  useSearchParams: () => [new URLSearchParams(), vi.fn()],
+  useSearchParams: () => [mockSearchParams.value, vi.fn()],
   Navigate: ({ to, replace }: { to: string; replace?: boolean }) => {
     navigateComponentMock({ to, replace });
     return <div data-navigate-to={to} />;
@@ -175,6 +190,7 @@ describe("AppDetail", () => {
     document.body.appendChild(container);
     mockParams.connectionId = "conn-1";
     mockParams.tab = "setup";
+    mockSearchParams.value = new URLSearchParams();
     getConnectionMock.mockResolvedValue(connection());
     getConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
     listGalleryMock.mockResolvedValue({
@@ -249,6 +265,11 @@ describe("AppDetail", () => {
       authorizationUrl: "https://example.test/oauth",
       expiresAt: "2026-07-10T00:00:00.000Z",
     });
+    listUserDirectoryMock.mockResolvedValue({ users: [] });
+    getSessionMock.mockResolvedValue({
+      user: { id: "user-1", name: "Dotta", image: null },
+      session: { userId: "user-1" },
+    });
   });
 
   afterEach(() => {
@@ -277,7 +298,6 @@ describe("AppDetail", () => {
       "review",
       "permissions",
       "activity",
-      "advanced",
     ]);
   });
 
@@ -327,7 +347,6 @@ describe("AppDetail", () => {
     ["review", "Review 1 new action", true],
     ["permissions", "Action permissions", true],
     ["activity", "No activity yet.", false],
-    ["advanced", "Technical details", false],
   ])("renders the %s tab panel", async (tab, expectedText, showsActionCount) => {
     mockParams.tab = tab;
 
@@ -337,6 +356,17 @@ describe("AppDetail", () => {
     expect(container.textContent?.includes("2 actions available")).toBe(showsActionCount);
     expect(container.textContent).toContain(expectedText);
     expect(container.querySelector("section.bg-card")).toBeNull();
+  });
+
+  it("redirects the legacy Advanced route to Setup", async () => {
+    mockParams.tab = "advanced";
+
+    await renderAppDetail();
+
+    expect(navigateComponentMock).toHaveBeenCalledWith({
+      to: "/apps/conn-1/setup",
+      replace: true,
+    });
   });
 
   it("renders setup without waiting for tool discovery", async () => {
@@ -360,8 +390,32 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("Action permissions");
   });
 
-  it("hides secret URL parameters in advanced technical details", async () => {
-    mockParams.tab = "advanced";
+  it("explains that MCP actions can take a minute while Test loads", async () => {
+    mockParams.tab = "test";
+    listCatalogMock.mockImplementation(() => new Promise(() => undefined));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Loading MCP actions, this may take a minute.");
+    expect(container.querySelector(".animate-spin")).toBeTruthy();
+  });
+
+  it("confirms a successful connection on Test and clears the one-time URL flag", async () => {
+    mockParams.tab = "test";
+    mockSearchParams.value = new URLSearchParams("success=1");
+
+    await renderAppDetail();
+
+    expect(pushToastMock).toHaveBeenCalledWith({
+      title: "GitHub connected",
+      body: "The connection is ready. You can test an action below.",
+      tone: "success",
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/test", { replace: true });
+  });
+
+  it("hides secret URL parameters in setup technical details", async () => {
+    mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(
       connection({
         config: {
@@ -446,13 +500,15 @@ describe("AppDetail", () => {
     expect(finishInput.enabledCatalogEntryIds).not.toContain("catalog-quarantined-block");
   });
 
-  it("keeps setup focused on description and lifecycle", async () => {
+  it("keeps setup focused while including technical details and the danger zone", async () => {
     mockParams.tab = "setup";
 
     await renderAppDetail();
 
     expect(container.textContent).toContain("Give agents a governed way to inspect repositories and pull requests.");
     expect(container.textContent).toContain("Agents can use this app");
+    expect(container.textContent).toContain("Technical details");
+    expect(container.textContent).toContain("Danger zone");
     expect(container.textContent).not.toContain("Read repo");
     expect(container.textContent).not.toContain("Action permissions");
     expect(container.querySelector("section.bg-card")).toBeNull();
@@ -484,6 +540,7 @@ describe("AppDetail", () => {
   it("matches connected Notion guidance to the reconnect action", async () => {
     getConnectionMock.mockResolvedValue(connection({
       name: "Notion",
+      createdByUserId: "user-1",
       config: {
         sourceTemplateKey: "notion",
         oauth: {
@@ -506,9 +563,24 @@ describe("AppDetail", () => {
         urlPatterns: [],
       }],
     });
+    listUserDirectoryMock.mockResolvedValue({
+      users: [{
+        principalId: "user-1",
+        status: "active",
+        user: {
+          id: "user-1",
+          name: "Dotta",
+          email: "dotta@example.com",
+          image: "https://example.com/dotta.png",
+        },
+      }],
+    });
 
     await renderAppDetail();
 
+    expect(container.textContent).toContain("Dotta’s Notion");
+    expect(container.textContent).toContain("Connected by");
+    expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
     expect(container.textContent).toContain(
       "Your workspace authorization is active. Reconnect any time to replace it.",
     );
@@ -652,6 +724,35 @@ describe("AppDetail", () => {
     expect(putConnectionInstallsMock).toHaveBeenCalledWith("conn-1", [
       { targetType: "agent", targetId: "agent-1" },
     ]);
+  });
+
+  it("removes an existing agent grant directly from Permissions", async () => {
+    mockParams.tab = "permissions";
+    listProfilesMock.mockResolvedValue({
+      profiles: [{
+        profileKey: "app:conn-1",
+        entries: [
+          { effect: "include", catalogEntryId: "catalog-read" },
+          { effect: "include", catalogEntryId: "catalog-write" },
+        ],
+        bindings: [{ targetType: "agent", targetId: "agent-1" }],
+      }],
+    });
+
+    await renderAppDetail();
+
+    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove Coder access"]');
+    expect(remove).toBeTruthy();
+    await act(async () => {
+      remove!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["catalog-read", "catalog-write"],
+      askFirstCatalogEntryIds: ["catalog-write"],
+      access: { agentIds: [] },
+    });
   });
 
   it("renders activity attribution with issue context and human resolver names", async () => {

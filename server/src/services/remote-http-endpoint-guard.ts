@@ -53,24 +53,24 @@ export async function assertPublicRemoteHttpEndpoint(
  * (PAP-17098). Returning the resolved set — rather than a bare `void` — is what
  * lets `guardedRemoteHttpFetch` close that window.
  *
- * An empty result means "no address pinning required": the deployment allows
- * private endpoints, so there is no boundary left to enforce.
+ * Hostnames are always resolved and pinned, including in deployments that
+ * allow private networking. Link-local addresses remain outside that allowance,
+ * so handing an allowed hostname back to platform fetch would reopen a DNS
+ * rebinding path to instance metadata.
  */
 export async function resolveApprovedRemoteHttpAddresses(
   endpoint: URL,
   options: RemoteHttpEndpointGuardOptions,
   error: RemoteHttpEndpointErrorFactory,
 ): Promise<string[]> {
-  if (options.allowPrivateNetwork) return [];
-
   const hostname = endpoint.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+  if (!options.allowPrivateNetwork && (hostname === "localhost" || hostname.endsWith(".localhost"))) {
     throw error("Remote MCP connection URL cannot target private or reserved network addresses", "remote_http_private_endpoint");
   }
 
   const literalVersion = isIP(hostname);
   if (literalVersion !== 0) {
-    if (isPrivateOrReservedIp(hostname)) {
+    if (isAlwaysDeniedLinkLocalIp(hostname) || (!options.allowPrivateNetwork && isPrivateOrReservedIp(hostname))) {
       throw error("Remote MCP connection URL cannot target private or reserved network addresses", "remote_http_private_endpoint");
     }
     return [hostname];
@@ -89,7 +89,9 @@ export async function resolveApprovedRemoteHttpAddresses(
   if (results.length === 0) {
     throw error("Remote MCP connection hostname did not resolve", "remote_http_dns_failed");
   }
-  if (results.some((result) => isPrivateOrReservedIp(result.address))) {
+  if (results.some((result) =>
+    isAlwaysDeniedLinkLocalIp(result.address)
+    || (!options.allowPrivateNetwork && isPrivateOrReservedIp(result.address)))) {
     throw error("Remote MCP connection URL cannot resolve to private or reserved network addresses", "remote_http_private_endpoint");
   }
   return results.map((result) => result.address);
@@ -140,6 +142,16 @@ export function isPrivateOrReservedIp(address: string): boolean {
   if (isIP(address) === 4) return isPrivateOrReservedIpv4(address);
   if (isIP(address) === 6) return isPrivateOrReservedIpv6(lower);
   return true;
+}
+
+/** Link-local egress is denied in every deployment mode. */
+export function isAlwaysDeniedLinkLocalIp(address: string): boolean {
+  const normalized = normalizeIpAddress(address);
+  if (isIP(normalized) === 4) {
+    const octets = parseIpv4Address(normalized);
+    return octets !== null && octets[0] === 169 && octets[1] === 254;
+  }
+  return isIP(normalized) === 6 && /^fe[89ab]/.test(normalized);
 }
 
 function isPrivateOrReservedIpv4(address: string): boolean {

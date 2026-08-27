@@ -150,7 +150,7 @@ function reusableOAuthConnection(
   }) ?? null;
 }
 
-export function AppsConnect() {
+export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
   const navigate = useNavigate();
   const routeParams = useParams<{ appKey?: string }>();
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -163,6 +163,7 @@ export function AppsConnect() {
   const directOAuthSource = isMcpDirectOAuthConnectSlug(sourceSlug) ? sourceSlug : null;
   const requestedAppKey = appKey ?? directOAuthSource ?? undefined;
   const zapierSource = sourceSlug === "zapier";
+  const byo = byoOnly || searchParams.get("byo") === "1";
 
   // Prefill arrives from the app page for reconnects; read once so later
   // wizard navigation doesn't fight the URL.
@@ -270,17 +271,17 @@ export function AppsConnect() {
     setInstallMode("none");
     setInstallAgentIds(new Set());
     setStep("gallery");
-    navigate("/apps/connect?byo=1");
+    navigate(byoOnly ? "/apps/byo" : "/apps/connect?byo=1");
   };
 
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Apps", href: "/apps" },
-      { label: "Connect an app" },
+      { label: byoOnly ? "Connect your own tool" : "Connect an app" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [byoOnly, setBreadcrumbs, selectedCompany?.name]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -687,30 +688,33 @@ export function AppsConnect() {
   return (
     <div className="max-w-5xl">
       {step !== "success" && (
-        <StepHeader
-          subtitle={
-            step === "gallery"
-              ? "Pick the app you want your agents to use."
-              : `Step ${stepIndex + 1} of ${stepLabels.length}`
-          }
-          step={step}
-          activeIndex={stepIndex}
-          labels={stepLabels}
-          appIdentity={
-            zapierSource
-              ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null }
-              : undefined
-          }
-          unverifiedHost={!entry && !zapierSource && step !== "gallery" ? endpointHost(linkUrl) : null}
-          onCancel={() => navigate("/apps")}
-        />
+        !(byoOnly && step === "gallery") && (
+          <StepHeader
+            subtitle={
+              step === "gallery"
+                ? "Pick the app you want your agents to use."
+                : `Step ${stepIndex + 1} of ${stepLabels.length}`
+            }
+            step={step}
+            activeIndex={stepIndex}
+            labels={stepLabels}
+            appIdentity={
+              zapierSource
+                ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null }
+                : undefined
+            }
+            unverifiedHost={!entry && !zapierSource && step !== "gallery" ? endpointHost(linkUrl) : null}
+            onCancel={() => navigate("/apps")}
+          />
+        )
       )}
 
       {step === "gallery" && (
         <GalleryStep
           loading={galleryQuery.isLoading}
           apps={galleryQuery.data?.apps ?? []}
-          byo={searchParams.get("byo") === "1"}
+          byo={byo}
+          byoOnly={byoOnly}
           source={searchParams.get("source")}
           onPick={useMatchedGalleryEntry}
           onUseLink={(url) => {
@@ -1093,6 +1097,7 @@ function GalleryStep({
   loading,
   apps,
   byo = false,
+  byoOnly = false,
   source = null,
   onPick,
   onUseLink,
@@ -1103,6 +1108,8 @@ function GalleryStep({
   apps: AppDefinition[];
   /** Entered via the "Connect your own MCP server" card (PAP-12371, Finding C): focus the link path. */
   byo?: boolean;
+  /** Canonical BYO page: keep the URL path and alternate methods, without the app gallery. */
+  byoOnly?: boolean;
   source?: string | null;
   onPick: (entry: AppDefinition) => void;
   onUseLink: (link: string) => void;
@@ -1114,14 +1121,17 @@ function GalleryStep({
   const [linkError, setLinkError] = useState<string | null>(null);
   const linkSectionRef = useRef<HTMLDivElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
+  const linkInputSelectedRef = useRef(false);
 
-  // Arriving from the BYO card: scroll the "Connect with a link" section into
-  // view and focus its input so the paste-URL path is the obvious next step.
+  // Arriving from the BYO card: scroll the URL section into view and select its
+  // input so the operator can paste immediately.
   useEffect(() => {
-    if (!byo || loading) return;
-    linkSectionRef.current?.scrollIntoView({ block: "center" });
+    if (!byo || (loading && !byoOnly) || linkInputSelectedRef.current) return;
+    if (!byoOnly) linkSectionRef.current?.scrollIntoView?.({ block: "center" });
     linkInputRef.current?.focus();
-  }, [byo, loading]);
+    linkInputRef.current?.select();
+    linkInputSelectedRef.current = true;
+  }, [byo, byoOnly, loading]);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return apps;
@@ -1141,7 +1151,7 @@ function GalleryStep({
     onUseLink(next);
   };
 
-  if (loading) {
+  if (loading && !byoOnly) {
     return (
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
@@ -1153,58 +1163,62 @@ function GalleryStep({
 
   return (
     <div className="space-y-6">
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search apps…"
-          className="h-11 pl-9"
-        />
-      </div>
+      {!byoOnly && (
+        <>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search apps…"
+              className="h-11 pl-9"
+            />
+          </div>
 
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-        {filtered.map((app) => {
-          const copy = appCopyFor(app.slug, app.description);
-          const methods = getAvailableConnectionMethods(app);
-          const oauth = methods[0]?.auth === "oauth";
-          const oauthBlocked = methods.length === 1 && oauth && !isMcpDirectOAuthConnectSlug(app.slug);
-          const unavailable = app.availability?.available === false;
-          return (
-            <button
-              key={app.slug}
-              type="button"
-              disabled={oauthBlocked || unavailable}
-              title={
-                unavailable
-                  ? `${app.name} isn't configured on this instance yet. Ask your Paperclip admin.`
-                  : undefined
-              }
-              onClick={() => onPick(app)}
-              className={cn(
-                "flex flex-col rounded-xl border border-border bg-card p-4 text-left transition-colors",
-                oauthBlocked || unavailable ? "cursor-not-allowed opacity-60" : "hover:border-foreground/30 hover:bg-accent/40",
-              )}
-            >
-              <AppLogo name={app.name} logoUrl={app.branding.logoUrl} size={36} />
-              <div className="mt-3 text-sm font-bold text-foreground">{app.name}</div>
-              <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{copy.tagline}</div>
-              <div className="mt-3 text-xs font-semibold text-foreground">
-                {unavailable ? (
-                  <span className="text-muted-foreground">Not available on this instance - ask your admin.</span>
-                ) : oauthBlocked ? (
-                  <span className="text-muted-foreground">Sign-in coming soon</span>
-                ) : (
-                  <span>Connect →</span>
-                )}
-              </div>
-            </button>
-          );
-        })}
-      </div>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            {filtered.map((app) => {
+              const copy = appCopyFor(app.slug, app.description);
+              const methods = getAvailableConnectionMethods(app);
+              const oauth = methods[0]?.auth === "oauth";
+              const oauthBlocked = methods.length === 1 && oauth && !isMcpDirectOAuthConnectSlug(app.slug);
+              const unavailable = app.availability?.available === false;
+              return (
+                <button
+                  key={app.slug}
+                  type="button"
+                  disabled={oauthBlocked || unavailable}
+                  title={
+                    unavailable
+                      ? `${app.name} isn't configured on this instance yet. Ask your Paperclip admin.`
+                      : undefined
+                  }
+                  onClick={() => onPick(app)}
+                  className={cn(
+                    "flex flex-col rounded-xl border border-border bg-card p-4 text-left transition-colors",
+                    oauthBlocked || unavailable ? "cursor-not-allowed opacity-60" : "hover:border-foreground/30 hover:bg-accent/40",
+                  )}
+                >
+                  <AppLogo name={app.name} logoUrl={app.branding.logoUrl} size={36} />
+                  <div className="mt-3 text-sm font-bold text-foreground">{app.name}</div>
+                  <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{copy.tagline}</div>
+                  <div className="mt-3 text-xs font-semibold text-foreground">
+                    {unavailable ? (
+                      <span className="text-muted-foreground">Not available on this instance - ask your admin.</span>
+                    ) : oauthBlocked ? (
+                      <span className="text-muted-foreground">Sign-in coming soon</span>
+                    ) : (
+                      <span>Connect →</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
 
-      {filtered.length === 0 && (
-        <div className="py-10 text-center text-sm text-muted-foreground">No apps match “{search}”.</div>
+          {filtered.length === 0 && (
+            <div className="py-10 text-center text-sm text-muted-foreground">No apps match “{search}”.</div>
+          )}
+        </>
       )}
 
       <div
@@ -1265,6 +1279,7 @@ function GalleryStep({
           <div className="flex gap-2">
             <Input
               ref={linkInputRef}
+              aria-label="MCP server URL"
               value={linkInput}
               onChange={(e) => {
                 setLinkInput(e.target.value);
@@ -1485,7 +1500,7 @@ function LinkConnectStep({
 
         {showSimpleKeyQuestion && (
           <div>
-            <label className="text-sm font-medium text-foreground">Does it need a key?</label>
+            <label className="mr-2 text-sm font-medium text-foreground">Does it need a key?</label>
             <div className="mt-2 inline-flex rounded-lg border border-border bg-muted/50 p-1">
               <SegmentedOption
                 label="No"

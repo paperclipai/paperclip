@@ -16,6 +16,8 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
+import { accessApi } from "@/api/access";
+import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { AppLogo } from "./AppLogo";
 import {
+  appApplicationSourceSlug,
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
@@ -39,6 +42,12 @@ import {
 } from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
 import { AdvancedToolsLink } from "./store-cards";
+import {
+  ConnectionOwnerIdentity,
+  connectionDisplayNameForOwner,
+  connectionOwnerProfile,
+  type ConnectionOwnerProfile,
+} from "./connection-owner";
 
 const BROWSE_HREF = "/apps";
 
@@ -51,9 +60,10 @@ type AppStatus = {
 
 type AppRow = {
   application: ToolApplication;
-  primaryConnection: ToolConnection | null;
-  connectionCount: number;
-  agentAvailableConnectionCount: number;
+  connection: ToolConnection | null;
+  displayName: string;
+  owner: ConnectionOwnerProfile | null;
+  remainingAgentAvailableConnectionCount: number;
   status: AppStatus;
   actionCount: number;
   lastUsedAt: Date | string | null;
@@ -137,6 +147,11 @@ export function Connections() {
     queryFn: () => toolsApi.listProfiles(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const userDirectoryQuery = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const deleteConnection = useMutation({
     mutationFn: (target: { id: string; appName: string; remainingConnectionCount: number }) =>
@@ -197,40 +212,53 @@ export function Connections() {
     }
     return map;
   }, [connections]);
+  const userProfileById = useMemo(
+    () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
+    [userDirectoryQuery.data],
+  );
 
   const rows = useMemo<AppRow[]>(() => {
-    return applications.map((application) => {
+    return applications.flatMap((application): AppRow[] => {
       const appConnections = connectionsByApplication.get(application.id) ?? [];
-      const primaryConnection = appConnections[0] ?? null;
-      const actionCount = appConnections.reduce(
-        (sum, connection) => sum + (actionCountByConnection.get(`app:${connection.id}`) ?? 0),
-        0,
-      );
-      const lastUsedAt = appConnections.reduce<Date | string | null>((latest, connection) => {
-        if (!connection.lastUsedAt) return latest;
-        if (!latest) return connection.lastUsedAt;
-        return new Date(connection.lastUsedAt).getTime() > new Date(latest).getTime()
-          ? connection.lastUsedAt
-          : latest;
-      }, null);
-      const galleryEntry = application.applicationKey
-        ? logoByKey.get(application.applicationKey)
-        : undefined;
-      return {
-        application,
-        primaryConnection,
-        connectionCount: appConnections.length,
-        agentAvailableConnectionCount: appConnections.filter(
-          (connection) => connection.status === "active" && connection.enabled,
-        ).length,
-        status: statusFor(application, appConnections),
-        actionCount,
-        lastUsedAt,
-        logoUrl: appDefinitionLogoUrl(galleryEntry) ??
-          appDefinitionLogoUrl(logoByName.get(application.name.toLowerCase())),
-      };
+      const galleryEntry = logoByKey.get(appApplicationSourceSlug(application) ?? "");
+      const logoUrl = appDefinitionLogoUrl(galleryEntry) ??
+        appDefinitionLogoUrl(logoByName.get(application.name.toLowerCase()));
+      const agentAvailableConnectionCount = appConnections.filter(
+        (connection) => connection.status === "active" && connection.enabled,
+      ).length;
+      if (appConnections.length === 0) {
+        return [{
+          application,
+          connection: null,
+          displayName: application.name,
+          owner: null,
+          remainingAgentAvailableConnectionCount: 0,
+          status: statusFor(application, []),
+          actionCount: 0,
+          lastUsedAt: null,
+          logoUrl,
+        }];
+      }
+      return appConnections.map((connection) => {
+        const owner = connectionOwnerProfile(connection, userProfileById);
+        return {
+          application,
+          connection,
+          displayName: connectionDisplayNameForOwner(connection, application.name, owner),
+          owner,
+          remainingAgentAvailableConnectionCount: Math.max(
+            0,
+            agentAvailableConnectionCount -
+              (connection.status === "active" && connection.enabled ? 1 : 0),
+          ),
+          status: statusFor(application, [connection]),
+          actionCount: actionCountByConnection.get(`app:${connection.id}`) ?? 0,
+          lastUsedAt: connection.lastUsedAt ?? null,
+          logoUrl,
+        };
+      });
     });
-  }, [actionCountByConnection, applications, connectionsByApplication, logoByKey, logoByName]);
+  }, [actionCountByConnection, applications, connectionsByApplication, logoByKey, logoByName, userProfileById]);
 
   const rowsNeedingAttention = rows.filter(rowNeedsAttention);
   const visibleRows = filter === "attention" ? rowsNeedingAttention : rows;
@@ -304,7 +332,7 @@ export function Connections() {
               <ShieldAlert className="h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold text-red-900 dark:text-red-100">
-                  {rowsNeedingAttention.length} {rowsNeedingAttention.length === 1 ? "app needs" : "apps need"} attention
+                  {rowsNeedingAttention.length} {rowsNeedingAttention.length === 1 ? "connection needs" : "connections need"} attention
                 </div>
                 <div className="truncate text-xs text-red-700 dark:text-red-300">
                   {floatSummary(rowsNeedingAttention)}
@@ -318,7 +346,8 @@ export function Connections() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5">App</th>
+                  <th className="px-4 py-2.5">Connection</th>
+                  <th className="px-4 py-2.5">Connected by</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Actions</th>
                   <th className="px-4 py-2.5">Last used</th>
@@ -327,29 +356,31 @@ export function Connections() {
               </thead>
               <tbody>
                 {visibleRows.map((row) => {
-                  const { application, primaryConnection, status } = row;
+                  const { application, connection, status } = row;
                   const attention = rowNeedsAttention(row);
                   const hint =
                     status.tone === "attention"
-                      ? primaryConnection?.authKind === "oauth"
+                      ? connection?.authKind === "oauth"
                         ? "Reconnect required — sign in again to restore access."
                         : "The key stopped working — reconnect to fix."
                       : status.tone === "paused"
                         ? "Paused — agents can’t use it right now."
                         : status.tone === "not_connected"
                           ? "Connect it so agents can use it."
-                          : row.connectionCount > 1
-                            ? `${row.connectionCount} connections`
+                          : row.displayName !== application.name
+                            ? application.name
                             : null;
-                  const appHref = `/apps/app/${application.id}/setup`;
-                  const actionLabel = !primaryConnection
+                  const appHref = connection
+                    ? `/apps/${connection.id}/setup`
+                    : `/apps/app/${application.id}/setup`;
+                  const actionLabel = !connection
                     ? "Connect"
                     : status.tone === "attention"
                       ? "Reconnect"
-                      : "Open";
+                      : "Edit";
                   return (
                     <tr
-                      key={application.id}
+                      key={connection?.id ?? application.id}
                       onClick={() => navigate(appHref)}
                       className={cn(
                         "cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/30",
@@ -359,19 +390,22 @@ export function Connections() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <AppLogo
-                            name={application.name}
+                            name={row.displayName}
                             logoUrl={row.logoUrl}
                             size={32}
                           />
                           <div className="min-w-0">
                             <div className="font-medium text-foreground">
-                              {application.name}
+                              {row.displayName}
                             </div>
                             {hint && (
                               <div className="truncate text-xs text-muted-foreground">{hint}</div>
                             )}
                           </div>
                         </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <ConnectionOwnerIdentity owner={row.owner} />
                       </td>
                       <td className="px-4 py-3">
                         <span
@@ -403,22 +437,18 @@ export function Connections() {
                           >
                             {actionLabel}
                           </Button>
-                          {primaryConnection && (
+                          {connection && (
                             <Button
                               variant="ghost"
                               size="icon-sm"
                               className="text-muted-foreground hover:text-destructive"
-                              aria-label={`Delete ${application.name} connection`}
+                              aria-label={`Delete ${row.displayName} connection`}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 setConnectionToDelete({
-                                  id: primaryConnection.id,
+                                  id: connection.id,
                                   appName: application.name,
-                                  remainingConnectionCount: Math.max(
-                                    0,
-                                    row.agentAvailableConnectionCount -
-                                      (primaryConnection.status === "active" && primaryConnection.enabled ? 1 : 0),
-                                  ),
+                                  remainingConnectionCount: row.remainingAgentAvailableConnectionCount,
                                 });
                               }}
                             >

@@ -4,8 +4,6 @@ import {
   Layers,
   Network,
   ScrollText,
-  Server,
-  Shield,
   TerminalSquare,
 } from "lucide-react";
 
@@ -35,8 +33,6 @@ export const ADVANCED_TABS = [
 export const DEVELOPER_TABS = [
   { key: "gateways", label: "Gateways", icon: Network },
   { key: "profiles", label: "Profiles", icon: Layers },
-  { key: "policies", label: "Rules", icon: Shield },
-  { key: "runtime", label: "Health", icon: Server },
   { key: "audit", label: "Activity", icon: ScrollText },
   { key: "smoke-lab", label: "Smoke Lab", icon: FlaskConical },
 ] as const;

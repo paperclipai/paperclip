@@ -164,18 +164,18 @@ describe("AppConnectionSidebar", () => {
     await flushReact();
   }
 
-  it("renders a back link and the connected app tabs (including Test)", async () => {
+  it("renders a back link and the connected app tabs with Test after Setup", async () => {
     await renderSidebar();
 
     expect(container.querySelector('a[href="/apps/connections"]')?.textContent).toContain("All apps");
     expect(container.textContent).toContain("GitHub");
-    expect(container.querySelectorAll("[data-to]").length).toBe(6);
+    expect(container.querySelectorAll("[data-to]").length).toBe(5);
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/setup", label: "Setup", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/review", label: "Review", badge: 3, badgeTone: "danger" }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/permissions", label: "Permissions", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/test", label: "Test", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/activity", label: "Activity", end: true }));
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/conn-1/advanced", label: "Advanced", end: true }));
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Advanced" }));
   });
 
   it("marks the current tab active through the nav item target", async () => {
@@ -197,11 +197,11 @@ describe("AppConnectionSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/app/app-1/review", label: "Review", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/app/app-1/permissions", label: "Permissions", end: true }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/app/app-1/activity", label: "Activity", end: true }));
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(expect.objectContaining({ to: "/apps/app/app-1/advanced", label: "Advanced", end: true }));
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Advanced" }));
     expect(container.querySelector('[data-to="/apps/app/app-1/review"]')?.getAttribute("data-active")).toBe("true");
     // The Test tab needs a live connection, so it is hidden in application mode.
     expect(container.querySelector('[data-to="/apps/app/app-1/test"]')).toBeNull();
-    expect(container.querySelectorAll("[data-to]").length).toBe(5);
+    expect(container.querySelectorAll("[data-to]").length).toBe(4);
   });
 
   it("keeps rendering a connection sidebar when its connection is unavailable", async () => {
@@ -213,7 +213,7 @@ describe("AppConnectionSidebar", () => {
 
     expect(container.textContent).toContain("App");
     expect(container.querySelector('a[href="/apps/connections"]')?.textContent).toContain("All apps");
-    expect(container.querySelectorAll("[data-to]").length).toBe(6);
+    expect(container.querySelectorAll("[data-to]").length).toBe(5);
   });
 
   it("keeps rendering an application sidebar when its application is unavailable", async () => {
@@ -226,6 +226,6 @@ describe("AppConnectionSidebar", () => {
 
     expect(container.textContent).toContain("App");
     expect(container.querySelector('a[href="/apps/connections"]')?.textContent).toContain("All apps");
-    expect(container.querySelectorAll("[data-to]").length).toBe(5);
+    expect(container.querySelectorAll("[data-to]").length).toBe(4);
   });
 });

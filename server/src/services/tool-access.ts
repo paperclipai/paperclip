@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
-  activityLog,
   agents,
   connectionGrants,
   connectionTokenIssuances,
@@ -78,8 +77,6 @@ import type {
   ToolActionRequestListItem,
   ToolActionRequestStatus,
   ToolConnectionActivityResponse,
-  ToolConnectionLifecycleEvent,
-  ToolConnectionLifecycleEventType,
   ToolAppConnectionActionSummary,
   ToolExampleInstallResult,
   ToolExampleSmokeCheck,
@@ -146,6 +143,7 @@ import {
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
+import { listConnectionLifecycleEvents } from "./tool-connection-activity.js";
 
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -449,7 +447,7 @@ function sameOAuthIssuer(a: string | null | undefined, b: string | null | undefi
 
 const oauthRegistrationFlights = new Map<string, Promise<unknown>>();
 
-async function oauthSingleFlight<T>(
+async function singleFlight<T>(
   flights: Map<string, Promise<unknown>>,
   key: string,
   operation: () => Promise<T>,
@@ -470,6 +468,8 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+  /** How long persisted remote MCP action discovery remains fresh. */
+  catalogCacheTtlMs?: number;
   /** Test seam for deciding whether an OAuth client metadata URL is publicly resolvable. */
   oauthClientMetadataLookup?: RemoteHttpEndpointLookup;
 };
@@ -1349,47 +1349,6 @@ function userFallbackName(userId: string): string {
   return userId;
 }
 
-/** Activity-log actions that map to a connection lifecycle event on the Activity tab (PAP-11284). */
-const LIFECYCLE_ACTIVITY_LOG_ACTIONS = [
-  "tool_app.connected",
-  "tool_app.oauth_connected",
-  "tool_example.installed",
-  "tool_app.reconnected",
-  "tool_connection.archived",
-  "tool_connection.updated",
-] as const;
-
-/**
- * Map a connection-scoped activity-log row to a lifecycle event type, or null
- * when it isn't an operator-visible lifecycle change. A `tool_connection.updated`
- * row only surfaces when the route tagged it with a `lifecycle` discriminator
- * (pause/resume/allowlist); plain settings edits stay out of the feed.
- */
-function activityLogActionToLifecycleType(
-  action: string,
-  details: Record<string, unknown> | null,
-): ToolConnectionLifecycleEventType | null {
-  switch (action) {
-    case "tool_app.connected":
-    case "tool_app.oauth_connected":
-    case "tool_example.installed":
-      return "app_connected";
-    case "tool_app.reconnected":
-      return "reconnected";
-    case "tool_connection.archived":
-      return "disconnected";
-    case "tool_connection.updated": {
-      const lifecycle = typeof details?.lifecycle === "string" ? details.lifecycle : null;
-      if (lifecycle === "paused") return "app_paused";
-      if (lifecycle === "resumed") return "app_resumed";
-      if (lifecycle === "allowlist_changed") return "allowlist_changed";
-      return null;
-    }
-    default:
-      return null;
-  }
-}
-
 function denialReasonForDecision(
   invocation: typeof toolInvocations.$inferSelect,
   latestAuditEvent: typeof toolCallEvents.$inferSelect | null,
@@ -1832,9 +1791,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   const policySvc = toolAccessPolicyService(db);
   const now = options.now ?? (() => new Date());
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
-  // This map only removes duplicate work inside one service instance. The
-  // database refresh lease below is the cross-process serialization boundary.
+  // These maps remove duplicate work inside one service instance. OAuth also
+  // uses the database refresh lease below as its cross-process boundary.
   const oauthRefreshFlights = new Map<string, Promise<unknown>>();
+  const catalogRefreshFlights = new Map<string, Promise<unknown>>();
+  const catalogCacheTtlMs = Math.max(0, options.catalogCacheTtlMs ?? 15 * 60 * 1000);
 
   function allowPrivateRemoteEndpoints() {
     return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
@@ -4136,9 +4097,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
   }
 
-  async function refreshCatalog(connectionId: string, actor?: ActorInfo): Promise<ToolCatalogRefreshResult> {
+  async function refreshCatalog(
+    connectionId: string,
+    actor?: ActorInfo,
+    refreshOptions: { enableAllByDefault?: boolean } = {},
+  ): Promise<ToolCatalogRefreshResult> {
     const connection = await getConnectionRow(connectionId);
-    const now = new Date();
+    const refreshedAt = now();
     let descriptors: McpToolDescriptor[];
     try {
       descriptors = await discoverTools(connection);
@@ -4168,7 +4133,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const sourceTemplateKey = typeof asRecord(connection.config).sourceTemplateKey === "string"
       ? String(asRecord(connection.config).sourceTemplateKey)
       : null;
-    const quarantineOnRefresh = shouldQuarantineNewEntries(connection)
+    const quarantineOnRefresh = !refreshOptions.enableAllByDefault
+      && shouldQuarantineNewEntries(connection)
       && (connection.status === "active" || sourceTemplateKey === "posthog");
     const safeDefault = asRecord(connection.config).safeDefault === true;
     for (const descriptor of descriptors) {
@@ -4206,14 +4172,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             status,
             versionHash: hash,
             schemaHash,
-            lastSeenAt: now,
+            lastSeenAt: refreshedAt,
             quarantinedAt: status === "quarantined"
-              ? shouldQuarantine ? now : existing.quarantinedAt
+              ? shouldQuarantine ? refreshedAt : existing.quarantinedAt
               : null,
             quarantineReason: status === "quarantined"
               ? shouldQuarantine ? "pending_review" : existing.quarantineReason
               : null,
-            updatedAt: now,
+            updatedAt: refreshedAt,
           })
           .where(eq(toolCatalogEntries.id, existing.id))
           .returning();
@@ -4237,25 +4203,33 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           status,
           versionHash: hash,
           schemaHash,
-          firstSeenAt: now,
-          lastSeenAt: now,
-          quarantinedAt: shouldQuarantine ? now : null,
+          firstSeenAt: refreshedAt,
+          lastSeenAt: refreshedAt,
+          quarantinedAt: shouldQuarantine ? refreshedAt : null,
           quarantineReason: shouldQuarantine ? "pending_review" : null,
         }).returning();
         updatedEntries.push(toCatalogEntry(created));
       }
     }
 
+    const normalizedConfig = refreshOptions.enableAllByDefault
+      ? { ...connection.config, quarantineNewEntries: false }
+      : connection.config;
+    const normalizedTransportConfig = refreshOptions.enableAllByDefault
+      ? { ...connection.transportConfig, quarantineNewEntries: false }
+      : connection.transportConfig;
     const [updatedConnection] = await db
       .update(toolConnections)
       .set({
+        config: normalizedConfig,
+        transportConfig: normalizedTransportConfig,
         healthStatus: "ok",
         healthMessage: "Tool catalog refreshed.",
-        healthCheckedAt: now,
-        lastHealthAt: now,
-        lastCatalogRefreshAt: now,
+        healthCheckedAt: refreshedAt,
+        lastHealthAt: refreshedAt,
+        lastCatalogRefreshAt: refreshedAt,
         lastError: null,
-        updatedAt: now,
+        updatedAt: refreshedAt,
       })
       .where(eq(toolConnections.id, connection.id))
       .returning();
@@ -4264,22 +4238,37 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await ensureRuntimeSlot(updatedConnection);
       await db
         .update(toolRuntimeSlots)
-        .set({ healthStatus: "ok", healthMessage: "Approved stdio template is ready.", lastHealthCheckAt: now, updatedAt: now })
+        .set({
+          healthStatus: "ok",
+          healthMessage: "Approved stdio template is ready.",
+          lastHealthCheckAt: refreshedAt,
+          updatedAt: refreshedAt,
+        })
         .where(eq(toolRuntimeSlots.connectionId, connection.id));
     }
 
     const activeEntries = updatedEntries.filter((entry) => entry.status === "active");
     await enableCatalogEntriesByDefault({
       connection: updatedConnection,
-      newCatalogEntryIds: activeEntries
-        .filter((entry) => {
-          const previous = existingByName.get(entry.toolName);
-          return !previous || previous.status === "quarantined";
-        })
-        .map((entry) => entry.id),
+      newCatalogEntryIds: refreshOptions.enableAllByDefault
+        ? activeEntries.map((entry) => entry.id)
+        : activeEntries
+          .filter((entry) => {
+            const previous = existingByName.get(entry.toolName);
+            return !previous || previous.status === "quarantined";
+          })
+          .map((entry) => entry.id),
       activeCatalogEntryIds: activeEntries.map((entry) => entry.id),
       actor,
     });
+    if (refreshOptions.enableAllByDefault) {
+      await upsertAskFirstPolicies({
+        companyId: updatedConnection.companyId,
+        connection: updatedConnection,
+        askFirstEntries: [],
+        actor,
+      });
+    }
 
     await audit({
       companyId: connection.companyId,
@@ -5874,7 +5863,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const key = `${input.connection.id}:${input.redirectUri}`;
-    return oauthSingleFlight(oauthRegistrationFlights, key, async () => {
+    return singleFlight(oauthRegistrationFlights, key, async () => {
       const latest = await getConnectionRow(input.connection.id, input.connection.companyId);
       const latestConfigured = configuredOAuthClientForConnection(latest, input.endpoints.provider);
       if (latestConfigured.clientId) {
@@ -6345,7 +6334,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (typeof oauth.tokenUrl !== "string" || typeof oauth.provider !== "string") return connection;
     const expiresAtMs = oauthExpiresAtMs(connection);
     if (expiresAtMs && expiresAtMs > Date.now() + 60_000) return connection;
-    return oauthSingleFlight(oauthRefreshFlights, connection.id, async () => {
+    return singleFlight(oauthRefreshFlights, connection.id, async () => {
       const lease = await acquireOAuthRefreshLease(connection);
       if (!lease.leaseId) return lease.connection;
       try {
@@ -6641,7 +6630,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
         throw error;
       }
-      const refresh = await refreshCatalog(connectionRow.id, actor);
+      const refresh = await refreshCatalog(connectionRow.id, actor, { enableAllByDefault: true });
       const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
       return {
         connectionId: refresh.connection.id,
@@ -7082,7 +7071,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .where(eq(toolConnections.id, connection.id))
       .returning();
     await syncCredentialBindings(updated);
-    return checkConnectionHealth(updated.id, actor);
+    const health = await checkConnectionHealth(updated.id, actor);
+    const refresh = await refreshCatalog(updated.id, actor, { enableAllByDefault: true });
+    return { ...health, connection: refresh.connection };
   }
 
   async function startOAuth(
@@ -7257,6 +7248,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .select({
         companyId: toolOauthStates.companyId,
         connectionId: toolOauthStates.connectionId,
+        subjectUserId: toolOauthStates.subjectUserId,
       })
       .from(toolOauthStates)
       .where(eq(toolOauthStates.state, state))
@@ -7542,7 +7534,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     await syncCredentialBindings(connection);
 
     await checkConnectionHealth(connection.id, input.actor);
-    const refresh = await refreshCatalog(connection.id, input.actor);
+    const refresh = await refreshCatalog(connection.id, input.actor, { enableAllByDefault: true });
     const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
     return {
       connectionId: refresh.connection.id,
@@ -7559,137 +7551,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       },
       auth: null,
     };
-  }
-
-  /**
-   * Build the connection lifecycle timeline for the Activity tab (PAP-11284) by
-   * surfacing two existing audit sources scoped to this connection:
-   *  - `activity_log` rows (connect / pause / resume / allowlist / reconnect / disconnect)
-   *  - `tool_access_audit_events` catalog refreshes that quarantined new actions
-   * Actors are resolved to display names (agent name or user name/email).
-   */
-  async function listConnectionLifecycleEvents(
-    connection: typeof toolConnections.$inferSelect,
-    limit: number,
-  ): Promise<ToolConnectionLifecycleEvent[]> {
-    const [logRows, quarantineRows] = await Promise.all([
-      db
-        .select()
-        .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.companyId, connection.companyId),
-            eq(activityLog.entityType, "tool_connection"),
-            eq(activityLog.entityId, connection.id),
-            inArray(activityLog.action, [...LIFECYCLE_ACTIVITY_LOG_ACTIONS]),
-          ),
-        )
-        .orderBy(desc(activityLog.createdAt))
-        .limit(limit),
-      db
-        .select()
-        .from(toolAccessAuditEvents)
-        .where(
-          and(
-            eq(toolAccessAuditEvents.companyId, connection.companyId),
-            eq(toolAccessAuditEvents.connectionId, connection.id),
-            eq(toolAccessAuditEvents.action, "tool_connection.catalog_refresh"),
-            sql`(${toolAccessAuditEvents.details}->>'quarantinedCount')::int > 0`,
-          ),
-        )
-        .orderBy(desc(toolAccessAuditEvents.createdAt))
-        .limit(limit),
-    ]);
-
-    type Pending = {
-      id: string;
-      type: ToolConnectionLifecycleEventType;
-      actorType: ToolConnectionLifecycleEvent["actorType"];
-      actorId: string | null;
-      agentId: string | null;
-      details: Record<string, unknown> | null;
-      createdAt: Date;
-    };
-    const pending: Pending[] = [];
-
-    for (const row of logRows) {
-      const type = activityLogActionToLifecycleType(row.action, row.details ?? null);
-      if (!type) continue;
-      pending.push({
-        id: row.id,
-        type,
-        actorType: (row.actorType as Pending["actorType"]) ?? "system",
-        actorId: row.actorId ?? null,
-        agentId: row.agentId ?? null,
-        details: row.details ?? null,
-        createdAt: row.createdAt,
-      });
-    }
-
-    for (const row of quarantineRows) {
-      const count = Number((row.details as Record<string, unknown> | null)?.quarantinedCount ?? 0);
-      pending.push({
-        id: row.id,
-        type: "actions_quarantined",
-        actorType: (row.actorType as Pending["actorType"]) ?? "system",
-        actorId: row.actorId ?? null,
-        agentId: null,
-        details: { count: Number.isFinite(count) ? count : 0 },
-        createdAt: row.createdAt,
-      });
-    }
-
-    pending.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    const limited = pending.slice(0, limit);
-
-    // Resolve actor display names in batch. Agent actors carry their id in
-    // `agentId` (activity log) or `actorId` (audit events); user actors carry a
-    // user id in `actorId`.
-    const agentIds = new Set<string>();
-    const userIds = new Set<string>();
-    for (const item of limited) {
-      if (item.agentId) agentIds.add(item.agentId);
-      if (item.actorType === "agent" && item.actorId) agentIds.add(item.actorId);
-      if (item.actorType === "user" && item.actorId && item.actorId !== "board") userIds.add(item.actorId);
-    }
-    const agentRows = agentIds.size
-      ? await db
-        .select({ id: agents.id, name: agents.name })
-        .from(agents)
-        .where(and(eq(agents.companyId, connection.companyId), inArray(agents.id, [...agentIds])))
-      : [];
-    const userRows = userIds.size
-      ? await db
-        .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
-        .from(authUsers)
-        .where(inArray(authUsers.id, [...userIds]))
-      : [];
-    const agentNames = new Map(agentRows.map((agent) => [agent.id, agent.name]));
-    const userNames = new Map(
-      userRows.map((user) => [user.id, user.name?.trim() || user.email?.trim() || user.id]),
-    );
-
-    return limited.map((item) => {
-      let actorDisplayName: string | null = null;
-      if (item.agentId) actorDisplayName = agentNames.get(item.agentId) ?? null;
-      else if (item.actorType === "agent" && item.actorId) actorDisplayName = agentNames.get(item.actorId) ?? null;
-      else if (item.actorType === "user" && item.actorId) {
-        actorDisplayName = item.actorId === "board"
-          ? "The board"
-          : userNames.get(item.actorId) ?? userFallbackName(item.actorId);
-      }
-      return {
-        id: item.id,
-        connectionId: connection.id,
-        type: item.type,
-        actorType: item.actorType,
-        actorId: item.actorId,
-        agentId: item.agentId,
-        actorDisplayName,
-        details: item.details,
-        createdAt: item.createdAt,
-      };
-    });
   }
 
   return {
@@ -8062,7 +7923,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return connections;
     },
 
-    createConnection: async (companyId: string, input: CreateToolConnection): Promise<ToolConnection> => {
+    createConnection: async (companyId: string, input: CreateToolConnection, actor?: ActorInfo): Promise<ToolConnection> => {
       let applicationId = input.applicationId;
       let applicationNamespace = input.applicationName ?? input.name;
       const transport = input.transport;
@@ -8091,6 +7952,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
       await assertSecretRefs(companyId, [...(input.credentialRefs ?? []), ...(input.credentialSecretRefs ?? [])]);
       const connectionId = randomUUID();
+      const binding = actorBinding(actor);
       const [row] = await db.insert(toolConnections).values({
         id: connectionId,
         companyId,
@@ -8107,6 +7969,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         transportConfig: isGoogleSheetsConnectionConfig(config) ? config : input.transportConfig ?? config,
         credentialRefs: input.credentialRefs ?? [],
         credentialSecretRefs: input.credentialSecretRefs ?? [],
+        createdByAgentId: binding.actorType === "agent" ? binding.actorId : null,
+        createdByUserId: binding.actorType === "user" ? binding.actorId : null,
       }).returning();
       await ensureDefaultWorkspaceGrant(row);
       await syncCredentialBindings(row);
@@ -8155,6 +8019,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         createdByUserId: binding.actorType === "user" ? binding.actorId : null,
       }).returning();
       if (!grant) throw new Error("Failed to create connection installation");
+      await db.insert(toolAccessAuditEvents).values({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        actorType: binding.actorType ?? "system",
+        actorId: binding.actorId,
+        action: "connection_grant.created",
+        outcome: "success",
+        reasonCode: "grant_created",
+        details: { grantId: grant.id, kind: grant.kind, isDefault: grant.isDefault },
+      });
       return grant;
     },
 
@@ -8174,6 +8048,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         eq(connectionGrants.connectionId, connection.id),
       )).returning();
       if (!grant) throw notFound("Connection grant not found");
+      await db.insert(toolAccessAuditEvents).values({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        actorType: binding.actorType ?? "system",
+        actorId: binding.actorId,
+        action: "connection_grant.revoked",
+        outcome: "success",
+        reasonCode: "grant_revoked",
+        details: { grantId: grant.id, kind: grant.kind },
+      });
       return grant;
     },
 
@@ -8286,6 +8170,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             if (binding) accessExtensions.push({ targetType: install.targetType, targetId: install.targetId, profileId: profile.id });
           }
         }
+        if (removeIds.length > 0 || additions.length > 0) {
+          const binding = actorBinding(actor);
+          await tx.insert(toolAccessAuditEvents).values({
+            companyId: connection.companyId,
+            connectionId: connection.id,
+            actorType: binding.actorType ?? "system",
+            actorId: binding.actorId,
+            action: "connection_installs.changed",
+            outcome: "success",
+            reasonCode: "installs_changed",
+            details: {
+              added: additions.map((install) => ({ targetType: install.targetType, targetId: install.targetId })),
+              removed: existing
+                .filter((install) => removeIds.includes(install.id))
+                .map((install) => ({ targetType: install.targetType, targetId: install.targetId })),
+            },
+          });
+        }
       });
       for (const extension of accessExtensions) {
         await logActivity(db, {
@@ -8340,11 +8242,37 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     listCatalog: async (connectionId: string, companyId?: string): Promise<ToolCatalogEntry[]> => {
       const connection = await getConnectionRow(connectionId, companyId);
-      const rows = await db
+      let rows = await db
         .select()
         .from(toolCatalogEntries)
         .where(eq(toolCatalogEntries.connectionId, connection.id))
         .orderBy(desc(toolCatalogEntries.updatedAt));
+      const cacheExpired = connection.transport === "mcp_remote"
+        && connection.status !== "archived"
+        && (
+          rows.length === 0
+          || !connection.lastCatalogRefreshAt
+          || connection.lastCatalogRefreshAt.getTime() <= now().getTime() - catalogCacheTtlMs
+        );
+      if (cacheExpired) {
+        try {
+          await singleFlight(
+            catalogRefreshFlights,
+            connection.id,
+            () => refreshCatalog(connection.id, { actorType: "system", actorId: "tool_catalog_cache" }),
+          );
+          rows = await db
+            .select()
+            .from(toolCatalogEntries)
+            .where(eq(toolCatalogEntries.connectionId, connection.id))
+            .orderBy(desc(toolCatalogEntries.updatedAt));
+        } catch (error) {
+          // A stale catalog remains useful when the remote server is temporarily
+          // unavailable. Empty caches still fail so callers never mistake “no
+          // actions discovered” for a successful lookup.
+          if (rows.length === 0) throw error;
+        }
+      }
       return rows.map((row) => toCatalogEntryForConnection(row, connection));
     },
 
@@ -8440,7 +8368,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ]),
       );
 
-      const lifecycleEvents = await listConnectionLifecycleEvents(connection, safeLimit);
+      const lifecycleEvents = await listConnectionLifecycleEvents(db, {
+        companyId: connection.companyId,
+        connectionIds: [connection.id],
+        limit: safeLimit,
+      });
 
       return {
         connectionId: connection.id,
@@ -9067,6 +8999,29 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         await recordFailure(outcome, errorCode, details);
         throw new HttpError(status, message, { code: errorCode, path, ...details });
       };
+
+      const [install] = await db
+        .select({ id: toolConnectionInstalls.id })
+        .from(toolConnectionInstalls)
+        .where(and(
+          eq(toolConnectionInstalls.companyId, connection.companyId),
+          eq(toolConnectionInstalls.connectionId, connection.id),
+          sql`((${toolConnectionInstalls.targetType} = 'company' and ${toolConnectionInstalls.targetId} = ${connection.companyId}) or (${toolConnectionInstalls.targetType} = 'agent' and ${toolConnectionInstalls.targetId} = ${input.agentId}))`,
+        ))
+        .limit(1);
+      if (!install) {
+        await fail(
+          403,
+          `Connection ${connection.name} must be installed for this agent before it can mint a token`,
+          "denied",
+          "installation_required",
+          {
+            connection: { id: connection.id, uid: connection.uid, name: connection.name },
+            agentId: input.agentId,
+            remediation: { action: "install_connection", targetType: "agent", targetId: input.agentId },
+          },
+        );
+      }
 
       const subject = input.body.subject ?? { type: "app" as const };
       if (subject.type === "user" && subject.userId !== runContext.responsibleUserId) {

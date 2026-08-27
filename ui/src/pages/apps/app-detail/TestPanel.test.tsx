@@ -219,6 +219,16 @@ afterEach(() => {
 });
 
 describe("TestPanel", () => {
+  it("pairs the loading skeleton with explicit MCP wait copy and animation", async () => {
+    listTestAgentsMock.mockImplementation(() => new Promise(() => undefined));
+
+    await act(async () => renderPanel());
+
+    expect(container.textContent).toContain("Loading MCP actions, this may take a minute.");
+    expect(container.querySelector(".animate-spin")).toBeTruthy();
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).not.toHaveLength(0);
+  });
+
   it("renders the Test-as header and grouped actions with access badges", async () => {
     await act(async () => renderPanel());
     await flushReact();

@@ -1405,7 +1405,11 @@ rl.on("line", (line) => {
     ]));
   });
 
-  it("blocks private remote HTTP endpoints in authenticated public deployments before dispatch", async () => {
+  it.each([
+    ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
+    ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],
+    ["authenticated/public", { deploymentMode: "authenticated" as const, deploymentExposure: "public" as const }],
+  ])("always blocks link-local gateway dispatch in %s before fetch", async (_label, deployment) => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
@@ -1417,10 +1421,7 @@ rl.on("line", (line) => {
     await allowAllToolsForAgent(db, company.id, agent.id);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch should not be called"));
     try {
-      const gateway = createTestToolGatewayService(db, {
-        deploymentMode: "authenticated",
-        deploymentExposure: "public",
-      });
+      const gateway = createTestToolGatewayService(db, deployment);
       const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
       const connectedTool = (await gateway.listToolsForSession(session.token))
         .find((tool) => tool.providerType === "mcp_remote_http");
@@ -3320,7 +3321,7 @@ rl.on("line", (line) => {
     expect(audit.body).toHaveProperty("nextCursor");
   });
 
-  it("filters, paginates, and enriches tool gateway audit events server-side", async () => {
+  it("aggregates connection activity with server-side filters, pagination, and enrichment", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const otherAgent = await createAgent(db, company.id);
@@ -3339,6 +3340,25 @@ rl.on("line", (line) => {
       status: "active",
       enabled: true,
     }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `audit-${randomUUID()}`,
+      name: `Audit ${randomUUID()}`,
+    }).returning();
+    const [gateway, otherGateway] = await db.insert(toolMcpGateways).values([
+      {
+        companyId: company.id,
+        name: `Audit gateway ${randomUUID()}`,
+        slug: `audit-${randomUUID()}`,
+        profileId: profile!.id,
+      },
+      {
+        companyId: company.id,
+        name: `Other gateway ${randomUUID()}`,
+        slug: `other-${randomUUID()}`,
+        profileId: profile!.id,
+      },
+    ]).returning();
     const [newerInvocation, olderInvocation, otherInvocation] = await db.insert(toolInvocations).values([
       {
         companyId: company.id,
@@ -3346,9 +3366,16 @@ rl.on("line", (line) => {
         actorId: agent.id,
         agentId: agent.id,
         runId: run.id,
+        gatewayId: gateway!.id,
         applicationId: application!.id,
         connectionId: connection!.id,
         toolName: "mail:send_email",
+        argumentsSummary: { summary: JSON.stringify({ to: "person@example.test", token: "***REDACTED***" }) },
+        resultSummary: { summary: JSON.stringify({ delivered: true }) },
+        policyDecision: "allow",
+        status: "succeeded",
+        startedAt: new Date(Date.now() - 1_500),
+        completedAt: new Date(Date.now() - 1_000),
       },
       {
         companyId: company.id,
@@ -3356,6 +3383,7 @@ rl.on("line", (line) => {
         actorId: agent.id,
         agentId: agent.id,
         runId: run.id,
+        gatewayId: gateway!.id,
         applicationId: application!.id,
         connectionId: connection!.id,
         toolName: "mail:read_email",
@@ -3366,48 +3394,77 @@ rl.on("line", (line) => {
         actorId: otherAgent.id,
         agentId: otherAgent.id,
         runId: run.id,
+        gatewayId: otherGateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
         toolName: "other:delete_everything",
       },
     ]).returning();
     const now = Date.now();
-    await db.insert(activityLog).values([
+    const callEvents = await db.insert(toolCallEvents).values([
       {
         companyId: company.id,
+        eventType: "call_completed",
         actorType: "agent",
         actorId: agent.id,
-        action: "tool_gateway.call_completed",
-        entityType: "issue",
-        entityId: run.id,
         agentId: agent.id,
         runId: run.id,
-        details: { invocationId: newerInvocation!.id, decision: "allow", reasonCode: "tool_completed", tool: "mail:send_email", upstreamToolName: "fixture.todo.list" },
+        gatewayId: gateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        invocationId: newerInvocation!.id,
+        toolName: "mail:send_email",
+        decision: "allow",
+        reasonCode: "tool_completed",
+        outcome: "success",
+        metadata: { upstreamToolName: "fixture.todo.list" },
         createdAt: new Date(now - 1_000),
       },
       {
         companyId: company.id,
+        eventType: "call_completed",
         actorType: "agent",
         actorId: agent.id,
-        action: "tool_gateway.call_allowed",
-        entityType: "issue",
-        entityId: run.id,
         agentId: agent.id,
         runId: run.id,
-        details: { invocationId: olderInvocation!.id, decision: "allow", reasonCode: "profile_allows_tool", tool: "mail:read_email" },
+        gatewayId: gateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        invocationId: olderInvocation!.id,
+        toolName: "mail:read_email",
+        decision: "allow",
+        reasonCode: "profile_allows_tool",
+        outcome: "success",
         createdAt: new Date(now - 2_000),
       },
       {
         companyId: company.id,
+        eventType: "call_denied",
         actorType: "agent",
         actorId: otherAgent.id,
-        action: "tool_gateway.call_denied",
-        entityType: "issue",
-        entityId: run.id,
         agentId: otherAgent.id,
         runId: run.id,
-        details: { invocationId: otherInvocation!.id, decision: "deny", reasonCode: "deny_policy_block", tool: "other:delete_everything" },
+        gatewayId: otherGateway!.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        invocationId: otherInvocation!.id,
+        toolName: "other:delete_everything",
+        decision: "deny",
+        reasonCode: "deny_policy_block",
+        outcome: "denied",
         createdAt: new Date(now - 500),
       },
-    ]);
+    ]).returning();
+    const [connectedEvent] = await db.insert(activityLog).values({
+      companyId: company.id,
+      actorType: "system",
+      actorId: "system",
+      action: "tool_app.connected",
+      entityType: "tool_connection",
+      entityId: connection!.id,
+      details: { galleryKey: "mail" },
+      createdAt: new Date(now - 45 * 24 * 60 * 60 * 1000),
+    }).returning();
 
     const app = createGatewayRouteApp(db, createTestToolGatewayService(db), {
       type: "board",
@@ -3418,9 +3475,27 @@ rl.on("line", (line) => {
       isInstanceAdmin: true,
     });
 
+    const allActivity = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id });
+    expect(allActivity.status).toBe(200);
+    expect(allActivity.body.events.map((event: { id: string }) => event.id)).toEqual([
+      callEvents[2]!.id,
+      callEvents[0]!.id,
+      callEvents[1]!.id,
+      connectedEvent!.id,
+    ]);
+    expect(allActivity.body.events.find((event: { id: string }) => event.id === connectedEvent!.id)).toMatchObject({
+      action: "tool_connection.app_connected",
+      connectionId: connection!.id,
+      applicationId: application!.id,
+      appDisplayName: "Mail",
+      lifecycleType: "app_connected",
+    });
+
     const firstPage = await request(app)
       .get("/api/tool-gateway/audit")
-      .query({ companyId: company.id, app: connection!.id, agent: agent.id, outcome: "allowed", window: "24h", limit: 1 });
+      .query({ companyId: company.id, gateway: gateway!.id, app: connection!.id, agent: agent.id, outcome: "allowed", window: "24h", limit: 1 });
     expect(firstPage.status).toBe(200);
     expect(firstPage.body.events).toEqual([
       expect.objectContaining({
@@ -3432,6 +3507,14 @@ rl.on("line", (line) => {
         appDisplayName: "Mail",
         toolDisplayName: "Send Email",
         normalizedOutcome: "allowed",
+        invocation: expect.objectContaining({
+          id: newerInvocation!.id,
+          toolName: "mail:send_email",
+          status: "succeeded",
+          policyDecision: "allow",
+          argumentsSummary: expect.objectContaining({ summary: expect.stringContaining("***REDACTED***") }),
+          resultSummary: expect.objectContaining({ summary: expect.stringContaining("delivered") }),
+        }),
       }),
     ]);
     expect(typeof firstPage.body.nextCursor).toBe("string");
@@ -3440,6 +3523,7 @@ rl.on("line", (line) => {
       .get("/api/tool-gateway/audit")
       .query({
         companyId: company.id,
+        gateway: gateway!.id,
         app: connection!.id,
         agent: agent.id,
         outcome: "allowed",
@@ -3450,7 +3534,7 @@ rl.on("line", (line) => {
     expect(secondPage.status).toBe(200);
     expect(secondPage.body.events).toEqual([
       expect.objectContaining({
-        action: "tool_gateway.call_allowed",
+        action: "tool_gateway.call_completed",
         toolDisplayName: "Read Email",
       }),
     ]);

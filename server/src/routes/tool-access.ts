@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, companies } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { agents, companies, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { and, eq, or } from "drizzle-orm";
 import {
   CONNECTABLE_APP_DEFINITIONS,
   DEFAULT_OWNERSHIP_AVAILABILITY,
@@ -109,6 +109,7 @@ export function toolAccessRoutes(
   options: {
     deploymentMode?: DeploymentMode;
     deploymentExposure?: DeploymentExposure;
+    authPublicBaseUrl?: string | null;
     trustedLocalStdioRuntimeHost?: string | null;
     toolGateway?: ToolGatewayService;
   } = {},
@@ -123,6 +124,8 @@ export function toolAccessRoutes(
       || process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim()
       || process.env.BETTER_AUTH_URL?.trim()
       || process.env.BETTER_AUTH_BASE_URL?.trim()
+      || options.authPublicBaseUrl?.trim()
+      || process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim()
     );
     if (!raw) return null;
     try {
@@ -143,14 +146,18 @@ export function toolAccessRoutes(
     return new URL("/api/tools/oauth/callback", configured).toString();
   }
 
-  async function oauthSetupPath(companyId: string, connectionId: string) {
+  async function oauthAppPath(
+    companyId: string,
+    connectionId: string,
+    tab: "setup" | "test",
+  ) {
     const [company] = await db
       .select({ issuePrefix: companies.issuePrefix })
       .from(companies)
       .where(eq(companies.id, companyId))
       .limit(1);
     if (!company) throw new Error("OAuth callback connection belongs to a missing company");
-    return `/${company.issuePrefix}/apps/${connectionId}/setup`;
+    return `/${company.issuePrefix}/apps/${connectionId}/${tab}`;
   }
   const access = accessService(db);
 
@@ -161,6 +168,71 @@ export function toolAccessRoutes(
     const userId = req.actor.userId;
     if (userId && await access.hasPermission(companyId, "user", userId, permissionKey)) return;
     throw forbidden(`Missing permission: ${permissionKey}`);
+  }
+
+  function activeToolMembership(req: Request, companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return null;
+    const membership = Array.isArray(req.actor.memberships)
+      ? req.actor.memberships.find((item) => item.companyId === companyId)
+      : null;
+    if (!membership || membership.status !== "active") {
+      throw forbidden("User does not have active company access");
+    }
+    if (!membership.membershipRole || membership.membershipRole === "viewer") {
+      throw forbidden("Viewer access is read-only");
+    }
+    return membership;
+  }
+
+  async function isToolConnectionManager(req: Request, companyId: string) {
+    const membership = activeToolMembership(req, companyId);
+    if (!membership) return true;
+    if (membership.membershipRole === "owner" || membership.membershipRole === "admin") return true;
+    return Boolean(req.actor.userId && await access.hasPermission(
+      companyId,
+      "user",
+      req.actor.userId,
+      "tools:manage_connections",
+    ));
+  }
+
+  async function assertToolConnectionConfigureAccess(
+    req: Request,
+    connection: { companyId: string; createdByUserId?: string | null },
+  ) {
+    if (await isToolConnectionManager(req, connection.companyId)) return;
+    if (req.actor.userId && connection.createdByUserId === req.actor.userId) return;
+    throw forbidden(
+      "Only the connection creator or a connection manager can configure, reconnect, or delete this connection",
+    );
+  }
+
+  async function assertToolConnectionAccess(
+    req: Request,
+    connection: { id: string; companyId: string; createdByUserId?: string | null },
+  ) {
+    activeToolMembership(req, connection.companyId);
+    if (await isToolConnectionManager(req, connection.companyId)) return;
+    if (req.actor.userId && connection.createdByUserId === req.actor.userId) return;
+    const [grant] = await db
+      .select({ id: connectionGrants.id })
+      .from(connectionGrants)
+      .where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.status, "active"),
+        or(
+          eq(connectionGrants.kind, "workspace"),
+          req.actor.userId
+            ? and(eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, req.actor.userId))
+            : eq(connectionGrants.kind, "workspace"),
+        ),
+      ))
+      .limit(1);
+    if (grant) return;
+    throw forbidden("You need access to this connection before you can install it on an agent");
   }
 
   async function assertBoardAnyToolPermission(req: Request, companyId: string, permissionKeys: PermissionKey[]) {
@@ -257,18 +329,7 @@ export function toolAccessRoutes(
   });
 
   function assertToolAppMutationAccess(req: Request, companyId: string) {
-    assertBoard(req);
-    assertCompanyAccess(req, companyId);
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    const membership = Array.isArray(req.actor.memberships)
-      ? req.actor.memberships.find((item) => item.companyId === companyId)
-      : null;
-    if (!membership || membership.status !== "active") {
-      throw forbidden("User does not have active company access");
-    }
-    if (!membership.membershipRole || membership.membershipRole === "viewer") {
-      throw forbidden("Viewer access is read-only");
-    }
+    activeToolMembership(req, companyId);
   }
 
   router.get("/companies/:companyId/tools/gallery", async (req, res) => {
@@ -361,11 +422,12 @@ export function toolAccessRoutes(
     validate(startConnectionAuthorizationSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertToolAppMutationAccess(req, companyId);
+      activeToolMembership(req, companyId);
       if (!req.actor.userId || req.actor.userId !== req.body.subjectUserId) {
         throw forbidden("Board users may only authorize their own connection subject");
       }
       const existing = await svc.getConnection(req.params.connectionId as string, companyId);
+      await assertToolConnectionAccess(req, existing);
       const result = await svc.startOAuth(companyId, existing.id, {
         redirectUri: oauthRedirectUri(),
         actor: getActorInfo(req),
@@ -380,7 +442,7 @@ export function toolAccessRoutes(
   router.post("/tools/oauth/:connectionId/start", async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    assertToolAppMutationAccess(req, existing.companyId);
+    await assertToolConnectionConfigureAccess(req, existing);
     const result = await svc.startOAuth(existing.companyId, existing.id, {
       redirectUri: oauthRedirectUri(),
       actor: getActorInfo(req),
@@ -401,7 +463,12 @@ export function toolAccessRoutes(
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired OAuth state");
     }
-    assertToolAppMutationAccess(req, pendingState.companyId);
+    const pendingConnection = await svc.getConnection(pendingState.connectionId, pendingState.companyId);
+    if (pendingState.subjectUserId && pendingState.subjectUserId === req.actor.userId) {
+      await assertToolConnectionAccess(req, pendingConnection);
+    } else {
+      await assertToolConnectionConfigureAccess(req, pendingConnection);
+    }
     const acceptsHtml = req.get("accept")?.includes("text/html") === true;
     let result: Awaited<ReturnType<typeof svc.completeOAuthCallback>>;
     try {
@@ -429,7 +496,7 @@ export function toolAccessRoutes(
         oauth: callbackErrorCode === "oauth_authorization_denied" ? "denied" : "failed",
       });
       if (callbackErrorCode) params.set("code", callbackErrorCode);
-      const setupPath = await oauthSetupPath(pendingState.companyId, pendingState.connectionId);
+      const setupPath = await oauthAppPath(pendingState.companyId, pendingState.connectionId, "setup");
       res.redirect(303, `${setupPath}?${params.toString()}`);
       return;
     }
@@ -446,8 +513,8 @@ export function toolAccessRoutes(
       },
     });
     if (acceptsHtml) {
-      const setupPath = await oauthSetupPath(result.connection.companyId, result.connection.id);
-      res.redirect(303, `${setupPath}?oauth=connected`);
+      const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
+      res.redirect(303, `${testPath}?success=1`);
       return;
     }
     res.json(result);
@@ -455,8 +522,8 @@ export function toolAccessRoutes(
 
   router.post("/companies/:companyId/tools/apps/:connectionId/finish", validate(finishToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertToolAppMutationAccess(req, companyId);
     const existing = await svc.getConnection(req.params.connectionId as string, companyId);
+    await assertToolConnectionConfigureAccess(req, existing);
     const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, getActorInfo(req));
     await logActivity(db, {
       companyId,
@@ -629,7 +696,7 @@ export function toolAccessRoutes(
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
     try {
-      const connection = await svc.createConnection(companyId, req.body);
+      const connection = await svc.createConnection(companyId, req.body, getActorInfo(req));
       await logActivity(db, {
         companyId,
         actorType: "user",
@@ -668,7 +735,7 @@ export function toolAccessRoutes(
     assertBoard(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
-    await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+    await assertToolConnectionConfigureAccess(req, connection);
     const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
     const credentialSecretRefs = Array.isArray(body.credentialSecretRefs) ? body.credentialSecretRefs : [];
     const providerTenant = body.providerTenant && typeof body.providerTenant === "object"
@@ -695,7 +762,14 @@ export function toolAccessRoutes(
     assertBoard(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
-    await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+    const { grants } = await svc.listConnectionGrants(connection.id, connection.companyId);
+    const grantToRevoke = grants.find((grant) => grant.id === req.params.grantId);
+    const canRevokeOwnGrant = Boolean(
+      req.actor.userId
+      && grantToRevoke
+      && (grantToRevoke.subjectUserId === req.actor.userId || grantToRevoke.createdByUserId === req.actor.userId),
+    );
+    if (!canRevokeOwnGrant) await assertToolConnectionConfigureAccess(req, connection);
     const grant = await svc.revokeConnectionGrant(connection.id, req.params.grantId as string, getActorInfo(req));
     await logActivity(db, {
       companyId: connection.companyId,
@@ -732,7 +806,47 @@ export function toolAccessRoutes(
       assertBoard(req);
       const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
       if (!connection) return;
-      await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+      const existingInstalls = await db
+        .select()
+        .from(toolConnectionInstalls)
+        .where(and(
+          eq(toolConnectionInstalls.companyId, connection.companyId),
+          eq(toolConnectionInstalls.connectionId, connection.id),
+        ));
+      const requestedInstalls = req.body.installs as Array<{ targetType: "company" | "agent"; targetId: string }>;
+      const requestedKeys = new Set(requestedInstalls.map((install) => `${install.targetType}:${install.targetId}`));
+      const existingKeys = new Set(existingInstalls.map((install) => `${install.targetType}:${install.targetId}`));
+      const changedInstalls = [
+        ...requestedInstalls.filter((install) => !existingKeys.has(`${install.targetType}:${install.targetId}`)),
+        ...existingInstalls.filter((install) => !requestedKeys.has(`${install.targetType}:${install.targetId}`)),
+      ];
+      if (changedInstalls.some((install) => install.targetType === "company")) {
+        await assertToolConnectionConfigureAccess(req, connection);
+      }
+      if (changedInstalls.some((install) => install.targetType === "agent")) {
+        await assertToolConnectionAccess(req, connection);
+        const changedAgentIds = [...new Set(
+          changedInstalls
+            .filter((install) => install.targetType === "agent")
+            .map((install) => install.targetId),
+        )];
+        for (const agentId of changedAgentIds) {
+          const [agent] = await db
+            .select({ id: agents.id, companyId: agents.companyId })
+            .from(agents)
+            .where(and(eq(agents.id, agentId), eq(agents.companyId, connection.companyId)))
+            .limit(1);
+          if (!agent) throw forbidden("The target agent is not available in this company");
+          const decision = await access.decide({
+            actor: req.actor,
+            action: "agent_config:update",
+            resource: { type: "agent", companyId: connection.companyId, agentId: agent.id },
+          });
+          if (!decision.allowed) {
+            throw forbidden(`You cannot edit agent ${agent.id}, so you cannot change its connection installs`);
+          }
+        }
+      }
       const snapshot = await svc.putConnectionInstalls(connection.id, req.body, getActorInfo(req));
       await logActivity(db, {
         companyId: connection.companyId,
@@ -844,7 +958,7 @@ export function toolAccessRoutes(
   router.patch("/tool-connections/:connectionId", validate(updateToolConnectionSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    assertToolAppMutationAccess(req, existing.companyId);
+    await assertToolConnectionConfigureAccess(req, existing);
     const connection = await svc.updateConnection(existing.id, req.body);
     const lifecycleChanges = classifyConnectionUpdate(
       { enabled: existing.enabled, config: existing.config },
@@ -888,7 +1002,7 @@ export function toolAccessRoutes(
   router.delete("/tool-connections/:connectionId", async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    assertToolAppMutationAccess(req, existing.companyId);
+    await assertToolConnectionConfigureAccess(req, existing);
     const applicationBefore = await svc.getApplication(existing.applicationId);
     const { connection, removal } = await svc.archiveConnection(
       existing.id,
@@ -925,7 +1039,7 @@ export function toolAccessRoutes(
   router.post("/tool-connections/:connectionId/health-check", async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    assertToolAppMutationAccess(req, existing.companyId);
+    await assertToolConnectionConfigureAccess(req, existing);
     res.json(await svc.checkHealth(existing.id, getActorInfo(req)));
   });
 
@@ -935,7 +1049,7 @@ export function toolAccessRoutes(
     async (req, res) => {
       const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
       if (!existing) return;
-      assertToolAppMutationAccess(req, existing.companyId);
+      await assertToolConnectionConfigureAccess(req, existing);
       const result = await svc.reconnectGalleryApp(
         existing.id,
         existing.companyId,
@@ -958,7 +1072,7 @@ export function toolAccessRoutes(
   router.post("/tool-connections/:connectionId/catalog/refresh", async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    assertToolAppMutationAccess(req, existing.companyId);
+    await assertToolConnectionConfigureAccess(req, existing);
     res.json(await svc.refreshCatalog(existing.id, getActorInfo(req)));
   });
 

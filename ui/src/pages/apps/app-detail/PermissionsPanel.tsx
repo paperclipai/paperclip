@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, PackageCheck, RefreshCw } from "lucide-react";
+import { Loader2, PackageCheck, RefreshCw, X } from "lucide-react";
 import type { Agent, ToolCatalogEntry } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
+import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
@@ -105,9 +106,11 @@ function AccessSection({
   const summary =
     access.mode === "all"
       ? "Every agent can use it"
-      : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} can use it`;
+      : access.agentIds.size === 0
+        ? "No agents can use it"
+        : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} can use it`;
 
-  const canSave = draft.mode === "all" || draft.agentIds.size > 0;
+  const grantedAgents = liveAgents.filter((agent) => access.agentIds.has(agent.id));
 
   return (
     <section>
@@ -122,6 +125,30 @@ function AccessSection({
           </Button>
         )}
       </div>
+
+      {!editing && access.mode === "specific" && grantedAgents.length > 0 && (
+        <div className="space-y-0.5 pt-3">
+          {grantedAgents.map((agent) => (
+            <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1 text-sm">
+              <AgentIcon icon={agent.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
+              <button
+                type="button"
+                aria-label={`Remove ${agent.name} access`}
+                disabled={disabled}
+                className="rounded-sm p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                  const nextAgentIds = new Set(access.agentIds);
+                  nextAgentIds.delete(agent.id);
+                  onSave({ mode: "specific", agentIds: nextAgentIds });
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {editing && (
         <div className="space-y-3 pt-4">
@@ -162,7 +189,7 @@ function AccessSection({
           <div className="flex items-center gap-2 pt-1">
             <Button
               size="sm"
-              disabled={disabled || !canSave}
+              disabled={disabled}
               onClick={() => {
                 onSave(draft);
                 setEditing(false);

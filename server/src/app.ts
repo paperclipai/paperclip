@@ -577,6 +577,7 @@ export async function createApp(
   api.use(toolAccessRoutes(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
+    authPublicBaseUrl: opts.authPublicBaseUrl,
     trustedLocalStdioRuntimeHost,
     toolGateway,
   }));

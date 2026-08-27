@@ -68,9 +68,10 @@ export function credentialConfigPath(field: FieldDef): string {
 }
 
 export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
-  const method = getAvailableConnectionMethod(app, methodKey);
+  void app;
+  void methodKey;
   return {
     access: "all_agents",
-    askFirstRiskLevels: method?.riskTier === "S1" ? [] : ["write", "destructive"],
+    askFirstRiskLevels: [],
   };
 }

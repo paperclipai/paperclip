@@ -53,12 +53,13 @@ export const queryKeys = {
     audit: (companyId: string, limit: number) => ["tools", companyId, "audit", limit] as const,
     activity: (
       companyId: string,
-      filters: { app?: string; agent?: string; outcome?: string; window?: string; search?: string },
+      filters: { gateway?: string; app?: string; agent?: string; outcome?: string; window?: string; search?: string },
     ) =>
       [
         "tools",
         companyId,
         "activity",
+        filters.gateway ?? "__all",
         filters.app ?? "__all",
         filters.agent ?? "__all",
         filters.outcome ?? "__all",

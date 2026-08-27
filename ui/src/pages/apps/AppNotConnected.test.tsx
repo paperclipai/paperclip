@@ -11,6 +11,7 @@ const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
+const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const updateApplicationMock = vi.hoisted(() => vi.fn());
 const mockAgentsList = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -31,6 +32,12 @@ vi.mock("@/api/tools", () => ({
     approveActionRequest: vi.fn(),
     declineActionRequest: vi.fn(),
     createTrustRuleFromActionRequest: vi.fn(),
+  },
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    listUserDirectory: (companyId: string) => listUserDirectoryMock(companyId),
   },
 }));
 
@@ -150,6 +157,7 @@ describe("AppNotConnected", () => {
     });
     listConnectionActivityMock.mockResolvedValue({ events: [], issues: {}, actionRequests: {} });
     listActionRequestsMock.mockResolvedValue({ actionRequests: [] });
+    listUserDirectoryMock.mockResolvedValue({ users: [] });
     mockAgentsList.mockResolvedValue([]);
     updateApplicationMock.mockResolvedValue(application({ status: "archived" }));
   });
@@ -213,9 +221,27 @@ describe("AppNotConnected", () => {
     });
     listConnectionsMock.mockResolvedValue({
       connections: [
-        connection({ id: "conn-one", applicationId: "app-1", name: "Notion", status: "active" }),
+        connection({
+          id: "conn-one",
+          applicationId: "app-1",
+          name: "Notion",
+          status: "active",
+          createdByUserId: "user-1",
+        }),
         connection({ id: "conn-two", applicationId: "app-2", name: "Notion team", status: "active" }),
       ],
+    });
+    listUserDirectoryMock.mockResolvedValue({
+      users: [{
+        principalId: "user-1",
+        status: "active",
+        user: {
+          id: "user-1",
+          name: "Dotta",
+          email: "dotta@example.com",
+          image: "https://example.com/dotta.png",
+        },
+      }],
     });
 
     await renderPage();
@@ -223,7 +249,9 @@ describe("AppNotConnected", () => {
     expect(navigateComponentMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("2 connected");
     expect(container.textContent).toContain("Already connected to Notion");
+    expect(container.textContent).toContain("Dotta’s Notion");
     expect(container.textContent).toContain("Notion team");
+    expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
     expect(container.textContent).toContain("Connect another");
 
     const editRows = Array.from(container.querySelectorAll("button")).filter((button) =>
@@ -282,7 +310,6 @@ describe("AppNotConnected", () => {
     ["permissions", "Permissions paused"],
     ["test", "Reconnect to test this app."],
     ["activity", "No activity yet."],
-    ["advanced", "Danger zone"],
   ])("renders the %s tab with persistent app identity", async (tab, expectedText) => {
     mockParams.tab = tab;
 
@@ -293,6 +320,17 @@ describe("AppNotConnected", () => {
     expect(container.textContent).toContain(expectedText);
   });
 
+  it("redirects the legacy Advanced route to Setup", async () => {
+    mockParams.tab = "advanced";
+
+    await renderPage();
+
+    expect(navigateComponentMock).toHaveBeenCalledWith({
+      to: "/apps/app/app-1/setup",
+      replace: true,
+    });
+  });
+
   it("keeps previous setup context on reconnect tabs", async () => {
     mockParams.tab = "setup";
 
@@ -301,5 +339,6 @@ describe("AppNotConnected", () => {
     expect(container.textContent).toContain("Previous setup");
     expect(container.textContent).toContain("Last error: Token expired.");
     expect(container.textContent).toContain("https://github.example/mcp");
+    expect(container.textContent).toContain("Danger zone");
   });
 });

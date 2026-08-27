@@ -20,16 +20,17 @@ const EXCLUDED_PROJECT_SWITCHERS = new Set(["switch-project", "switch-organizati
 const DEFAULT_AGENT_TIMEOUT_MS = 15 * 60_000;
 
 class SmokeFailure extends Error {
-  constructor(checkpoint, code) {
+  constructor(checkpoint, code, details = null) {
     super(`${checkpoint}:${code}`);
     this.name = "SmokeFailure";
     this.checkpoint = checkpoint;
     this.code = code;
+    this.details = details;
   }
 }
 
-function fail(checkpoint, code) {
-  throw new SmokeFailure(checkpoint, code);
+function fail(checkpoint, code, details = null) {
+  throw new SmokeFailure(checkpoint, code, details);
 }
 
 function asArray(value, key) {
@@ -93,10 +94,15 @@ function assertNoCredentialMaterial(value, secrets, checkpoint) {
 async function apiJson(request, baseUrl, method, pathname, data, checkpoint, expectedStatuses = [200]) {
   let response;
   try {
+    const origin = new URL(baseUrl).origin;
     response = await request.fetch(new URL(pathname, baseUrl).toString(), {
       method,
       ...(data === undefined ? {} : { data }),
-      headers: { accept: "application/json" },
+      headers: {
+        accept: "application/json",
+        origin,
+        referer: `${origin}/`,
+      },
       timeout: 30_000,
     });
   } catch {
@@ -132,17 +138,137 @@ async function expectVisible(locator, checkpoint, code, timeout = 30_000) {
   }
 }
 
+async function gotoPaperclipPage(
+  page,
+  url,
+  readyLocator,
+  checkpoint,
+  code,
+  { attempts = 3, timeout = 15_000 } = {},
+) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await readyLocator.waitFor({ state: "visible", timeout });
+      return;
+    } catch {
+      if (attempt < attempts) await page.waitForTimeout(500);
+    }
+  }
+  fail(checkpoint, code);
+}
+
+async function stabilizeCompanyContext(page, config, companyId) {
+  const galleryPath = `/api/companies/${companyId}/tools/gallery`;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const galleryResponsePromise = page.waitForResponse(
+        (response) => response.request().method() === "GET"
+          && new URL(response.url()).pathname === galleryPath,
+        { timeout: 30_000 },
+      );
+      await page.goto(new URL(`/${TARGET_COMPANY_PREFIX}/apps`, config.baseUrl).toString(), {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      });
+      const response = await galleryResponsePromise;
+      if (!response.ok()) continue;
+      const posthogAction = page.getByRole("button", {
+        name: /^(?:Connect for PostHog|Add another PostHog account)$/,
+      }).first();
+      await posthogAction.waitFor({ state: "visible", timeout: 30_000 });
+      // The company-prefixed route and selected-company provider settle in
+      // separate renders. Clicking the tile immediately can carry the prior
+      // company's gallery cache into the setup effect and redirect back out.
+      await page.waitForTimeout(2_000);
+      return;
+    } catch {
+      if (attempt < 3) await page.waitForTimeout(500);
+    }
+  }
+  fail("A.company-context", "posthog_gallery_context_missing");
+}
+
+async function openPosthogSetupFromGallery(page, config, companyId) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await stabilizeCompanyContext(page, config, companyId);
+    const addAnother = page.getByRole("button", { name: /^Add another PostHog account$/ }).first();
+    const connect = page.getByRole("button", { name: /^Connect for PostHog$/ }).first();
+    const action = await addAnother.isVisible().catch(() => false) ? addAnother : connect;
+    try {
+      await action.click({ timeout: 5_000 });
+      await page.getByRole("button", { name: "Sign in with PostHog" }).waitFor({
+        state: "visible",
+        timeout: 30_000,
+      });
+      return;
+    } catch {
+      if (attempt < 3) await page.waitForTimeout(500);
+    }
+  }
+  fail("A.setup-route", "oauth_method_missing");
+}
+
+async function safePageState(page, resourceFailures, paperclipOrigin) {
+  let current;
+  try {
+    current = new URL(page.url());
+  } catch {
+    return { location: "invalid", resourceFailures };
+  }
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  return {
+    location: current.origin === paperclipOrigin
+      ? `${current.hostname}${current.pathname}`
+      : current.hostname,
+    headingCount: await page.getByRole("heading").count().catch(() => 0),
+    buttonCount: await page.getByRole("button").count().catch(() => 0),
+    methodSignals: {
+      posthogSignIn: /sign in with posthog/i.test(bodyText),
+      personalApiKey: /personal api key/i.test(bodyText),
+      connectApp: /connect an app/i.test(bodyText),
+    },
+    resourceFailures,
+  };
+}
+
 async function clickVisibleButton(page, names) {
   for (const name of names) {
-    const button = page.getByRole("button", { name, exact: false }).filter({ visible: true }).first();
-    if (await button.count()) {
-      try {
-        await button.click({ timeout: 2_000 });
-        return true;
-      } catch {
-        // Provider pages often replace their form between locator creation and
-        // click. The next loop re-reads the current DOM.
+    for (const role of ["button", "link"]) {
+      const control = page.getByRole(role, { name, exact: false }).filter({ visible: true }).first();
+      if (await control.count()) {
+        try {
+          await control.click({ timeout: 2_000 });
+          return true;
+        } catch {
+          // Provider pages often replace their form between locator creation
+          // and click. The next loop re-reads the current DOM.
+        }
       }
+    }
+  }
+  return false;
+}
+
+async function selectPosthogCloudRegion(page) {
+  const region = (process.env.POSTHOG_CLOUD_REGION || "us").trim().toLowerCase();
+  if (!new Set(["us", "eu"]).has(region)) {
+    fail("B.oauth-callback", "unsupported_cloud_region");
+  }
+  const expectedHost = `${region}.posthog.com`;
+  const links = page.getByRole("link");
+  for (let index = 0; index < await links.count(); index += 1) {
+    const link = links.nth(index);
+    const href = await link.getAttribute("href");
+    if (!href) continue;
+    try {
+      const target = new URL(href, page.url());
+      if (target.hostname !== expectedHost) continue;
+      await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
+      return true;
+    } catch {
+      // The provider can replace this chooser while the link is being read.
+      // The next authorization-loop iteration re-evaluates it.
     }
   }
   return false;
@@ -150,7 +276,12 @@ async function clickVisibleButton(page, names) {
 
 async function completePosthogAuthorization(page, config) {
   const paperclipOrigin = new URL(config.baseUrl).origin;
-  const deadline = Date.now() + 4 * 60_000;
+  const providerTimeoutMs = Number(process.env.POSTHOG_PROVIDER_TIMEOUT_MS || 4 * 60_000);
+  const deadline = Date.now() + (Number.isFinite(providerTimeoutMs) && providerTimeoutMs > 0
+    ? providerTimeoutMs
+    : 4 * 60_000);
+  let providerState = null;
+  let credentialFormSubmitted = false;
   while (Date.now() < deadline) {
     let current;
     try {
@@ -161,16 +292,79 @@ async function completePosthogAuthorization(page, config) {
     if (current.origin === paperclipOrigin && current.pathname.includes("/apps/")) return;
 
     const emailInput = page.locator('input[type="email"], input[name="email"], input[autocomplete="username"]').filter({ visible: true }).first();
+    const passwordInput = page.locator('input[type="password"], input[name="password"], input[autocomplete="current-password"]').filter({ visible: true }).first();
+    const identityFieldVisible = await emailInput.count() > 0;
+    const credentialFieldVisible = await passwordInput.count() > 0;
+    const credentialForm = page.locator("form").filter({ has: passwordInput }).first();
+    const submitControl = credentialForm.locator('button[type="submit"], input[type="submit"]').filter({ visible: true }).first();
+    const consentControlVisible = await page.getByRole("button", {
+      name: /^(?:authorize|allow|approve|grant access|accept)$/i,
+    }).first().isVisible().catch(() => false);
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    const linkHrefs = await page.getByRole("link").evaluateAll((links) =>
+      links.map((link) => link.getAttribute("href")).filter(Boolean)
+    ).catch(() => []);
+    const linkTargets = Array.from(new Set(linkHrefs.map((href) => {
+      try {
+        const target = new URL(href, current.origin);
+        return `${target.hostname}${target.pathname}`;
+      } catch {
+        return "invalid";
+      }
+    })));
+    providerState = {
+      host: current.hostname,
+      path: current.pathname.slice(0, 200),
+      identityFieldVisible,
+      credentialFieldVisible,
+      credentialFormVisible: await credentialForm.count() > 0,
+      submitControlVisible: await submitControl.count() > 0,
+      submitControlDisabled: await submitControl.isDisabled().catch(() => false),
+      consentControlVisible,
+      alertCount: await page.getByRole("alert").count(),
+      headingCount: await page.getByRole("heading").count(),
+      buttonCount: await page.getByRole("button").count(),
+      linkCount: await page.getByRole("link").count(),
+      linkTargets,
+      frameCount: page.frames().length,
+      semanticSignals: {
+        signIn: /\b(?:sign in|log in)\b/i.test(bodyText),
+        continue: /\bcontinue\b/i.test(bodyText),
+        consent: /\b(?:authorize|allow|approve|grant access|accept)\b/i.test(bodyText),
+        loading: /\b(?:loading|preparing|opening|redirecting)\b/i.test(bodyText),
+        workspace: /\b(?:workspace|organization|project)\b/i.test(bodyText),
+        error: /\b(?:error|invalid|failed|problem|went wrong)\b/i.test(bodyText),
+      },
+    };
+    if (current.hostname === "oauth.posthog.com" && await selectPosthogCloudRegion(page)) {
+      await page.waitForTimeout(500);
+      continue;
+    }
     if (await emailInput.count()) {
       const currentValue = await emailInput.inputValue().catch(() => "");
       if (!currentValue) await emailInput.fill(config.email);
     }
 
-    const passwordInput = page.locator('input[type="password"], input[name="password"], input[autocomplete="current-password"]').filter({ visible: true }).first();
     if (await passwordInput.count()) {
       const currentValue = await passwordInput.inputValue().catch(() => "");
       if (!currentValue) await passwordInput.fill(config.password);
-      await clickVisibleButton(page, [/^sign in$/i, /^log in$/i, /^continue$/i, /sign in with email/i]);
+      if (!credentialFormSubmitted) {
+        if (await submitControl.count() && !await submitControl.isDisabled().catch(() => true)) {
+          await submitControl.click({ noWaitAfter: true, timeout: 2_000 }).catch(() => {});
+        } else {
+          const submitted = await clickVisibleButton(page, [
+            /^sign in$/i,
+            /^log in$/i,
+            /^login$/i,
+            /^continue$/i,
+            /sign in with email/i,
+            /log in with email/i,
+            /login with email/i,
+          ]);
+          if (!submitted) await passwordInput.press("Enter").catch(() => {});
+        }
+        credentialFormSubmitted = true;
+      }
     } else if (await emailInput.count()) {
       await clickVisibleButton(page, [/^continue$/i, /^next$/i, /continue with email/i, /sign in with email/i]);
     } else {
@@ -187,7 +381,7 @@ async function completePosthogAuthorization(page, config) {
     }
     await page.waitForTimeout(500);
   }
-  fail("B.oauth-callback", "provider_authorization_timed_out");
+  fail("B.oauth-callback", "provider_authorization_timed_out", { providerState });
 }
 
 async function safeScreenshot(page, outputPath, config, checkpoint) {
@@ -246,7 +440,30 @@ async function finishAgentOnlySetup(request, config, companyId, connectionId, ca
   );
 }
 
-async function cleanupConnection(request, config, companyId, connectionId, connectionName) {
+async function findConnectionIdByName(request, config, companyId, connectionName) {
+  const connectionsResponse = await apiJson(
+    request,
+    config.baseUrl,
+    "GET",
+    `/api/companies/${companyId}/tools/connections`,
+    undefined,
+    "F.cleanup-recovery",
+  );
+  const matching = asArray(connectionsResponse, "connections").filter(
+    (connection) => connection.name === connectionName && connection.status !== "archived",
+  );
+  if (matching.length > 1) fail("F.cleanup-recovery", "duplicate_test_connections");
+  return matching[0]?.id ?? null;
+}
+
+async function cleanupConnection(
+  request,
+  config,
+  companyId,
+  connectionId,
+  connectionName,
+  { requireInstalledState = true } = {},
+) {
   const removed = await apiJson(
     request,
     config.baseUrl,
@@ -256,11 +473,12 @@ async function cleanupConnection(request, config, companyId, connectionId, conne
     "F.cleanup",
   );
   const receipt = removed.removal;
-  if (!receipt
-    || receipt.installsRemoved < 1
+  if (!receipt || (requireInstalledState && (
+    receipt.installsRemoved < 1
     || receipt.appProfileBindingsRemoved < 1
     || receipt.credentialRefsCleared + receipt.secretsRevoked < 1
-    || !["deleted", "archived"].includes(receipt.appProfile)) {
+    || !["deleted", "archived"].includes(receipt.appProfile)
+  ))) {
     fail("F.cleanup", "incomplete_removal_receipt");
   }
 
@@ -336,10 +554,13 @@ async function runSmoke({ config, chromium }) {
 
   let browser;
   let context;
+  let page;
   let connectionId = null;
   let companyId = null;
   let cleanupComplete = false;
   let caughtFailure = null;
+  let activeCheckpoint = "A.browser-launch";
+  const resourceFailures = [];
 
   try {
     browser = await chromium.launch({ headless: process.env.POSTHOG_SMOKE_HEADED !== "1" });
@@ -348,10 +569,31 @@ async function runSmoke({ config, chromium }) {
       acceptDownloads: false,
       serviceWorkers: "block",
     });
-    const page = await context.newPage();
+    page = await context.newPage();
+    page.on("requestfailed", (request) => {
+      if (!["document", "script", "stylesheet", "xhr", "fetch"].includes(request.resourceType())) return;
+      try {
+        const target = new URL(request.url());
+        if (target.origin !== new URL(config.baseUrl).origin) return;
+        resourceFailures.push({
+          target: `${target.hostname}${target.pathname}`,
+          resourceType: request.resourceType(),
+          error: request.failure()?.errorText ?? "unknown",
+        });
+        if (resourceFailures.length > 12) resourceFailures.shift();
+      } catch {
+        // Ignore malformed resource URLs rather than copying them into evidence.
+      }
+    });
 
-    await page.goto(new URL("/auth?next=/", config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
-    await expectVisible(page.locator("#email"), "A.paperclip-login", "email_field_missing");
+    activeCheckpoint = "A.paperclip-login";
+    await gotoPaperclipPage(
+      page,
+      new URL("/auth?next=/", config.baseUrl).toString(),
+      page.locator("#email"),
+      "A.paperclip-login",
+      "email_field_missing",
+    );
     await page.locator("#email").fill(config.email);
     await page.locator("#password").fill(config.password);
     const loginResponsePromise = page.waitForResponse((response) =>
@@ -364,11 +606,13 @@ async function runSmoke({ config, chromium }) {
       fail("A.paperclip-login", "login_redirect_missing");
     });
 
+    activeCheckpoint = "A.company-selection";
     const companiesResponse = await apiJson(context.request, config.baseUrl, "GET", "/api/companies", undefined, "A.company-selection");
     const company = asArray(companiesResponse, "companies").find((candidate) => candidate.issuePrefix === TARGET_COMPANY_PREFIX);
     if (!company) fail("A.company-selection", "pap_company_missing");
     companyId = company.id;
 
+    activeCheckpoint = "C.agent-scope";
     const agentsResponse = await apiJson(
       context.request,
       config.baseUrl,
@@ -380,12 +624,11 @@ async function runSmoke({ config, chromium }) {
     const agent = asArray(agentsResponse, "agents").find((candidate) => candidate.name === TARGET_AGENT_NAME);
     if (!agent) fail("C.agent-scope", "codex_coder_pro_missing");
 
-    const setupUrl = new URL(`/${TARGET_COMPANY_PREFIX}/apps/connect?byo=1&appKey=posthog&stage=setup`, config.baseUrl);
-    await page.goto(setupUrl.toString(), { waitUntil: "domcontentloaded" });
-    await expectVisible(page.getByRole("heading", { name: "Connect PostHog" }), "A.setup-route", "posthog_setup_missing");
-    await expectVisible(page.getByRole("button", { name: "Sign in with PostHog" }), "A.setup-route", "oauth_method_missing");
+    activeCheckpoint = "A.setup-route";
+    await openPosthogSetupFromGallery(page, config, companyId);
     await expectVisible(page.getByRole("button", { name: "Use a personal API key" }), "A.setup-route", "api_key_method_missing");
 
+    activeCheckpoint = "B.oauth-setup";
     await page.getByRole("button", { name: "Sign in with PostHog" }).click();
     const nameInput = page.locator('input[placeholder="My app"]');
     await nameInput.fill(connectionName);
@@ -402,28 +645,46 @@ async function runSmoke({ config, chromium }) {
     const responseMode = page.locator("label", { hasText: "Tool response mode" }).locator("..").locator("select");
     if (await responseMode.inputValue() !== "tools") fail("B.oauth-setup", "individual_tools_mode_not_selected");
 
-    const connectResponsePromise = page.waitForResponse((response) => {
-      const target = new URL(response.url());
-      return response.request().method() === "POST"
-        && target.pathname === `/api/companies/${companyId}/tools/apps/connect`;
-    });
-    await page.getByRole("button", { name: "Continue to sign in" }).click();
+    activeCheckpoint = "B.oauth-start";
+    const connectResponsePromise = page.waitForResponse(
+      (response) => {
+        const target = new URL(response.url());
+        return response.request().method() === "POST"
+          && target.pathname === `/api/companies/${companyId}/tools/apps/connect`;
+      },
+      { timeout: 120_000 },
+    );
+    await page.getByRole("button", { name: "Continue to sign in" }).click({ noWaitAfter: true });
     const connectResponse = await connectResponsePromise;
     if (!connectResponse.ok()) fail("B.oauth-start", `http_${connectResponse.status()}`);
-    let connectResult;
+    let connectResult = null;
     try {
       connectResult = await connectResponse.json();
     } catch {
-      fail("B.oauth-start", "invalid_json");
+      // A successful create immediately redirects the page to PostHog. Chromium
+      // can discard that response body during the cross-origin navigation, so
+      // recover the uniquely named draft instead of orphaning it.
     }
-    connectionId = connectResult.connectionId;
+    connectionId = connectResult?.connectionId ?? await waitFor(
+      "B.oauth-start",
+      () => findConnectionIdByName(context.request, config, companyId, connectionName),
+      { timeoutMs: 15_000, intervalMs: 500 },
+    );
     if (typeof connectionId !== "string" || !connectionId) fail("B.oauth-start", "connection_id_missing");
 
+    activeCheckpoint = "B.oauth-callback";
     await completePosthogAuthorization(page, config);
     const cleanSetupPath = `/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/setup`;
-    await page.goto(new URL(cleanSetupPath, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
-    await expectVisible(page.getByText("PostHog connected", { exact: true }), "B.oauth-callback", "connected_state_missing", 45_000);
+    await gotoPaperclipPage(
+      page,
+      new URL(cleanSetupPath, config.baseUrl).toString(),
+      page.getByText("PostHog connected", { exact: true }),
+      "B.oauth-callback",
+      "connected_state_missing",
+      { attempts: 3, timeout: 30_000 },
+    );
 
+    activeCheckpoint = "C.connection-detail";
     let connection = await apiJson(
       context.request,
       config.baseUrl,
@@ -446,6 +707,7 @@ async function runSmoke({ config, chromium }) {
     await safeScreenshot(page, screenshotFile(outputDirectory, connectedShot), config, "F.connected-screenshot");
     summary.screenshots.push(connectedShot);
 
+    activeCheckpoint = "C.catalog-policy";
     let catalogResponse = await apiJson(
       context.request,
       config.baseUrl,
@@ -538,8 +800,14 @@ async function runSmoke({ config, chromium }) {
       catalogRefresh: "succeeded",
     };
 
-    await page.goto(new URL(`/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/permissions`, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
-    await expectVisible(page.getByText("Who can use it", { exact: true }), "C.permissions-ui", "permissions_panel_missing");
+    activeCheckpoint = "C.permissions-ui";
+    await gotoPaperclipPage(
+      page,
+      new URL(`/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/permissions`, config.baseUrl).toString(),
+      page.getByText("Who can use it", { exact: true }),
+      "C.permissions-ui",
+      "permissions_panel_missing",
+    );
     const projectGetPermission = page.locator(`[data-action-id="${facts.projectGet.id}"] select`);
     const projectSettingsPermission = page.locator(`[data-action-id="${facts.projectSettings.id}"] select`);
     await expectVisible(projectGetPermission, "C.permissions-ui", "project_get_permission_missing");
@@ -551,8 +819,14 @@ async function runSmoke({ config, chromium }) {
     await safeScreenshot(page, screenshotFile(outputDirectory, permissionsShot), config, "F.permissions-screenshot");
     summary.screenshots.push(permissionsShot);
 
-    await page.goto(new URL(`/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/test`, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
-    await expectVisible(page.getByLabel("Choose which agent to test as"), "D.test-panel", "agent_picker_missing");
+    activeCheckpoint = "D.test-panel";
+    await gotoPaperclipPage(
+      page,
+      new URL(`/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/test`, config.baseUrl).toString(),
+      page.getByLabel("Choose which agent to test as"),
+      "D.test-panel",
+      "agent_picker_missing",
+    );
     await page.getByLabel("Choose which agent to test as").click();
     await page.getByLabel("Search agents").fill(TARGET_AGENT_NAME);
     await page.getByRole("button", { name: new RegExp(`^${escapeRegex(TARGET_AGENT_NAME)}`) }).click();
@@ -563,6 +837,7 @@ async function runSmoke({ config, chromium }) {
     await actionRow.click();
     await expectVisible(page.getByText("This action takes no inputs."), "D.test-panel", "empty_input_form_missing");
 
+    activeCheckpoint = "D.project-get";
     const boardTestStartedAt = Date.now();
     const testCallResponsePromise = page.waitForResponse((response) =>
       response.request().method() === "POST"
@@ -611,6 +886,7 @@ async function runSmoke({ config, chromium }) {
       durationMs: Date.now() - boardTestStartedAt,
     };
 
+    activeCheckpoint = "E.create-proof-issue";
     const parentIssueId = process.env.POSTHOG_PROOF_PARENT_ISSUE_ID || process.env.PAPERCLIP_TASK_ID;
     if (!parentIssueId) fail("E.create-proof-issue", "parent_issue_id_missing");
     const child = await apiJson(
@@ -640,6 +916,7 @@ async function runSmoke({ config, chromium }) {
       [201],
     );
     if (child.status !== "todo") fail("E.create-proof-issue", "child_not_created_todo");
+    activeCheckpoint = "E.fresh-agent-run";
     const observedStatuses = new Set(["todo"]);
     const finishedChild = await waitFor("E.fresh-agent-run", async () => {
       const issue = await apiJson(context.request, config.baseUrl, "GET", `/api/issues/${child.id}`, undefined, "E.fresh-agent-run");
@@ -731,30 +1008,73 @@ async function runSmoke({ config, chromium }) {
       durationMs: agentEvent.latencyMs,
     };
 
-    await page.goto(new URL(`/${TARGET_COMPANY_PREFIX}/issues/${child.identifier}`, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
-    await expectVisible(page.getByText(child.title, { exact: true }).first(), "F.child-screenshot", "child_issue_missing");
+    activeCheckpoint = "F.evidence";
+    await gotoPaperclipPage(
+      page,
+      new URL(`/${TARGET_COMPANY_PREFIX}/issues/${child.identifier}`, config.baseUrl).toString(),
+      page.getByText(child.title, { exact: true }).first(),
+      "F.child-screenshot",
+      "child_issue_missing",
+    );
     const childShot = "04-fresh-agent-proof.png";
     await safeScreenshot(page, screenshotFile(outputDirectory, childShot), config, "F.child-screenshot");
     summary.screenshots.push(childShot);
 
-    await page.goto(new URL(`/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/activity`, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
-    await expectVisible(page.getByText(PROJECT_GET, { exact: false }).first(), "F.activity-screenshot", "project_get_activity_missing");
+    await gotoPaperclipPage(
+      page,
+      new URL(`/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/activity`, config.baseUrl).toString(),
+      page.getByText(PROJECT_GET, { exact: false }).first(),
+      "F.activity-screenshot",
+      "project_get_activity_missing",
+    );
     const activityShot = "05-redacted-activity.png";
     await safeScreenshot(page, screenshotFile(outputDirectory, activityShot), config, "F.activity-screenshot");
     summary.screenshots.push(activityShot);
 
+    activeCheckpoint = "F.cleanup";
     summary.cleanup = await cleanupConnection(context.request, config, companyId, connectionId, connectionName);
     cleanupComplete = true;
     summary.passed = true;
   } catch (error) {
-    caughtFailure = error instanceof SmokeFailure ? error : new SmokeFailure("unexpected", "unexpected_error");
+    caughtFailure = error instanceof SmokeFailure ? error : new SmokeFailure(activeCheckpoint, "unexpected_error");
+    if (page) {
+      caughtFailure.details = {
+        ...(caughtFailure.details ?? {}),
+        pageState: await safePageState(page, resourceFailures, new URL(config.baseUrl).origin),
+      };
+    }
   } finally {
+    if (!connectionId && companyId && context) {
+      try {
+        connectionId = await findConnectionIdByName(
+          context.request,
+          config,
+          companyId,
+          connectionName,
+        );
+      } catch (error) {
+        summary.cleanup = {
+          completed: false,
+          code: error instanceof SmokeFailure ? error.code : "cleanup_recovery_failed",
+        };
+      }
+    }
     if (connectionId && companyId && context && !cleanupComplete) {
       try {
-        summary.cleanup = await cleanupConnection(context.request, config, companyId, connectionId, connectionName);
+        summary.cleanup = await cleanupConnection(
+          context.request,
+          config,
+          companyId,
+          connectionId,
+          connectionName,
+          { requireInstalledState: false },
+        );
         cleanupComplete = true;
-      } catch {
-        summary.cleanup = { completed: false, code: "cleanup_failed" };
+      } catch (error) {
+        summary.cleanup = {
+          completed: false,
+          code: error instanceof SmokeFailure ? error.code : "cleanup_failed",
+        };
         if (!caughtFailure) caughtFailure = new SmokeFailure("F.cleanup", "cleanup_failed");
       }
     }
@@ -764,7 +1084,11 @@ async function runSmoke({ config, chromium }) {
 
   summary.completedAt = new Date().toISOString();
   if (caughtFailure) {
-    summary.failure = { checkpoint: caughtFailure.checkpoint, code: caughtFailure.code };
+    summary.failure = {
+      checkpoint: caughtFailure.checkpoint,
+      code: caughtFailure.code,
+      ...(caughtFailure.details ? { details: caughtFailure.details } : {}),
+    };
   }
   assertSanitizedEvidence(summary);
   const summaryPath = path.join(outputDirectory, "summary.json");

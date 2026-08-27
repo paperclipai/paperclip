@@ -1,10 +1,7 @@
 import { ChevronLeft, AppWindow, Store, ShieldQuestion } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
-import { queryKeys } from "@/lib/queryKeys";
-import { toolsApi } from "@/api/tools";
 import { DEVELOPER_TABS, advancedTabHref, isExperimentalToolTab } from "@/pages/tools/tool-tabs";
 import { useSmokeLabEnabled } from "@/hooks/useSmokeLabEnabled";
 import { useReviewCount } from "@/pages/apps/useReviewCount";
@@ -15,7 +12,7 @@ import { SidebarNavItem } from "./SidebarNavItem";
  * PAP-13254 / U3).
  *
  *   ← Back · APPS: Browse / Review (n)
- *   DEVELOPER: Connections / Gateways / Profiles / Rules / Health / Activity
+ *   DEVELOPER: Connections / Gateways / Profiles / Activity
  *
  * "Browse" is the store and "Review" holds decisions waiting on the user's
  * OK. Connection management lives with the Developer tools.
@@ -28,7 +25,7 @@ import { SidebarNavItem } from "./SidebarNavItem";
  * (PAP-10922).
  */
 export function AppsSidebar() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompany } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
 
   const reviewCount = useReviewCount();
@@ -36,15 +33,6 @@ export function AppsSidebar() {
   const developerTabs = DEVELOPER_TABS.filter(
     (tab) => !isExperimentalToolTab(tab.key) || smokeLabEnabled,
   );
-
-  const runtimeSlots = useQuery({
-    queryKey: queryKeys.tools.runtimeSlots(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listRuntimeSlots(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 15_000,
-  });
-  const runtimeActiveCount = (runtimeSlots.data?.runtimeSlots ?? [])
-    .filter((slot) => slot.status === "running").length;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -84,7 +72,7 @@ export function AppsSidebar() {
           Developer
         </div>
         <p className="px-3 pb-1.5 text-(length:--text-micro) leading-snug text-muted-foreground/70">
-          Advanced setup for developers. Most teams never open this.
+          Advanced setup for developers.
         </p>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/apps/connections" label="Connections" icon={AppWindow} end />
@@ -95,7 +83,6 @@ export function AppsSidebar() {
               label={tab.label}
               icon={tab.icon}
               end
-              liveCount={tab.key === "runtime" && runtimeActiveCount > 0 ? runtimeActiveCount : undefined}
             />
           ))}
         </div>

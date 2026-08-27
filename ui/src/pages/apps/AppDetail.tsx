@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
@@ -11,7 +11,7 @@ import {
   humanizeConnectionDisplayName,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
-import { Navigate, useParams, useNavigate } from "@/lib/router";
+import { Navigate, useParams, useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -20,7 +20,7 @@ import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
-import { buildCompanyUserLabelMap } from "@/lib/company-members";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installPayload, installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
@@ -50,12 +50,19 @@ import {
   connectionTransportLabel,
 } from "./app-detail/AdvancedPanel";
 import type { AccessDraft } from "./app-detail/types";
+import {
+  ConnectionOwnerIdentity,
+  connectionDisplayNameForOwner,
+  connectionOwnerProfile,
+  type ConnectionOwnerProfile,
+} from "./connection-owner";
 
 export { DangerZone, connectionAddress, connectionTransportLabel };
 
 export function AppDetail() {
   const { connectionId = "", tab } = useParams<{ connectionId: string; tab?: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -108,7 +115,7 @@ export function AppDetail() {
   const userDirectoryQuery = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId && activeTab === "activity",
+    enabled: !!selectedCompanyId && !!activeTab,
   });
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
@@ -117,7 +124,38 @@ export function AppDetail() {
   });
 
   const connection = connectionQuery.data;
-  const appName = connection ? humanizeConnectionDisplayName(connection) : "App";
+  const logoEntry = useMemo(
+    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
+    [galleryQuery.data, connection],
+  );
+  const userProfileById = useMemo(
+    () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
+    [userDirectoryQuery.data],
+  );
+  const owner = connection ? connectionOwnerProfile(connection, userProfileById) : null;
+  const baseAppName = connection
+    ? logoEntry ? appDefinitionName(logoEntry) : humanizeConnectionDisplayName(connection)
+    : "App";
+  const appName = connection
+    ? connectionDisplayNameForOwner(connection, baseAppName, owner)
+    : "App";
+  const successNoticeShownFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (
+      activeTab !== "test"
+      || searchParams.get("success") !== "1"
+      || !connection
+      || successNoticeShownFor.current === connection.id
+    ) return;
+    successNoticeShownFor.current = connection.id;
+    pushToast({
+      title: `${appName} connected`,
+      body: "The connection is ready. You can test an action below.",
+      tone: "success",
+    });
+    navigate(appTabHref(connection.id, "test"), { replace: true });
+  }, [activeTab, appName, connection, navigate, pushToast, searchParams]);
 
   useEffect(() => {
     if (!activeTab) return;
@@ -155,11 +193,6 @@ export function AppDetail() {
     }
     return labels;
   }, [userDirectoryQuery.data, sessionQuery.data]);
-  const logoEntry = useMemo(
-    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
-    [galleryQuery.data, connection],
-  );
-
   const [pending, setPending] = useState(false);
   const persist = useMutation({
     mutationFn: (next: {
@@ -400,6 +433,7 @@ export function AppDetail() {
         logoEntry={logoEntry}
         status={status}
         actionCount={actionCount}
+        owner={owner}
         renaming={renaming}
         nameDraft={nameDraft}
         renamePending={rename.isPending}
@@ -428,16 +462,30 @@ export function AppDetail() {
       )}
 
       {activeTab === "setup" && (
-        <SetupPanel
-          connection={connection}
-          galleryEntry={logoEntry}
-          appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
-          onToggleApp={() => toggleEnabled.mutate()}
-          configUpdateDisabled={updateConfig.isPending}
-          onUpdateConfig={(config) => updateConfig.mutate(config)}
-          oauthStartDisabled={startOAuth.isPending}
-          onStartOAuth={() => startOAuth.mutate()}
-        />
+        <div className="space-y-8">
+          <SetupPanel
+            connection={connection}
+            galleryEntry={logoEntry}
+            appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
+            onToggleApp={() => toggleEnabled.mutate()}
+            configUpdateDisabled={updateConfig.isPending}
+            onUpdateConfig={(config) => updateConfig.mutate(config)}
+            oauthStartDisabled={startOAuth.isPending}
+            onStartOAuth={() => startOAuth.mutate()}
+          />
+          <AdvancedPanel
+            connection={connection}
+            appName={appName}
+            galleryEntry={logoEntry}
+            removing={removeApp.isPending}
+            onRemove={() => removeApp.mutate()}
+            onReplaced={() => {
+              queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+              queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
+              queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId) });
+            }}
+          />
+        </div>
       )}
       {activeTab === "review" && (
         reviewFailed
@@ -490,7 +538,7 @@ export function AppDetail() {
         catalogQuery.isError
           ? <ToolsLoadError onRetry={() => { void catalogQuery.refetch(); }} />
           : catalogQuery.isLoading
-          ? <ToolsLoading />
+          ? <ToolsLoading mcpActions />
           : <TestPanel connectionId={connectionId} appName={appName} active={active} quarantined={quarantined} />
       )}
       {activeTab === "activity" && (
@@ -506,20 +554,6 @@ export function AppDetail() {
           userLabelById={userLabelById}
         />
       )}
-      {activeTab === "advanced" && (
-        <AdvancedPanel
-          connection={connection}
-          appName={appName}
-          galleryEntry={logoEntry}
-          removing={removeApp.isPending}
-          onRemove={() => removeApp.mutate()}
-          onReplaced={() => {
-            queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId) });
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -530,6 +564,7 @@ function AppDetailHeader({
   logoEntry,
   status,
   actionCount,
+  owner,
   renaming,
   nameDraft,
   renamePending,
@@ -543,6 +578,7 @@ function AppDetailHeader({
   logoEntry: AppGalleryDisplayEntry | null;
   status: StatusInfo;
   actionCount: number | null;
+  owner: ConnectionOwnerProfile | null;
   renaming: boolean;
   nameDraft: string;
   renamePending: boolean;
@@ -597,6 +633,12 @@ function AppDetailHeader({
           {connectionDisplaySecondaryHint(connection) && (
             <p className="text-xs text-muted-foreground">{connectionDisplaySecondaryHint(connection)}</p>
           )}
+          {owner && (
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span>Connected by</span>
+              <ConnectionOwnerIdentity owner={owner} />
+            </div>
+          )}
           {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-1" /> : null}
           <div className="mt-1 flex items-center gap-2">
             <StatusBadge status={status} />
@@ -612,11 +654,11 @@ function AppDetailHeader({
   );
 }
 
-function ToolsLoading() {
+function ToolsLoading({ mcpActions = false }: { mcpActions?: boolean }) {
   return (
     <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
       <Loader2 className="h-4 w-4 animate-spin" />
-      Loading tools…
+      {mcpActions ? "Loading MCP actions, this may take a minute." : "Loading tools…"}
     </div>
   );
 }

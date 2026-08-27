@@ -57,7 +57,10 @@ const PUBLIC_BASE_URL = "https://paperclip.fixture.test";
 const REDIRECT_URI = `${PUBLIC_BASE_URL}/api/tools/oauth/callback`;
 const CLIENT_METADATA_DOCUMENT_URL = `${PUBLIC_BASE_URL}/api/tools/oauth/client-metadata`;
 
-const MCP_ORIGIN = "https://mcp.fixture.test";
+// A public IP literal keeps the global-fetch protocol fixture deterministic.
+// Hostname dispatch is intentionally DNS-pinned even in local/private mode, so
+// a made-up test hostname would correctly fail DNS before reaching this mock.
+const MCP_ORIGIN = "https://8.8.8.8";
 const MCP_URL = `${MCP_ORIGIN}/mcp`;
 /** A pathful issuer, so RFC 8414 well-known insertion is actually exercised. */
 const ISSUER = `${MCP_ORIGIN}/tenant/acme`;
@@ -1553,5 +1556,30 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       application_type: "web",
     });
     expect(JSON.stringify(response.body)).not.toContain(company.id);
+  });
+
+  it("uses the managed runtime origin when no explicit callback origin is configured", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "");
+    vi.stubEnv("BETTER_AUTH_URL", "");
+    vi.stubEnv("BETTER_AUTH_BASE_URL", "");
+    vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "https://worktree.tail29c1aa.ts.net");
+    const app = createRouteApp(db);
+
+    const response = await request(app).get("/api/tools/oauth/client-metadata").expect(200);
+
+    expect(response.body.redirect_uris).toEqual([
+      "https://worktree.tail29c1aa.ts.net/api/tools/oauth/callback",
+    ]);
+  });
+
+  it("keeps an explicit callback origin ahead of managed runtime inference", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+    vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "https://inferred.tail29c1aa.ts.net");
+    const app = createRouteApp(db);
+
+    const response = await request(app).get("/api/tools/oauth/client-metadata").expect(200);
+
+    expect(response.body.redirect_uris).toEqual([REDIRECT_URI]);
   });
 });

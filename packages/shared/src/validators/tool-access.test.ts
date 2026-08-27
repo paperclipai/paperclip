@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   connectionTokenRequestSchema,
   connectToolAppSchema,
+  createToolMcpGatewayTokenSchema,
   createToolConnectionSchema,
   startConnectionAuthorizationSchema,
   toolCredentialSecretRefSchema,
@@ -10,6 +11,16 @@ import {
 } from "./tool-access.js";
 
 describe("tool access validators", () => {
+  it("treats a gateway token owner note as optional", () => {
+    const parsed = createToolMcpGatewayTokenSchema.parse({
+      name: "cursor-client",
+      clientLabel: "cursor-client",
+      expiresAt: "2026-12-01T00:00:00.000Z",
+    });
+
+    expect(parsed.ownerNote).toBe("");
+  });
+
   it("defaults connection token subjects to app", () => {
     expect(connectionTokenRequestSchema.parse({})).toEqual({ subject: { type: "app" } });
   });

@@ -6,6 +6,7 @@ import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
 import {
+  isAlwaysDeniedLinkLocalIp,
   isPrivateOrReservedIp,
   normalizeIpAddress,
   resolveApprovedRemoteHttpAddresses,
@@ -56,8 +57,7 @@ export type GuardedRemoteHttpFetchOptions = RemoteHttpEndpointGuardOptions & {
   /** Deadline for response headers, and idle deadline between body chunks. */
   responseTimeoutMs?: number;
   /**
-   * Platform `fetch`, used only when the deployment allows private endpoints and
-   * there is therefore no egress boundary to pin against.
+   * Platform `fetch`, used only for IP literals, which cannot be rebound.
    */
   unpinnedFetch?: typeof fetch;
 };
@@ -84,12 +84,8 @@ export type GuardedRemoteHttpFetchOptions = RemoteHttpEndpointGuardOptions & {
  * 5. never follows redirects — it behaves as `redirect: "manual"` so the caller
  *    re-runs the whole guard against every `Location` it decides to follow.
  *
- * Two cases need no pinning and keep platform `fetch` semantics:
- *
- * - the deployment allows private endpoints, where the guard is a documented
- *   no-op and rebinding cannot reach anything an operator could not reach by
- *   typing the private URL in directly; and
- * - the URL already carries an IP literal, where no name resolution happens on
+ * URLs that already carry an IP literal need no pinning and keep platform
+ * `fetch` semantics: no name resolution happens on
  *   either side of the guard, so there is no second answer to disagree with the
  *   first. `URL` has already normalised the literal (`0x7f.1`, `::ffff:7f00:1`)
  *   by the time the guard classifies it.
@@ -103,7 +99,7 @@ export async function guardedRemoteHttpFetch(
   const approved = await resolveApprovedRemoteHttpAddresses(endpoint, options, options.error);
   const literalHost = isIP(endpoint.hostname.replace(/^\[|\]$/g, "")) !== 0;
   const platformFetch = options.unpinnedFetch ?? fetch;
-  if (approved.length === 0 || literalHost) {
+  if (literalHost) {
     try {
       return await platformFetch(endpoint.toString(), { ...init, redirect: "manual" });
     } catch (error) {
@@ -237,7 +233,11 @@ async function openVerifiedSocket(input: {
   }
 
   const peer = raw.remoteAddress ? normalizeIpAddress(raw.remoteAddress) : null;
-  if (!peer || isPrivateOrReservedIp(peer) || !approvedSet.has(peer)) {
+  const peerDenied = peer && (
+    isAlwaysDeniedLinkLocalIp(peer)
+    || (!options.allowPrivateNetwork && isPrivateOrReservedIp(peer))
+  );
+  if (!peer || peerDenied || !approvedSet.has(peer)) {
     raw.destroy();
     throw options.error(
       "Remote MCP connection resolved to an address that was not approved",

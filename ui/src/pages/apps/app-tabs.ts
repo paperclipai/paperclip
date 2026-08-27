@@ -1,4 +1,4 @@
-import { Activity, Beaker, Inbox, Settings2, ShieldCheck, Wrench } from "lucide-react";
+import { Activity, Beaker, Inbox, Settings2, ShieldCheck } from "lucide-react";
 
 export const APP_TABS = [
   { key: "setup", label: "Setup", icon: Settings2 },
@@ -6,7 +6,6 @@ export const APP_TABS = [
   { key: "review", label: "Review", icon: Inbox },
   { key: "permissions", label: "Permissions", icon: ShieldCheck },
   { key: "activity", label: "Activity", icon: Activity },
-  { key: "advanced", label: "Advanced", icon: Wrench },
 ] as const;
 
 export type AppTabKey = (typeof APP_TABS)[number]["key"];

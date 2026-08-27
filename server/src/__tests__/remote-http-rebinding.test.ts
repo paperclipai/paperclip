@@ -484,9 +484,7 @@ describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
     expect(calls).toEqual(["POST https://93.184.216.34/mcp manual"]);
   });
 
-  it("uses platform fetch when the deployment allows private endpoints", async () => {
-    // Nothing to pin: an operator who is allowed to point at 127.0.0.1 directly
-    // gains nothing from rebinding, so this mode keeps `fetch` semantics.
+  it("uses platform fetch for an allowed private IP literal", async () => {
     const calls: string[] = [];
     const response = await guardedRemoteHttpFetch("http://127.0.0.1:9/mcp", {}, {
       allowPrivateNetwork: true,
@@ -502,5 +500,39 @@ describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
 
     expect(response.status).toBe(200);
     expect(calls).toEqual(["http://127.0.0.1:9/mcp"]);
+  });
+
+  it("never invokes platform fetch for a link-local literal in private mode", async () => {
+    const calls: string[] = [];
+    await expect(guardedRemoteHttpFetch("http://169.254.169.254/latest/meta-data/", {}, {
+      allowPrivateNetwork: true,
+      error: guardError,
+      unpinnedFetch: async (input) => {
+        calls.push(String(input));
+        return new Response("{}", { status: 200 });
+      },
+    })).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
+    expect(calls).toEqual([]);
+  });
+
+  it("pins an allowed private hostname and rejects a link-local peer before request bytes", async () => {
+    const internal = await startServer();
+    const factory: RemoteHttpSocketFactory = () => {
+      const socket = netConnect({ host: "127.0.0.1", port: internal.port });
+      openSockets.push(socket);
+      Object.defineProperty(socket, "remoteAddress", { get: () => "169.254.169.254", configurable: true });
+      return socket;
+    };
+
+    await expect(guardedRemoteHttpFetch("http://lan-service.example/mcp", {}, {
+      allowPrivateNetwork: true,
+      lookup: async () => [{ address: "10.0.0.8", family: 4 }],
+      socketFactory: factory,
+      error: guardError,
+      unpinnedFetch: async () => {
+        throw new Error("hostnames must remain pinned");
+      },
+    })).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
+    expect(internal.requests).toHaveLength(0);
   });
 });

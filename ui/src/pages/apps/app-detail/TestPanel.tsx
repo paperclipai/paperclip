@@ -201,6 +201,10 @@ export function TestPanel({
   if (testAgentsQuery.isLoading) {
     return (
       <div className="space-y-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading MCP actions, this may take a minute.
+        </div>
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-12 w-full" />
         <Skeleton className="h-12 w-full" />

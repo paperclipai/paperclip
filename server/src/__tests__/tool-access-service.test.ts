@@ -121,7 +121,10 @@ function createRouteApp(
   db: ReturnType<typeof createDb>,
   actor?: Express.Request["actor"],
   toolGateway?: ToolGatewayService,
-  deployment?: { deploymentMode: "authenticated"; deploymentExposure: "public" },
+  deployment?: {
+    deploymentMode: "local_trusted" | "authenticated";
+    deploymentExposure: "private" | "public";
+  },
 ) {
   const app = express();
   app.use(express.json());
@@ -232,6 +235,12 @@ async function allowConnectionForAgent(
   connectionId: string,
   input: { brokerMint?: boolean } = {},
 ) {
+  await db.insert(toolConnectionInstalls).values({
+    companyId,
+    connectionId,
+    targetType: "agent",
+    targetId: agentId,
+  });
   const [profile] = await db.insert(toolProfiles).values({
     companyId,
     profileKey: `broker-${randomUUID()}`,
@@ -562,6 +571,56 @@ describeEmbeddedPostgres("tool access service", () => {
         outcome: "success",
       }),
     ]));
+  });
+
+  it("denies token minting with an actionable error when the requesting agent has no install", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "installation_required",
+      connection: { id: connection.id, name: connection.name },
+      remediation: { action: "install_connection", targetType: "agent", targetId: agent.id },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [audit] = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.reasonCode, "installation_required"));
+    expect(audit).toMatchObject({ actorType: "agent", actorId: agent.id, outcome: "failure" });
+  });
+
+  it("accepts a company-wide install when minting a token", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, { path: "static" });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    await db
+      .update(toolConnectionInstalls)
+      .set({ targetType: "company", targetId: company.id })
+      .where(eq(toolConnectionInstalls.connectionId, connection.id));
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ status: "use_env_lease", connectionId: connection.id });
   });
 
   it.each([
@@ -1261,20 +1320,30 @@ describeEmbeddedPostgres("tool access service", () => {
     })).rejects.toThrow("Local stdio MCP connections must use an approved templateId");
   });
 
-  it("blocks private remote HTTP endpoints in authenticated public deployments", async () => {
+  it.each([
+    ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
+    ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],
+    ["authenticated/public", { deploymentMode: "authenticated" as const, deploymentExposure: "public" as const }],
+  ])("always blocks link-local remote HTTP endpoints in %s before fetch", async (_label, deployment) => {
     const company = await createCompany(db);
-    const service = toolAccessService(db, { deploymentMode: "authenticated", deploymentExposure: "public" });
+    const service = toolAccessService(db, deployment);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch should not be called"));
 
-    await expect(service.createConnection(company.id, {
-      name: "Metadata endpoint",
-      transport: "mcp_remote",
-      config: { url: "http://169.254.169.254/latest/meta-data" },
-      enabled: true,
-      status: "active",
-    })).rejects.toMatchObject({
-      status: 400,
-      details: { code: "remote_http_private_endpoint" },
-    });
+    try {
+      await expect(service.createConnection(company.id, {
+        name: "Metadata endpoint",
+        transport: "mcp_remote",
+        config: { url: "http://169.254.169.254/latest/meta-data" },
+        enabled: true,
+        status: "active",
+      })).rejects.toMatchObject({
+        status: 400,
+        details: { code: "remote_http_private_endpoint" },
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("creates profiles with entries, binds them to agents, and resolves effective allowed tools", async () => {
@@ -2891,6 +2960,59 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
   });
 
+  it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {
+    const company = await createCompany(db);
+    let currentTime = new Date("2026-08-20T12:00:00.000Z");
+    let tools = [
+      {
+        name: "cached_read",
+        description: "Read the cached value.",
+        annotations: { readOnlyHint: true },
+      },
+    ];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      result: { tools },
+    }));
+    const service = toolAccessService(db, {
+      now: () => currentTime,
+      catalogCacheTtlMs: 60_000,
+    });
+    const connected = await service.connectGalleryApp(company.id, {
+      link: "https://cache.example.test/mcp",
+      name: "Cached actions",
+    }, { actorType: "user", actorId: "board" });
+    const discoveryCallsAfterConnect = fetchMock.mock.calls.length;
+
+    const cached = await service.listCatalog(connected.connectionId);
+
+    expect(cached.map((entry) => entry.toolName)).toContain("cached_read");
+    expect(fetchMock).toHaveBeenCalledTimes(discoveryCallsAfterConnect);
+
+    tools = [
+      ...tools,
+      {
+        name: "fresh_read",
+        description: "Read a newly discovered value.",
+        annotations: { readOnlyHint: true },
+      },
+    ];
+    currentTime = new Date(currentTime.getTime() + 60_001);
+
+    const refreshed = await service.listCatalog(connected.connectionId);
+
+    expect(refreshed.map((entry) => entry.toolName)).toContain("fresh_read");
+    expect(fetchMock).toHaveBeenCalledTimes(discoveryCallsAfterConnect + 1);
+
+    currentTime = new Date(currentTime.getTime() + 60_001);
+    fetchMock.mockRejectedValueOnce(new Error("temporary MCP outage"));
+
+    await expect(service.listCatalog(connected.connectionId)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ toolName: "fresh_read" })]),
+    );
+  });
+
   it("requires an explicit PostHog method and projects validated project filters", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -3456,7 +3578,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(redirectCallbackRes.status).toBe(303);
     expect(redirectCallbackRes.headers.location).toBe(
-      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/setup?oauth=connected`,
+      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/test?success=1`,
     );
     expect(fetchMock).toHaveBeenCalledTimes(6);
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
@@ -3471,7 +3593,11 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     const service = toolAccessService(db);
-    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack reauth" });
+    const connect = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "slack", name: "Slack reauth" },
+      { actorType: "user", actorId: "operator-user" },
+    );
     await db
       .update(toolConnections)
       .set({ status: "active", updatedAt: new Date() })
@@ -5022,12 +5148,13 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
-  it("rejects OAuth metadata redirects to private endpoints", async () => {
+  it.each([
+    ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
+    ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],
+    ["authenticated/public", { deploymentMode: "authenticated" as const, deploymentExposure: "public" as const }],
+  ])("rejects OAuth metadata redirects to link-local endpoints in %s", async (_label, deployment) => {
     const company = await createCompany(db);
-    const app = createRouteApp(db, undefined, undefined, {
-      deploymentMode: "authenticated",
-      deploymentExposure: "public",
-    });
+    const app = createRouteApp(db, undefined, undefined, deployment);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
       if (href === "https://8.8.8.8/mcp") {
@@ -5826,17 +5953,37 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     mockToolsList([
       { name: "list_zaps", description: "List", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
+      { name: "update_zap", description: "Update", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: false } },
     ]);
 
-    const connect = await service.connectGalleryApp(company.id, {
-      galleryKey: "zapier",
-      name: "Zapier reconnect",
-      credentialValues: { "credentials.authorization": "old-secret" },
-    }, { actorType: "user", actorId: "board" });
+    const connect = await withGalleryServerUrl("zapier", PUBLIC_MCP_FIXTURE_URL, () =>
+      service.connectGalleryApp(company.id, {
+        galleryKey: "zapier",
+        name: "Zapier reconnect",
+        credentialValues: { "credentials.authorization": "old-secret" },
+      }, { actorType: "user", actorId: "board" }));
 
     const before = await service.getConnection(connect.connectionId, company.id);
     const beforeRef = before.credentialSecretRefs.find((r) => r.configPath === "credentials.authorization")!;
     expect(beforeRef).toBeDefined();
+
+    const listEntry = connect.catalog.find((entry) => entry.toolName === "list_zaps")!;
+    const updateEntry = connect.catalog.find((entry) => entry.toolName === "update_zap")!;
+    const finished = await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, updateEntry.id],
+      askFirstCatalogEntryIds: [updateEntry.id],
+      access: "all_agents",
+    }, { actorType: "user", actorId: "board" });
+    await db.delete(toolProfileEntries).where(eq(toolProfileEntries.profileId, finished.profile.id));
+    await db.update(toolCatalogEntries).set({
+      status: "quarantined",
+      quarantineReason: "pending_review",
+      quarantinedAt: new Date(),
+    }).where(eq(toolCatalogEntries.connectionId, connect.connectionId));
+    await db.update(toolConnections).set({
+      config: { ...before.config, quarantineNewEntries: true },
+      transportConfig: { ...before.transportConfig, quarantineNewEntries: true },
+    }).where(eq(toolConnections.id, connect.connectionId));
 
     await expect(
       service.reconnectGalleryApp(connect.connectionId, company.id, { credentialValues: {} }, { actorType: "user", actorId: "board" }),
@@ -5855,6 +6002,27 @@ describeEmbeddedPostgres("tool access service", () => {
     // Rotated in place: same secret, no duplicate ref created.
     expect(after.credentialSecretRefs).toHaveLength(before.credentialSecretRefs.length);
     expect(afterRef.secretId).toBe(beforeRef.secretId);
+    expect(after.config).toMatchObject({ quarantineNewEntries: false });
+    expect(after.transportConfig).toMatchObject({ quarantineNewEntries: false });
+
+    const catalogAfterReconnect = await db.select().from(toolCatalogEntries).where(
+      eq(toolCatalogEntries.connectionId, connect.connectionId),
+    );
+    expect(catalogAfterReconnect).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: listEntry.id, status: "active", quarantineReason: null }),
+      expect.objectContaining({ id: updateEntry.id, status: "active", quarantineReason: null }),
+    ]));
+    const profileEntriesAfterReconnect = await db.select().from(toolProfileEntries).where(
+      eq(toolProfileEntries.profileId, finished.profile.id),
+    );
+    expect(profileEntriesAfterReconnect).toEqual(expect.arrayContaining([
+      expect.objectContaining({ catalogEntryId: listEntry.id, effect: "include" }),
+      expect.objectContaining({ catalogEntryId: updateEntry.id, effect: "include" }),
+    ]));
+    await expect(db.select().from(toolPolicies).where(and(
+      eq(toolPolicies.companyId, company.id),
+      eq(toolPolicies.enabled, true),
+    ))).resolves.toHaveLength(0);
   });
 
   it("stops and restarts local stdio runtime slots through the board service", async () => {
@@ -7390,6 +7558,73 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(get.body.installs).toEqual(expect.arrayContaining([
       expect.objectContaining({ targetType: "agent", targetId: agent.id }),
     ]));
+  });
+
+  it("limits connection configuration to the creator or a manager with role defaults", async () => {
+    const company = await createCompany(db);
+    const creator = boardSessionActor(company.id, "member", `creator-${randomUUID()}`);
+    const otherMember = boardSessionActor(company.id, "member", `member-${randomUUID()}`);
+    const admin = boardSessionActor(company.id, "admin", `admin-${randomUUID()}`);
+    await grantBoardUser(db, company.id, creator.userId!, [], "member");
+    await grantBoardUser(db, company.id, otherMember.userId!, [], "member");
+    await grantBoardUser(db, company.id, admin.userId!, [], "admin");
+    const connection = await toolAccessService(db).createConnection(company.id, {
+      name: "Creator-owned connection",
+      transport: "mcp_remote",
+      config: { url: PUBLIC_MCP_FIXTURE_URL },
+    }, { actorType: "user", actorId: creator.userId! });
+
+    const denied = await request(createRouteApp(db, otherMember))
+      .patch(`/api/tool-connections/${connection.id}`)
+      .send({ name: "Member edit" });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toContain("connection creator or a connection manager");
+
+    await request(createRouteApp(db, creator))
+      .patch(`/api/tool-connections/${connection.id}`)
+      .send({ name: "Creator edit" })
+      .expect(200);
+    await request(createRouteApp(db, admin))
+      .patch(`/api/tool-connections/${connection.id}`)
+      .send({ name: "Admin edit" })
+      .expect(200);
+
+    const adminGrants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, admin.userId!));
+    expect(adminGrants).toEqual([]);
+  });
+
+  it("keeps agent installs self-serve for members with connection access and audits changes", async () => {
+    const company = await createCompany(db);
+    const creator = boardSessionActor(company.id, "member", `creator-${randomUUID()}`);
+    const member = boardSessionActor(company.id, "member", `member-${randomUUID()}`);
+    await grantBoardUser(db, company.id, creator.userId!, [], "member");
+    await grantBoardUser(db, company.id, member.userId!, ["agents:configure"], "member");
+    const agent = await createAgent(db, company.id);
+    const connection = await toolAccessService(db).createConnection(company.id, {
+      name: "Shared organization connection",
+      transport: "mcp_remote",
+      config: { url: PUBLIC_MCP_FIXTURE_URL },
+    }, { actorType: "user", actorId: creator.userId! });
+    const app = createRouteApp(db, member);
+
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [{ targetType: "agent", targetId: agent.id }] })
+      .expect(200);
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [] })
+      .expect(200);
+
+    const audits = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.action, "connection_installs.changed"));
+    expect(audits).toHaveLength(2);
+    expect(audits.every((audit) => audit.actorType === "user" && audit.actorId === member.userId)).toBe(true);
   });
 });
 

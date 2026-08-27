@@ -7,7 +7,7 @@ import { appSourceConnectHref } from "./app-connect-policy";
 export const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "posthog", "linear"];
 
 /** Deep-link into the Connect wizard's bring-your-own-tool URL flow. */
-export const BYO_CONNECT_HREF = "/apps/connect?byo=1";
+export const BYO_CONNECT_HREF = "/apps/byo";
 
 /** Zapier connects with the complete MCP URL issued by Zapier. */
 export const ZAPIER_CONNECT_HREF = "/apps/connect?byo=1&source=zapier";
@@ -32,7 +32,7 @@ export function ByoConnectCard({ onConnect }: { onConnect: () => void }) {
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">Connect your own tool</div>
         <div className="text-xs text-muted-foreground">
-          Paste the URL from a custom or self-hosted MCP server and review its actions before enabling it.
+          Paste the URL from a custom or self-hosted MCP server. All discovered actions are enabled automatically.
         </div>
       </div>
       <span className="shrink-0 text-xs font-semibold text-primary">Connect →</span>

@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ToolConnection } from "@paperclipai/shared";
 import {
   connectionDisplaySecondaryHint,
-  humanizeConnectionDisplayName,
   isToolConnectionAttentionHealth,
 } from "@paperclipai/shared";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
@@ -14,8 +13,10 @@ import { queryKeys } from "@/lib/queryKeys";
 import { timeAgo } from "@/lib/timeAgo";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
+import { accessApi } from "@/api/access";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
 import { AppLogo } from "./AppLogo";
 import {
   appApplicationSourceSlug,
@@ -29,6 +30,11 @@ import { connectionAddress, connectionTransportLabel, DangerZone } from "./AppDe
 import { ActivityPanel } from "./app-detail/ActivityPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { appApplicationTabHref, appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
+import {
+  ConnectionOwnerIdentity,
+  connectionDisplayNameForOwner,
+  connectionOwnerProfile,
+} from "./connection-owner";
 
 export function AppNotConnected() {
   const { applicationId = "", tab } = useParams<{ applicationId: string; tab?: string }>();
@@ -52,6 +58,11 @@ export function AppNotConnected() {
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!activeTab,
+  });
+  const userDirectoryQuery = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId && !!activeTab,
   });
 
@@ -79,6 +90,10 @@ export function AppNotConnected() {
   );
   const activeConnection = activeConnections[0] ?? null;
   const previousConnection = useMemo(() => latestArchivedConnection(appConnections), [appConnections]);
+  const userProfileById = useMemo(
+    () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
+    [userDirectoryQuery.data],
+  );
   const activityQuery = useQuery({
     queryKey: queryKeys.tools.connectionActivity(previousConnection?.id ?? "__none__"),
     queryFn: () => toolsApi.listConnectionActivity(previousConnection!.id, 20),
@@ -175,14 +190,22 @@ export function AppNotConnected() {
       />
 
       {activeTab === "setup" && (
-        <SetupTab
-          applicationName={application.name}
-          activeConnections={activeConnections}
-          previousConnection={previousConnection}
-          previousAddress={previousAddress}
-          onConnect={() => navigate(connectHref)}
-          onEdit={(connectionId) => navigate(appTabHref(connectionId, "setup"))}
-        />
+        <div className="space-y-8">
+          <SetupTab
+            applicationName={application.name}
+            activeConnections={activeConnections}
+            previousConnection={previousConnection}
+            previousAddress={previousAddress}
+            userProfileById={userProfileById}
+            onConnect={() => navigate(connectHref)}
+            onEdit={(connectionId) => navigate(appTabHref(connectionId, "setup"))}
+          />
+          <DangerZone
+            appName={application.name}
+            removing={remove.isPending}
+            onRemove={() => remove.mutate()}
+          />
+        </div>
       )}
       {activeTab === "review" && (
         previousConnection ? (
@@ -228,15 +251,6 @@ export function AppNotConnected() {
           />
         )
       )}
-      {activeTab === "advanced" && (
-        <AdvancedTab
-          appName={application.name}
-          previousConnection={previousConnection}
-          previousAddress={previousAddress}
-          removing={remove.isPending}
-          onRemove={() => remove.mutate()}
-        />
-      )}
     </div>
   );
 }
@@ -275,6 +289,7 @@ function SetupTab({
   activeConnections,
   previousConnection,
   previousAddress,
+  userProfileById,
   onConnect,
   onEdit,
 }: {
@@ -282,6 +297,7 @@ function SetupTab({
   activeConnections: ToolConnection[];
   previousConnection: ToolConnection | null;
   previousAddress: string | null;
+  userProfileById: ReadonlyMap<string, CompanyUserProfile>;
   onConnect: () => void;
   onEdit: (connectionId: string) => void;
 }) {
@@ -292,11 +308,12 @@ function SetupTab({
           <div>
             <h2 className="text-sm font-bold text-foreground">Already connected to {applicationName}</h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Open a connection to edit it, or add another account.
+              Edit an existing connection, or deliberately add another account below.
             </p>
           </div>
-          <div className="overflow-hidden rounded-lg border border-border">
+          <div className="divide-y divide-border">
             {activeConnections.map((connection) => {
+              const owner = connectionOwnerProfile(connection, userProfileById);
               const secondary = connectionDisplaySecondaryHint(connection) ??
                 (connection.lastUsedAt ? `Last used ${timeAgo(connection.lastUsedAt)}` : "Not used yet");
               const status = connection.enabled === false || connection.status === "disabled"
@@ -309,14 +326,15 @@ function SetupTab({
                   key={connection.id}
                   type="button"
                   onClick={() => onEdit(connection.id)}
-                  className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition-colors last:border-0 hover:bg-muted/30"
+                  className="flex w-full items-center gap-3 py-3 text-left transition-colors hover:bg-muted/30"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-foreground">
-                      {humanizeConnectionDisplayName(connection)}
+                      {connectionDisplayNameForOwner(connection, applicationName, owner)}
                     </div>
                     <div className="truncate text-xs text-muted-foreground">{secondary}</div>
                   </div>
+                  <ConnectionOwnerIdentity owner={owner} />
                   <span className="text-xs text-muted-foreground">{status}</span>
                   <span className="text-xs font-semibold text-primary">Edit →</span>
                 </button>
@@ -325,7 +343,7 @@ function SetupTab({
           </div>
         </section>
 
-        <section className="rounded-xl border border-border bg-card px-5 py-4">
+        <section>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-bold text-foreground">Connect another</h2>
@@ -342,7 +360,7 @@ function SetupTab({
 
   return (
     <div className="space-y-6">
-      <section className="rounded-xl border border-border bg-card px-5 py-4">
+      <section>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-bold text-foreground">
@@ -361,7 +379,11 @@ function SetupTab({
       </section>
 
       {previousConnection && (
-        <PreviousSetup connection={previousConnection} previousAddress={previousAddress} />
+        <PreviousSetup
+          connection={previousConnection}
+          previousAddress={previousAddress}
+          owner={connectionOwnerProfile(previousConnection, userProfileById)}
+        />
       )}
     </div>
   );
@@ -370,13 +392,21 @@ function SetupTab({
 function PreviousSetup({
   connection,
   previousAddress,
+  owner,
 }: {
   connection: ToolConnection;
   previousAddress: string | null;
+  owner: CompanyUserProfile | null;
 }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <h2 className="text-sm font-bold text-foreground">Previous setup</h2>
+      {owner && (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span>Connected by</span>
+          <ConnectionOwnerIdentity owner={owner} />
+        </div>
+      )}
       {connection.healthMessage && (
         <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
           Last error: {connection.healthMessage}
@@ -398,7 +428,7 @@ function PreviousSetup({
 
 function PermissionsTab({ previousConnection }: { previousConnection: ToolConnection | null }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <h2 className="text-sm font-bold text-foreground">Permissions paused</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         Reconnect this app to edit who can use it and which actions need a human first.
@@ -412,37 +442,9 @@ function PermissionsTab({ previousConnection }: { previousConnection: ToolConnec
   );
 }
 
-function AdvancedTab({
-  appName,
-  previousConnection,
-  previousAddress,
-  removing,
-  onRemove,
-}: {
-  appName: string;
-  previousConnection: ToolConnection | null;
-  previousAddress: string | null;
-  removing: boolean;
-  onRemove: () => void;
-}) {
-  return (
-    <div className="space-y-6">
-      {previousConnection ? (
-        <PreviousSetup connection={previousConnection} previousAddress={previousAddress} />
-      ) : (
-        <EmptyTab
-          title="No previous connection details"
-          body="Technical details will appear here after this app is connected."
-        />
-      )}
-      <DangerZone appName={appName} removing={removing} onRemove={onRemove} />
-    </div>
-  );
-}
-
 function EmptyTab({ title, body }: { title: string; body: string }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <h2 className="text-sm font-bold text-foreground">{title}</h2>
       <p className="mt-1 text-sm text-muted-foreground">{body}</p>
     </section>
