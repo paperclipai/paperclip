@@ -269,6 +269,7 @@ export {
   getAvailableConnectionMethods,
   getConnectableAppDefinition,
   recommendedDefaultsForApp,
+  resolveConnectionMethodServerUrl,
 } from "./app-definitions.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
 export * from "./validators/status-card.js";

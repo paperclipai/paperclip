@@ -117,7 +117,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
-import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getAvailableConnectionMethods, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getAvailableConnectionMethods, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp, resolveConnectionMethodServerUrl } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -854,7 +854,11 @@ export function normalizeConnectionMethodConfig(
     }
   }
 
-  const endpoint = method.defaults?.serverUrl ? new URL(method.defaults.serverUrl) : null;
+  const resolvedServerUrl = resolveConnectionMethodServerUrl(method, values);
+  if (method.defaults?.serverUrlTemplate && !resolvedServerUrl) {
+    throw badRequest("Missing or invalid connection settings for the server URL");
+  }
+  const endpoint = resolvedServerUrl ? new URL(resolvedServerUrl) : null;
   const headers: Record<string, string> = {};
   for (const field of fields) {
     const transport = field.transport;

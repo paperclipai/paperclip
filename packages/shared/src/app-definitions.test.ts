@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_DEFINITIONS } from "./app-definitions.generated.js";
-import { APP_STORE_DEFINITIONS, APP_STORE_HIDDEN_SLUGS, CONNECTABLE_APP_DEFINITIONS, appSupportsCatalogSetup, getAvailableConnectionMethod, getRecommendedConnectionMethod, recommendedDefaultsForApp } from "./app-definitions.js";
+import { APP_STORE_DEFINITIONS, APP_STORE_HIDDEN_SLUGS, CONNECTABLE_APP_DEFINITIONS, appSupportsCatalogSetup, getAvailableConnectionMethod, getRecommendedConnectionMethod, recommendedDefaultsForApp, resolveConnectionMethodServerUrl } from "./app-definitions.js";
 import { BLOCKED_MCP_PROVIDERS, SELF_SERVE_MCP_CANDIDATES, SELF_SERVE_MCP_RESEARCH } from "./self-serve-mcp-research.js";
 import { appDefinitionsSchema } from "./validators/app-definition.js";
 describe("AppDefinition catalog",()=>{
@@ -88,7 +88,7 @@ describe("AppDefinition catalog",()=>{
  });
  it("preserves required Linear OAuth scopes",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="linear")?.methods[0]?.defaults?.scopesHint).toEqual(["read","write"]));
  it("requests only Hugging Face's MCP read scope",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="hugging-face")?.methods[0]?.defaults?.scopesHint).toEqual(["read-mcp"]));
- it("defaults S4 write and destructive actions to ask-first",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods)expect(recommendedDefaultsForApp(app,method.key)).toEqual({access:"all_agents",askFirstRiskLevels:method.riskTier==="S4"?["write","destructive"]:[]})});
+ it("defaults S2-S4 write and destructive actions to ask-first",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods)expect(recommendedDefaultsForApp(app,method.key)).toEqual({access:"all_agents",askFirstRiskLevels:method.riskTier==="S1"?[]:["write","destructive"]})});
  it("defaults explicit read/write capability groups to their write-capable method",()=>{
   const drive=APP_DEFINITIONS.find((app)=>app.slug==="google-drive")!;
   const gmail=APP_DEFINITIONS.find((app)=>app.slug==="gmail")!;
@@ -176,7 +176,7 @@ describe("AppDefinition catalog",()=>{
    }
   }
  });
- it("configures Shopify's official tenant-scoped Storefront MCP without OAuth",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="shopify")?.methods[0]).toMatchObject({key:"storefront-mcp",auth:"none",defaults:{serverUrlTemplate:"https://{storeDomain}/api/mcp"},tenantFields:[expect.objectContaining({key:"storeDomain",required:true})]}));
+ it("configures Shopify's official tenant-scoped Storefront MCP without OAuth",()=>{const method=APP_DEFINITIONS.find((app)=>app.slug==="shopify")?.methods[0];expect(method).toMatchObject({key:"storefront-mcp",auth:"none",defaults:{serverUrlTemplate:"https://{storeDomain}/api/mcp"},tenantFields:[expect.objectContaining({key:"storeDomain",required:true})]});expect(resolveConnectionMethodServerUrl(method!,{storeDomain:"paperclip-demo.myshopify.com"})).toBe("https://paperclip-demo.myshopify.com/api/mcp");expect(resolveConnectionMethodServerUrl(method!,{})).toBeNull()});
  it("offers PostHog OAuth and API-key methods with zero-config defaults and advanced narrowing",()=>{const posthog=APP_DEFINITIONS.find((app)=>app.slug==="posthog");expect(posthog?.methods.map((method)=>method.key)).toEqual(["mcp-oauth","mcp-api-key"]);for(const method of posthog?.methods??[]){const projectField=method.tenantFields?.find((field)=>field.key==="projectId");expect(method.riskTier).toBe("S3");expect(method.tenantFields?.find((field)=>field.key==="readOnly")).toMatchObject({defaultValue:false,advanced:true});expect(projectField).toMatchObject({advanced:true,transport:{location:"header",name:"x-posthog-project-id"}});expect(projectField?.required).not.toBe(true);expect(method.tenantFields?.filter((field)=>field.advanced).map((field)=>field.key)).toEqual(["projectId","readOnly","features","tools"]);expect(method.tenantFields?.find((field)=>field.key==="mode")).toMatchObject({hidden:true,defaultValue:"tools",transport:{location:"query",name:"mode"}});expect(method.configRequirements).toBeUndefined();expect(method.requiredResourceFilters).toBeUndefined();expect(method.guidanceMd).toContain("optional advanced controls")}});
  it("requires only reviewed provider or safety-boundary configuration on the default path",()=>{const required=APP_DEFINITIONS.flatMap((app)=>app.methods.flatMap((method)=>[...(method.tenantFields??[]),...(method.extensionFields??[])].filter((field)=>field.required&&field.advanced!==true&&!field.hidden).map((field)=>`${app.slug}:${method.key}:${field.key}`))).sort();expect(required).toEqual(["clickhouse:mcp-oauth:serviceId","shopify:storefront-mcp:storeDomain","supabase:mcp-api-key:projectRef","supabase:mcp-oauth:projectRef"])});
  it("limits Vercel Connect setup to the reviewed pilot methods",()=>{

@@ -198,6 +198,31 @@ export function credentialConfigPath(field: FieldDef): string {
   return `credentials.${field.key}`;
 }
 
+export function resolveConnectionMethodServerUrl(
+  method: ConnectionMethodDef,
+  configValues: Record<string, string | boolean>,
+): string | null {
+  const template = method.defaults?.serverUrlTemplate;
+  if (!template) return method.defaults?.serverUrl ?? null;
+
+  let missingValue = false;
+  const resolved = template.replace(/\{([a-zA-Z0-9_-]+)\}/g, (_placeholder, key: string) => {
+    const value = configValues[key];
+    if (value === undefined || String(value).trim().length === 0) {
+      missingValue = true;
+      return "";
+    }
+    return encodeURIComponent(String(value).trim());
+  });
+  if (missingValue) return null;
+
+  try {
+    return new URL(resolved).toString();
+  } catch {
+    return null;
+  }
+}
+
 export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
   const normalizedMethodKey = app.slug === "gmail" && methodKey === "paperclip-id-oauth" ? "paperclip-draft" : methodKey;
   const method = normalizedMethodKey
@@ -205,6 +230,6 @@ export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string
     : getAvailableConnectionMethod(app, null);
   return {
     access: "all_agents",
-    askFirstRiskLevels: method?.riskTier === "S4" ? ["write", "destructive"] : [],
+    askFirstRiskLevels: method && method.riskTier !== "S1" ? ["write", "destructive"] : [],
   };
 }

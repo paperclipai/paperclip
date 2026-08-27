@@ -8656,6 +8656,16 @@ describe("normalizeConnectionMethodConfig", () => {
   const posthog = getConnectableAppDefinition("posthog")!;
   const apiKeyMethod = posthog.methods.find((method) => method.key === "mcp-api-key")!;
 
+  it("builds a concrete Shopify endpoint from the validated store domain", () => {
+    const shopifyMethod = getConnectableAppDefinition("shopify")!.methods[0]!;
+    expect(normalizeConnectionMethodConfig(shopifyMethod, {
+      storeDomain: "paperclip-demo.myshopify.com",
+    })).toEqual({
+      values: { storeDomain: "paperclip-demo.myshopify.com" },
+      url: "https://paperclip-demo.myshopify.com/api/mcp",
+    });
+  });
+
   it("uses the broad PostHog catalog when optional advanced filters are untouched", () => {
     expect(normalizeConnectionMethodConfig(apiKeyMethod, {
       projectId: "12345",
