@@ -41,7 +41,20 @@ import type { AgentAdapterType } from "@paperclipai/shared";
 // unified `adapter_auth_sessions` table also holds the Codex device-login rows,
 // so every store scan filters by this adapter to reach only the setup-token
 // rows.
-const SETUP_TOKEN_ADAPTER_TYPE: AgentAdapterType = "claude_local";
+//
+// Three consumers share this one constant, and they must change together:
+//   1. The start-route guard in `agents.ts`, which rejects a request for any
+//      other adapter type before it creates a lease, a durable row, or a
+//      pseudo-terminal.
+//   2. The five follow-up routes in `agents.ts`, which build their session
+//      lookup key from this constant through `companySetupTokenKey`.
+//   3. The restart reaper scan below, which filters on this constant to reach
+//      only the setup-token rows and to leave every Codex device-login row
+//      alone.
+// A future change that serves a second adapter through this flow must widen
+// all three consumers, not just one, or a served adapter will create a row
+// that a follow-up route or the reaper cannot find.
+export const SETUP_TOKEN_ADAPTER_TYPE: AgentAdapterType = "claude_local";
 
 /**
  * The session states. The four terminal states end the login. The `stored`

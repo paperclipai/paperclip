@@ -48,10 +48,7 @@ import {
   classifyThrownErrorClass,
   logSandboxProbeDiagnostic,
 } from "./probe-diagnostics.js";
-import {
-  classifyWorkspaceRestoreFailure,
-  describeWorkspaceRestoreFailure,
-} from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
@@ -219,24 +216,13 @@ async function prepareClaudeRemoteManagedHome(
   // the host. A restore miss is logged and never fails the run.
   const registerWorkspaceSyncBack = (
     stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
-  ): AcpxRemoteManagedHomeResult["teardown"] => async () => {
-    try {
-      await onLog("stdout", "[paperclip] Restoring workspace changes from the sandbox.\n");
-      await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
-      return { ok: true };
-    } catch (err) {
-      // The run log is readable by any same-company actor, so it must never
-      // carry the caught error's own message: that message can hold a host
-      // filesystem path or a process id. Log only the fixed, allowlisted
-      // diagnostic for the classified code.
-      const code = classifyWorkspaceRestoreFailure(err);
-      await onLog(
-        "stderr",
-        `[paperclip] Claude ACP teardown workspace restore failed: ${describeWorkspaceRestoreFailure(code)}\n`,
-      );
-      return { ok: false, code };
-    }
-  };
+  ): AcpxRemoteManagedHomeResult["teardown"] =>
+    createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
+      failurePrefix: "[paperclip] Claude ACP teardown workspace restore failed",
+    });
   const envConfig = parseObject(input.config.env);
   const explicitClaudeConfigDir =
     typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0

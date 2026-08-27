@@ -38,6 +38,7 @@ import {
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
+import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -1182,6 +1183,26 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
   });
 
+  it.skipIf(process.platform === "win32")("keeps the operational skill in an ACPX Codex home after an empty replacement", async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, "skills");
+    const codexHome = path.join(root, "codex-home");
+    const operational = {
+      ...await createSkill(skillRoot, "paperclip"),
+      key: "paperclipai/paperclip/paperclip",
+    };
+
+    await runExecutor({
+      agent: "codex",
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [operational],
+      paperclipSkillSync: { desiredSkills: [] },
+    });
+
+    expect(await pathExists(path.join(codexHome, "skills", operational.runtimeName, "SKILL.md"))).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
@@ -1569,6 +1590,37 @@ describe("shared ACPX engine runtime behavior", () => {
       const signature = await referencedSourceContentSignature(localPath, { kind: "failed", reason: "git status timed out" });
 
       expect(signature).toBe("unreadable:git status timed out");
+    });
+
+    it("never leaks a raw absolute path into the signature, even when the underlying scan embedded one", async () => {
+      const root = await makeTempRoot();
+      const localPath = path.join(root, "does-not-exist");
+
+      // A raw toplevel string that makes `localPath` a non-descendant, carrying
+      // a sensitive absolute path — exactly the shape a caught Git diagnostic
+      // could embed. `resolveReferencedSourceIgnore` is the single choke point
+      // that must reduce it to the fixed category before the signature (which
+      // embeds `reason` verbatim as `unreadable:${reason}`) ever sees it.
+      const sensitivePath = "/home/alice/project";
+      let ignoreResolution;
+      try {
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.toplevel") {
+            return { stdout: `${sensitivePath}\n`, stderr: "" };
+          }
+          return { stdout: "", stderr: "" };
+        });
+        ignoreResolution = await resolveReferencedSourceIgnore(localPath);
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
+      expect(ignoreResolution.kind).toBe("failed");
+
+      const signature = await referencedSourceContentSignature(localPath, ignoreResolution);
+
+      expect(signature).toBe("unreadable:git-toplevel-not-descendant");
+      expect(signature).not.toContain(sensitivePath);
+      expect(signature).not.toContain(localPath);
     });
 
     it("skips a Git-ignored file (exact match) so its content never affects the signature", async () => {
