@@ -37,6 +37,9 @@ describe("finalizeServerShutdown", () => {
     const shutdownInstrumentation = vi.fn(async () => {
       order.push("instrumentation:flush");
     });
+    const shutdownSentry = vi.fn(async () => {
+      order.push("sentry:flush");
+    });
 
     let exited = false;
     const finalize = finalizeServerShutdown({
@@ -44,6 +47,7 @@ describe("finalizeServerShutdown", () => {
       shutdownAppServices,
       stopEmbeddedPostgres,
       shutdownInstrumentation,
+      shutdownSentry,
       log: stubLogger(),
     }).then(() => {
       // This models the caller's `process.exit(0)` continuation.
@@ -67,6 +71,7 @@ describe("finalizeServerShutdown", () => {
       "appServices:settled",
       "postgres:stop",
       "instrumentation:flush",
+      "sentry:flush",
       "exit",
     ]);
   });
@@ -87,6 +92,7 @@ describe("finalizeServerShutdown", () => {
     const shutdownInstrumentation = vi.fn(async () => {
       order.push("instrumentation:flush");
     });
+    const shutdownSentry = vi.fn(async () => undefined);
     const log = stubLogger();
 
     let exited = false;
@@ -95,6 +101,7 @@ describe("finalizeServerShutdown", () => {
       shutdownAppServices,
       stopEmbeddedPostgres,
       shutdownInstrumentation,
+      shutdownSentry,
       log,
     }).then(() => {
       exited = true;
@@ -120,6 +127,7 @@ describe("finalizeServerShutdown", () => {
   it("skips the database stop when no embedded PostgreSQL runs in this process", async () => {
     const shutdownAppServices = vi.fn(async () => undefined);
     const shutdownInstrumentation = vi.fn(async () => undefined);
+    const shutdownSentry = vi.fn(async () => undefined);
     const log = stubLogger();
 
     await finalizeServerShutdown({
@@ -127,6 +135,7 @@ describe("finalizeServerShutdown", () => {
       shutdownAppServices,
       stopEmbeddedPostgres: null,
       shutdownInstrumentation,
+      shutdownSentry,
       log,
     });
 

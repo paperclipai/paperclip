@@ -6,20 +6,101 @@
 // The manager allowlists `command` to the fixed `CLAUDE_SETUP_TOKEN_COMMAND`. The
 // test encodes a JSON directive in the forwarded `providerLeaseId`, so one fixture
 // serves every route-gate case:
-//   - `mode`: "normal" | "malformed-open" | "no-open-reply" | "duplicate-open-reply"
+//   - `mode`: "normal" | "malformed-open" | "no-open-reply" | "duplicate-open-reply" |
+//     "exit-before-open-reply"
 //   - `workerSessionId`: the worker session id the open reply returns (default "ws-1")
 //   - `outputs`: an array of `{ chunk, sid? }`. The fixture emits each as an output
 //     notification after the open reply. `sid` defaults to the real worker session
 //     id; a test sets a wrong `sid` to prove the host drops a mismatched
 //     notification.
 //   - `exitCode`: when set, the fixture emits an exit notification after the outputs.
+//   - `extraExits`: an array of `{ exitCode, sid? }`. The fixture emits each as a
+//     further exit notification, after the main `exitCode` exit. `sid` defaults
+//     to the real worker session id; a test sets a wrong `sid` to script a worker
+//     that sends a valid exit, then a mismatched exit, before the bind.
+//   - `outputsAfterExit`: an array of `{ chunk, sid? }`, same shape as `outputs`.
+//     The fixture emits these after the exit notification, so a test proves the
+//     host drops output that arrives behind a queued exit.
+//   - `sequence`: an array of `{ type: "output", chunk, sid? }` or
+//     `{ type: "exit", exitCode, sid? }` entries. When set, the fixture emits
+//     exactly this sequence, in order, instead of the fixed
+//     outputs/exitCode/extraExits/outputsAfterExit composition. A test uses
+//     this to script an arrival order the fixed composition cannot express,
+//     for example a mismatched exit that arrives before a valid one.
 //   - `closeMode`: "ack" | "bad-ack" | "no-ack" (default "ack"). It controls the
 //     close reply, so a test proves the host retires the worker on an unconfirmed
 //     close.
+//   - `batchWithOpenReply`: when true, the fixture writes the open reply and the
+//     scripted outputs and exit in one stdout write. The host then reads the open
+//     reply and the notifications in one batch, so a test proves the host queues
+//     and replays a record that arrives before the route binds.
+//   - `mode: "exit-before-open-reply"`: the fixture emits the scripted outputs,
+//     then exits with no open reply, so a test proves the host clears the
+//     pre-bind queue on a worker exit during the open window.
 const readline = require("node:readline");
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+// Serialize one array of `{ chunk, sid? }` entries as newline-delimited output
+// notification lines. A test sets a wrong `sid` on one entry to force a
+// mismatch.
+function outputLines(entries, workerSessionId) {
+  let lines = "";
+  for (const entry of entries) {
+    lines += `${JSON.stringify({
+      jsonrpc: "2.0",
+      method: "loginPty.output",
+      params: {
+        workerSessionId: entry.sid ?? workerSessionId,
+        chunk: entry.chunk,
+      },
+    })}\n`;
+  }
+  return lines;
+}
+
+// Serialize one exit notification line for the given worker session id.
+function exitLine(workerSessionId, exitCode) {
+  return `${JSON.stringify({
+    jsonrpc: "2.0",
+    method: "loginPty.exit",
+    params: { workerSessionId, exitCode },
+  })}\n`;
+}
+
+// Serialize the scripted output and exit notifications as newline-delimited
+// lines. The `sequence` directive, when set, emits exactly that order. The
+// fixed composition otherwise emits, in order: the pre-exit outputs, then
+// the main exit, then every extra exit, then the post-exit outputs. The
+// batch mode writes these together with the open reply in one stdout write.
+function scriptedOutputLines(directive, workerSessionId) {
+  if (Array.isArray(directive.sequence)) {
+    let lines = "";
+    for (const entry of directive.sequence) {
+      if (entry.type === "output") {
+        lines += outputLines([{ chunk: entry.chunk, sid: entry.sid }], workerSessionId);
+      } else if (entry.type === "exit") {
+        lines += exitLine(entry.sid ?? workerSessionId, entry.exitCode);
+      }
+    }
+    return lines;
+  }
+  const outputs = Array.isArray(directive.outputs) ? directive.outputs : [];
+  const outputsAfterExit = Array.isArray(directive.outputsAfterExit)
+    ? directive.outputsAfterExit
+    : [];
+  const extraExits = Array.isArray(directive.extraExits) ? directive.extraExits : [];
+  let lines = outputLines(outputs, workerSessionId);
+  if (typeof directive.exitCode === "number") {
+    lines += exitLine(workerSessionId, directive.exitCode);
+  }
+  for (const exit of extraExits) {
+    lines += exitLine(exit.sid ?? workerSessionId, exit.exitCode);
+  }
+  lines += outputLines(outputsAfterExit, workerSessionId);
+  return lines;
 }
 
 // The registered terminals, keyed by the host route id. Each entry records the
@@ -71,41 +152,48 @@ rl.on("line", (line) => {
       // Never reply, so the host open call times out.
       return;
     }
-    if (mode === "malformed-open") {
-      // Reply with no worker session id, so the host terminalizes the route.
-      send({ jsonrpc: "2.0", id: message.id, result: {} });
+    if (mode === "exit-before-open-reply") {
+      // Emit the scripted pre-bind outputs, then exit with no open reply. The
+      // route never binds, so a test proves the worker-exit path clears the
+      // pre-bind queue.
+      process.stdout.write(scriptedOutputLines(directive, workerSessionId));
+      process.exit(1);
       return;
     }
 
-    const reply = () =>
-      send({ jsonrpc: "2.0", id: message.id, result: { workerSessionId } });
-    reply();
+    // A malformed reply carries no worker session id, so the host cannot bind
+    // and terminalizes the route.
+    const isMalformedOpen = mode === "malformed-open";
+    const openReplyLine = `${JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: isMalformedOpen ? {} : { workerSessionId },
+    })}\n`;
+
+    if (directive.batchWithOpenReply === true) {
+      // Write the open reply and the scripted outputs and exit in one stdout
+      // write. The host reads them in one batch, so an output or an exit
+      // notification arrives before the route binds — even a malformed reply
+      // that never binds. The host must queue and, on a bind, replay it; on a
+      // malformed reply, it must clear the queue instead.
+      process.stdout.write(openReplyLine + scriptedOutputLines(directive, workerSessionId));
+      return;
+    }
+
+    process.stdout.write(openReplyLine);
     if (mode === "duplicate-open-reply") {
       // Send a second open reply for the same request id. The host drops it.
-      reply();
+      process.stdout.write(openReplyLine);
+    }
+    if (isMalformedOpen) {
+      // No scripted output follows a non-batched malformed reply.
+      return;
     }
 
     // Emit the scripted output and the exit after the open reply, so the host
     // binds the route first.
     setImmediate(() => {
-      const outputs = Array.isArray(directive.outputs) ? directive.outputs : [];
-      for (const entry of outputs) {
-        send({
-          jsonrpc: "2.0",
-          method: "loginPty.output",
-          params: {
-            workerSessionId: entry.sid ?? workerSessionId,
-            chunk: entry.chunk,
-          },
-        });
-      }
-      if (typeof directive.exitCode === "number") {
-        send({
-          jsonrpc: "2.0",
-          method: "loginPty.exit",
-          params: { workerSessionId, exitCode: directive.exitCode },
-        });
-      }
+      process.stdout.write(scriptedOutputLines(directive, workerSessionId));
     });
     return;
   }

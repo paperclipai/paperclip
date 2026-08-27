@@ -1100,6 +1100,50 @@ export const LOGIN_PTY_OUTPUT_NOTIFICATION = "loginPty.output";
 export const LOGIN_PTY_EXIT_NOTIFICATION = "loginPty.exit";
 
 // ---------------------------------------------------------------------------
+// Byte-safe duplex channel wire representation.
+// ---------------------------------------------------------------------------
+// A JSON-RPC message travels as one line of JSON text (see `serializeMessage`
+// below). JSON has no binary type, so a raw byte chunk cannot cross this hop
+// unchanged. `ChannelBytesWireValue` is the one JSON-safe encoding this
+// protocol uses for a duplex channel chunk: a base64 string.
+//
+// Every layer above this hop carries the chunk as `Uint8Array`. This includes
+// the plugin context, the worker RPC host's public duplex methods, and the
+// host-side plugin worker manager. Only the JSON-RPC message itself holds the
+// base64 form, and only for the one hop between the host process and the
+// worker process.
+//
+// This base64 form is not the sandbox provider channel's wire format. That
+// channel carries raw bytes with no base64 armor: a live measurement of the
+// provider transport proved that every byte value survives it unchanged.
+//
+// HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
+
+/** The wire-safe JSON-RPC form of one duplex channel byte chunk: a base64 string. */
+export type ChannelBytesWireValue = string;
+
+/** Encodes raw channel bytes into the wire-safe JSON-RPC representation. */
+export function encodeChannelBytes(bytes: Uint8Array): ChannelBytesWireValue {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+}
+
+/**
+ * Decodes the wire-safe JSON-RPC representation back to raw channel bytes.
+ * Returns `null` for a value that is not a well-formed base64 string, so a
+ * caller on the trust boundary treats a malformed frame as a protocol error
+ * instead of silently substituting the empty byte array.
+ */
+export function decodeChannelBytes(value: unknown): Uint8Array | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  // `Buffer.from(str, "base64")` silently drops an invalid character instead
+  // of throwing, so re-encode the decoded bytes and compare. A well-formed
+  // base64 string round-trips to itself; a malformed one does not.
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.toString("base64") !== value) return null;
+  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
+}
+
+// ---------------------------------------------------------------------------
 // Generic duplex channel worker methods.
 // ---------------------------------------------------------------------------
 // The host drives one persistent duplex channel inside a sandbox provider
@@ -1150,8 +1194,8 @@ export interface PluginDuplexChannelWriteParams {
   hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
-  /** The raw input bytes to write to the channel. */
-  data: string;
+  /** The raw input bytes to write to the channel, in the {@link ChannelBytesWireValue} wire form. */
+  data: ChannelBytesWireValue;
 }
 
 /** The stop request. It carries the exact route pair. */
@@ -1196,8 +1240,8 @@ export interface PluginDuplexChannelDataParams {
   hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
-  /** The raw channel output bytes. */
-  chunk: string;
+  /** The raw channel output bytes, in the {@link ChannelBytesWireValue} wire form. */
+  chunk: ChannelBytesWireValue;
 }
 
 /** The worker→host duplex channel exit notification parameters. */

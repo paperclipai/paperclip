@@ -232,6 +232,7 @@ import {
   claudeSetupTokenSessionOwnerResponseSchema,
   claudeSetupTokenCompletionResponseSchema,
   claudeOAuthTokenStatusResponseSchema,
+  startAdapterAuthSessionRequestSchema,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -642,11 +643,12 @@ const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().guid()).max(50).optional(),
 }).strict();
 
-// The start route reads the body directly, so document the accepted fields
-// here. A sandbox environment is required. The time-to-live is optional.
-const startAdapterLoginSessionSchema = z.object({
-  environmentId: z.string().min(1),
-  ttlSeconds: z.number().optional(),
+// The route enforces the shared strict request schema. The route spine
+// injects the adapter type from the path, so the client body never carries
+// it; derive the documented body from the shared schema and omit that field,
+// so the documented body cannot drift from the route again.
+const startAdapterLoginSessionSchema = startAdapterAuthSessionRequestSchema.omit({
+  adapterType: true,
 });
 
 const environmentCustomImageCompanyQuerySchema = z.object({

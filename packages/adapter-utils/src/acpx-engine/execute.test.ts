@@ -31,13 +31,14 @@ import {
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
+  referencedSourceContentSignature,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
-import { createDuplexBridgeBroker } from "../duplex-bridge-broker.js";
-import type { CommandManagedDuplexChannel } from "../command-managed-runtime.js";
+import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
+import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -1182,6 +1183,26 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
   });
 
+  it.skipIf(process.platform === "win32")("keeps the operational skill in an ACPX Codex home after an empty replacement", async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, "skills");
+    const codexHome = path.join(root, "codex-home");
+    const operational = {
+      ...await createSkill(skillRoot, "paperclip"),
+      key: "paperclipai/paperclip/paperclip",
+    };
+
+    await runExecutor({
+      agent: "codex",
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [operational],
+      paperclipSkillSync: { desiredSkills: [] },
+    });
+
+    expect(await pathExists(path.join(codexHome, "skills", operational.runtimeName, "SKILL.md"))).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
@@ -1419,6 +1440,50 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(repointed)).not.toBe(fp(two));
   });
 
+  it("routes every referenced project's Git-ignore scan through the registered scheduler, not an unbounded direct spawn", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    // The paths need not exist: the scheduler hook intercepts the scan before
+    // any real `git` process (or even a directory-existence check) runs.
+    const projectPaths = ["/host/project-a", "/host/project-b", "/host/project-c"];
+
+    const scannedPaths: string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      scannedPaths.push(input.localDir);
+      const error = new Error("fatal: not a git repository (or any of the parent directories): .git");
+      throw Object.assign(error, { stdout: "", stderr: error.message });
+    });
+
+    try {
+      await runExecutor(baseConfig, {
+        context: {
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWorkspace: {
+            cwd,
+            realization: {
+              additional: projectPaths.map((localPath, index) => ({
+                path: localPath,
+                projectId: String.fromCharCode(97 + index),
+              })),
+            },
+          },
+        },
+      });
+    } finally {
+      setExpensiveWorkspaceGitExecutor(null);
+    }
+
+    // Every referenced project's scan reached the registered scheduler hook.
+    // The `Promise.all` fan-out over projects can no longer bypass it by
+    // spawning `git` directly, so a host process that bounds concurrent scans
+    // there bounds referenced-project scans too, however many projects a run
+    // configures.
+    expect(scannedPaths.sort()).toEqual([...projectPaths].sort());
+  });
+
   it("busts the session fingerprint when referenced-project files change at the same host path", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -1513,6 +1578,84 @@ describe("shared ACPX engine runtime behavior", () => {
     // The content signature reads bytes, so an equal-size, equal-mtime edit busts
     // the fingerprint and the resume re-stages instead of reusing a stale tree.
     expect(fp(after)).not.toBe(fp(before));
+  });
+
+  describe("referencedSourceContentSignature", () => {
+    it("returns a stable marker without walking the tree when the ignore resolution failed", async () => {
+      const root = await makeTempRoot();
+      // A directory that does not exist: a walk would throw ENOENT. The
+      // `failed` resolution must short-circuit before any `fs.readdir` call.
+      const localPath = path.join(root, "does-not-exist");
+
+      const signature = await referencedSourceContentSignature(localPath, { kind: "failed", reason: "git status timed out" });
+
+      expect(signature).toBe("unreadable:git status timed out");
+    });
+
+    it("never leaks a raw absolute path into the signature, even when the underlying scan embedded one", async () => {
+      const root = await makeTempRoot();
+      const localPath = path.join(root, "does-not-exist");
+
+      // A raw toplevel string that makes `localPath` a non-descendant, carrying
+      // a sensitive absolute path — exactly the shape a caught Git diagnostic
+      // could embed. `resolveReferencedSourceIgnore` is the single choke point
+      // that must reduce it to the fixed category before the signature (which
+      // embeds `reason` verbatim as `unreadable:${reason}`) ever sees it.
+      const sensitivePath = "/home/alice/project";
+      let ignoreResolution;
+      try {
+        setExpensiveWorkspaceGitExecutor(async (input) => {
+          if (input.operation === "referenced_source.toplevel") {
+            return { stdout: `${sensitivePath}\n`, stderr: "" };
+          }
+          return { stdout: "", stderr: "" };
+        });
+        ignoreResolution = await resolveReferencedSourceIgnore(localPath);
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
+      expect(ignoreResolution.kind).toBe("failed");
+
+      const signature = await referencedSourceContentSignature(localPath, ignoreResolution);
+
+      expect(signature).toBe("unreadable:git-toplevel-not-descendant");
+      expect(signature).not.toContain(sensitivePath);
+      expect(signature).not.toContain(localPath);
+    });
+
+    it("skips a Git-ignored file (exact match) so its content never affects the signature", async () => {
+      const root = await makeTempRoot();
+      const localPath = path.join(root, "project");
+      await fs.mkdir(localPath, { recursive: true });
+      await fs.writeFile(path.join(localPath, "kept.txt"), "kept\n", "utf8");
+      await fs.writeFile(path.join(localPath, "secret.env"), "TOKEN=1\n", "utf8");
+
+      const resolution = { kind: "git" as const, ignoredPaths: ["secret.env"] };
+      const before = await referencedSourceContentSignature(localPath, resolution);
+      await fs.writeFile(path.join(localPath, "secret.env"), "TOKEN=2\n", "utf8");
+      const afterIgnoredEdit = await referencedSourceContentSignature(localPath, resolution);
+      await fs.writeFile(path.join(localPath, "kept.txt"), "kept, changed\n", "utf8");
+      const afterKeptEdit = await referencedSourceContentSignature(localPath, resolution);
+
+      // Editing the ignored file never busts the signature; editing the kept file does.
+      expect(afterIgnoredEdit).toBe(before);
+      expect(afterKeptEdit).not.toBe(before);
+    });
+
+    it("skips every file under a Git-ignored directory (prefix match)", async () => {
+      const root = await makeTempRoot();
+      const localPath = path.join(root, "project");
+      await fs.mkdir(path.join(localPath, "build", "nested"), { recursive: true });
+      await fs.writeFile(path.join(localPath, "kept.txt"), "kept\n", "utf8");
+      await fs.writeFile(path.join(localPath, "build", "nested", "artifact.js"), "v1\n", "utf8");
+
+      const resolution = { kind: "git" as const, ignoredPaths: ["build"] };
+      const before = await referencedSourceContentSignature(localPath, resolution);
+      await fs.writeFile(path.join(localPath, "build", "nested", "artifact.js"), "v2\n", "utf8");
+      const after = await referencedSourceContentSignature(localPath, resolution);
+
+      expect(after).toBe(before);
+    });
   });
 
   it("shapes ACPX session env for remote execution identities", async () => {
@@ -2928,6 +3071,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
             stagedRuntime,
             teardown: async () => {
               teardownCalls += 1;
+              return { ok: true };
             },
           };
         },
@@ -3271,6 +3415,7 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
           stagedRuntime,
           teardown: async () => {
             teardownCalls += 1;
+            return { ok: true };
           },
           disposeStaged: async () => {
             disposeCalls += 1;
@@ -3315,6 +3460,7 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
         stagedRuntime: await input.stage([]),
         teardown: async () => {
           teardownCalls += 1;
+          return { ok: true };
         },
         disposeStaged: async () => {
           disposeCalls += 1;
@@ -4584,6 +4730,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
               teardownExecFired = true;
               issueSandboxExecFromStore(traceContext);
             }
+            return { ok: true };
           },
         };
       },
@@ -5734,56 +5881,55 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
   });
 });
 
-describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => {
+describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  // A minimal in-memory duplex channel. The test drives a channel exit to latch a
-  // real loss in a real broker, so the seam reads a real run disposition.
-  function createFakeDuplexChannel() {
-    let exitListener: ((exit: { exitCode: number | null }) => void) | null = null;
-    const channel: CommandManagedDuplexChannel = {
-      write(): void {},
-      onData(): void {},
-      onExit(listener: (exit: { exitCode: number | null }) => void): void {
-        exitListener = listener;
-      },
-      stop(): void {},
-      close(): Promise<void> {
-        return Promise.resolve();
-      },
-    };
-    return {
-      channel,
-      emitExit: (exit: { exitCode: number | null }) => exitListener?.(exit),
-    };
-  }
-
-  // Wrap a started real broker in a paperclip bridge handle. The handle exposes
-  // the same run-disposition surface the sandbox bridge exposes, so the seam runs
-  // against the real latch and the real orderly-completion mark.
-  async function bridgeOverBroker(fake: ReturnType<typeof createFakeDuplexChannel>) {
-    const broker = await createDuplexBridgeBroker({
-      channel: fake.channel,
-      forwardRequest: async () => ({ status: 200 }),
+  /**
+   * A minimal run-disposition latch. It reproduces the same ordering rule the
+   * bridge transport applies: the first ordered loss or orderly completion
+   * latches the terminal disposition, and a later call never overrides it.
+   * The test drives the latch directly, with no channel and no live process.
+   */
+  function createFakeBridgeHandle() {
+    let lossOrdered = false;
+    let lossReason: string | null = null;
+    let completionOrdered = false;
+    const readDisposition = () => ({ failed: lossOrdered, lossReason });
+    const markOrderlyCompletion = vi.fn(() => {
+      if (completionOrdered || lossOrdered) return;
+      completionOrdered = true;
     });
-    broker.start();
-    const markOrderlyCompletion = vi.fn(() => broker.markOrderlyCompletion());
-    const settleRunDisposition = vi.fn(() => broker.settleRunDisposition());
+    const settleRunDisposition = vi.fn(() => {
+      markOrderlyCompletion();
+      return readDisposition();
+    });
     const stop = vi.fn(async () => {});
     const handle = {
       env: {
         PAPERCLIP_API_URL: "http://127.0.0.1:1",
         PAPERCLIP_API_KEY: "bridge-token",
-        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
+        PAPERCLIP_API_BRIDGE_MODE: "http2_v1",
       },
-      readRunDisposition: () => broker.runDisposition,
+      readRunDisposition: () => readDisposition(),
       settleRunDisposition,
       markOrderlyCompletion,
       stop,
     };
-    return { broker, handle, markOrderlyCompletion, settleRunDisposition };
+    return {
+      handle,
+      markOrderlyCompletion,
+      settleRunDisposition,
+      readDisposition,
+      // Record the first ordered loss. A loss ordered after a completion, or a
+      // second loss, is a no-op — the same rule the real transport applies.
+      emitLoss: (reason: string) => {
+        if (lossOrdered || completionOrdered) return;
+        lossOrdered = true;
+        lossReason = reason;
+      },
+    };
   }
 
   // A runtime whose one turn completes cleanly. The `beforeResult` hook runs at
@@ -5888,14 +6034,13 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
     } as never);
   }
 
-  it("fails a completed run when the duplex channel was lost before the completion", async () => {
+  it("fails a completed run when the bridge channel was lost before the completion", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle, settleRunDisposition } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // Latch the loss before the ACP terminal resolves.
-    const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
+    const runtime = runtimeWithControlledResult(() => fake.emitLoss("provider_exit"));
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
     // The lost channel overrides the nominally completed terminal to a failure.
     expect(result.exitCode).not.toBe(0);
@@ -5905,65 +6050,62 @@ describe("ACPX engine sandbox duplex run-disposition seam (fail-closed)", () => 
     expect(result.resultJson).toMatchObject({ status: "failed" });
     // The seam read the disposition through the atomic settle step, and the
     // latched loss kept the failure, so no orderly completion ordered.
-    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
-    expect(broker.runDisposition.failed).toBe(true);
+    expect(fake.settleRunDisposition).toHaveBeenCalledTimes(1);
+    expect(fake.readDisposition().failed).toBe(true);
   });
 
   it("keeps a completed run a success when the channel stays live, and a later teardown loss is benign", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle, settleRunDisposition } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // No loss before the completion.
     const runtime = runtimeWithControlledResult();
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
     expect(result.exitCode).toBe(0);
     expect(result.errorCode ?? null).toBeNull();
     // The atomic settle step marked the orderly completion for the
     // success-eligible terminal.
-    expect(settleRunDisposition).toHaveBeenCalledTimes(1);
+    expect(fake.settleRunDisposition).toHaveBeenCalledTimes(1);
     // A teardown loss ordered after the orderly completion is a normal teardown,
     // so the run disposition stays a success.
-    fake.emitExit({ exitCode: 0 });
-    expect(broker.runDisposition.failed).toBe(false);
+    fake.emitLoss("provider_exit");
+    expect(fake.readDisposition().failed).toBe(false);
   });
 
   it("does not let a later completion or activity clear the loss latch", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // Latch the loss before the ACP terminal resolves.
-    const runtime = runtimeWithControlledResult(() => fake.emitExit({ exitCode: 1 }));
+    const runtime = runtimeWithControlledResult(() => fake.emitLoss("provider_exit"));
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
     expect(result.exitCode).not.toBe(0);
     expect(result.errorCode).toBe("duplex_channel_lost");
     // A later orderly-completion mark and further channel activity cannot clear
     // the latched loss.
-    broker.markOrderlyCompletion();
-    fake.emitExit({ exitCode: 0 });
-    expect(broker.runDisposition.failed).toBe(true);
-    expect(broker.runDisposition.lossReason).toBe("provider_exit");
+    fake.markOrderlyCompletion();
+    fake.emitLoss("provider_exit");
+    expect(fake.readDisposition().failed).toBe(true);
+    expect(fake.readDisposition().lossReason).toBe("provider_exit");
   });
 
   it("marks an orderly completion on a failed terminal so the teardown loss emits no false loss", async () => {
     const sandbox = await setupRemoteSandbox();
-    const fake = createFakeDuplexChannel();
-    const { broker, handle, markOrderlyCompletion } = await bridgeOverBroker(fake);
+    const fake = createFakeBridgeHandle();
     // The turn fails, and no channel loss ordered before the finalization.
     const runtime = runtimeWithFailedResult();
 
-    const result = await runRemote(handle, runtime, sandbox);
+    const result = await runRemote(fake.handle, runtime, sandbox);
 
-    // The failed terminal stays a failure, but not a duplex loss.
+    // The failed terminal stays a failure, but not a bridge-channel loss.
     expect(result.exitCode).not.toBe(0);
     expect(result.errorCode).not.toBe("duplex_channel_lost");
     // The non-success-eligible terminal marked the orderly completion, so the
-    // teardown channel_exit orders after the mark and does not latch a loss.
-    expect(markOrderlyCompletion).toHaveBeenCalledTimes(1);
-    fake.emitExit({ exitCode: 0 });
-    expect(broker.runDisposition.failed).toBe(false);
+    // teardown loss orders after the mark and does not latch a loss.
+    expect(fake.markOrderlyCompletion).toHaveBeenCalledTimes(1);
+    fake.emitLoss("provider_exit");
+    expect(fake.readDisposition().failed).toBe(false);
   });
 });

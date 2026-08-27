@@ -15,13 +15,14 @@ import type {
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
-  adapterExecutionTargetDuplexTelemetryRecorder,
+  adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
+  resolveReferencedSourceIgnore,
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
@@ -31,10 +32,16 @@ import {
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
+  type ReferencedSourceIgnoreResolution,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
-import type { DuplexLossReason } from "../duplex-telemetry.js";
-import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../duplex-bridge-broker.js";
+import type { DuplexLossReason } from "../duplex-observability.js";
+import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
+import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import {
+  classifyWorkspaceRestoreFailure,
+  describeWorkspaceRestoreFailure,
+} from "../workspace-restore-merge.js";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
@@ -50,13 +57,14 @@ import {
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
+  isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
   selectPaperclipTaskMarkdown,
-  resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
@@ -215,7 +223,7 @@ export interface StagedRuntimeCacheEntry {
    * in-sandbox credential, not a stale snapshot. It never removes the staged
    * in-sandbox home, so re-running it on each reuse can't invalidate this entry.
    */
-  teardown: (() => Promise<void>) | null;
+  teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   /**
    * The seam's one-time host-side staged-resource cleanup (e.g. remove the
    * staged home temp dir), or null. Fired ONLY when this entry is dropped —
@@ -312,7 +320,7 @@ export interface AcpxRemoteManagedHomeResult {
    * cached staged runtime across resumes never destroys resources a later run
    * still needs.
    */
-  teardown?: () => Promise<void>;
+  teardown?: () => Promise<WorkspaceRestoreOutcome>;
   /**
    * One-time cleanup of host-side staged resources (e.g. the curated staged
    * home temp dir). Split out from {@link teardown} so it fires ONLY when the
@@ -417,7 +425,7 @@ interface AcpxPreparedRuntime {
   // exit path by the settlement `syncBack` step; it never removes staged temp, so
   // it is safe on every compatible resume. Null for local runs, the runner-less
   // fallback, and adapters with no seam.
-  remoteManagedHomeTeardown: (() => Promise<void>) | null;
+  remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   // One-time host-side staged-resource cleanup from the seam (remove staged temp
   // dirs). Fired ONLY when the staged runtime is dropped (failed/cancelled/timed
   // -out turn, incompatible re-stage, idle eviction), not on a clean turn that
@@ -518,9 +526,14 @@ export function finalizeLaunchEnvironment(
 }
 
 // Directory names the staging path never ships for a referenced project (heavy
-// build/cache output and git history). The content signature skips them so it
-// reflects only the staged tree and never reads their bytes. Keep this set equal
-// to the staging excludes in the sandbox and remote runtimes.
+// build/cache output and git history), applied regardless of the project's
+// ignore resolution. The content signature skips them so it reflects only the
+// staged tree and never reads their bytes. Keep this set equal to the fixed
+// excludes the sandbox and SSH runtimes always apply. A project's OWN resolved
+// Git-ignored paths (see `resolveReferencedSourceIgnore`) are matched
+// separately, by relative path, inside `referencedSourceContentSignature` — that
+// is the real invariant now: the signature and both staging lanes must consume
+// the SAME one resolution per project, not just this fixed name list.
 const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
   "node_modules",
   "vendor",
@@ -550,12 +563,30 @@ const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
  * re-checkout that restores the same size and timestamp. The byte hash busts on any
  * content change, so the fingerprint busts and the next launch stages the current
  * tree. The walk skips the heavy build, cache, and git directories the staging path
- * never ships, and records a symlink by its target text without following it. On a
- * read error the function returns a stable marker, so the fingerprint does not churn
- * while staging surfaces the real error. The walk runs only when the run carries
- * referenced projects (the multi-project sync path).
+ * never ships, plus the project's own resolved Git-ignored paths, and records a
+ * symlink by its target text without following it. On a read error the function
+ * returns a stable marker, so the fingerprint does not churn while staging
+ * surfaces the real error. The walk runs only when the run carries referenced
+ * projects (the multi-project sync path).
+ *
+ * `ignoreResolution` is the ONE resolution `resolveReferencedSourceIgnore`
+ * computed for this project — the same one the sandbox lane and the SSH lane
+ * consume. A `failed` resolution skips the walk entirely and returns a stable
+ * marker instead, because a failed project is not staged and its bytes are not
+ * read anywhere.
  */
-async function referencedSourceContentSignature(localPath: string): Promise<string> {
+export async function referencedSourceContentSignature(
+  localPath: string,
+  ignoreResolution: ReferencedSourceIgnoreResolution,
+): Promise<string> {
+  if (ignoreResolution.kind === "failed") {
+    return `unreadable:${ignoreResolution.reason}`;
+  }
+  const isIgnoredByGitResolution = (relativePath: string): boolean =>
+    ignoreResolution.kind === "git" &&
+    ignoreResolution.ignoredPaths.some(
+      (entry) => relativePath === entry || relativePath.startsWith(`${entry}/`),
+    );
   const hash = createHash("sha256");
   const walk = async (relative: string): Promise<void> => {
     const current = relative ? path.join(localPath, relative) : localPath;
@@ -563,6 +594,9 @@ async function referencedSourceContentSignature(localPath: string): Promise<stri
     dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
     for (const dirent of dirents) {
       const next = relative ? path.posix.join(relative, dirent.name) : dirent.name;
+      if (isIgnoredByGitResolution(next)) {
+        continue;
+      }
       if (dirent.isDirectory()) {
         if (REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS.has(dirent.name)) {
           continue;
@@ -876,11 +910,16 @@ async function resolveSelectedRuntimeSkills(
   moduleDir: string,
 ): Promise<{ allSkills: PaperclipSkillEntry[]; selectedSkills: PaperclipSkillEntry[]; desiredSkillNames: string[] }> {
   const allSkills = await readPaperclipRuntimeSkillEntries(config, moduleDir);
-  const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, allSkills);
+  const desiredSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, allSkills);
   const desiredSet = new Set(desiredSkillNames);
   return {
     allSkills,
-    selectedSkills: allSkills.filter((entry) => desiredSet.has(entry.key)),
+    // Missing-source entries never mount: buildSkillSetKey hashes each
+    // selected entry's path contents, and a nonexistent source would abort
+    // runtime construction over one broken skill.
+    selectedSkills: allSkills.filter(
+      (entry) => desiredSet.has(entry.key) && !isPaperclipSkillSourceMissing(entry),
+    ),
     desiredSkillNames,
   };
 }
@@ -1539,32 +1578,56 @@ async function buildRuntime(input: {
   const additionalSourceRecords = (
     Array.isArray(realizationContext.additional) ? realizationContext.additional : []
   ).map((entry) => parseObject(entry));
-  const additionalSources: SandboxAdditionalSource[] = additionalSourceRecords
-    .map((entry) => ({ localPath: asString(entry.path, ""), projectId: asString(entry.projectId, "") }))
+  const additionalSourceCandidates = additionalSourceRecords
+    .map((entry) => ({
+      localPath: asString(entry.path, ""),
+      projectId: asString(entry.projectId, ""),
+      projectWorkspaceId: asString(entry.projectWorkspaceId, ""),
+      repoUrl: asString(entry.repoUrl, ""),
+      repoRef: asString(entry.repoRef, ""),
+    }))
     .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0);
+  // Resolve each referenced project's Git-ignored paths ONCE, here, before any
+  // staging site runs. The sandbox lane, the SSH lane, and the content signature
+  // below all consume this SAME resolution per project, so they can never apply
+  // a different exclusion set to the same project. See
+  // `resolveReferencedSourceIgnore` for the fail-closed rules.
+  const additionalSourcesWithIgnore = await Promise.all(
+    additionalSourceCandidates.map(async (entry) => ({
+      ...entry,
+      ignoreResolution: await resolveReferencedSourceIgnore(entry.localPath),
+    })),
+  );
+  const additionalSources: SandboxAdditionalSource[] = additionalSourcesWithIgnore.map((entry) => ({
+    localPath: entry.localPath,
+    projectId: entry.projectId,
+    ignoreResolution: entry.ignoreResolution,
+  }));
   // Stable identity of the referenced-project set for the session fingerprint.
   // The staged-runtime cache reuses already-staged referenced-project trees on a
   // compatible resume, so the fingerprint must change when the set OR a project's
   // pinned checkout changes. Without this, a resume reuses a stale staged tree.
   // Fold in each project's id, host path, workspace id, and pinned ref; sort by
   // projectId so the identity depends on the set, not the record order.
-  const additionalSourcesIdentityBase = additionalSourceRecords
+  const additionalSourcesIdentityBase = additionalSourcesWithIgnore
     .map((entry) => ({
-      projectId: asString(entry.projectId, ""),
-      localPath: asString(entry.path, ""),
-      projectWorkspaceId: asString(entry.projectWorkspaceId, ""),
-      repoUrl: asString(entry.repoUrl, ""),
-      repoRef: asString(entry.repoRef, ""),
+      projectId: entry.projectId,
+      localPath: entry.localPath,
+      projectWorkspaceId: entry.projectWorkspaceId,
+      repoUrl: entry.repoUrl,
+      repoRef: entry.repoRef,
+      ignoreResolution: entry.ignoreResolution,
     }))
-    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0)
     .sort((a, b) => (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0));
   // Metadata alone does not change on a content-only checkout change (same host
   // path and pinned ref, new file bytes). Fold in each tree's content signature so
   // a file add, remove, or edit busts the fingerprint and the resume re-stages.
+  // The signature reads the same `ignoreResolution` the staging sites above use,
+  // so it never disagrees with what was actually shipped.
   const additionalSourcesIdentity = await Promise.all(
-    additionalSourcesIdentityBase.map(async (entry) => ({
+    additionalSourcesIdentityBase.map(async ({ ignoreResolution, ...entry }) => ({
       ...entry,
-      contentSignature: await referencedSourceContentSignature(entry.localPath),
+      contentSignature: await referencedSourceContentSignature(entry.localPath, ignoreResolution),
     })),
   );
   // Referenced-project workspace hints exposed to the agent through PAPERCLIP_WORKSPACES_JSON. The
@@ -1789,7 +1852,7 @@ async function buildRuntime(input: {
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else {
-    const desired = resolvePaperclipDesiredSkillNames(
+    const desired = resolveLegacyPaperclipDesiredSkillNames(
       config,
       await readPaperclipRuntimeSkillEntries(config, input.engine.moduleDir),
     );
@@ -1955,7 +2018,7 @@ async function buildRuntime(input: {
     remoteExecutionIdentity,
   });
   let stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
-  let remoteManagedHomeTeardown: (() => Promise<void>) | null = null;
+  let remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null = null;
   let remoteStagingDispose: (() => Promise<void>) | null = null;
   let remoteStagingEnvDelta: Record<string, string> | null = null;
   let sessionStagingLeaseRelease: (() => void) | null = null;
@@ -2052,7 +2115,7 @@ async function buildRuntime(input: {
           timeoutSec,
           hostApiToken: env.PAPERCLIP_API_KEY,
           enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
-          duplexTelemetryRecorder: adapterExecutionTargetDuplexTelemetryRecorder(remoteTarget),
+          duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(remoteTarget),
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
           runtimeSpan: input.runtimeSpan,
@@ -2306,14 +2369,22 @@ async function stopRunTransport(prepared: AcpxPreparedRuntime): Promise<void> {
 // dirs. The seam logs and swallows its own failures — an unclean-teardown
 // copy-back miss is the accepted, loud `refresh_token_reused` residual on the
 // next host Codex use, never silent HOST-credential corruption — so a teardown
-// fault never masks or fails the run result here.
-async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<void> {
-  if (prepared.remoteManagedHomeTeardown) {
-    await prepared.remoteManagedHomeTeardown().catch(() => {});
+// fault never masks or fails the run result here. It still returns the restore
+// outcome, so the caller can record a failure on the run record; the run's exit
+// code and status stay exactly what the turn produced.
+// The per-session staging lease does NOT release here. The settlement releases
+// it last, in its own `finally`, so a same-session second run cannot re-stage
+// until this run fully settles and the caller observes the result.
+async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<WorkspaceRestoreOutcome> {
+  if (!prepared.remoteManagedHomeTeardown) {
+    return { ok: true };
   }
-  // The per-session staging lease does NOT release here. The settlement releases
-  // it last, in its own `finally`, so a same-session second run cannot re-stage
-  // until this run fully settles and the caller observes the result.
+  // The teardown closure already catches and logs its own error (fail-soft);
+  // this `.catch` is defense in depth for the case where it rejects anyway, so
+  // a teardown fault can never propagate out of settlement.
+  return await prepared
+    .remoteManagedHomeTeardown()
+    .catch((): WorkspaceRestoreOutcome => ({ ok: false, code: "restore_failed" }));
 }
 
 /** How the settlement `endSession` step releases the runtime a run acquired. */
@@ -3384,16 +3455,38 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let referencedProjectStagingFailuresField:
         | { referencedProjectStagingFailures: Array<{ projectId: string; error: string }> }
         | Record<string, never> = {};
+      // Set only when the settlement sync-back reports a failed workspace
+      // restore. `reproduceResult` merges this into the returned result's
+      // `resultJson`, so a clean run adds no new key. The run's exit code and
+      // status stay exactly what the turn produced — this is a signal, not an
+      // outcome change.
+      let workspaceRestoreFailureField:
+        | { workspaceRestoreFailure: WorkspaceRestoreFailureCode }
+        | Record<string, never> = {};
+      // The one settlement step name whose error can be the same workspace-
+      // restore failure the adapter teardown closure already classifies (a
+      // caught error from `syncBackManagedHome`). The closure already
+      // sanitizes its own `onLog` line; this is a second, independent layer,
+      // so a defect in that closure (or a future call site that forgets to
+      // sanitize) still cannot put a raw `Error.message` — and the host path
+      // or process id it can carry — on the run log.
+      const SYNC_BACK_SETTLEMENT_STEP = "settlement-sync_back";
       const recordTeardownError = async (step: string, teardownErr: unknown) => {
-        const reason = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        const reason =
+          step === SYNC_BACK_SETTLEMENT_STEP
+            ? describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(teardownErr))
+            : teardownErr instanceof Error
+              ? teardownErr.message
+              : String(teardownErr);
         await ctx
           .onLog("stderr", `[paperclip] ACPX teardown step "${step}" failed: ${reason}\n`)
           .catch(() => {});
       };
-      // Emit one per-phase timing telemetry event. It is observability-only: it
-      // carries the phase name (from the closed allowlist), the wall time, and the
-      // outcome, and never a command, a path, an environment value, or an
-      // identifier. Telemetry failure never fails the run.
+      // Emit one per-phase timing run-log event. It is not an OpenTelemetry
+      // export and it is not a Telemetry event: it carries the phase name
+      // (from the closed allowlist), the wall time, and the outcome, and
+      // never a command, a path, an environment value, or an identifier. A
+      // failure to emit this event never fails the run.
       const emitPhase = (phase: string, startMs: number, outcome: "ok" | "failed"): Promise<void> =>
         emitRunPhaseTiming(ctx, phase, now() - startMs, outcome);
       // Time a settlement step and emit its phase timing on every path. A step
@@ -4386,7 +4479,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // per-task restore spans parent to `sandbox.syncBack`.
         syncBack: () => timedPhase("sync_back", async () => {
           await runRuntimeSpan("sandbox.syncBack", async () => {
-            await syncBackManagedHome(prepared);
+            const restoreOutcome = await syncBackManagedHome(prepared);
+            if (!restoreOutcome.ok) {
+              workspaceRestoreFailureField = { workspaceRestoreFailure: restoreOutcome.code };
+            }
           });
         }),
         // The staging lease releases as the run's final act, AFTER the coordinator
@@ -4431,7 +4527,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           if (!capturedResult) {
             throw new Error("run coordinator reproduced a result before the run recorded one");
           }
-          return capturedResult;
+          // The sync-back settlement step runs before this reproduces the result
+          // (settlement precedes reproduction), so a failed workspace restore is
+          // already recorded by the time we get here. Merge it into `resultJson`
+          // only on a failure — a clean restore adds no new key.
+          if (!("workspaceRestoreFailure" in workspaceRestoreFailureField)) {
+            return capturedResult;
+          }
+          return {
+            ...capturedResult,
+            resultJson: {
+              ...(capturedResult.resultJson ?? {}),
+              ...workspaceRestoreFailureField,
+            },
+          };
         },
       };
       return await runAttempt(plan);

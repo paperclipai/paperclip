@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import express, { Router, type Request, type Response } from "express";
+import express, { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/shared/portability-zip";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+  SETTINGS_OPERATOR_MANAGED_ERROR_CODE,
   companyArtifactsQuerySchema,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
@@ -21,6 +22,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  hidesCompanyPage,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -61,8 +63,9 @@ import {
   workTimelineService,
 } from "../services/index.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
 
 // A company import can arrive one of two ways on the import + preview routes:
@@ -503,6 +506,40 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     res.json(buildExportFidelityReport(companyId, counts));
   });
 
+  /**
+   * Floor for the whole company-import surface: single-shot upload, preview,
+   * job polling, chunked transfers, and the per-company agent-safe import
+   * routes. Two independent signals close it, both checked up front — before
+   * auth or body work, the same way the company-creation floor does:
+   *
+   * - a cloud-managed instance (`cloud_managed`): the hosting platform
+   *   provisions the company, so materializing imported companies on a
+   *   managed instance is disabled unconditionally;
+   * - the operator hiding the Import page (`company.import` in
+   *   `PAPERCLIP_HIDDEN_SETTINGS` → `settings_operator_managed`): hiding the
+   *   page also disables its API, so the hide is real rather than cosmetic.
+   *
+   * Export routes stay open either way — they are the tenant's
+   * data-portability escape hatch.
+   */
+  const importFloor = (_req: Request, _res: Response, next: NextFunction) => {
+    if (isCloudManagedInstance()) {
+      throw forbidden("Company import is disabled on cloud-managed instances", {
+        code: "cloud_managed",
+      });
+    }
+    if (hidesCompanyPage(getHiddenSettings(), "company.import")) {
+      throw forbidden("Company import is hidden by the hosting operator", {
+        code: SETTINGS_OPERATOR_MANAGED_ERROR_CODE,
+      });
+    }
+    next();
+  };
+  // COMPANY_IMPORT_TRANSFERS_ROUTE_PATH nests under the import path, so these
+  // two prefixes cover every import route registered below.
+  router.use(COMPANY_IMPORT_ROUTE_PATH, importFloor);
+  router.use("/:companyId/imports", importFloor);
+
   router.post("/import/preview", async (req, res) => {
     assertBoard(req);
     const body = companyPortabilityPreviewSchema.parse(await resolveImportPayload(req, res));
@@ -729,12 +766,25 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       containerRef: { kind: "chunked_zip_upload" },
     });
     if (alreadyCompleted) {
+      // Tell the caller WHERE the prior apply landed. companyId on the run is
+      // written best-effort after apply and the company may have been deleted
+      // since, so this lookup is null-safe and the field stays optional. The
+      // actor key proves this caller ran the original import, but their
+      // access may have been revoked since — withhold the identity unless
+      // they can still reach the company today (hasCompanyAccess, so a
+      // revoked caller sees the same null as a deleted company).
+      const landedCompany = run.companyId && hasCompanyAccess(req, run.companyId)
+        ? await svc.getById(run.companyId)
+        : null;
       res.json({
         transferId: run.id,
         status: "completed",
         alreadyCompleted: true,
         totalParts: declared.parts.length,
         missingParts: [],
+        company: landedCompany
+          ? { id: landedCompany.id, name: landedCompany.name ?? null, issuePrefix: landedCompany.issuePrefix ?? null }
+          : null,
       } satisfies CompanyImportTransferCreated);
       return;
     }

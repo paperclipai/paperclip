@@ -140,6 +140,21 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "created_at" timestamptz NOT NULL DEFAULT now()
           );
         `);
+        await sourceSql.unsafe(`
+          CREATE FUNCTION "public"."backup_test_mark_done"()
+          RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          BEGIN
+            NEW."state" := 'done';
+            RETURN NEW;
+          END;
+          $$;
+          CREATE TRIGGER "backup_test_mark_done_trigger"
+          BEFORE UPDATE OF "title" ON "public"."backup_test_records"
+          FOR EACH ROW
+          EXECUTE FUNCTION "public"."backup_test_mark_done"();
+        `);
 
         const payload = "x".repeat(8192);
         for (let index = 0; index < 160; index += 1) {
@@ -213,6 +228,18 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             metadata: { index: 159, even: false },
           },
         ]);
+
+        await restoreSql.unsafe(`
+          UPDATE "public"."backup_test_records"
+          SET "title" = 'triggered'
+          WHERE "title" = 'row-0'
+        `);
+        const triggeredRows = await restoreSql.unsafe<{ state: string }[]>(`
+          SELECT "state"::text AS "state"
+          FROM "public"."backup_test_records"
+          WHERE "title" = 'triggered'
+        `);
+        expect(triggeredRows).toEqual([{ state: "done" }]);
       } finally {
         await sourceSql.end();
         await restoreSql.end();

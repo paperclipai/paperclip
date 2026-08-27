@@ -8,11 +8,11 @@ vi.mock("../services/environment-config.js", () => ({
   resolveEnvironmentDriverConfigForRuntime: mockResolveEnvironmentDriverConfigForRuntime,
 }));
 
-import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 
-const SNAPSHOT: EffectiveSandboxCapabilities = {
+const SNAPSHOT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: false,
@@ -27,7 +27,7 @@ const SNAPSHOT: EffectiveSandboxCapabilities = {
 
 // A snapshot that grants every capability. A test overrides one flag to prove
 // that the removed capability alone changes the runtime decision.
-const FULL_GRANT: EffectiveSandboxCapabilities = {
+const FULL_GRANT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: true,
@@ -42,7 +42,7 @@ const FULL_GRANT: EffectiveSandboxCapabilities = {
 // `supportsSync` result. The helper returns the sandbox target so a test reads
 // the runner and the streaming flag the snapshot gates.
 async function buildSandboxTarget(input: {
-  snapshot: EffectiveSandboxCapabilities | null;
+  snapshot: EffectiveExecutionCapabilities | null;
   supportsSync: boolean;
   config?: Record<string, unknown>;
   // Reject the capability resolution to exercise the fail-closed error path.
@@ -66,7 +66,7 @@ async function buildSandboxTarget(input: {
     supportsSync: () => input.supportsSync,
     syncIn: vi.fn(),
     syncOut: vi.fn(),
-    effectiveSandboxCapabilities: vi.fn(async () => {
+    resolveCapabilities: vi.fn(async () => {
       if (input.rejectResolution) {
         throw new Error("capability resolution failed");
       }
@@ -102,10 +102,10 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
       config: { provider: "daytona", reuseLease: true, timeoutMs: 30_000 },
     });
 
-    const effectiveSandboxCapabilities = vi.fn(async () => Object.freeze({ ...SNAPSHOT }));
+    const resolveCapabilities = vi.fn(async () => Object.freeze({ ...SNAPSHOT }));
     const environmentRuntime = {
       supportsSync: () => false,
-      effectiveSandboxCapabilities,
+      resolveCapabilities,
     } as unknown as EnvironmentRuntimeService;
 
     const target = await resolveEnvironmentExecutionTarget({
@@ -123,12 +123,12 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     if (target?.kind !== "remote" || target.transport !== "sandbox") {
       throw new Error("expected a sandbox target");
     }
-    expect(effectiveSandboxCapabilities).toHaveBeenCalledTimes(1);
+    expect(resolveCapabilities).toHaveBeenCalledTimes(1);
     expect(target.effectiveCapabilities).toEqual(SNAPSHOT);
 
     // The snapshot is read-only: it is frozen, so a write does not change it.
     expect(Object.isFrozen(target.effectiveCapabilities)).toBe(true);
-    const snapshot = target.effectiveCapabilities as EffectiveSandboxCapabilities;
+    const snapshot = target.effectiveCapabilities as EffectiveExecutionCapabilities;
     try {
       (snapshot as { reusableLeases: boolean }).reusableLeases = false;
     } catch {
@@ -159,6 +159,43 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
       throw new Error("expected a sandbox target");
     }
     expect(target.effectiveCapabilities).toBeUndefined();
+  });
+
+  // The static `hasLeaseCapabilityModel` trait is `true` only for the
+  // `sandbox` driver in this phase (see `environment-driver-traits.ts`). An
+  // `ssh` lease must never reach the general resolver: the new
+  // `resolveCapabilities` method never returns `null` for a registered
+  // driver, so an ungated call would turn "no snapshot" into "every
+  // capability denied" for a driver this file does not otherwise gate on.
+  it("never calls the general capability resolver for an ssh lease", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: {
+        host: "example.test",
+        port: 22,
+        username: "agent",
+        remoteWorkspacePath: "/work",
+      },
+    });
+
+    const resolveCapabilities = vi.fn(async () => ({ ...SNAPSHOT }));
+    const environmentRuntime = {
+      resolveCapabilities,
+    } as unknown as EnvironmentRuntimeService;
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "ssh", config: {} },
+      leaseId: "lease-1",
+      leaseMetadata: {},
+      lease: { id: "lease-1", leasePolicy: "reuse_by_environment" } as never,
+      environmentRuntime,
+    });
+
+    expect(target?.kind).toBe("remote");
+    expect(resolveCapabilities).not.toHaveBeenCalled();
   });
 });
 

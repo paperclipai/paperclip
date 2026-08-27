@@ -478,6 +478,8 @@ export interface PluginDefinition {
    * and the exit through worker→host notifications, never as a reply. Defining
    * the four `onDuplexChannel*` hooks advertises the four methods. The host reads
    * the open verb to gate the `duplexCommandStream` capability.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
    */
   onDuplexChannelOpen?(
     params: PluginDuplexChannelOpenParams,

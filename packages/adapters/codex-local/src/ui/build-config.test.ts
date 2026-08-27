@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexLocalConfig } from "./build-config.js";
+import { buildCodexLocalConfig, buildPaperclipRunnerConfig } from "./build-config.js";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigValues {
@@ -67,5 +67,43 @@ describe("buildCodexLocalConfig", () => {
     const config = buildCodexLocalConfig(makeValues({ model: "" }));
 
     expect(config).not.toHaveProperty("model");
+  });
+});
+
+describe("buildPaperclipRunnerConfig", () => {
+  it("keeps only settings implemented by the Codex runner profile", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
+      codexEngine: "acp",
+      codexAcpAgentCommand: "custom-acp",
+      codexAcpStateDir: "/tmp/acp",
+      search: true,
+      fastMode: true,
+      dangerouslyBypassSandbox: true,
+      instructionsFilePath: "/tmp/AGENTS.md",
+      thinkingEffort: "high",
+      command: "custom-codex",
+      extraArgs: "--unsafe",
+    }));
+
+    expect(config).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.4",
+      timeoutSec: 0,
+      graceSec: 15,
+    });
+    for (const unsupportedKey of [
+      "engine",
+      "agentCommand",
+      "stateDir",
+      "instructionsFilePath",
+      "modelReasoningEffort",
+      "search",
+      "fastMode",
+      "dangerouslyBypassApprovalsAndSandbox",
+      "command",
+      "extraArgs",
+    ]) {
+      expect(config).not.toHaveProperty(unsupportedKey);
+    }
   });
 });

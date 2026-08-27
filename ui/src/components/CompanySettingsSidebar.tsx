@@ -25,6 +25,7 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -47,6 +48,9 @@ export function CompanySettingsSidebar() {
   const { hidden: hiddenSettings } = useHiddenSettings();
   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
   const showPlugins = showPage("instance.plugins");
+  // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
+  // nav entry is hidden rather than dead-ending. Export stays available.
+  const isCloud = Boolean(useCloudInstance());
   const { slots: companySettingsPluginSlots } = usePluginSlots({
     slotTypes: ["companySettingsPage"],
     companyId: selectedCompanyId,
@@ -90,7 +94,7 @@ export function CompanySettingsSidebar() {
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         >
           <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{selectedCompany?.name ?? "Company"}</span>
+          <span className="truncate">{selectedCompany?.name ?? "Organization"}</span>
         </Link>
       </div>
 
@@ -105,13 +109,15 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
-          <SidebarNavItem
-            to="/company/settings/members"
-            label="Members"
-            icon={Users}
-            badge={badges?.joinRequests ?? 0}
-            end
-          />
+          {showPage("company.members") && (
+            <SidebarNavItem
+              to="/company/settings/members"
+              label="Members"
+              icon={Users}
+              badge={badges?.joinRequests ?? 0}
+              end
+            />
+          )}
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
             .map((slot) => (
@@ -123,8 +129,12 @@ export function CompanySettingsSidebar() {
                 end
               />
             ))}
-          <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
-          <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          {showPage("company.invites") && (
+            <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
+          )}
+          {showPage("company.secrets") && (
+            <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          )}
           {showPage("instance.environments") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
@@ -149,8 +159,12 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
-          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
-          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+          {showPage("company.export") && (
+            <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          )}
+          {!isCloud && showPage("company.import") && (
+            <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+          )}
           {showPage("instance.experimental") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}

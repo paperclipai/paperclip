@@ -194,6 +194,25 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      # PID 1 must be an init that reaps adopted orphans. With node there, the
+      # orphans agent runs leave behind are never wait()ed and pin as zombies
+      # until the cgroup pid limit is exhausted and every fork() in the
+      # container fails. Run against the pushed image rather than a local
+      # build: the step above is multi-arch with `push: true`, so nothing is
+      # loaded into the runner's daemon. The cloud variant is FROM production
+      # and inherits the same ENTRYPOINT, so checking this image covers both.
+      - name: Verify PID 1 reaps orphaned processes
+        env:
+          # Through the environment, not interpolated into the script body, so
+          # the tag text is data rather than shell.
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
+          test -n "$image"
+          echo "Verifying orphan reaping in $image"
+          docker run --rm -i --pull always "$image" sh -s < scripts/assert-orphan-reaping.sh
+
   # The cloud variant carries built bundled plugins for managed deployments
   # (see the `cloud` stage in the Dockerfile). It runs as its own job with no
   # `needs:` on the stock publish above, so the two builds run in parallel and

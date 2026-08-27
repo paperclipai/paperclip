@@ -50,6 +50,10 @@ const manifest: PaperclipPluginManifestV1 = {
       // over a raw pseudo-terminal. Declare the opt-in capability so the host may
       // select the duplex transport. The host resolves it `true` only when the
       // worker also verifies the `duplexChannelOpen` handler.
+      //
+      // Daytona is the first provider that runs the HTTP/2 transport over this
+      // channel. HTTP/2 is the preferred transport. `queue_v1` is the
+      // soft-deprecated fallback.
       sandboxCapabilities: {
         incrementalSessionOutput: true,
         concurrentSyncOperations: true,

@@ -411,6 +411,25 @@ async function columnExists(
   return rows[0]?.exists ?? false;
 }
 
+async function columnHasDataType(
+  sql: ReturnType<typeof postgres>,
+  tableName: string,
+  columnName: string,
+  dataType: string,
+): Promise<boolean> {
+  const rows = await sql<{ dataType: string; udtName: string }[]>`
+    SELECT data_type AS "dataType", udt_name AS "udtName"
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = ${tableName}
+      AND column_name = ${columnName}
+  `;
+  const expected = dataType.toLowerCase();
+  return rows.some((row) => (
+    row.dataType.toLowerCase() === expected || row.udtName.toLowerCase() === expected
+  ));
+}
+
 async function indexExists(
   sql: ReturnType<typeof postgres>,
   indexName: string,
@@ -444,11 +463,65 @@ async function constraintExists(
   return rows[0]?.exists ?? false;
 }
 
+async function functionExists(
+  sql: ReturnType<typeof postgres>,
+  functionName: string,
+): Promise<boolean> {
+  const rows = await sql<{ exists: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public'
+        AND p.proname = ${functionName}
+    ) AS exists
+  `;
+  return rows[0]?.exists ?? false;
+}
+
+async function triggerExists(
+  sql: ReturnType<typeof postgres>,
+  triggerName: string,
+): Promise<boolean> {
+  const rows = await sql<{ exists: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND t.tgname = ${triggerName}
+        AND NOT t.tgisinternal
+    ) AS exists
+  `;
+  return rows[0]?.exists ?? false;
+}
+
+async function heartbeatNextEventSequencesAreCurrent(
+  sql: ReturnType<typeof postgres>,
+): Promise<boolean> {
+  const rows = await sql<{ current: boolean }[]>`
+    SELECT NOT EXISTS (
+      SELECT 1
+      FROM heartbeat_runs run
+      WHERE run.next_event_seq IS DISTINCT FROM COALESCE((
+        SELECT max(event.seq) + 1
+        FROM heartbeat_run_events event
+        WHERE event.run_id = run.id
+      ), 1)
+    ) AS current
+  `;
+  return rows[0]?.current ?? false;
+}
+
 async function migrationStatementAlreadyApplied(
   sql: ReturnType<typeof postgres>,
   statement: string,
 ): Promise<boolean> {
-  const normalized = statement.replace(/\s+/g, " ").trim();
+  const normalized = statement
+    .replace(/^\s*--.*$/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
   const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createTableMatch) {
@@ -462,6 +535,18 @@ async function migrationStatementAlreadyApplied(
     return columnExists(sql, addColumnMatch[1], addColumnMatch[2]);
   }
 
+  const alterColumnTypeMatch = normalized.match(
+    /^ALTER TABLE "([^"]+)" ALTER COLUMN "([^"]+)" SET DATA TYPE ([A-Za-z0-9_]+)/i,
+  );
+  if (alterColumnTypeMatch) {
+    return columnHasDataType(
+      sql,
+      alterColumnTypeMatch[1],
+      alterColumnTypeMatch[2],
+      alterColumnTypeMatch[3],
+    );
+  }
+
   const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createIndexMatch) {
     return indexExists(sql, createIndexMatch[1]);
@@ -470,6 +555,30 @@ async function migrationStatementAlreadyApplied(
   const addConstraintMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)"/i);
   if (addConstraintMatch) {
     return constraintExists(sql, addConstraintMatch[2]);
+  }
+
+  const createFunctionMatch = normalized.match(
+    /^CREATE OR REPLACE FUNCTION "?([A-Za-z_][A-Za-z0-9_]*)"?\s*\(/i,
+  );
+  if (createFunctionMatch) {
+    return functionExists(sql, createFunctionMatch[1]);
+  }
+
+  const createTriggerMatch = normalized.match(
+    /^CREATE TRIGGER "?([A-Za-z_][A-Za-z0-9_]*)"?/i,
+  );
+  if (createTriggerMatch) {
+    return triggerExists(sql, createTriggerMatch[1]);
+  }
+
+  // This native-runner cursor backfill has a persistent postcondition. Verify it
+  // instead of replaying it when a restored database is missing only the
+  // migration-history row.
+  if (
+    normalized.startsWith('UPDATE "heartbeat_runs" AS run')
+    && normalized.includes('SET "next_event_seq" = COALESCE')
+  ) {
+    return heartbeatNextEventSequencesAreCurrent(sql);
   }
 
   // If we cannot reason about a statement safely, require manual migration.

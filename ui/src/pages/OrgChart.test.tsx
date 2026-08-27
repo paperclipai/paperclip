@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { OrgChart } from "./OrgChart";
 
 const navigateMock = vi.fn();
@@ -261,5 +262,20 @@ describe("OrgChart mobile gestures", () => {
     });
 
     expect(layer.style.transform).toBe("translate(-45px, 40px) scale(1.5)");
+  });
+
+  it("shows both portability buttons on self-hosted instances", async () => {
+    await renderOrgChart();
+
+    expect(container.textContent).toContain("Import organization");
+    expect(container.textContent).toContain("Export organization");
+  });
+
+  it("hides the Import button but keeps Export on a Cloud-managed instance", async () => {
+    queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    await renderOrgChart();
+
+    expect(container.textContent).not.toContain("Import organization");
+    expect(container.textContent).toContain("Export organization");
   });
 });

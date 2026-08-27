@@ -176,9 +176,9 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
   "- Use `PAPERCLIP_SCRATCH_DIR` / `PAPERCLIP_RUN_SCRATCH_DIR` for temporary scratch files instead of ad hoc `/tmp` paths; Paperclip removes that run-owned directory after the run ends.",
-  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance.",
+  "- To ask for that input, create an interaction on the current issue with POST /api/issues/$PAPERCLIP_TASK_ID/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance.",
   "- Never create probe or throwaway issue-thread interactions to discover the interactions API shape or your permissions; schema discovery goes through the OpenAPI spec and explicit validation errors, not placeholder cards. Every ask_user_questions, suggest_tasks, or request_confirmation you post must carry a real, answerable prompt; withdraw one you no longer need instead of leaving it pending.",
-  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
+  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/$PAPERCLIP_TASK_ID/comments or PATCH /api/issues/$PAPERCLIP_TASK_ID comment payload (substitute that issue's real id when it is not the current task). Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
@@ -322,7 +322,13 @@ function buildManagedSkillOrigin(): Pick<
   };
 }
 
-function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
+/**
+ * True when a runtime skill entry's files are unavailable (failed
+ * materialization, deleted version snapshot). Adapters must skip these at
+ * mount time: their `source` path does not exist, so symlinking produces a
+ * dangling link and content hashing throws.
+ */
+export function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
   return entry.sourceStatus === "missing";
 }
 
@@ -2010,7 +2016,7 @@ export function renderPaperclipWakePrompt(
     lines.push(
       "",
       "The harness already checked out this issue for the current run.",
-      "Do not call `/api/issues/{id}/checkout` again unless you intentionally switch to a different task.",
+      "Do not call `POST /api/issues/$PAPERCLIP_TASK_ID/checkout` again unless you intentionally switch to a different task.",
       "",
     );
   }
@@ -2981,6 +2987,33 @@ export function resolvePaperclipDesiredSkillNames(
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
   return Array.from(new Set(desiredSkills));
+}
+
+/**
+ * Legacy adapters call the Paperclip API through the operational skill. Keep
+ * that skill mounted even when an agent predates skill preferences or carries
+ * an explicit empty desired set. Native runners provide the same authority
+ * through their protocol and must continue to use the configurable-only
+ * resolver above.
+ */
+export const PAPERCLIP_OPERATIONAL_SKILL_KEY = "paperclipai/paperclip/paperclip";
+
+export function resolveLegacyPaperclipDesiredSkillNames(
+  config: Record<string, unknown>,
+  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
+): string[] {
+  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const operationalEntry = availableEntries.find(
+    (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  );
+  if (!operationalEntry) return desiredSkills;
+
+  return [
+    operationalEntry.key,
+    ...desiredSkills.filter(
+      (key) => key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    ),
+  ];
 }
 
 export function writePaperclipSkillSyncPreference(

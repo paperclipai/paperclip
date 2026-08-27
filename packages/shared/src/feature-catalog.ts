@@ -50,6 +50,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableNativeRunner: {
+    title: "Paperclip Runner",
+    description:
+      "Allow new Codex agents to use the experimental Rust Paperclip Runner transport.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableManagedSandboxOnly: {
     title: "Managed Environment Only",
     description:
