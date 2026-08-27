@@ -452,7 +452,7 @@ describe("issue attachment routes", () => {
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Attachment exceeds 10485760 bytes");
+    expect(res.body.error).toBe("Attachment is larger than the 10 MB limit");
     expect(storage.__calls.putFile).toBeUndefined();
     // The deployment cap is the only limit left. The route no longer reads a
     // per-company override, so it never loads the company to size an upload.

@@ -6,7 +6,11 @@ import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import {
+  formatAttachmentSize,
+  isAllowedContentType,
+  MAX_ATTACHMENT_BYTES,
+} from "../attachment-types.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
@@ -116,7 +120,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({
+            error: `File is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -220,7 +226,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Image exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({
+            error: `Image is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });

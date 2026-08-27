@@ -25,7 +25,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   isUuidLike,
 } from "@paperclipai/shared";
-import { MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
+import { formatAttachmentSize, MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1282,7 +1282,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          throw unprocessable(`Attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes`);
+          throw unprocessable(
+            `Attachment is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          );
         }
         throw badRequest(err.message);
       }

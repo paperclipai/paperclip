@@ -195,6 +195,21 @@ describe("POST /api/companies/:companyId/assets/images", () => {
     expect(res.body.contentPath).toBe("/api/assets/asset-1/content");
     expect(res.body.contentType).toBe("text/plain");
   });
+
+  it("names the limit in human units when a file exceeds the attachment cap", async () => {
+    const app = await createApp(createStorageService());
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const file = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, "a");
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/assets/images")
+        .attach("file", file, "too-large.png"),
+    );
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("File is larger than the 10 MB limit");
+  });
 });
 
 describe("POST /api/companies/:companyId/logo", () => {
@@ -297,7 +312,7 @@ describe("POST /api/companies/:companyId/logo", () => {
     );
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe(`Image exceeds ${MAX_ATTACHMENT_BYTES} bytes`);
+    expect(res.body.error).toBe("Image is larger than the 10 MB limit");
   });
 
   it("rejects unsupported image types", async () => {
