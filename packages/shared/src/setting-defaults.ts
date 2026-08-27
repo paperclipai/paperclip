@@ -120,3 +120,44 @@ export function applyOperatorGeneralDefaults(
   }
   return next ?? general;
 }
+
+/**
+ * Strip overlay echoes from a general-settings write at persist time.
+ *
+ * A client that writes back the full object it read (a full-GET echo) sends
+ * the overlaid operator value for a field the user never chose. Persisting
+ * that echo would promote the operator value into an explicit stored choice —
+ * sticky across later changes to, or removal of, the environment variable.
+ * This maps such a write back to the schema default: a field whose stored
+ * value is still the schema default (unchosen) and whose incoming value
+ * equals the operator default stays unchosen, keeping the overlay
+ * strictly read-time.
+ *
+ * A user cannot be distinguished from an echo when they deliberately pick the
+ * value that already shows as the default, so that pick also stays unchosen —
+ * the mirror image of the documented "stored schema default is treated as
+ * unchosen" rule, with identical effective behavior. Any other write persists
+ * as given: an incoming value that differs from the operator default, or a
+ * write over an explicit stored choice.
+ */
+export function stripOperatorGeneralEchoes(
+  stored: InstanceGeneralSettings,
+  next: InstanceGeneralSettings,
+  defaults: OperatorSettingDefaults | null,
+): InstanceGeneralSettings {
+  if (!defaults) return next;
+  let result: InstanceGeneralSettings | null = null;
+  for (const key of DEFAULTABLE_GENERAL_SETTINGS) {
+    const value = defaults[key];
+    if (value === undefined) continue;
+    if (
+      stored[key] === schemaDefaults[key] &&
+      next[key] === value &&
+      next[key] !== schemaDefaults[key]
+    ) {
+      result ??= { ...next };
+      result[key] = schemaDefaults[key];
+    }
+  }
+  return result ?? next;
+}

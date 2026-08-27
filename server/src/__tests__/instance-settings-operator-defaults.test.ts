@@ -102,4 +102,31 @@ describe("instanceSettingsService operator setting defaults", () => {
     expect(persistedGeneral.censorUsernameInLogs).toBe(true);
     expect(persistedGeneral.feedbackDataSharingPreference).toBe("prompt");
   });
+
+  it("does not let a full-GET echo promote the operator value into a choice", async () => {
+    // A client PUTs back the full object it read, including the overlaid
+    // "allowed". The stored value is still the schema default (unchosen), so
+    // the echo maps back to the schema default: changing or unsetting
+    // PAPERCLIP_SETTING_DEFAULTS later still takes effect.
+    const { db, persistedSets } = stubDb(settingsRow({}));
+    const svc = instanceSettingsService(db, { runtimeEnv: defaultsEnv() });
+    const echoed = await svc.getGeneral();
+    expect(echoed.feedbackDataSharingPreference).toBe("allowed");
+    const result = await svc.updateGeneral({ ...echoed, censorUsernameInLogs: true });
+    expect(result.general.feedbackDataSharingPreference).toBe("allowed");
+    expect(persistedSets).toHaveLength(1);
+    const persistedGeneral = persistedSets[0]!.general as Record<string, unknown>;
+    expect(persistedGeneral.censorUsernameInLogs).toBe(true);
+    expect(persistedGeneral.feedbackDataSharingPreference).toBe("prompt");
+  });
+
+  it("persists an explicit write of a value that differs from the operator default", async () => {
+    const { db, persistedSets } = stubDb(settingsRow({}));
+    const svc = instanceSettingsService(db, { runtimeEnv: defaultsEnv() });
+    const result = await svc.updateGeneral({ feedbackDataSharingPreference: "not_allowed" });
+    expect(result.general.feedbackDataSharingPreference).toBe("not_allowed");
+    expect(persistedSets).toHaveLength(1);
+    const persistedGeneral = persistedSets[0]!.general as Record<string, unknown>;
+    expect(persistedGeneral.feedbackDataSharingPreference).toBe("not_allowed");
+  });
 });

@@ -28,7 +28,7 @@ import {
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
-import { applyOperatorGeneralDefaults } from "@paperclipai/shared";
+import { applyOperatorGeneralDefaults, stripOperatorGeneralEchoes } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
@@ -331,7 +331,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   // boot in index.ts) rather than silently running without the overlay.
   const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
   // Same posture for PAPERCLIP_SETTING_DEFAULTS: parsed once, applied per
-  // read, never persisted (see applyOperatorGeneralDefaults).
+  // read, never persisted (see applyOperatorGeneralDefaults) — including on
+  // the write path, where a full-GET echo of the overlaid value is stripped
+  // back to the schema default (see stripOperatorGeneralEchoes).
   const operatorDefaults = getOperatorSettingDefaults(options.runtimeEnv ?? process.env);
 
   function toGeneralView(raw: unknown): InstanceGeneralSettings {
@@ -434,10 +436,15 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextGeneral = normalizeGeneralSettings({
-        ...normalizeGeneralSettings(current.general),
-        ...patch,
-      });
+      const storedGeneral = normalizeGeneralSettings(current.general);
+      // A full-GET echo carries the overlaid operator value for a field the
+      // user never chose; stripping it keeps the overlay strictly read-time,
+      // so changing or unsetting the variable later still takes effect.
+      const nextGeneral = stripOperatorGeneralEchoes(
+        storedGeneral,
+        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+        operatorDefaults,
+      );
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)

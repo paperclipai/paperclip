@@ -67,6 +67,9 @@ schema default at read time: any field whose effective value is still the
 schema default resolves to the operator value, while an explicit non-default
 user choice always wins. The overlay is never persisted, so unsetting the
 variable restores stock behavior wherever a user has not chosen otherwise.
+A client that writes back the full settings object it read does not persist
+the operator value either: writing the operator value over a still-unchosen
+field is treated as an echo of the overlay and the field stays unchosen.
 
 Example: `PAPERCLIP_SETTING_DEFAULTS='{"feedbackDataSharingPreference":"allowed"}'`
 defaults AI feedback sharing to allowed; pairing it with

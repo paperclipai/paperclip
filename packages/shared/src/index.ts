@@ -2523,6 +2523,7 @@ export {
   SETTING_DEFAULTS_ENV_KEY,
   applyOperatorGeneralDefaults,
   parseSettingDefaults,
+  stripOperatorGeneralEchoes,
   type DefaultableGeneralSetting,
   type OperatorSettingDefaults,
   type ParsedSettingDefaults,

@@ -4,6 +4,7 @@ import {
   SETTING_DEFAULTS_ENV_KEY,
   applyOperatorGeneralDefaults,
   parseSettingDefaults,
+  stripOperatorGeneralEchoes,
 } from "./setting-defaults.js";
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
 
@@ -80,6 +81,55 @@ describe("applyOperatorGeneralDefaults", () => {
     const input = { ...schemaDefaults };
     applyOperatorGeneralDefaults(input, { feedbackDataSharingPreference: "allowed" });
     expect(input.feedbackDataSharingPreference).toBe(
+      schemaDefaults.feedbackDataSharingPreference,
+    );
+  });
+});
+
+describe("stripOperatorGeneralEchoes", () => {
+  const schemaDefaults = instanceGeneralSettingsSchema.parse({});
+  const defaults = { feedbackDataSharingPreference: "allowed" as const };
+
+  it("is the identity when no operator defaults are configured", () => {
+    const next = { ...schemaDefaults, feedbackDataSharingPreference: "allowed" as const };
+    expect(stripOperatorGeneralEchoes(schemaDefaults, next, null)).toBe(next);
+  });
+
+  it("maps an echoed operator value on an unchosen field back to the schema default", () => {
+    // Stored is still the schema default (unchosen); the incoming full-object
+    // echo carries the overlaid operator value. Persisting it would make the
+    // operator value sticky, so it maps back to the schema default.
+    const next = { ...schemaDefaults, feedbackDataSharingPreference: "allowed" as const };
+    const stripped = stripOperatorGeneralEchoes(schemaDefaults, next, defaults);
+    expect(stripped.feedbackDataSharingPreference).toBe(
+      schemaDefaults.feedbackDataSharingPreference,
+    );
+  });
+
+  it("keeps an incoming value that differs from the operator default", () => {
+    const next = { ...schemaDefaults, feedbackDataSharingPreference: "not_allowed" as const };
+    const stripped = stripOperatorGeneralEchoes(schemaDefaults, next, defaults);
+    expect(stripped).toBe(next);
+    expect(stripped.feedbackDataSharingPreference).toBe("not_allowed");
+  });
+
+  it("keeps a write over an explicit stored choice, even at the operator value", () => {
+    // The user previously chose "not_allowed" and now picks the operator's
+    // value: stored is not the schema default, so this is a real transition
+    // and persists as given.
+    const stored = { ...schemaDefaults, feedbackDataSharingPreference: "not_allowed" as const };
+    const next = { ...schemaDefaults, feedbackDataSharingPreference: "allowed" as const };
+    const stripped = stripOperatorGeneralEchoes(stored, next, defaults);
+    expect(stripped).toBe(next);
+    expect(stripped.feedbackDataSharingPreference).toBe("allowed");
+  });
+
+  it("does not mutate its inputs", () => {
+    const stored = { ...schemaDefaults };
+    const next = { ...schemaDefaults, feedbackDataSharingPreference: "allowed" as const };
+    stripOperatorGeneralEchoes(stored, next, defaults);
+    expect(next.feedbackDataSharingPreference).toBe("allowed");
+    expect(stored.feedbackDataSharingPreference).toBe(
       schemaDefaults.feedbackDataSharingPreference,
     );
   });
