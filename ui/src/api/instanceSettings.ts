@@ -6,6 +6,7 @@ import type {
   PatchInstanceSettings,
   PatchInstanceGeneralSettings,
   PatchInstanceExperimentalSettings,
+  WorktreeRunEngineStatus,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -22,6 +23,8 @@ export const instanceSettingsApi = {
     api.get<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental"),
   updateExperimental: (patch: PatchInstanceExperimentalSettings) =>
     api.patch<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental", patch),
+  getWorktreeRunEngine: () =>
+    api.get<WorktreeRunEngineStatus>("/instance/settings/experimental/worktree-run-engine"),
   previewIssueGraphLivenessAutoRecovery: (input: { lookbackHours?: number }) =>
     api.post<IssueGraphLivenessAutoRecoveryPreview>(
       "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",

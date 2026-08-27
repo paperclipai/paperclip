@@ -4582,6 +4582,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         status: "todo",
         priority: "medium",
         assigneeAgentId,
+        issueNumber: 1,
       },
       {
         id: childA,
@@ -4596,7 +4597,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         // createdAt, so without a distinct issueNumber the two children
         // tie on both sort keys and the database is free to return them
         // in either order.
-        issueNumber: 1,
+        issueNumber: 2,
       },
       {
         id: childB,
@@ -4605,7 +4606,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         title: "Child B",
         status: "blocked",
         priority: "medium",
-        issueNumber: 2,
+        issueNumber: 3,
       },
     ]);
 

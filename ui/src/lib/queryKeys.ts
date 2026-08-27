@@ -388,6 +388,7 @@ export const queryKeys = {
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    worktreeRunEngine: ["instance", "worktree-run-engine"] as const,
   },
   health: ["health"] as const,
   cloud: {

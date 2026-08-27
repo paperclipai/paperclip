@@ -4888,6 +4888,15 @@ function renderRuntimeServiceEnv(input: {
   return rendered;
 }
 
+export function stripRuntimeServiceIdentityEnvOverrides(env: Record<string, string>) {
+  const {
+    PAPERCLIP_HOME: _ignoredPaperclipHome,
+    PAPERCLIP_INSTANCE_ID: _ignoredPaperclipInstanceId,
+    ...allowedEnv
+  } = env;
+  return allowedEnv;
+}
+
 function resolveRuntimeServiceReuseIdentity(input: {
   service: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
@@ -4923,10 +4932,10 @@ function resolveRuntimeServiceReuseIdentity(input: {
     port: identityPort,
   });
   const serviceCwd = resolveConfiguredPath(renderTemplate(serviceCwdTemplate, templateData), input.workspace.cwd);
-  const renderedEnv = renderRuntimeServiceEnv({
+  const renderedEnv = stripRuntimeServiceIdentityEnvOverrides(renderRuntimeServiceEnv({
     envConfig,
     templateData,
-  });
+  }));
   const envFingerprint = createHash("sha256").update(stableStringify(renderedEnv)).digest("hex");
   const reuseKey =
     lifecycle === "shared"
@@ -5962,7 +5971,10 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     ...sanitizeRuntimeServiceBaseEnv(process.env),
     ...input.adapterEnv,
   } as Record<string, string>;
-  for (const [key, value] of Object.entries(renderRuntimeServiceEnv({ envConfig, templateData }))) {
+  for (const [key, value] of Object.entries(stripRuntimeServiceIdentityEnvOverrides(renderRuntimeServiceEnv({
+    envConfig,
+    templateData,
+  })))) {
     env[key] = value;
   }
   if (port) {

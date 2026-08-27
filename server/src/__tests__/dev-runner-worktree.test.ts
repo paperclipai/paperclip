@@ -73,7 +73,7 @@ describe("dev-runner worktree env bootstrap", () => {
     expect(isLinkedGitWorktreeCheckout(root)).toBe(true);
   });
 
-  it("loads repo-local Paperclip env for initialized worktrees without overriding explicit env", () => {
+  it("loads repo-local Paperclip env and overrides inherited identity keys", () => {
     const root = createTempRoot("paperclip-dev-runner-worktree-env-");
     fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });
     fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/feature\n", "utf8");
@@ -91,7 +91,9 @@ describe("dev-runner worktree env bootstrap", () => {
     );
 
     const env: NodeJS.ProcessEnv = {
+      PAPERCLIP_HOME: "/shared/paperclip-home",
       PAPERCLIP_INSTANCE_ID: "already-set",
+      PAPERCLIP_WORKTREE_NAME: "explicit-name",
     };
     const result = bootstrapDevRunnerWorktreeEnv(root, env);
 
@@ -100,8 +102,9 @@ describe("dev-runner worktree env bootstrap", () => {
       missingEnv: false,
     });
     expect(env.PAPERCLIP_HOME).toBe("/tmp/paperclip-worktrees");
-    expect(env.PAPERCLIP_INSTANCE_ID).toBe("already-set");
+    expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree");
     expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
+    expect(env.PAPERCLIP_WORKTREE_NAME).toBe("explicit-name");
     expect(env.PAPERCLIP_OPTIONAL).toBe("");
   });
 

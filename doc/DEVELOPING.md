@@ -581,6 +581,7 @@ The workspace UI surfaces `Provisioning database`, `Validating clone`, `Ready`, 
 | `--server-port <port>` | Preferred server port |
 | `--db-port <port>` | Preferred embedded Postgres port |
 | `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--no-seed` | Skip database seeding from the source instance |
 | `--force` | Replace existing repo-local config and isolated instance data |
 
@@ -617,6 +618,7 @@ For an already-created worktree where you want the CLI to decide whether to rebu
 | `--from-data-dir <path>` | Source `PAPERCLIP_HOME` used when deriving the source config |
 | `--from-instance <id>` | Source instance id when deriving the source config (default: `default`) |
 | `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--no-seed` | Repair metadata only when bootstrapping a missing worktree config |
 | `--allow-live-target` | Override the guard that requires the target worktree DB to be stopped first |
 
@@ -645,6 +647,7 @@ For an already-created worktree where you want to keep the existing repo-local c
 | `--from-data-dir <path>` | Source `PAPERCLIP_HOME` used when deriving the source config |
 | `--from-instance <id>` | Source instance id when deriving the source config |
 | `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `full`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--yes` | Skip the destructive confirmation prompt |
 | `--allow-live-target` | Override the guard that requires the target worktree DB to be stopped first |
 | `--backup-target` | Retain a recoverable full target-DB backup before reseeding |
@@ -682,6 +685,7 @@ Managed workspace repair uses this same verified full-reseed contract through `P
 | `--server-port <port>` | Preferred server port |
 | `--db-port <port>` | Preferred embedded Postgres port |
 | `--seed-mode <mode>` | Seed profile: `minimal` or `full` (default: `minimal`) |
+| `--preserve-live-work` | Explicitly bypass seed quarantine for copied runs, wakeups, monitors, agent timers, and assigned open issues. The worktree run-execution toggle is still reset. |
 | `--no-seed` | Skip database seeding from the source instance |
 | `--force` | Replace existing repo-local config and isolated instance data |
 

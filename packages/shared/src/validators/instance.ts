@@ -76,6 +76,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   // no redeploy. The host reads this per run before it selects the transport.
   enableSandboxDuplexBridge: z.boolean().default(false),
   enableWorktreeRunExecution: z.boolean().default(false),
+  worktreeRunExecutionInstanceNonce: z.string().uuid().nullable().default(null),
+  worktreeRunExecutionSeedEpoch: z.string().uuid().nullable().default(null),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
   issueGraphLivenessAutoRecoveryLookbackHours: z
@@ -91,6 +93,8 @@ export const patchInstanceExperimentalSettingsSchema = z
     shapeWithoutDefaults(
       instanceExperimentalSettingsSchema
         .omit({
+          worktreeRunExecutionInstanceNonce: true,
+          worktreeRunExecutionSeedEpoch: true,
           worktreeRunExecutionActivatedAt: true,
           worktreeRunExecutionActivationInstanceId: true,
         })
