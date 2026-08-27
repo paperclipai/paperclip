@@ -1,6 +1,7 @@
 {
   "name": "@paperclipai/db",
   "version": "0.3.1",
+  "description": "Database schema, migrations, and persistence for Paperclip.",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
