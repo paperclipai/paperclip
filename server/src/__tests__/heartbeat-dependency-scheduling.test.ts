@@ -430,8 +430,18 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const promotedBlockedRunCount = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
-      .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${blockedIssueId}`)
+      .where(and(
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${blockedIssueId}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'issue_blockers_resolved'`,
+      ))
       .then((rows) => rows[0]?.count ?? 0);
+    const dependencyWakeRequests = await db
+      .select({ idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests)
+      .where(eq(
+        agentWakeupRequests.idempotencyKey,
+        `issue_blockers_resolved:${blockedIssueId}:${blockerId}`,
+      ));
     const blockedWakeRequestCount = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(agentWakeupRequests)
@@ -442,9 +452,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         ),
       )
       .then((rows) => rows[0]?.count ?? 0);
-
     expect(promotedBlockedRun?.status).toBe("succeeded");
     expect(promotedBlockedRunCount).toBe(1);
+    expect(dependencyWakeRequests).toHaveLength(1);
     expect(descendantRuns).toBe(0);
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
 

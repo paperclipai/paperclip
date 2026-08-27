@@ -134,7 +134,10 @@ import { issueService } from "./issues.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  buildIssueBlockersResolvedWakeIdempotencyKey,
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+} from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -14627,6 +14630,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload,
     });
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    const resolvedBlockerIssueId =
+      readNonEmptyString(parseObject(payload).resolvedBlockerIssueId) ??
+      readNonEmptyString(enrichedContextSnapshot.resolvedBlockerIssueId);
+    let idempotencyKey = opts.idempotencyKey ?? null;
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
@@ -14759,6 +14766,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
+    }
+    if (!idempotencyKey && reason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON && issueId && resolvedBlockerIssueId) {
+      idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+        dependentIssueId: issueId,
+        resolvedBlockerIssueId,
+      });
     }
     // Propagate projectId into context so resolveWorkspaceForRun can bind the
     // project workspace even when context.projectId wasn't set by the caller.
@@ -15608,7 +15621,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "queued",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
           })
           .returning()
           .then((rows) => rows[0]);
