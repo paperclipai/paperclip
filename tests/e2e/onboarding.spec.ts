@@ -61,7 +61,7 @@ test.describe("Onboarding wizard", () => {
     // Step 1's "Next" now creates the company and goes straight to the agent.
     // The mission step used to sit between them and do the creating; onboarding
     // no longer asks for the mission, which is collected later in the app.
-    await page.waitForSelector("#onboarding-agent-role", {
+    await page.waitForSelector("#onboarding-agent-name", {
       timeout: 30_000,
     });
 

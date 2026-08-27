@@ -74,7 +74,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.getByRole("button", { name: /^Next/ }).click();
     // Step 1's "Next" creates the company and goes straight to the team lead.
     // The mission screenshot that sat here is gone with the step it captured.
-    await page.waitForSelector("#onboarding-agent-role", {
+    await page.waitForSelector("#onboarding-agent-name", {
       timeout: 30_000,
     });
     await page.screenshot({ path: shot("04-hire-team-lead.png") });

@@ -61,12 +61,10 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   // Naming the company creates it and goes straight to the agent step.
 
-  // The lead is no longer pre-named. Choosing a role fills the name from the
-  // role's label, which is also what gates "Next".
-  await page.waitForSelector("#onboarding-agent-role", { timeout: 30_000 });
-  await page.locator("#onboarding-agent-role").click();
-  await page.getByRole("option", { name: "CEO", exact: true }).click();
-  await expect(page.locator("#onboarding-agent-name")).toHaveValue(AGENT_NAME);
+  // The agent step asks for a name and nothing else; the name is what gates
+  // "Next", and the hire is filed under the neutral `general` role.
+  await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();
   await page.getByRole("button", { name: /^Connect$/ }).click();

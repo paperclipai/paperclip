@@ -78,12 +78,12 @@ import {
 } from "../lib/onboarding-mission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
-import { AgentCapsule } from "./AgentCapsule";
+import { PillGuy } from "./onboarding/PillGuy";
 import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
 import { FooterNav } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
-import { DEFAULT_AGENT_NAME, nextAgentNameForRole } from "../lib/onboarding-agent-role";
+import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -413,12 +413,18 @@ function OnboardingWizardInner({
   const [q4, setQ4] = useState((saved?.q4 as string) ?? ""); // What would success look like?
 
   // Step 2
-  // Neither is defaulted. The prototype asks for a role before it will create
-  // anything, and leaves the name optional — a pre-filled "Chief of staff" is a
-  // choice made on the customer's behalf that they then have to notice and
-  // undo. Picking a role fills the name; see nextAgentNameForRole.
+  // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
+  // on the customer's behalf that they then have to notice and undo. It is the
+  // step's only question, and its CTA gates on it.
   const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
-  const [agentRole, setAgentRole] = useState<AgentRole | "">((saved?.agentRole as AgentRole) ?? "");
+  // Defaults to `general` rather than empty. The arc stopped asking for a role
+  // — a customer naming their first agent is describing what it does, not
+  // filing it — but the hire still needs one, and the guard below returns
+  // silently when it is missing. An unset role there would mean Connect
+  // appearing to work and hiring nobody.
+  const [agentRole, setAgentRole] = useState<AgentRole>(
+    (saved?.agentRole as AgentRole) ?? DEFAULT_AGENT_ROLE,
+  );
   const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   const [model, setModel] = useState((saved?.model as string) ?? "");
@@ -842,11 +848,10 @@ function OnboardingWizardInner({
     setQ2("");
     setQ3("");
     setQ4("");
-    // Both cleared, matching the mount defaults: a reset that left a name
-    // behind without its role would put the walker back on a step whose CTA
-    // is disabled, next to a name nobody chose.
+    // Back to the mount defaults: an empty name (the step's only question, and
+    // what its CTA gates on) and the neutral role every onboarding hire uses.
     setAgentName("");
-    setAgentRole("");
+    setAgentRole(DEFAULT_AGENT_ROLE);
     setAdapterType("claude_local");
     setModel("");
     setCommand("");
@@ -1323,6 +1328,9 @@ function OnboardingWizardInner({
         }
       }
 
+      // `agentRole` always holds a value now (see its default), so this is a
+      // type narrowing rather than a gate — but it stays, because a future
+      // path that clears the role must not reach a hire that silently no-ops.
       if (!agentRole) return;
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
@@ -1605,11 +1613,10 @@ function OnboardingWizardInner({
                 />
               )}
 
-              {/* The hero, above the heading, as the prototype has it: one
-                  AgentCapsule held in the same tree slot across steps 3–5, so
-                  React reuses the DOM node and the morph reads as a single
-                  capsule coming to life — dashed slot → traced outline →
-                  liquid fill. Moving between steps never replays the entrance. */}
+              {/* The hero, above the heading: one PillGuy held in the same tree
+                  slot across steps 3–5, so React reuses the DOM node and moving
+                  between steps never replays the entrance. It is dormant while
+                  the agent is being specified and wakes on Review. */}
               {step >= 3 && step <= 5 && (
                 // reducedMotion="user" defers to the OS setting, so the hero
                 // arrives in place for anyone who asked for less movement. The
@@ -1625,19 +1632,14 @@ function OnboardingWizardInner({
                       transition={capsuleHeroMotion.transition}
                       className="flex flex-col items-center gap-2"
                     >
-                      <AgentCapsule
-                        state={step === 3 ? "slot" : step === 4 ? "configured" : "online"}
-                        gradient={5}
-                        glow="blue"
-                        size="md"
-                        // The arc is where the agent is born, so the
-                        // slot→configured morph traces the outline on.
-                        strokeDraw
+                      {/* Dormant until the agent is actually hired. Review is
+                          the first step where one exists, so that is where it
+                          wakes — the arc's payoff, not a flourish along it. */}
+                      <PillGuy
+                        state={step === 5 ? "alive" : "dormant"}
+                        className="size-(--sz-72px)"
                       />
-                      <AgentPreview
-                        agentName={agentName}
-                        agentRole={agentRole ? AGENT_ROLE_LABELS[agentRole] : ""}
-                      />
+                      <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>
 
                     <OnboardingHeading
@@ -1647,19 +1649,16 @@ function OnboardingWizardInner({
                           ? "Create your first agent"
                           : step === 4
                             ? "Connect a model"
-                            : "Review"
+                            : "Let's get started..."
                       }
                       // The agent step carries no lede, as the prototype has it:
                       // the capsule and the heading say what this is, and a
                       // sentence restating it only pushes the fields down.
                       lede={
                         step === 3 ? undefined : step === 4 ? (
-                          <>
-                            What model would you like your first agent to use? You can
-                            choose different models when creating additional agents.
-                          </>
+                          <>Paperclip works with your existing subscription or API keys.</>
                         ) : (
-                          <>Your first agent is online and ready to work.</>
+                          <>{agentName.trim() || "Your first agent"} is ready to work!</>
                         )
                       }
                     />
@@ -1991,47 +1990,22 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 3: role, then an optional name — the prototype's field
-                  pair, in its order and its widths. */}
+              {/* Step 3: the name, and only the name. The role picker went with
+                  the question it was asking — a customer naming their first
+                  agent is describing what it does, and the placeholder carries
+                  the range of answers that fit. Hiring uses the neutral
+                  `general` role; a specific one can be set later, where there
+                  is context to choose it in. */}
               {step === 3 && (
                 <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-6">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-role">Role</Label>
-                    {/* Options come from the AgentRole enum, not the prototype's
-                        mock list: four of that list's seven entries have no
-                        equivalent here, and one ("Coder") would fail validation
-                        at hire time. */}
-                    <Select
-                      value={agentRole || undefined}
-                      onValueChange={(value) => {
-                        const nextRole = value as AgentRole;
-                        setAgentRole(nextRole);
-                        setAgentName((current) =>
-                          nextAgentNameForRole({ currentName: current, nextRole }),
-                        );
-                      }}
-                    >
-                      <SelectTrigger id="onboarding-agent-role" className="w-full">
-                        <SelectValue placeholder="Select a role…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {AGENT_ROLES.map((role) => (
-                          <SelectItem key={role} value={role}>
-                            {AGENT_ROLE_LABELS[role]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-name">
-                      Name <span className="font-normal text-muted-foreground">(optional)</span>
-                    </Label>
+                    <Label htmlFor="onboarding-agent-name">Name</Label>
                     <Input
                       id="onboarding-agent-name"
-                      placeholder="Name"
+                      placeholder="e.g. Chief of staff, Designer, Ron, Clippy..."
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
+                      autoFocus
                     />
                   </div>
                 </div>
@@ -2040,11 +2014,10 @@ function OnboardingWizardInner({
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
-                  {/* Adapter type radio cards */}
+                  {/* The two cards are self-describing; an "Adapter type"
+                      eyebrow above them named the mechanism rather than the
+                      choice. */}
                   <div>
-                    <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
-                    </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
                         <button
@@ -2068,11 +2041,9 @@ function OnboardingWizardInner({
                             setModel("");
                           }}
                         >
-                          {opt.recommended && (
-                            <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
-                              Recommended
-                            </Badge>
-                          )}
+                          {/* No "Recommended" badge: it sat on both options,
+                              so it recommended nothing and only added the one
+                              saturated colour on the screen. */}
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
                           <span className="text-muted-foreground text-(length:--text-nano)">
@@ -2092,7 +2063,7 @@ function OnboardingWizardInner({
                           showMoreAdapters ? "rotate-0" : "-rotate-90"
                         )}
                       />
-                      More Agent Adapter Types
+                      Advanced settings
                     </button>
 
                     {showMoreAdapters && (
@@ -2146,107 +2117,11 @@ function OnboardingWizardInner({
                   </div>
 
                   {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
-                        </label>
-                        <Popover
-                          open={modelOpen}
-                          onOpenChange={(next) => {
-                            setModelOpen(next);
-                            if (!next) setModelSearch("");
-                          }}
-                        >
-                          <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-                              <span
-                                className={cn(
-                                  !model && "text-muted-foreground"
-                                )}
-                              >
-                                {selectedModel
-                                  ? selectedModel.label
-                                  : model ||
-                                    (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
-                              </span>
-                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="w-(--radix-popover-trigger-width) p-1"
-                            align="start"
-                          >
-                            <input
-                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
-                              value={modelSearch}
-                              onChange={(e) => setModelSearch(e.target.value)}
-                              autoFocus
-                            />
-                            {adapterType !== "opencode_local" && (
-                              <button
-                                className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  !model && "bg-accent"
-                                )}
-                                onClick={() => {
-                                  setModel("");
-                                  setModelOpen(false);
-                                }}
-                              >
-                                Default
-                              </button>
-                            )}
-                            <div className="max-h-(--sz-240px) overflow-y-auto">
-                              {groupedModels.map((group) => (
-                                <div
-                                  key={group.provider}
-                                  className="mb-1 last:mb-0"
-                                >
-                                  {adapterType === "opencode_local" && (
-                                    <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                                      {group.provider} ({group.entries.length})
-                                    </div>
-                                  )}
-                                  {group.entries.map((m) => (
-                                    <button
-                                      key={m.id}
-                                      className={cn(
-                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                        m.id === model && "bg-accent"
-                                      )}
-                                      onClick={() => {
-                                        setModel(m.id);
-                                        setModelOpen(false);
-                                      }}
-                                    >
-                                      <span
-                                        className="block w-full text-left truncate"
-                                        title={m.id}
-                                      >
-                                        {adapterType === "opencode_local"
-                                          ? extractModelName(m.id)
-                                          : m.label}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                            {filteredModels.length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
-                              </p>
-                            )}
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-                    </div>
-                  )}
+                  {/* No model picker. Every adapter this step offers resolves
+                      its own default (see buildAdapterConfig), so the picker
+                      asked the customer to choose a model before they had any
+                      way to judge one — and the agent's model is changeable
+                      later, where its work gives the choice meaning. */}
 
                   {/* The environment check runs without being shown: Connect
                       probes the adapter before hiring (see handleGiveHeartbeat)
@@ -2395,37 +2270,10 @@ function OnboardingWizardInner({
               )}
 
               {/* Step 5: Review — lead is online (shared capsule above) */}
-              {step === 5 && (
-                <div className="space-y-5 py-1">
-                  {/* Review checklist — everything that's now set up */}
-                  <div className="space-y-1.5">
-                    {/* No "Mission" row: onboarding stopped asking for one, so a
-                        checklist item for it could only ever render unchecked —
-                        a permanent red mark for a question nobody was asked. */}
-                    {[
-                      { label: "Organization name", done: Boolean(companyName.trim()) },
-                      { label: "Agent created", done: Boolean(createdAgentId) },
-                      { label: "Model connected", done: Boolean(createdAgentId) },
-                    ].map(({ label, done }) => (
-                      <div key={label} className="flex items-center gap-2 text-sm">
-                        <span
-                          className={cn(
-                            "flex h-4 w-4 items-center justify-center rounded-full shrink-0",
-                            done
-                              ? "bg-green-500/15 text-green-600 dark:text-green-400"
-                              : "bg-muted text-muted-foreground"
-                          )}
-                        >
-                          <Check className="h-2.5 w-2.5" />
-                        </span>
-                        <span className={done ? "text-foreground" : "text-muted-foreground"}>
-                          {label}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Step 5: nothing. The heading names the agent and says it is
+                  ready, and the pill above has just woken to show it — a
+                  checklist restating those in three rows only asked the
+                  customer to audit work they watched happen. */}
 
               {/* Error */}
               {visibleError && (
@@ -2450,7 +2298,7 @@ function OnboardingWizardInner({
                   loading={step === 3 ? false : loading}
                   primaryDisabled={
                     step === 3
-                      ? !agentRole
+                      ? !agentName.trim()
                       : step === 4
                         ? loading || adapterEnvLoading || missionUnresolvedForHire
                         : loading || launchStateIncomplete

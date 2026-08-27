@@ -78,11 +78,10 @@ async function runOnboardingWizard(page: Page, companyName: string) {
 
   // Step 1's "Next" creates the company; the mission step no longer runs.
 
-  // Step 3: the lead's role, then its name. The role gates "Next", and
-  // choosing one fills the name — so the walk only types here to override it.
-  await page.waitForSelector("#onboarding-agent-role", { timeout: 15_000 });
-  await page.locator("#onboarding-agent-role").click();
-  await page.getByRole("option", { name: "CEO", exact: true }).click();
+  // Step 3: name the agent. The role picker is gone — the arc asks for a
+  // name and hires under the neutral `general` role.
+  await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-name").fill("Ada");
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Step 4: adapter (claude_local default); heartbeat is intercepted.
