@@ -38,6 +38,7 @@ import {
   connectionMethodSupportsAutomaticOAuth,
   credentialConfigPath,
   getAppDefinitionForUrl,
+  getConnectableAppDefinition,
   getAvailableConnectionMethod,
   getAvailableConnectionMethods,
   getRecommendedConnectionMethod,
@@ -68,6 +69,7 @@ import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { AppLogo } from "@/pages/apps/AppLogo";
+import { appApplicationSourceSlug } from "@/pages/apps/app-definition-display";
 import { UnverifiedServerBadge } from "@/pages/apps/UnverifiedServerBadge";
 import {
   appSourceConnectHref,
@@ -101,6 +103,22 @@ const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   key: "setup",
   success: "complete",
 };
+
+export function requestedConnectionEntry(input: {
+  requestedAppKey: string;
+  galleryApps: readonly AppDefinition[];
+  reconnectConnection: ToolConnection | null;
+  applications: readonly ToolApplication[];
+}): AppDefinition | null {
+  const visible = input.galleryApps.find((candidate) => candidate.slug === input.requestedAppKey);
+  if (visible) return visible;
+  if (!input.reconnectConnection) return null;
+  const application = input.applications.find(
+    (candidate) => candidate.id === input.reconnectConnection?.applicationId,
+  );
+  if (appApplicationSourceSlug(application) !== input.requestedAppKey) return null;
+  return getConnectableAppDefinition(input.requestedAppKey);
+}
 
 function appConnectHref(
   appKey: string,
@@ -599,6 +617,20 @@ export function ConnectionSetupFlow({
       : null,
     [connectionsQuery.data, reconnectConnectionId],
   );
+  const reconnectApplication = useMemo(
+    () => reconnectConnection
+      ? (applicationsQuery.data?.applications ?? []).find(
+        (application) => application.id === reconnectConnection.applicationId,
+      ) ?? null
+      : null,
+    [applicationsQuery.data, reconnectConnection],
+  );
+  const reconnectSourceMatches = Boolean(
+    reconnectConnection
+    && reconnectApplication
+    && requestedAppKey
+    && appApplicationSourceSlug(reconnectApplication) === requestedAppKey,
+  );
   const resumeConnection = useMemo(
     () => resumeConnectionId
       ? (connectionsQuery.data?.connections ?? []).find((connection) => connection.id === resumeConnectionId) ?? null
@@ -887,7 +919,17 @@ export function ConnectionSetupFlow({
   useEffect(() => {
     if (!requestedAppKey || galleryQuery.isLoading || !galleryQuery.data) return;
 
-    const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.slug === requestedAppKey);
+    if (reconnectConnectionId && (
+      !connectionsQuery.isFetchedAfterMount
+      || !applicationsQuery.isFetchedAfterMount
+    )) return;
+
+    const requestedEntry = requestedConnectionEntry({
+      requestedAppKey,
+      galleryApps: galleryQuery.data.apps,
+      reconnectConnection,
+      applications: applicationsQuery.data?.applications ?? [],
+    });
     const methods = connectionMethodsForCredentialSource(requestedEntry, credentialSource);
     const method = methods.length === 1 ? methods[0]! : null;
     const automaticOAuth = credentialSource === "paperclip_vault" && Boolean(automaticOAuthMethod(requestedEntry));
@@ -900,6 +942,7 @@ export function ConnectionSetupFlow({
     if (!requestedEntry || methods.length === 0 || unsupportedOAuth || vercelUnavailable || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");
+      if (reconnectConnectionId) return;
       navigate(
         credentialSource === "vercel_connect" ? vercelConnectSourceHref() : "/apps/connect",
         { replace: true },
@@ -947,6 +990,7 @@ export function ConnectionSetupFlow({
   }, [
     applicationsQuery.isError,
     applicationsQuery.isFetchedAfterMount,
+    applicationsQuery.data,
     connectionsQuery.isError,
     connectionsQuery.isFetchedAfterMount,
     credentialSource,
@@ -955,6 +999,8 @@ export function ConnectionSetupFlow({
     galleryQuery.isLoading,
     navigate,
     reconnectGrantKind,
+    reconnectConnection,
+    reconnectConnectionId,
     resumeConnectionId,
     requestedAppKey,
     requestedAgentId,
@@ -1113,12 +1159,19 @@ export function ConnectionSetupFlow({
     );
   }
 
-  if (reconnectConnectionId && connectionsQuery.isFetchedAfterMount && !reconnectConnection) {
+  if (
+    reconnectConnectionId
+    && connectionsQuery.isFetchedAfterMount
+    && applicationsQuery.isFetchedAfterMount
+    && (!reconnectConnection || !reconnectSourceMatches)
+  ) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
         <h2 className="text-lg font-semibold text-foreground">This connection can’t be reconnected</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          The retained connection no longer exists or is not available to this company.
+          {!reconnectConnection
+            ? "The retained connection no longer exists or is not available to this company."
+            : "This reconnect link does not match the retained connection's provider."}
         </p>
         <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
           Back to apps
@@ -1143,6 +1196,7 @@ export function ConnectionSetupFlow({
 
   if (reconnectConnectionId && (
     !connectionsQuery.isFetchedAfterMount
+    || !applicationsQuery.isFetchedAfterMount
     || galleryQuery.isLoading
     || !entry
   )) {

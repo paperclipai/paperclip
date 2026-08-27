@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import { readConnectionIntentOAuthOutcome } from "./ConnectionSetupFlow";
+import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
+import { getConnectableAppDefinition } from "@paperclipai/shared";
+import { readConnectionIntentOAuthOutcome, requestedConnectionEntry } from "./ConnectionSetupFlow";
 
 const origin = "https://paperclip.test";
 const interactionId = "interaction-123";
@@ -65,5 +67,46 @@ describe("connection intent OAuth window messages", () => {
     expect(
       readConnectionIntentOAuthOutcome(candidate, origin, interactionId),
     ).toBeNull();
+  });
+});
+
+describe("retained reconnect definition lookup", () => {
+  const connection = { applicationId: "app-1" } as ToolConnection;
+
+  it("restores a hidden provider only for its exact retained application", () => {
+    const githubApplication = {
+      id: "app-1",
+      applicationKey: "github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+
+    expect(requestedConnectionEntry({
+      requestedAppKey: "github",
+      galleryApps: [],
+      reconnectConnection: connection,
+      applications: [githubApplication],
+    })?.slug).toBe("github");
+    expect(requestedConnectionEntry({
+      requestedAppKey: "notion",
+      galleryApps: [],
+      reconnectConnection: connection,
+      applications: [githubApplication],
+    })).toBeNull();
+  });
+
+  it("does not expose a hidden provider without an exact reconnect target", () => {
+    expect(requestedConnectionEntry({
+      requestedAppKey: "github",
+      galleryApps: [],
+      reconnectConnection: null,
+      applications: [],
+    })).toBeNull();
+    const visibleNotion = getConnectableAppDefinition("notion")!;
+    expect(requestedConnectionEntry({
+      requestedAppKey: "notion",
+      galleryApps: [visibleNotion],
+      reconnectConnection: null,
+      applications: [],
+    })).toBe(visibleNotion);
   });
 });
