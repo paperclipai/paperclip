@@ -50,17 +50,20 @@ export function accessService(db: Db) {
       eq(connectionGrants.subjectUserId, userId),
     ));
     const grantIds = ownedGrants.map((grant) => grant.id);
-    // Membership removal is an ownership boundary, not merely a grant cleanup.
-    // Destroy every personal secret owned by the departing user, including
-    // orphaned rows that are not referenced by a current grant. Restricting the
-    // lookup to grant refs leaves recoverable credentials on disk and lets them
-    // reappear if the same identity is later reactivated.
-    const ownedSecrets = await tx.select({
+    // Membership removal revokes personal connection identities. It must not
+    // erase unrelated user-scoped values used by agent or environment secret
+    // declarations. Delete only secrets that the departing user's grants
+    // explicitly own, and verify ownership before deleting a referenced row.
+    const referencedSecretIds = [...new Set(ownedGrants.flatMap((grant) =>
+      grant.credentialSecretRefs.map((ref) => ref.secretId),
+    ))];
+    const ownedSecrets = referencedSecretIds.length === 0 ? [] : await tx.select({
       id: companySecrets.id,
     }).from(companySecrets).where(and(
       eq(companySecrets.companyId, companyId),
       eq(companySecrets.scope, "user"),
       eq(companySecrets.ownerUserId, userId),
+      inArray(companySecrets.id, referencedSecretIds),
     ));
     const secretIds = ownedSecrets.map((secret) => secret.id);
     const removedDelegations = grantIds.length === 0 ? [] : await tx

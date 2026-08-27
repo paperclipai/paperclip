@@ -478,7 +478,7 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ status: "revoked", credentialSecretRefs: [] })]);
   });
 
-  it("destroys every owned personal secret on suspension, including unreferenced secrets", async () => {
+  it("preserves unrelated user-scoped secrets when membership is suspended", async () => {
     const { company } = await createCompanyWithOwner(db);
     const member = await db.insert(companyMemberships).values({
       companyId: company.id,
@@ -492,14 +492,14 @@ describeEmbeddedPostgres("access service", () => {
       key: `oauth-${randomUUID()}`,
       name: "Personal OAuth token",
     }).returning().then((rows) => rows[0]!);
-    const ownedSecrets = await db.insert(companySecrets).values({
+    const unrelatedSecret = await db.insert(companySecrets).values({
       companyId: company.id,
       scope: "user",
       ownerUserId: member.principalId,
       userSecretDefinitionId: definition.id,
       key: `oauth-${randomUUID()}`,
-      name: "Orphaned personal credential",
-    }).returning();
+      name: "Environment API key",
+    }).returning().then((rows) => rows[0]!);
     const otherUserSecret = await db.insert(companySecrets).values({
       companyId: company.id,
       scope: "user",
@@ -511,10 +511,8 @@ describeEmbeddedPostgres("access service", () => {
 
     await accessService(db).updateMember(company.id, member.id, { status: "suspended" });
 
-    expect(await db.select().from(companySecrets).where(inArray(
-      companySecrets.id,
-      ownedSecrets.map((secret) => secret.id),
-    ))).toHaveLength(0);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, unrelatedSecret.id)))
+      .toHaveLength(1);
     expect(await db.select().from(companySecrets).where(eq(companySecrets.id, otherUserSecret.id)))
       .toHaveLength(1);
   });
