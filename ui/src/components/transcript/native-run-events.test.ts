@@ -109,7 +109,7 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("collapses streaming usage updates into one cumulative run summary", () => {
+  it("sums run deltas without leaking session-cumulative usage", () => {
     const transcript = nativeRunEventsToTranscript([
       event(1, "usage.reported", {
         runDelta: {
@@ -119,10 +119,10 @@ describe("nativeRunEventsToTranscript", () => {
           providerCostUsd: 0.01,
         },
         cumulative: {
-          inputTokens: 12,
-          outputTokens: 3,
-          cacheReadTokens: 2,
-          providerCostUsd: 0.01,
+          inputTokens: 112,
+          outputTokens: 53,
+          cacheReadTokens: 22,
+          providerCostUsd: 1.01,
         },
       }),
       event(2, "usage.reported", {
@@ -133,10 +133,10 @@ describe("nativeRunEventsToTranscript", () => {
           providerCostUsd: 0.005,
         },
         cumulative: {
-          inputTokens: 16,
-          outputTokens: 5,
-          cacheReadTokens: 3,
-          providerCostUsd: 0.015,
+          inputTokens: 116,
+          outputTokens: 55,
+          cacheReadTokens: 23,
+          providerCostUsd: 1.015,
         },
       }),
     ]);

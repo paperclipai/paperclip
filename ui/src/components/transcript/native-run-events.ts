@@ -132,8 +132,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "usage.reported") {
-      const cumulative = record(payload.cumulative);
-      const measurement = cumulative ?? record(payload.runDelta);
+      const measurement = record(payload.runDelta);
       if (!measurement) continue;
       const next = {
         ts,
@@ -142,18 +141,17 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         cachedTokens: finiteNumber(measurement.cacheReadTokens),
         costUsd: finiteNumber(measurement.providerCostUsd),
       };
-      // A cumulative measurement is authoritative. Delta-only providers are
-      // still supported by folding every subsequent report into the same run
-      // summary rather than rendering one usage row per streaming update.
-      usageSummary = cumulative || !usageSummary
-        ? next
-        : {
+      // Provider cumulative values are session-scoped and can include earlier
+      // runs. Fold only the event's run delta into this run's transcript.
+      usageSummary = usageSummary
+        ? {
             ts,
             inputTokens: usageSummary.inputTokens + next.inputTokens,
             outputTokens: usageSummary.outputTokens + next.outputTokens,
             cachedTokens: usageSummary.cachedTokens + next.cachedTokens,
             costUsd: usageSummary.costUsd + next.costUsd,
-          };
+          }
+        : next;
       continue;
     }
 
