@@ -127,10 +127,12 @@ function isGenericAcpToolName(value: unknown): boolean {
 function meaningfulAcpToolProgress(value: string, title: string | undefined, status: string | undefined): boolean {
   const progress = value.trim();
   if (!progress || /^tool(?:\s+|_)call\b/i.test(progress)) return false;
-  const normalizedStatus = (status ?? "").replaceAll("_", "[ _-]?");
-  if (!title || !normalizedStatus) return true;
+  const statusPattern = (status ?? "")
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replaceAll("_", "[ _-]?");
+  if (!title || !statusPattern) return true;
   const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return !new RegExp(`^${escapedTitle}\\s*\\(${normalizedStatus}\\)\\s*$`, "i").test(progress);
+  return !new RegExp(`^${escapedTitle}\\s*\\(${statusPattern}\\)\\s*$`, "i").test(progress);
 }
 
 interface AcpxToolLifecycleIdentity {

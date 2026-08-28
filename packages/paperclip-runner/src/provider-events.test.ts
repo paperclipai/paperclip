@@ -289,6 +289,27 @@ describe("provider-neutral events", () => {
     }
   });
 
+  it("treats provider status metacharacters as literal progress text", () => {
+    const normalize = createAcpxToolEventNormalizer();
+    expect(() => normalize({
+      type: "tool_call",
+      tag: "tool_call",
+      toolCallId: "tool-hostile-status",
+      title: "Read",
+      kind: "read",
+      status: "[",
+      text: "Read ([)",
+    } as never)).not.toThrow();
+    expect(normalize({
+      type: "tool_call",
+      tag: "tool_call_update",
+      toolCallId: "tool-hostile-status",
+      title: "Read",
+      status: "(",
+      text: "Meaningful progress",
+    } as never)).toMatchObject({ text: "Meaningful progress" });
+  });
+
   it("normalizes dotted MCP names, ToolSearch, and truly unnamed calls", () => {
     const dotted = canonicalProviderEventsFromAcpxRuntimeEvent({
       type: "tool_call", tag: "tool_call", toolCallId: "mcp-1", title: "mcp.paperclip.get_task_context",
