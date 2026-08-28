@@ -1996,6 +1996,18 @@ function readToolActionContinuationContext(interaction: {
     };
   }
 
+  if (executionStatus === "expired") {
+    const expirationMessage = error ? `: ${error}` : "";
+    return {
+      toolName,
+      actionRequestId,
+      decision: "accepted",
+      executionStatus,
+      ...(error ? { error } : {}),
+      instructions: `the approved ${toolName} action expired before execution${expirationMessage}; if the task still requires it, call the tool again to request a fresh approval.`,
+    };
+  }
+
   return {
     toolName,
     actionRequestId,
