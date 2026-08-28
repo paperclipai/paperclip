@@ -29,6 +29,8 @@ function counterDb(
                 companyId: "22222222-2222-4222-8222-222222222222",
                 agentId: "33333333-3333-4333-8333-333333333333",
                 responsibleUserId: "user-1",
+                // Real rows carry a status, and only a live run may write.
+                status: "running",
                 contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
                 ...runOverrides,
               }]),
@@ -166,6 +168,7 @@ describe("cross-issue influence limit rollout", () => {
     ["missing", null],
     ["wrong-agent", { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
     ["wrong-company", { companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+    ["terminal", { status: "failed" }],
   ] as const)("fails closed for a %s locked run", async (_label, runOverrides) => {
     const fake = counterDb(0, runOverrides);
 

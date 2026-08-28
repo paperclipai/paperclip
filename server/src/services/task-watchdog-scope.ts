@@ -1,6 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issues, issueWatchdogs } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
+import { hasAgentWriteRunAuthority } from "./agent-run-authority.js";
 
 const MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH = 100;
 export const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
@@ -56,13 +58,17 @@ export async function resolveTaskWatchdogMutationScope(
   const agentId = readString(actor.agentId);
   const runId = readString(actor.runId);
   const actorCompanyId = readString(actor.companyId);
-  if (!agentId || !runId) return { kind: "none" };
+  // A forged run header is an arbitrary string. Reject malformed ids before the
+  // lookup so an untrusted value cannot become a uuid cast error, which would
+  // turn every downstream fail-closed denial into a 500 (FAI-9983).
+  if (!agentId || !runId || !isUuidLike(runId)) return { kind: "none" };
 
   const run = await db
     .select({
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
       agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
       contextSnapshot: heartbeatRuns.contextSnapshot,
     })
     .from(heartbeatRuns)
@@ -70,6 +76,11 @@ export async function resolveTaskWatchdogMutationScope(
     .then((rows) => rows[0] ?? null);
 
   if (!run) return { kind: "none" };
+  // Watchdog scope is a grant this run carries while it executes, not a
+  // property of the row that outlives it. Without this, any persisted watchdog
+  // run of this agent's — including one that finished long ago — could be
+  // replayed by id to reacquire subtree mutation powers (FAI-9983).
+  if (!hasAgentWriteRunAuthority(run.status)) return { kind: "none" };
   const taskWatchdog = readTaskWatchdogContext(run.contextSnapshot);
   if (!taskWatchdog) return { kind: "none" };
   if (run.agentId !== agentId || (actorCompanyId && run.companyId !== actorCompanyId)) {

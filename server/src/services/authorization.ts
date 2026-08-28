@@ -20,7 +20,7 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, isUuidLike, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -28,6 +28,7 @@ import {
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
 import { logger } from "../middleware/logger.js";
+import { hasAgentWriteRunAuthority } from "./agent-run-authority.js";
 
 export type AuthorizationActor =
   {
@@ -749,8 +750,12 @@ export function authorizationService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // `runId` comes from a caller-controlled header, so it is not necessarily a
+  // uuid. A malformed value has to read as "no run" here; letting it reach the
+  // lookup raises a uuid cast error, which turns a fail-closed 403 further down
+  // the route into a 500 (FAI-9983).
   async function loadRunPolicy(runId: string | null | undefined, companyId: string, agentId: string) {
-    if (!runId) return null;
+    if (!runId || !isUuidLike(runId)) return null;
     const row = await db
       .select({
         id: heartbeatRuns.id,
@@ -768,18 +773,27 @@ export function authorizationService(db: Db) {
       : null;
   }
 
+  /**
+   * The run's canonical issue, used to widen an agent's reach to that issue's
+   * direct parent. That is a grant the run carries while it executes, so a run
+   * that has finished must not still confer it: the stale checkout lock a dead
+   * run can leave behind would otherwise be enough to keep writing to the
+   * parent (FAI-9983).
+   */
   async function loadRunIssueId(runId: string | null | undefined, companyId: string, agentId: string) {
-    if (!runId) return null;
+    if (!runId || !isUuidLike(runId)) return null;
     const row = await db
       .select({
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!row || row.companyId !== companyId || row.agentId !== agentId) return null;
+    if (!hasAgentWriteRunAuthority(row.status)) return null;
     const context = isPlainRecord(row.contextSnapshot) ? row.contextSnapshot : null;
     const issueId = typeof context?.issueId === "string"
       ? context.issueId.trim()

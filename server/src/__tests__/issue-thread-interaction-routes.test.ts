@@ -106,6 +106,9 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
                   id: run.runId ?? null,
                   companyId: run.companyId ?? null,
                   agentId: run.agentId ?? null,
+                  // A run only issues writes while it is executing, and the
+                  // counter now rejects spent runs, so model a live one.
+                  status: "running",
                   responsibleUserId: run.responsibleUserId ?? null,
                   contextSnapshot: { issueId: mockCrossIssueInfluence.sourceIssueId },
                 }]

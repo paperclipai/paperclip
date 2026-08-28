@@ -57,6 +57,26 @@ async function createAgentRequest(token: string): Promise<APIRequestContext> {
   });
 }
 
+/**
+ * The heartbeat-run statuses that still carry agent write authority.
+ *
+ * `X-Paperclip-Run-Id` is a claim, not a credential: the server refuses a run id
+ * that names a run which has already finished, because replaying a spent run is
+ * the escalation path the run-context gate exists to close (FAI-9983). A helper
+ * that hands back the first context-matching run it can find will sooner or
+ * later find a *historical* one in the agent's receipts and authenticate the
+ * suite with precisely the artifact the server is built to reject — which reads
+ * as a flaky 403 rather than as the correct refusal it is. So liveness is part
+ * of what makes a run usable here, exactly as it is for a real agent.
+ */
+const LIVE_RUN_STATUSES = new Set(["queued", "running"]);
+
+async function isLiveRun(board: APIRequestContext, runId: string): Promise<boolean> {
+  const res = await board.get(`${BASE_URL}/api/heartbeat-runs/${runId}`);
+  if (!res.ok()) return false;
+  return LIVE_RUN_STATUSES.has((await res.json()).status);
+}
+
 /** Invoke a heartbeat run for an agent, returning the run ID. */
 async function invokeHeartbeat(
   board: APIRequestContext,
@@ -67,24 +87,40 @@ async function invokeHeartbeat(
     data: {
       reason: "issue_assigned",
       payload: { issueId, taskId: issueId, taskKey: issueId },
+      // Each helper call stands in for a distinct agent turn, so it wants a
+      // genuinely fresh run. Without saying so the issue-rewake throttle
+      // (PAP-13775) is right to skip the second wake: this suite's adapter is a
+      // no-op, so every prior run for the pair looks like a run that finished
+      // without making issue-visible progress. A skipped wake used to be
+      // survivable because the helper could fall back on an old run id; now
+      // that a run id has to be live to carry authority, the skip leaves the
+      // caller with nothing to speak as.
+      forceFreshSession: true,
     },
   });
   expect(res.ok()).toBe(true);
   const run = await res.json();
-  if (typeof run.id === "string" && run.id.length > 0) return run.id;
+  const invokedRunId = typeof run.id === "string" && run.id.length > 0 ? run.id : null;
+  if (invokedRunId && await isLiveRun(board, invokedRunId)) return invokedRunId;
 
   // A stage transition can already be replacing the previous executor's run
-  // with the participant's queued run. If the legacy invoke is skipped and
-  // that run has already released the issue lock, recover it from the agent's
-  // recent run receipts.
-  const deadline = Date.now() + 3_000;
+  // with the participant's queued run. If the legacy invoke is skipped — or
+  // returns a run that has already finished — recover a live one from the
+  // agent's recent run receipts.
+  //
+  // A context-matching run that is already spent is kept only as a last resort:
+  // returning it lets the caller's own board-checkout fallback decide what to do
+  // instead of failing the shard here, but it must never win over a live run.
+  let spentFallback: string | null = invokedRunId;
+  const deadline = Date.now() + 10_000;
   do {
     const issueRunLock = await getIssueRunLockState(board, issueId);
     if (issueRunLock.assigneeAgentId !== agentId) {
       // Negative authorization cases intentionally invoke a non-participant.
       // Preserve the server rejection instead of waiting for a run that must
-      // never be assigned to that agent.
-      return issueRunLock.executionRunId ?? issueRunLock.checkoutRunId ?? "";
+      // never be assigned to that agent, and keep speaking as that agent's own
+      // run so the refusal is the participation one the test asserts on.
+      return spentFallback ?? issueRunLock.executionRunId ?? issueRunLock.checkoutRunId ?? "";
     }
     const candidates = new Set<string>([
       run.executionRunId,
@@ -105,16 +141,15 @@ async function invokeHeartbeat(
       if (!runRes.ok()) continue;
       const candidateRun = await runRes.json();
       const context = candidateRun.contextSnapshot ?? {};
-      if (
-        candidateRun.agentId === agentId &&
-        (context.issueId === issueId || context.taskId === issueId)
-      ) {
-        return candidate;
-      }
+      if (candidateRun.agentId !== agentId) continue;
+      if (context.issueId !== issueId && context.taskId !== issueId) continue;
+      if (LIVE_RUN_STATUSES.has(candidateRun.status)) return candidate;
+      spentFallback ??= candidate;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
 
+  if (spentFallback) return spentFallback;
   throw new Error(`No issue-bound heartbeat run became available for agent ${agentId}`);
 }
 
