@@ -26,7 +26,14 @@ import type {
   ToolConnectionAuthKind,
   ToolConnectionCreateCapabilities,
 } from "@paperclipai/shared";
-import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod, getAvailableConnectionMethods } from "@paperclipai/shared";
+import {
+  connectionMethodAcceptsCustomerOAuthClient,
+  connectionMethodSupportsAutomaticOAuth,
+  credentialConfigPath,
+  getAppDefinitionForUrl,
+  getAvailableConnectionMethod,
+  getAvailableConnectionMethods,
+} from "@paperclipai/shared";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -544,8 +551,10 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     const method = requestedEntry ? getAvailableConnectionMethod(requestedEntry) : null;
     const methods = requestedEntry ? getAvailableConnectionMethods(requestedEntry) : [];
     const directOAuth = method?.auth === "oauth" && isMcpDirectOAuthConnectSlug(requestedEntry?.slug);
-    const brokeredOAuth = method?.oauthStrategy === "paperclip_id_connector";
-    const unsupportedOAuth = methods.length === 1 && method?.auth === "oauth" && !brokeredOAuth && !directOAuth;
+    const unsupportedOAuth = methods.length === 1
+      && method?.auth === "oauth"
+      && !connectionMethodSupportsAutomaticOAuth(method)
+      && !connectionMethodAcceptsCustomerOAuthClient(method);
     if (!requestedEntry || unsupportedOAuth || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");

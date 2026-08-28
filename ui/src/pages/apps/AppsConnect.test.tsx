@@ -29,6 +29,7 @@ const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
+const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -909,7 +910,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
-  it("keeps non-allowlisted OAuth apps blocked", async () => {
+  it("opens customer-client OAuth apps in branded setup", async () => {
     const slack = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "slack")!;
     mockParams.appKey = "slack";
     listGalleryMock.mockResolvedValueOnce({ apps: [slack] });
@@ -917,7 +918,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     expect(connectAppMock).not.toHaveBeenCalled();
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect", { replace: true });
+    expect(container.textContent).toContain("Who is this credential for?");
+    expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
   it("routes the enabled Notion gallery tile through the generic source deep link", async () => {
@@ -1242,6 +1244,32 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await passAccessStep();
     expect(mockNavigate).toHaveBeenCalledWith(
       `/apps/connect?byo=1&appKey=zapier&stage=setup&intent=${interactionId}`,
+    );
+  });
+
+  it("keeps an intent on its requested manual OAuth provider", async () => {
+    const interactionId = "11111111-1111-4111-8111-111111111111";
+    mockSearch.value = `byo=1&appKey=asana&intent=${interactionId}`;
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [ASANA],
+      capabilities: {
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Who is this credential for?");
+    expect(mockNavigate).not.toHaveBeenCalledWith(
+      `/apps/connect?byo=1&intent=${interactionId}`,
+      { replace: true },
+    );
+
+    await passAccessStep();
+    expect(container.textContent).toContain("Connect Asana");
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/apps/connect?byo=1&appKey=asana&stage=setup&intent=${interactionId}`,
     );
   });
 
