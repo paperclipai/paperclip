@@ -60,3 +60,27 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   return ac;
 }
+
+/** Build the Codex-only profile accepted by the experimental Rust runner. */
+export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
+  const config = buildCodexLocalConfig(v);
+  for (const unsupportedKey of [
+    "engine",
+    "agentCommand",
+    "mode",
+    "nonInteractivePermissions",
+    "stateDir",
+    "warmHandleIdleMs",
+    "dangerouslyBypassApprovalsAndSandbox",
+    "dangerouslyBypassSandbox",
+    "instructionsFilePath",
+    "modelReasoningEffort",
+    "search",
+    "fastMode",
+    "command",
+    "extraArgs",
+  ]) {
+    delete config[unsupportedKey];
+  }
+  return { ...config, provider: "codex" };
+}

@@ -763,7 +763,7 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
     return "Paperclip is retrying the original owner";
   }
   if (type === "bounded_recovery_owner") return "A recovery owner is repairing the next step";
-  if (type === "board_escalation") return "Board will decide";
+  if (type === "board_escalation") return "Board decision required";
   if (type === "manual") return "Manual follow-up needed";
   if (type === "manual_repair_required") return "Repair needed before retry";
   if (type === "monitor") {

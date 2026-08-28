@@ -125,6 +125,8 @@ async function seedValidWorktreeSource(
   if (options.includeCredentialAccount !== false) {
     await db.insert(authAccounts).values({
       id: "credential-existing",
+      // The issuer Better Auth stamps on an email/password account.
+      issuer: "local:credential",
       accountId: "existing@paperclip.ing",
       providerId: "credential",
       userId,
@@ -1610,7 +1612,13 @@ describe("worktree helpers", () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },
-    30_000,
+    // This test starts three separate embedded Postgres lifecycles (the
+    // source database, the worktree init's internal target database, and a
+    // third instance opened here to verify the seeded rows), so it needs
+    // more headroom than the other embedded-Postgres tests in this file.
+    // It normally finishes in well under 10s; the 60s budget absorbs CI
+    // runner contention without masking a real hang.
+    60_000,
   );
 
   itEmbeddedPostgres(

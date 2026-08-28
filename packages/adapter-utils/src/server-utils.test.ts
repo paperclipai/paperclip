@@ -13,8 +13,11 @@ import {
   buildPaperclipEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  resolveLegacyPaperclipDesiredSkillNames,
+  resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   runningProcesses,
   runChildProcess,
@@ -27,6 +30,45 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("legacy adapter skill selection", () => {
+  const operationalEntry = {
+    key: PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    runtimeName: "paperclip",
+  };
+  const optionalEntry = {
+    key: "company/example/reviewer",
+    runtimeName: "reviewer",
+  };
+
+  it("keeps the operational skill selected without a stored preference", () => {
+    expect(resolveLegacyPaperclipDesiredSkillNames({}, [operationalEntry, optionalEntry])).toEqual([
+      PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    ]);
+  });
+
+  it("keeps the operational skill selected after an explicit empty replacement", () => {
+    expect(resolveLegacyPaperclipDesiredSkillNames(
+      { paperclipSkillSync: { desiredSkills: [] } },
+      [operationalEntry, optionalEntry],
+    )).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
+  });
+
+  it("does not force optional skills or synthesize a missing operational entry", () => {
+    const config = { paperclipSkillSync: { desiredSkills: [optionalEntry.key] } };
+    expect(resolveLegacyPaperclipDesiredSkillNames(config, [operationalEntry, optionalEntry])).toEqual([
+      PAPERCLIP_OPERATIONAL_SKILL_KEY,
+      optionalEntry.key,
+    ]);
+    expect(resolveLegacyPaperclipDesiredSkillNames(config, [optionalEntry])).toEqual([
+      optionalEntry.key,
+    ]);
+  });
+
+  it("leaves the configurable resolver available for native runners", () => {
+    expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual([]);
+  });
+});
 
 function isPidAlive(pid: number) {
   try {
@@ -880,7 +922,12 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
-    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/{issueId}/interactions");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/$PAPERCLIP_TASK_ID/interactions");
+    // URL paths in prompt text carry real ids or env vars, never brace
+    // placeholders: agents paste these lines verbatim, and a literal {issueId}
+    // reaches the server as /api/issues/%7BissueId%7D and 404s.
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain("/api/issues/{issueId}");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain("/api/issues/{id}");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("kind suggest_tasks, ask_user_questions, or request_confirmation");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance",

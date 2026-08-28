@@ -85,6 +85,20 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     // The seed's free-text role is a job title; the structural role stays `ceo`.
     expect(companyAgents[0]?.title).toBe("Chief of Staff");
     expect(companyAgents[0]?.role).toBe("ceo");
+    // A seeded CEO arrives with the core paperclip skills enabled. Skills only
+    // reach an agent's runtime through its own desired set, and the default
+    // CEO instructions assume this toolkit.
+    expect(companyAgents[0]?.adapterConfig).toMatchObject({
+      paperclipSkillSync: {
+        desiredSkills: expect.arrayContaining([
+          "paperclipai/paperclip/paperclip",
+          "paperclipai/paperclip/paperclip-board",
+          "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
+          "paperclipai/paperclip/paperclip-create-agent",
+          "paperclipai/paperclip/para-memory-files",
+        ]),
+      },
+    });
 
     const companyIssues = await ctx.db.select().from(issues).where(eq(issues.companyId, companyId));
     expect(companyIssues).toHaveLength(1);

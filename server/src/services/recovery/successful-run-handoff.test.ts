@@ -531,7 +531,7 @@ describe("successful run handoff decision", () => {
     expect(notice.metadata.sourceRunId).toBe("22222222-2222-4222-8222-222222222222");
     expect(notice.metadata.sections).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        title: "Recovery owner",
+        title: "Recovery",
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "key_value", label: "Recovery action", value: "77777777-7777-4777-8777-777777777777" }),
           expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CTO" }),

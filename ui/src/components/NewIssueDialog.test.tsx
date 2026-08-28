@@ -27,7 +27,6 @@ const companyState = vi.hoisted(() => ({
       id: "company-1",
       name: "Paperclip",
       status: "active",
-      brandColor: "#123456",
       issuePrefix: "PAP",
     },
   ],
@@ -36,7 +35,6 @@ const companyState = vi.hoisted(() => ({
     id: "company-1",
     name: "Paperclip",
     status: "active",
-    brandColor: "#123456",
     issuePrefix: "PAP",
   },
 }));
@@ -544,6 +542,33 @@ describe("NewIssueDialog", () => {
     });
 
     expect(container.textContent).toContain("agent_token,project_token");
+
+    act(() => root.unmount());
+  });
+
+  it("warns when the selected assignee is a paused imported agent", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Compare onboarding flows",
+      assigneeAgentId: "agent-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CEO",
+        status: "paused",
+        pauseReason: "import",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="new-issue-paused-assignee-note"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("arrived paused from an organization import");
 
     act(() => root.unmount());
   });
@@ -1445,7 +1470,6 @@ describe("NewIssueDialog", () => {
           id: "company-1",
           name: "Acme Labs",
           status: "active",
-          brandColor: "#123456",
           issuePrefix: "OPS",
         },
       ];
@@ -1453,7 +1477,6 @@ describe("NewIssueDialog", () => {
         id: "company-1",
         name: "Acme Labs",
         status: "active",
-        brandColor: "#123456",
         issuePrefix: "OPS",
       };
 

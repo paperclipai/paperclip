@@ -112,17 +112,50 @@ export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "agent_default",
 ] as const;
 
+// Mirrors git check-ref-format for a single branch name. The runtime verifies
+// the branch actually exists before attaching, so this only rejects values
+// that could never be a branch (path escapes, option injection, ref syntax).
+export function isValidExistingBranchName(value: string): boolean {
+  if (value.length === 0 || value.length > 255) return false;
+  if (value.startsWith("-") || value.startsWith("/") || value.startsWith(".")) return false;
+  if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock")) return false;
+  if (value.includes("..") || value.includes("//") || value.includes("@{") || value.includes("/.")) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(value)) return false;
+  return true;
+}
+
 const executionWorkspaceStrategySchema = z
   .object({
     type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
+    existingBranch: z.string().trim().refine(isValidExistingBranchName, {
+      message: "existingBranch must be a valid git branch name",
+    }).optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
     runtimeProvisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((strategy, ctx) => {
+    if (!strategy.existingBranch) return;
+    if (strategy.type !== "git_worktree") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["existingBranch"],
+        message: "existingBranch requires workspaceStrategy.type \"git_worktree\"",
+      });
+    }
+    if (strategy.branchTemplate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["existingBranch"],
+        message: "existingBranch and branchTemplate are mutually exclusive",
+      });
+    }
+  });
 
 const ipv4CidrPattern = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:3[0-2]|[12]?\d)$/;
 const protectedTaskEgressCidrs = [
@@ -176,7 +209,16 @@ export const issueExecutionWorkspaceSettingsSchema = z
       )).max(100).optional(),
     }).strict().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((settings, ctx) => {
+    if (settings.workspaceStrategy?.existingBranch && settings.mode !== "isolated_workspace") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workspaceStrategy", "existingBranch"],
+        message: "existingBranch requires mode \"isolated_workspace\"",
+      });
+    }
+  });
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
@@ -804,12 +846,54 @@ export const askUserQuestionsQuestionSchema = z.object({
   options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
 });
 
+const paperclipQuestionOptionSchema = z.object({
+  id: z.string().min(1).max(160),
+  label: z.string().min(1).max(1000),
+  description: z.string().max(4000).optional(),
+  recommended: z.boolean().optional(),
+});
+
+const paperclipQuestionSchema = z.object({
+  id: z.string().min(1).max(160),
+  header: z.string().max(1000).optional(),
+  prompt: z.string().min(1).max(4000),
+  helpText: z.string().max(4000).optional(),
+  required: z.boolean(),
+  answerMode: z.enum(["single_select", "multi_select", "text"]),
+  options: z.array(paperclipQuestionOptionSchema).max(128).optional(),
+  customAnswer: z.object({
+    enabled: z.literal(true),
+    label: z.string().max(1000).optional(),
+    placeholder: z.string().max(1000).optional(),
+  }).optional(),
+  textValidation: z.object({
+    minLength: z.number().int().min(0).max(100000).optional(),
+    maxLength: z.number().int().min(0).max(100000).optional(),
+    pattern: z.string().max(1000).optional(),
+    inputType: z.enum(["text", "number", "integer"]).optional(),
+    minimum: z.number().finite().optional(),
+    maximum: z.number().finite().optional(),
+  }).optional(),
+});
+
+const paperclipQuestionSetSchema = z.object({
+  schema: z.literal("paperclip.question_set.v1"),
+  title: z.string().max(1000).optional(),
+  description: z.string().max(4000).optional(),
+  submitLabel: z.string().max(200).optional(),
+  questions: z.array(paperclipQuestionSchema).min(1).max(64),
+});
+
 export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
+  /** Exact canonical presentation retained for a recovered harness request. */
+  questionSet: paperclipQuestionSetSchema.optional(),
+  /** Stable correlation for draft handoff from a live runtime request. */
+  runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
   for (const [questionIndex, question] of value.questions.entries()) {

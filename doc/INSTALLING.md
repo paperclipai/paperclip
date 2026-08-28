@@ -138,6 +138,11 @@ paperclipai onboard --yes --install-service  # explicit automation opt-in
 paperclipai onboard --yes --no-install-service
 ```
 
+After onboarding installs and starts the service, it waits for the service to
+report its selected runtime port and then prints the dashboard URL. Interactive
+terminals open that URL in the default browser; headless and non-interactive
+runs print the URL without trying to launch a browser.
+
 Service commands are namespaced:
 
 ```sh

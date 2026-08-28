@@ -101,7 +101,7 @@ describe("reservedRootLabel", () => {
 describe("skillFolderDisplayPath", () => {
   it("prefixes company folders and preserves reserved-root labels", () => {
     const model = buildSkillFolderTree(folders);
-    expect(skillFolderDisplayPath(model, "eng-review")).toBe("Company / Engineering / Review");
+    expect(skillFolderDisplayPath(model, "eng-review")).toBe("Organization / Engineering / Review");
     expect(skillFolderDisplayPath(model, "mine")).toBe("My Skills / dotta");
     expect(skillFolderDisplayPath(model, "bundled-git")).toBe("Bundled / git");
     expect(skillFolderDisplayPath(model, null)).toBeNull();
@@ -110,7 +110,7 @@ describe("skillFolderDisplayPath", () => {
 
 describe("skillFolderPathDisplayFallback", () => {
   it("humanizes cold detail paths before folder metadata loads", () => {
-    expect(skillFolderPathDisplayFallback("engineering/code-review")).toBe("Company / Engineering / Code Review");
+    expect(skillFolderPathDisplayFallback("engineering/code-review")).toBe("Organization / Engineering / Code Review");
     expect(skillFolderPathDisplayFallback("my/local-board/drafts")).toBe("My Skills / Local Board / Drafts");
     expect(skillFolderPathDisplayFallback("bundled/review-pr")).toBe("Bundled / Review Pr");
     expect(skillFolderPathDisplayFallback(null)).toBeNull();

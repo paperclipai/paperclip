@@ -43,7 +43,6 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
 import type {
   AdapterLoginPanelMode,
-  AdapterLoginSandboxTransport,
   AdapterLoginTimeoutPolicy,
 } from "@paperclipai/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
@@ -101,13 +100,13 @@ interface AdapterInstallRequest {
 
 /**
  * The safe scalar login fields the adapter listing projects to the client. It
- * carries only the panel mode, the sandbox transport, and the timeout policy.
- * It carries no function member and no secret. The user interface reads it to
- * pick the login flow and the login panel.
+ * carries only the panel mode and the timeout policy. It carries no function
+ * member and no secret. The user interface reads it to pick the login flow and
+ * the login panel. Every login runs on a real pseudo-terminal, so the projection
+ * carries no transport field.
  */
 interface AdapterLoginProjection {
   panelMode: AdapterLoginPanelMode;
-  sandboxTransport: AdapterLoginSandboxTransport;
   timeoutPolicy: AdapterLoginTimeoutPolicy;
 }
 
@@ -189,7 +188,6 @@ export function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterC
       ? {
           login: {
             panelMode: login.panelMode,
-            sandboxTransport: login.sandboxTransport,
             timeoutPolicy: login.timeoutPolicy,
           },
         }
@@ -261,7 +259,9 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 // Router
 // ---------------------------------------------------------------------------
 
-export function adapterRoutes() {
+export function adapterRoutes(options: {
+  getNativeRunnerEnabled?: () => Promise<boolean>;
+} = {}) {
   const router = Router();
 
   /**
@@ -282,6 +282,8 @@ export function adapterRoutes() {
       listAdapterPlugins().map((r) => [r.type, r]),
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
+    const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
+    if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
       buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),

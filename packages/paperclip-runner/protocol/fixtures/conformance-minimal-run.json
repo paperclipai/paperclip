@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "paperclip.runner.conformance.fixture.v1",
+  "run": {
+    "runId": "run_conformance_0001",
+    "sessionId": "session_conformance_0001",
+    "companyId": "company_conformance",
+    "issueId": "issue_conformance",
+    "agentId": "agent_conformance"
+  },
+  "events": [
+    {
+      "eventId": "event_conformance_0001",
+      "runId": "run_conformance_0001",
+      "sequence": 1,
+      "type": "run.started"
+    },
+    {
+      "eventId": "event_conformance_0002",
+      "runId": "run_conformance_0001",
+      "sequence": 2,
+      "type": "run.completed"
+    }
+  ],
+  "result": {
+    "runId": "run_conformance_0001",
+    "status": "succeeded",
+    "summary": "Standalone Conformance fixture accepted."
+  }
+}

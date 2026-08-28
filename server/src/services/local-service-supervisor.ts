@@ -634,13 +634,50 @@ export async function readLocalServicePortOwner(port: number) {
   }
 }
 
+/**
+ * Resolve a running process's working directory.
+ *
+ * Linux reads it straight off procfs. macOS has no procfs, so it asks `lsof`
+ * for the process's `cwd` descriptor — the same tool this module already shells
+ * out to for port ownership, so this adds no new dependency. `-d cwd` narrows
+ * the output to the working directory.
+ *
+ * `-F0n` terminates each field with NUL instead of a newline. The parser does
+ * not trim the path or split it on newlines. That matters because the caller
+ * compares this value against a workspace root: a directory name may contain
+ * leading or trailing spaces, or even a newline, and changing the path would
+ * report a different directory than the one the process runs in.
+ *
+ * Returning a real path on macOS is what lets `adoptLocalServiceFromPortOwner`
+ * verify a listener actually belongs to the workspace. While this returned
+ * null off Linux, that check could never pass, so port-owner adoption always
+ * failed there and still-running services were reconciled to `stopped`.
+ */
 export async function readLocalServiceProcessCwd(pid: number) {
-  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== "linux") return null;
-  try {
-    return await fs.readlink(`/proc/${pid}/cwd`);
-  } catch {
-    return null;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === "linux") {
+    try {
+      return await fs.readlink(`/proc/${pid}/cwd`);
+    } catch {
+      return null;
+    }
   }
+  if (process.platform === "darwin") {
+    try {
+      const { stdout } = await execFileAsync("lsof", ["-a", "-d", "cwd", "-p", String(pid), "-F0n"]);
+      // Each field ends with NUL. The newline that ends a field set carries
+      // into the next field, so drop it before reading the `n` tag; anything
+      // after the tag is the path exactly as lsof reported it.
+      const cwdField = stdout
+        .split("\0")
+        .map((field) => field.replace(/^\n+/, ""))
+        .find((field) => field.startsWith("n"));
+      return cwdField ? cwdField.slice(1) || null : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export async function isLocalServiceProcessInWorkspace(processCwd: string, workspaceCwd: string) {
@@ -657,7 +694,7 @@ export async function isLocalServiceProcessInWorkspace(processCwd: string, works
 }
 
 export async function isLocalServiceRegistryCwdCompatible(processCwd: string | null, workspaceCwd: string) {
-  if (!processCwd) return process.platform !== "linux";
+  if (!processCwd) return process.platform !== "linux" && process.platform !== "darwin";
   return isLocalServiceProcessInWorkspace(processCwd, workspaceCwd);
 }
 

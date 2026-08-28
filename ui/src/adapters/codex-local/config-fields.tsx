@@ -30,8 +30,15 @@ export function CodexLocalConfigFields({
   mark,
   models,
   hideInstructionsFile,
+  managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
-  const rawEngine = isCreate
+  const runnerManaged = adapterType === "paperclip_runner";
+  // The execution engine picks which binary runs on the execution host, and the
+  // ACP sub-fields below name host paths. The platform-managed environment owns
+  // both, so the managed-sandbox-only policy hides them the same way
+  // `runnerManaged` already does for the Paperclip Runner.
+  const hideEngineChoice = runnerManaged || managedSandboxOnly === true;
+  const rawEngine = runnerManaged ? "cli" : isCreate
     ? values!.codexEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
   const engine = rawEngine === "acp" || rawEngine === "cli" ? rawEngine : "auto";
@@ -55,7 +62,7 @@ export function CodexLocalConfigFields({
 
   return (
     <>
-      <Field label="Execution engine" hint="Auto uses ACP when prerequisites pass and falls back to Codex CLI with diagnostics.">
+      {!hideEngineChoice && <Field label="Execution engine" hint="Auto uses ACP when prerequisites pass and falls back to Codex CLI with diagnostics.">
         <select
           className={inputClass}
           value={engine}
@@ -70,29 +77,38 @@ export function CodexLocalConfigFields({
           <option value="cli">Codex CLI</option>
           <option value="acp">ACP</option>
         </select>
-      </Field>
+      </Field>}
+      {runnerManaged && (
+        <Field label="Provider" hint="Paperclip Runner currently supports Codex through app-server.">
+          <select className={inputClass} value="codex" disabled>
+            <option value="codex">Codex</option>
+          </select>
+        </Field>
+      )}
       {acpSelected && (
         <>
-          <Field
-            label="ACP server command"
-            hint="Optional override for the Codex ACP server command. Defaults to the package-local codex-acp binary."
-          >
-            <DraftInput
-              value={
-                isCreate
-                  ? values!.codexAcpAgentCommand ?? ""
-                  : eff("adapterConfig", "agentCommand", String(config.agentCommand ?? ""))
-              }
-              onCommit={(v) =>
-                isCreate
-                  ? set!({ codexAcpAgentCommand: v })
-                  : mark("adapterConfig", "agentCommand", v || undefined)
-              }
-              immediate
-              className={inputClass}
-              placeholder="codex-acp"
-            />
-          </Field>
+          {!managedSandboxOnly && (
+            <Field
+              label="ACP server command"
+              hint="Optional override for the Codex ACP server command. Defaults to the package-local codex-acp binary."
+            >
+              <DraftInput
+                value={
+                  isCreate
+                    ? values!.codexAcpAgentCommand ?? ""
+                    : eff("adapterConfig", "agentCommand", String(config.agentCommand ?? ""))
+                }
+                onCommit={(v) =>
+                  isCreate
+                    ? set!({ codexAcpAgentCommand: v })
+                    : mark("adapterConfig", "agentCommand", v || undefined)
+                }
+                immediate
+                className={inputClass}
+                placeholder="codex-acp"
+              />
+            </Field>
+          )}
           <Field label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
             <select
               className={inputClass}
@@ -134,29 +150,31 @@ export function CodexLocalConfigFields({
               <option value="fail">Fail</option>
             </select>
           </Field>
-          <Field
-            label="ACP state directory"
-            hint="Optional ACP session state directory. Defaults to Paperclip-managed company/agent scoped storage."
-          >
-            <div className="flex items-center gap-2">
-              <DraftInput
-                value={
-                  isCreate
-                    ? values!.codexAcpStateDir ?? ""
-                    : eff("adapterConfig", "stateDir", String(config.stateDir ?? ""))
-                }
-                onCommit={(v) =>
-                  isCreate
-                    ? set!({ codexAcpStateDir: v })
-                    : mark("adapterConfig", "stateDir", v || undefined)
-                }
-                immediate
-                className={inputClass}
-                placeholder="/path/to/acp-state"
-              />
-              <ChoosePathButton />
-            </div>
-          </Field>
+          {!managedSandboxOnly && (
+            <Field
+              label="ACP state directory"
+              hint="Optional ACP session state directory. Defaults to Paperclip-managed organization/agent scoped storage."
+            >
+              <div className="flex items-center gap-2">
+                <DraftInput
+                  value={
+                    isCreate
+                      ? values!.codexAcpStateDir ?? ""
+                      : eff("adapterConfig", "stateDir", String(config.stateDir ?? ""))
+                  }
+                  onCommit={(v) =>
+                    isCreate
+                      ? set!({ codexAcpStateDir: v })
+                      : mark("adapterConfig", "stateDir", v || undefined)
+                  }
+                  immediate
+                  className={inputClass}
+                  placeholder="/path/to/acp-state"
+                />
+                <ChoosePathButton />
+              </div>
+            </Field>
+          )}
           <Field
             label="ACP warm process idle ms"
             hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."
@@ -183,7 +201,7 @@ export function CodexLocalConfigFields({
           </Field>
         </>
       )}
-      {!hideInstructionsFile && (
+      {!runnerManaged && !hideInstructionsFile && (
         <Field label="Agent instructions file" hint={instructionsFileHint}>
           <div className="flex items-center gap-2">
             <DraftInput
@@ -209,52 +227,56 @@ export function CodexLocalConfigFields({
           </div>
         </Field>
       )}
-      <ToggleField
-        label="Bypass sandbox"
-        hint={help.dangerouslyBypassSandbox}
-        checked={
-          isCreate
-            ? values!.dangerouslyBypassSandbox
-            : eff(
-                "adapterConfig",
-                "dangerouslyBypassApprovalsAndSandbox",
-                bypassEnabled,
-              )
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslyBypassSandbox: v })
-            : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
-        }
-      />
-      <ToggleField
-        label="Enable search"
-        hint={help.search}
-        checked={
-          isCreate
-            ? values!.search
-            : eff("adapterConfig", "search", !!config.search)
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ search: v })
-            : mark("adapterConfig", "search", v)
-        }
-      />
-      <ToggleField
-        label="Fast mode"
-        hint={help.fastMode}
-        checked={fastModeEnabled}
-        onChange={(v) =>
-          isCreate
-            ? set!({ fastMode: v })
-            : mark("adapterConfig", "fastMode", v)
-        }
-      />
-      {fastModeEnabled && (
-        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-          {fastModeMessage}
-        </div>
+      {!runnerManaged && (
+        <>
+          <ToggleField
+            label="Bypass sandbox"
+            hint={help.dangerouslyBypassSandbox}
+            checked={
+              isCreate
+                ? values!.dangerouslyBypassSandbox
+                : eff(
+                    "adapterConfig",
+                    "dangerouslyBypassApprovalsAndSandbox",
+                    bypassEnabled,
+                  )
+            }
+            onChange={(v) =>
+              isCreate
+                ? set!({ dangerouslyBypassSandbox: v })
+                : mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", v)
+            }
+          />
+          <ToggleField
+            label="Enable search"
+            hint={help.search}
+            checked={
+              isCreate
+                ? values!.search
+                : eff("adapterConfig", "search", !!config.search)
+            }
+            onChange={(v) =>
+              isCreate
+                ? set!({ search: v })
+                : mark("adapterConfig", "search", v)
+            }
+          />
+          <ToggleField
+            label="Fast mode"
+            hint={help.fastMode}
+            checked={fastModeEnabled}
+            onChange={(v) =>
+              isCreate
+                ? set!({ fastMode: v })
+                : mark("adapterConfig", "fastMode", v)
+            }
+          />
+          {fastModeEnabled && (
+            <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+              {fastModeMessage}
+            </div>
+          )}
+        </>
       )}
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}
