@@ -1121,6 +1121,11 @@ The current app also exposes V1-supporting surfaces for:
   derive `deliveryState` as `merged_via_pr | merged_by_ancestry | unmerged | unknown`; terminal issue trees with a
   merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
   through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
+  The accepted target contract for remaining adapter-backed workspace coherence work requires a code-fix completion claim
+  to register an inspectable branch, commit, or pull-request work product appropriate to the requested handoff and prove
+  that the cited change is on that delivery path. It also requires coherent managed runtime command postconditions, bounded
+  isolated-workspace port allocation, and separate desired and actual state. Not every current runtime or completion path
+  enforces these target requirements yet; their normative details are in `doc/execution-semantics.md`.
 - task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
