@@ -81,6 +81,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
         galleryEntry({ key: "github", name: "GitHub", tagline: "Open PRs and issues." }),
         galleryEntry({ key: "slack", name: "Slack", tagline: "Post messages to channels." }),
         galleryEntry({ key: "notion", name: "Notion", tagline: "Read and update workspace content." }),
+        galleryEntry({ key: "composio", name: "Composio", tagline: "Connect hosted toolkits." }),
         galleryEntry({ key: "acme", name: "Acme CRM", tagline: "Sync deals and contacts." }),
       ],
     });
@@ -141,6 +142,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     const tile = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Acme CRM"),
     );
+    const composioTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Composio"),
+    );
     const byoCard = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Connect your own tool"),
     );
@@ -149,6 +153,8 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(zapierTiles.every((button) => !button.disabled)).toBe(true);
     expect(notionTiles).toHaveLength(2);
     expect(notionTiles.every((button) => !button.disabled)).toBe(true);
+    expect(composioTiles).toHaveLength(1);
+    expect(composioTiles[0]?.disabled).toBe(false);
     expect(githubTiles.every((button) => button.disabled)).toBe(true);
     expect(tile?.disabled).toBe(true);
     expect(byoCard?.disabled).toBe(false);
@@ -164,6 +170,11 @@ describe("Browse store door (PAP-13254 door 1)", () => {
       notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=notion");
+
+    await act(async () => {
+      composioTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=composio&stage=setup");
 
     await act(async () => {
       byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

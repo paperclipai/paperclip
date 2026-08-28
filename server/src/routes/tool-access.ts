@@ -45,6 +45,7 @@ import { getActorInfo, assertBoard, assertCompanyAccess, getAccessibleResource, 
 import { badRequest, forbidden, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import type { ComposioClient } from "../services/composio.js";
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
@@ -85,6 +86,7 @@ export function toolAccessRoutes(
     deploymentExposure?: DeploymentExposure;
     trustedLocalStdioRuntimeHost?: string | null;
     toolGateway?: ToolGatewayService;
+    composioClientFactory?: (apiKey: string) => ComposioClient;
   } = {},
 ) {
   const router = Router();
