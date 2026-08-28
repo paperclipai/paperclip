@@ -68,6 +68,7 @@ import {
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
+  splitAdapterEnvForPersistence,
   stringifyPaperclipWakePayload,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -399,6 +400,12 @@ interface AcpxPreparedRuntime {
   workspaceRepoUrl: string;
   workspaceRepoRef: string;
   env: Record<string, string>;
+  // `env` menos os segredos: e o unico pedaco que pode ir para `sessionOptions.env`,
+  // porque o acpx persiste esse objeto no registro da sessao (GAM-470).
+  sessionEnv: Record<string, string>;
+  // Os segredos que sairam de `sessionEnv`. Viajam por `authCredentials`, que o acpx
+  // injeta no filho e nao grava em disco.
+  authCredentials: Record<string, string>;
   loggedEnv: Record<string, string>;
   stateDir: string;
   permissionMode: "approve-all" | "approve-reads" | "deny-all";
@@ -2234,6 +2241,8 @@ async function buildRuntime(input: {
     resolvedCommand: agentCommand ?? acpxAgent,
   });
 
+  const { sessionEnv, authCredentials } = splitAdapterEnvForPersistence(env);
+
   return {
     acpxAgent,
     coalescePlaceholderToolUpdates,
@@ -2251,6 +2260,8 @@ async function buildRuntime(input: {
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
+    sessionEnv,
+    authCredentials,
     loggedEnv,
     stateDir,
     permissionMode,
@@ -3635,6 +3646,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // fingerprint / compat key are unaffected — this redirects ONLY the host
           // `spawn()` `chdir`, not the in-sandbox data path.
           spawnCwd: prepared.hostSpawnCwd,
+          // GAM-470: os segredos do charter vao por aqui, nao por `sessionOptions.env`.
+          // O acpx injeta `authCredentials` no ambiente do filho e NAO os grava no
+          // registro da sessao; `sessionOptions.env` e gravado e lido de volta.
+          authCredentials: prepared.authCredentials,
           sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
           agentRegistry: prepared.agentRegistry,
           permissionMode: prepared.permissionMode,
@@ -3726,7 +3741,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                   mode: prepared.mode,
                   cwd: prepared.cwd,
                   resumeSessionId,
-                  sessionOptions: { env: prepared.env },
+                  sessionOptions: { env: prepared.sessionEnv },
                 });
                 ensureSessionMs = now() - ensureSessionStart;
                 return established;
@@ -3757,7 +3772,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                   agent: prepared.acpxAgent,
                   mode: prepared.mode,
                   cwd: prepared.cwd,
-                  sessionOptions: { env: prepared.env },
+                  sessionOptions: { env: prepared.sessionEnv },
                 });
                 retryEnsureSessionMs = now() - ensureSessionStart;
                 return established;

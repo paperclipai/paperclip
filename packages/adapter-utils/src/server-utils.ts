@@ -2361,6 +2361,35 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   return env;
 }
 
+/**
+ * Split an adapter env into the half acpx may persist and the half it may not.
+ *
+ * acpx writes `sessionOptions.env` into the session record on disk and reads it back
+ * to rebuild the turn client on reconnect (`AcpRuntimeManager.createTurnClient` calls
+ * `sessionOptionsFromRecord(record)`), so the value has to survive a round trip — you
+ * cannot redact it on the way out without handing the next turn a redacted credential.
+ * acpx says as much in its own type docs: "persisted with the session record for
+ * reconnects (...) Do not put secrets here; use authCredentials for credentials."
+ *
+ * So anything sensitive travels on the credential lane instead. acpx injects
+ * `authCredentials` into the spawned child (`buildAgentEnvironment`) and never writes
+ * it to the record, which is exactly the split we want: the child still gets the value,
+ * the transcript does not.
+ */
+export function splitAdapterEnvForPersistence(env: Record<string, string>): {
+  sessionEnv: Record<string, string>;
+  authCredentials: Record<string, string>;
+} {
+  const sessionEnv: Record<string, string> = {};
+  const authCredentials: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string") continue;
+    if (SENSITIVE_ENV_KEY.test(key) || key === "DATABASE_URL") authCredentials[key] = value;
+    else sessionEnv[key] = value;
+  }
+  return { sessionEnv, authCredentials };
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
