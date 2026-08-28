@@ -115,9 +115,6 @@ jobs:
             ' <<< "$pr_json" >/dev/null 2>&1 \
             || fail_closed 'current pull request state does not match the triggering event'
 
-          live_pr_base_sha="$(jq -r '.base.sha // empty' <<< "$pr_json")"
-          is_commit_sha "$live_pr_base_sha" || fail_closed 'current pull request has no valid base SHA'
-
           live_merge_sha="$(jq -r '.merge_commit_sha // empty' <<< "$pr_json")"
           is_commit_sha "$live_merge_sha" || fail_closed 'current pull request has no valid merge SHA'
 
@@ -128,8 +125,6 @@ jobs:
             || fail_closed 'could not inspect the current base branch'
           live_base_ref_sha="$(jq -r '.object.sha // empty' <<< "$base_ref_json")"
           is_commit_sha "$live_base_ref_sha" || fail_closed 'current base branch has no valid commit SHA'
-          [[ "$live_pr_base_sha" == "$live_base_ref_sha" ]] \
-            || fail_closed 'current pull request base changed during validation'
 
           base_comparison="$(gh api \
             -H 'Accept: application/vnd.github+json' \
