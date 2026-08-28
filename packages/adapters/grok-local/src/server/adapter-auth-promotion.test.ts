@@ -253,6 +253,30 @@ describe("grok device-login credential promotion", () => {
     expect(Object.keys(written)).toEqual([`${ISSUER}::${UUID_A}`]);
   });
 
+  it("normalizes the company Grok home to mode 0700 when the home already exists at a broader mode", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const companyHome = resolveManagedGrokHomeDir(env, COMPANY_A);
+    await mkdir(companyHome, { recursive: true, mode: 0o755 });
+
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(outcome).toBe("promoted");
+
+    const dirStat = await lstat(companyHome);
+    expect(dirStat.mode & 0o777).toBe(0o700);
+    const authPath = path.join(companyHome, "auth.json");
+    const fileStat = await lstat(authPath);
+    expect(fileStat.mode & 0o777).toBe(0o600);
+  });
+
   it("keeps an occupied home that holds a different identity", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);

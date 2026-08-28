@@ -258,10 +258,14 @@ export async function promoteGrokDeviceLoginCredential(
     return "kept_foreign_identity";
   }
 
-  // 6. Write the company credential home. `mkdir` creates the private
-  //    directory; the explicit `chmod` after the write keeps the file mode
-  //    exact regardless of the process umask.
+  // 6. Write the company credential home. `mkdir` applies `mode` only when it
+  //    creates the directory, so an explicit `chmod` follows it. This keeps
+  //    the directory mode exact both for a new home and for a home that
+  //    already existed at a broader mode. The explicit `chmod` after the
+  //    write does the same job for the file mode, regardless of the process
+  //    umask.
   await mkdir(companyHome, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmod(companyHome, PRIVATE_DIR_MODE);
   await writeFile(authPath, authBytes, { mode: PRIVATE_FILE_MODE });
   await chmod(authPath, PRIVATE_FILE_MODE);
   await log("[paperclip] Grok device-login promotion: wrote the company credential home at mode 0600.");
