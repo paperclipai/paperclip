@@ -1890,6 +1890,22 @@ export interface CreateSandboxHttp2BridgeGatewayOptions {
    * `http2-bridge-server.ts` to know which requests need a retry elsewhere.
    */
   onGoaway?: (record: { lastStreamId: number; errorCode: number }) => void;
+  /**
+   * The time bound, in milliseconds, applied twice: once on the wait for the
+   * host's first `remoteSettings` event (the gateway opens no stream before
+   * that event arrives or before this bound passes, whichever comes first),
+   * and again, independently, on each opened stream's response lifecycle (an
+   * opened stream that never sends "end", "error", or "aborted" is destroyed
+   * and the request fails at this same bound). The default is
+   * {@link DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}.
+   */
+  responseTimeoutMs?: number;
+  /**
+   * The response body byte limit. The gateway counts the bytes it collects
+   * from each response and fails closed, destroying the stream, past this
+   * limit. The default is {@link DEFAULT_BRIDGE_MAX_BODY_BYTES}.
+   */
+  maxBodyBytes?: number;
 }
 
 function forwardOneHttp2Request(
@@ -1902,6 +1918,8 @@ function forwardOneHttp2Request(
     headers: Record<string, string>;
     body: Buffer;
   },
+  maxBodyBytes: number,
+  responseTimeoutMs: number,
 ): Promise<SandboxHttp2BridgeGatewayResponse> {
   return new Promise((resolve, reject) => {
     const query = request.query.trim();
@@ -1920,15 +1938,30 @@ function forwardOneHttp2Request(
       reject(error instanceof Error ? error : new Error(String(error)));
       return;
     }
-    const chunks: Buffer[] = [];
+    let chunks: Buffer[] = [];
+    let receivedBytes = 0;
     let responseHeaders: Record<string, string> = {};
     let status = 502;
     let settled = false;
     const settle = (run: () => void) => {
       if (settled) return;
       settled = true;
+      clearTimeout(responseTimer);
       run();
     };
+    // The handshake before this call already bounds the wait for the host's
+    // remote settings. This timer bounds the rest of the response lifecycle:
+    // an opened stream that never sends "end", "error", or "aborted" would
+    // otherwise leave this promise pending forever, which hangs the caller.
+    // It is armed for exactly this one stream and cleared the moment the
+    // stream settles any other way.
+    const responseTimer = setTimeout(() => {
+      settle(() => {
+        stream.destroy();
+        reject(new Error("Timed out waiting for the HTTP/2 bridge response stream to finish."));
+      });
+    }, responseTimeoutMs);
+    responseTimer.unref();
     stream.on("response", (headers) => {
       const rawStatus = headers[":status"];
       status = typeof rawStatus === "number" ? rawStatus : Number(rawStatus) || 502;
@@ -1938,7 +1971,17 @@ function forwardOneHttp2Request(
         responseHeaders[key] = Array.isArray(value) ? value.join(", ") : String(value);
       }
     });
-    stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+    stream.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      receivedBytes += chunk.length;
+      if (receivedBytes > maxBodyBytes) {
+        chunks = [];
+        stream.destroy();
+        settle(() => reject(new Error("Bridge response body exceeded the configured size limit.")));
+        return;
+      }
+      chunks.push(chunk);
+    });
     stream.once("end", () => settle(() => resolve({ status, headers: responseHeaders, body: Buffer.concat(chunks) })));
     stream.once("error", (error) =>
       settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
@@ -1950,6 +1993,35 @@ function forwardOneHttp2Request(
       stream.end();
     }
   });
+}
+
+/**
+ * Create the settings-handshake wait for one HTTP/2 client session. The
+ * client must wait for the host's first `remoteSettings` event before it
+ * opens its first stream (see the module-level notes on `forwardRequest`).
+ * A timer bounds the wait so a silent host never hangs a request forever.
+ * The timer is unref'd, so it never holds the process open, and the
+ * returned promise carries a no-operation rejection handler, so a rejection
+ * with no request yet in flight never raises an unhandled rejection.
+ */
+function createRemoteSettingsReadyPromise(session: http2.ClientHttp2Session, timeoutMs: number): Promise<void> {
+  let settled = false;
+  const ready = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Timed out waiting for the HTTP/2 bridge host settings handshake."));
+    }, timeoutMs);
+    timer.unref();
+    session.once("remoteSettings", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  ready.catch(() => undefined);
+  return ready;
 }
 
 /**
@@ -1965,6 +2037,8 @@ export function createSandboxHttp2BridgeGateway(
 ): SandboxHttp2BridgeGateway {
   const authority = options.authority?.trim() || SANDBOX_HTTP2_GATEWAY_DEFAULT_AUTHORITY;
   const headerAllowlist = options.headerAllowlist ?? DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST;
+  const responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS;
+  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_BRIDGE_MAX_BODY_BYTES;
   const session = http2.connect(`http://${authority}`, {
     createConnection: options.createConnection,
   });
@@ -1975,6 +2049,10 @@ export function createSandboxHttp2BridgeGateway(
   session.on("goaway", (errorCode: number, lastStreamId: number) => {
     options.onGoaway?.({ lastStreamId, errorCode });
   });
+  // One handshake promise for the whole session, created here before any
+  // request. Every `forwardRequest` call awaits this same stored promise, so
+  // exactly one timer is armed per session, not one per request.
+  const remoteSettingsReady = createRemoteSettingsReadyPromise(session, responseTimeoutMs);
 
   return {
     forwardRequest(request: SandboxHttp2BridgeGatewayRequest): Promise<SandboxHttp2BridgeGatewayResponse> {
@@ -1984,14 +2062,21 @@ export function createSandboxHttp2BridgeGateway(
       if (!compareBridgeTokensConstantTime(options.bridgeToken, request.receivedToken)) {
         return Promise.reject(new Error("Invalid bridge token."));
       }
-      return forwardOneHttp2Request(session, {
-        bridgeToken: options.bridgeToken,
-        method: request.method,
-        path: request.path,
-        query: request.query,
-        headers: sanitizeSandboxCallbackBridgeHeaders(request.headers, headerAllowlist),
-        body: request.body,
-      });
+      return remoteSettingsReady.then(() =>
+        forwardOneHttp2Request(
+          session,
+          {
+            bridgeToken: options.bridgeToken,
+            method: request.method,
+            path: request.path,
+            query: request.query,
+            headers: sanitizeSandboxCallbackBridgeHeaders(request.headers, headerAllowlist),
+            body: request.body,
+          },
+          maxBodyBytes,
+          responseTimeoutMs,
+        ),
+      );
     },
     close(): Promise<void> {
       return new Promise((resolve) => {
@@ -2387,6 +2472,13 @@ function runHttp2Gateway() {
   const authority = "bridge.internal";
   let session = null;
   let unavailable = false;
+  // One handshake promise for the whole session, created where the session
+  // is created, before any request. Every forwarded request awaits this
+  // same stored promise, so exactly one timer is armed per session, not one
+  // per request. The catch below stops an unobserved rejection (a failed
+  // handshake with no request yet in flight) from raising an unhandled
+  // rejection warning.
+  let remoteSettingsReady = null;
 
   function openSession() {
     if (session) return session;
@@ -2403,61 +2495,106 @@ function runHttp2Gateway() {
     session.on("goaway", (errorCode, lastStreamId) => {
       diag("host sent GOAWAY (errorCode=" + errorCode + ", lastStreamId=" + lastStreamId + ")");
     });
+    const activeSession = session;
+    let handshakeSettled = false;
+    remoteSettingsReady = new Promise((resolve, reject) => {
+      const timer = setTimeout(function () {
+        if (handshakeSettled) return;
+        handshakeSettled = true;
+        reject(new Error("Timed out waiting for the HTTP/2 bridge host settings handshake."));
+      }, responseTimeoutMs);
+      timer.unref();
+      activeSession.once("remoteSettings", function () {
+        if (handshakeSettled) return;
+        handshakeSettled = true;
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    remoteSettingsReady.catch(function () {});
     return session;
   }
 
   function forwardOverHttp2(request) {
-    return new Promise((resolve, reject) => {
-      const activeSession = openSession();
-      const query = request.query || "";
-      const pathWithQuery =
-        query.length === 0 ? request.path : request.path + (query.charAt(0) === "?" ? query : "?" + query);
-      const outboundHeaders = Object.assign(
-        {
-          ":method": request.method,
-          ":path": pathWithQuery,
-          authorization: "Bearer " + bridgeToken,
-        },
-        request.headers,
-      );
-      let stream;
-      try {
-        stream = activeSession.request(outboundHeaders, { endStream: request.body.length === 0 });
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
-        return;
-      }
-      const chunks = [];
-      let status = 502;
-      let responseHeaders = {};
-      let settled = false;
-      const settle = (run) => {
-        if (settled) return;
-        settled = true;
-        run();
-      };
-      stream.on("response", (headers) => {
-        const raw = headers[":status"];
-        status = typeof raw === "number" ? raw : Number(raw) || 502;
-        responseHeaders = {};
-        for (const [key, value] of Object.entries(headers)) {
-          if (key.charAt(0) === ":" || value == null) continue;
-          responseHeaders[key] = Array.isArray(value) ? value.join(", ") : String(value);
+    const activeSession = openSession();
+    const handshakeReady = remoteSettingsReady;
+    return handshakeReady.then(function () {
+      return new Promise((resolve, reject) => {
+        const query = request.query || "";
+        const pathWithQuery =
+          query.length === 0 ? request.path : request.path + (query.charAt(0) === "?" ? query : "?" + query);
+        const outboundHeaders = Object.assign(
+          {
+            ":method": request.method,
+            ":path": pathWithQuery,
+            authorization: "Bearer " + bridgeToken,
+          },
+          request.headers,
+        );
+        let stream;
+        try {
+          stream = activeSession.request(outboundHeaders, { endStream: request.body.length === 0 });
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        let chunks = [];
+        let receivedBytes = 0;
+        let status = 502;
+        let responseHeaders = {};
+        let settled = false;
+        const settle = (run) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(responseTimer);
+          run();
+        };
+        // The handshake above already bounds the wait for the host's remote
+        // settings. This timer bounds the rest of the response lifecycle: an
+        // opened stream that never sends "end", "error", or "aborted" would
+        // otherwise leave this promise pending forever, which hangs the local
+        // gateway request. It is armed for exactly this one stream and
+        // cleared the moment the stream settles any other way.
+        const responseTimer = setTimeout(function () {
+          settle(() => {
+            stream.destroy();
+            reject(new Error("Timed out waiting for the HTTP/2 bridge response stream to finish."));
+          });
+        }, responseTimeoutMs);
+        responseTimer.unref();
+        stream.on("response", (headers) => {
+          const raw = headers[":status"];
+          status = typeof raw === "number" ? raw : Number(raw) || 502;
+          responseHeaders = {};
+          for (const [key, value] of Object.entries(headers)) {
+            if (key.charAt(0) === ":" || value == null) continue;
+            responseHeaders[key] = Array.isArray(value) ? value.join(", ") : String(value);
+          }
+        });
+        stream.on("data", (chunk) => {
+          if (settled) return;
+          receivedBytes += chunk.length;
+          if (receivedBytes > maxBodyBytes) {
+            chunks = [];
+            stream.destroy();
+            settle(() => reject(new Error("Bridge response body exceeded the configured size limit.")));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        stream.once("end", () =>
+          settle(() => resolve({ status: status, headers: responseHeaders, body: Buffer.concat(chunks) })),
+        );
+        stream.once("error", (error) =>
+          settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
+        );
+        stream.once("aborted", () => settle(() => reject(new Error("Bridge HTTP/2 stream aborted."))));
+        if (request.body.length > 0) {
+          stream.end(request.body);
+        } else if (!stream.writableEnded) {
+          stream.end();
         }
       });
-      stream.on("data", (chunk) => chunks.push(chunk));
-      stream.once("end", () =>
-        settle(() => resolve({ status: status, headers: responseHeaders, body: Buffer.concat(chunks) })),
-      );
-      stream.once("error", (error) =>
-        settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
-      );
-      stream.once("aborted", () => settle(() => reject(new Error("Bridge HTTP/2 stream aborted."))));
-      if (request.body.length > 0) {
-        stream.end(request.body);
-      } else if (!stream.writableEnded) {
-        stream.end();
-      }
     });
   }
 

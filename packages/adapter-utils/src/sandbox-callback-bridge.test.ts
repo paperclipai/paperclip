@@ -3,7 +3,9 @@ import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Duplex, duplexPair } from "node:stream";
 import { promisify } from "node:util";
+import http2 from "node:http2";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getActiveStepContext, measureStartupStep } from "./acpx-engine/startup-timing.js";
@@ -14,6 +16,7 @@ import {
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  createSandboxHttp2BridgeGateway,
   getSandboxCallbackBridgeServerSource,
   sandboxCallbackBridgeDirectories,
   syncRemoteTextFileWithHashSkip,
@@ -3100,8 +3103,17 @@ describe("sandbox callback bridge", () => {
   async function startHttp2GatewayForTest(options: {
     bridgeToken: string;
     maxBodyBytes?: number;
+    responseTimeoutMs?: number;
     forwardRequest: (request: Http2BridgeForwardRequest) => Promise<Http2BridgeForwardResult>;
-  }): Promise<{ baseUrl: string; stop: () => Promise<void> }> {
+    onSession?: (session: http2.ServerHttp2Session) => void;
+    /**
+     * When true, hold every byte the host writes toward the sandbox process
+     * until a test calls the returned `releaseHostBytes`. This lets a test
+     * prove the sandbox gateway waits for the host's settings frame before
+     * it opens its first stream.
+     */
+    gateHostBytes?: boolean;
+  }): Promise<{ baseUrl: string; stop: () => Promise<void>; releaseHostBytes: () => void }> {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-http2-test-"));
     cleanupDirs.push(rootDir);
     const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
@@ -3129,6 +3141,9 @@ describe("sandbox callback bridge", () => {
         PAPERCLIP_BRIDGE_NONCE: "test-nonce",
         ...(options.maxBodyBytes != null
           ? { PAPERCLIP_BRIDGE_MAX_BODY_BYTES: String(options.maxBodyBytes) }
+          : {}),
+        ...(options.responseTimeoutMs != null
+          ? { PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: String(options.responseTimeoutMs) }
           : {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -3182,9 +3197,24 @@ describe("sandbox callback bridge", () => {
       }
     });
 
+    let hostBytesOpen = !options.gateHostBytes;
+    const bufferedHostBytes: Buffer[] = [];
+    const releaseHostBytes = () => {
+      if (hostBytesOpen) return;
+      hostBytesOpen = true;
+      for (const chunk of bufferedHostBytes.splice(0)) {
+        child.stdin.write(chunk);
+      }
+    };
+
     const channel: CommandManagedDuplexChannel = {
       write: (data) => {
-        child.stdin.write(Buffer.from(data));
+        const chunk = Buffer.from(data);
+        if (hostBytesOpen) {
+          child.stdin.write(chunk);
+        } else {
+          bufferedHostBytes.push(chunk);
+        }
       },
       onData: (listener) => {
         dataListeners.push(listener);
@@ -3205,6 +3235,7 @@ describe("sandbox callback bridge", () => {
     const handle = createHttp2BridgeServer({
       bridgeToken: options.bridgeToken,
       forwardRequest: options.forwardRequest,
+      onSession: options.onSession,
     });
     const boundDuplex = handle.bindChannel(channel);
     dispatchStarted = true;
@@ -3224,7 +3255,7 @@ describe("sandbox callback bridge", () => {
     };
     cleanupFns.push(stop);
 
-    return { baseUrl: `http://127.0.0.1:${assignedPort}`, stop };
+    return { baseUrl: `http://127.0.0.1:${assignedPort}`, stop, releaseHostBytes };
   }
 
   it("forwards the exact request body bytes to the HTTP/2 host handler, including a non-ASCII character", async () => {
@@ -3313,6 +3344,30 @@ describe("sandbox callback bridge", () => {
       error: "Bridge request body exceeded the configured size limit.",
     });
     expect(forwardCalls).toBe(0);
+  }, 15_000);
+
+  it("the generated HTTP/2 gateway fails a request at the response bound instead of hanging when the host never finishes the stream", async () => {
+    // The host settings handshake already bounds the wait before the first
+    // stream opens. This test proves the generated gateway also bounds the
+    // rest of the response lifecycle: a host that opens a stream and then
+    // never sends a body, an error, or an abort must still fail the local
+    // request instead of leaving it pending forever.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      responseTimeoutMs: 100,
+      forwardRequest: () => new Promise(() => {}),
+    });
+
+    const start = Date.now();
+    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${bridgeToken}` },
+    });
+    expect(Date.now() - start).toBeLessThan(5_000);
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Timed out waiting for the HTTP/2 bridge response stream to finish.",
+    });
   }, 15_000);
 
   it("rejects a request body over maxBodyBytes on the queue path before it writes the queue file", async () => {
@@ -3434,4 +3489,326 @@ describe("sandbox callback bridge", () => {
     expect(typeof seenRequests[0]?.body).toBe("string");
     expect(seenRequests[0]?.body).toBe(requestBodyText);
   });
+
+  /**
+   * Wrap one side of a paired in-memory `Duplex` as a minimal
+   * `CommandManagedDuplexChannel`, so the real host `createHttp2BridgeServer`
+   * can bind to it directly, with no spawned process in between.
+   */
+  function channelFromDuplex(duplex: Duplex): CommandManagedDuplexChannel {
+    const dataListeners: Array<(chunk: Uint8Array) => void> = [];
+    duplex.on("data", (chunk: Buffer) => {
+      for (const listener of dataListeners) listener(chunk);
+    });
+    return {
+      write: (data) => {
+        duplex.write(Buffer.from(data));
+      },
+      onData: (listener) => {
+        dataListeners.push(listener);
+      },
+      onExit: (listener) => {
+        duplex.once("end", () => listener({ exitCode: null, transportClosed: true }));
+      },
+      stop: () => {
+        duplex.destroy();
+      },
+      close: async () => {
+        duplex.end();
+      },
+    };
+  }
+
+  /**
+   * Hold back every chunk `source` emits until a test calls `release()`. A
+   * test uses this to delay the host's settings frame from reaching the
+   * exported sandbox HTTP/2 client gateway, so it can prove the gateway
+   * waits for that frame before it opens its first stream.
+   */
+  function createGatedDuplex(source: Duplex): { gated: Duplex; release: () => void } {
+    let open = false;
+    const buffered: Buffer[] = [];
+    const gated = new Duplex({
+      read() {},
+      write(chunk, _encoding, callback) {
+        source.write(chunk);
+        callback();
+      },
+      final(callback) {
+        source.end();
+        callback();
+      },
+    });
+    source.on("data", (chunk: Buffer) => {
+      if (open) {
+        gated.push(chunk);
+      } else {
+        buffered.push(chunk);
+      }
+    });
+    source.on("end", () => {
+      if (open) gated.push(null);
+    });
+    return {
+      gated,
+      release: () => {
+        open = true;
+        for (const chunk of buffered.splice(0)) gated.push(chunk);
+      },
+    };
+  }
+
+  it("the gateway client opens its first stream only after the host settings frame arrives", async () => {
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const [serverSide, clientSide] = duplexPair();
+    let sawStream = false;
+    const handle = createHttp2BridgeServer({
+      bridgeToken,
+      forwardRequest: async () => ({ status: 200, headers: {}, body: "" }),
+      onSession: (session) => {
+        session.on("stream", () => {
+          sawStream = true;
+        });
+      },
+    });
+    handle.bindChannel(channelFromDuplex(serverSide));
+
+    const gate = createGatedDuplex(clientSide);
+    const gateway = createSandboxHttp2BridgeGateway({
+      bridgeToken,
+      createConnection: () => gate.gated,
+    });
+    cleanupFns.push(async () => {
+      await gateway.close();
+      serverSide.destroy();
+      clientSide.destroy();
+    });
+
+    const forwardPromise = gateway.forwardRequest({
+      method: "GET",
+      path: "/api/agents/me",
+      query: "",
+      headers: {},
+      body: Buffer.alloc(0),
+      receivedToken: bridgeToken,
+    });
+
+    // Wait before the settings frame is let through, so an early dispatch
+    // has time to open a stream if the gateway does not wait for it.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(sawStream).toBe(false);
+
+    gate.release();
+    const response = await forwardPromise;
+    expect(response.status).toBe(200);
+    expect(sawStream).toBe(true);
+  }, 15_000);
+
+  it("a host that sends no settings frame fails the first request at the bound", async () => {
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const blackHole = new Duplex({
+      read() {},
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
+    const gateway = createSandboxHttp2BridgeGateway({
+      bridgeToken,
+      createConnection: () => blackHole,
+      responseTimeoutMs: 50,
+    });
+    // `gateway.close()` sends a graceful GOAWAY and waits for the transport
+    // to end, which a black-hole duplex never does. Destroy the transport
+    // directly instead, so teardown does not hang.
+    cleanupFns.push(async () => {
+      blackHole.destroy();
+    });
+
+    await expect(
+      gateway.forwardRequest({
+        method: "GET",
+        path: "/api/agents/me",
+        query: "",
+        headers: {},
+        body: Buffer.alloc(0),
+        receivedToken: bridgeToken,
+      }),
+    ).rejects.toThrow("Timed out waiting for the HTTP/2 bridge host settings handshake.");
+  });
+
+  it("a failed settings handshake raises no unhandled rejection when no request waits", async () => {
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const blackHole = new Duplex({
+      read() {},
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      const gateway = createSandboxHttp2BridgeGateway({
+        bridgeToken,
+        createConnection: () => blackHole,
+        responseTimeoutMs: 20,
+      });
+      // `gateway.close()` sends a graceful GOAWAY and waits for the
+      // transport to end, which a black-hole duplex never does. Destroy the
+      // transport directly instead, so teardown does not hang.
+      cleanupFns.push(async () => {
+        blackHole.destroy();
+      });
+
+      // No request is in flight while the handshake bound passes, so the
+      // stored handshake promise settles with nobody awaiting it yet.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(unhandled).toHaveLength(0);
+
+      // A request made after the bound already passed must still fail
+      // closed with the fixed handshake message. This proves the rejection
+      // was stored, not swallowed.
+      await expect(
+        gateway.forwardRequest({
+          method: "GET",
+          path: "/api/agents/me",
+          query: "",
+          headers: {},
+          body: Buffer.alloc(0),
+          receivedToken: bridgeToken,
+        }),
+      ).rejects.toThrow("Timed out waiting for the HTTP/2 bridge host settings handshake.");
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  }, 10_000);
+
+  it("the gateway client fails closed on a response body past the configured size limit", async () => {
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const maxBodyBytes = 16;
+    const [serverSide, clientSide] = duplexPair();
+    const handle = createHttp2BridgeServer({
+      bridgeToken,
+      forwardRequest: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain" },
+        body: "x".repeat(maxBodyBytes + 1),
+      }),
+    });
+    handle.bindChannel(channelFromDuplex(serverSide));
+
+    const gateway = createSandboxHttp2BridgeGateway({
+      bridgeToken,
+      createConnection: () => clientSide,
+      maxBodyBytes,
+    });
+    cleanupFns.push(async () => {
+      await gateway.close();
+      serverSide.destroy();
+      clientSide.destroy();
+    });
+
+    await expect(
+      gateway.forwardRequest({
+        method: "GET",
+        path: "/api/agents/me",
+        query: "",
+        headers: {},
+        body: Buffer.alloc(0),
+        receivedToken: bridgeToken,
+      }),
+    ).rejects.toThrow("Bridge response body exceeded the configured size limit.");
+  });
+
+  it("fails a request at the response bound when the host opens a stream but never finishes it", async () => {
+    // The settings handshake already completed by the time this stream
+    // opens, so only the per-stream response timer can end the wait. Before
+    // this timer existed, a host that opened a stream and then went silent
+    // left `forwardRequest` pending forever.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const [serverSide, clientSide] = duplexPair();
+    const handle = createHttp2BridgeServer({
+      bridgeToken,
+      forwardRequest: () => new Promise(() => {}),
+    });
+    handle.bindChannel(channelFromDuplex(serverSide));
+
+    const gateway = createSandboxHttp2BridgeGateway({
+      bridgeToken,
+      createConnection: () => clientSide,
+      responseTimeoutMs: 100,
+    });
+    cleanupFns.push(async () => {
+      await gateway.close();
+      serverSide.destroy();
+      clientSide.destroy();
+    });
+
+    const start = Date.now();
+    await expect(
+      gateway.forwardRequest({
+        method: "GET",
+        path: "/api/agents/me",
+        query: "",
+        headers: {},
+        body: Buffer.alloc(0),
+        receivedToken: bridgeToken,
+      }),
+    ).rejects.toThrow("Timed out waiting for the HTTP/2 bridge response stream to finish.");
+    expect(Date.now() - start).toBeLessThan(5_000);
+  });
+
+  it("the generated gateway asset opens its first stream only after the host settings frame arrives", async () => {
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    let sawStream = false;
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      gateHostBytes: true,
+      onSession: (session) => {
+        session.on("stream", () => {
+          sawStream = true;
+        });
+      },
+      forwardRequest: async () => ({ status: 200, headers: {}, body: "" }),
+    });
+
+    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${bridgeToken}` },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(sawStream).toBe(false);
+
+    gateway.releaseHostBytes();
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(sawStream).toBe(true);
+  }, 15_000);
+
+  it("the generated gateway asset fails closed on a response body past the configured size limit", async () => {
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const maxBodyBytes = 32;
+    const oversizedResponseBody = "x".repeat(maxBodyBytes + 1);
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      maxBodyBytes,
+      forwardRequest: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain" },
+        body: oversizedResponseBody,
+      }),
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${bridgeToken}` },
+    });
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Bridge response body exceeded the configured size limit.",
+    });
+  }, 15_000);
 });

@@ -94,6 +94,12 @@ import {
 } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { resolveDuplexAggregateCeilingBytesFromEnv } from "./duplex-aggregate-ceiling-env.js";
 import { DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL } from "@paperclipai/adapter-utils/duplex-observability";
+import {
+  configureHttp2BridgeAdmissionGate,
+  http2BridgeAdmissionBudgetBytes,
+  HTTP2_BRIDGE_ADMISSION_RESERVED_BUDGET_BYTES,
+} from "@paperclipai/adapter-utils/http2-bridge-admission";
+import { resolveHttp2BridgeAdmissionCapsFromEnv } from "./http2-bridge-admission-env.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -809,6 +815,51 @@ export async function startServer(): Promise<StartedServer> {
         "duplex aggregate byte ceiling override rejected; using the safe default",
       );
     },
+  );
+  // The process-wide admission gate for the host HTTP/2 sandbox bridge. Two
+  // optional operator overrides read PAPERCLIP_MAX_PARALLEL_HTTP2_BRIDGE_REQUESTS
+  // and PAPERCLIP_MAX_LIVE_HTTP2_BRIDGE_SESSIONS. An absent variable uses the
+  // documented default. A present invalid, blank, whitespace-only, non-finite,
+  // zero, negative, non-integer, unsafe, or over-maximum value does not fail
+  // startup: the resolver rejects it, reports it at error level, and uses the
+  // safe default. Each per-field cap can pass its own range and the pair can
+  // still spend more than the reserved memory budget, so the resolver also
+  // checks the joint rule on the resolved pair. A pair that fails the joint
+  // rule gives both defaults and one error log line; the host never keeps one
+  // operator value and one default from a refused pair. Every log line carries
+  // only the parsed number, never the raw operator string.
+  const http2BridgeAdmissionCaps = resolveHttp2BridgeAdmissionCapsFromEnv(
+    process.env.PAPERCLIP_MAX_PARALLEL_HTTP2_BRIDGE_REQUESTS,
+    process.env.PAPERCLIP_MAX_LIVE_HTTP2_BRIDGE_SESSIONS,
+    (rejectedValue) => {
+      logger.error(
+        { rejectedValue },
+        "HTTP/2 bridge admission cap override rejected; using the safe default",
+      );
+    },
+    (rejection) => {
+      logger.error(
+        {
+          maxParallel: rejection.maxParallel,
+          maxSessions: rejection.maxSessions,
+          totalBytes: rejection.totalBytes,
+          reservedBudgetBytes: HTTP2_BRIDGE_ADMISSION_RESERVED_BUDGET_BYTES,
+        },
+        "HTTP/2 bridge admission cap pair refused; using the safe default pair",
+      );
+    },
+  );
+  configureHttp2BridgeAdmissionGate(http2BridgeAdmissionCaps);
+  logger.info(
+    {
+      maxParallel: http2BridgeAdmissionCaps.maxParallel,
+      maxSessions: http2BridgeAdmissionCaps.maxSessions,
+      totalBytes: http2BridgeAdmissionBudgetBytes(
+        http2BridgeAdmissionCaps.maxParallel,
+        http2BridgeAdmissionCaps.maxSessions,
+      ),
+    },
+    "HTTP/2 bridge admission gate configured",
   );
   // The server has no process metric pipeline yet, so the ledger telemetry maps to
   // the structured logger. The gauge logs at debug. A reservation rejection logs at

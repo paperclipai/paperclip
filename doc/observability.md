@@ -648,6 +648,63 @@ names are literal constants in `duplex-observability.ts`.
 | `sandbox_duplex_aggregate_byte_reservation_rejections_total` | counter | One rejected aggregate byte reservation. The ledger increments it when a reservation would pass the aggregate ceiling. |
 | `sandbox_duplex_aggregate_byte_accounting_underflow_total` | counter | One aggregate byte accounting defect. The ledger increments it on a double release or on a transfer of a token it does not hold. |
 
+### HTTP/2 bridge admission gate
+
+The host bounds its own memory use for the sandbox HTTP/2 bridge with one
+process-wide admission gate. The code owner is
+`packages/adapter-utils/src/http2-bridge-admission.ts`. The gate holds two
+caps: a cap on parallel admitted bridge streams, and a cap on live bridge
+sessions. Each cap bounds a known per-unit byte cost, so the pair bounds the
+host's worst-case retained bytes for the bridge.
+
+The host reads two optional operator settings from the environment at
+startup:
+
+| Setting | Default | Valid range |
+| --- | --- | --- |
+| `PAPERCLIP_MAX_PARALLEL_HTTP2_BRIDGE_REQUESTS` | 64 | A safe integer from 1 to 64 |
+| `PAPERCLIP_MAX_LIVE_HTTP2_BRIDGE_SESSIONS` | 8 | A safe integer from 1 to 64 |
+
+`PAPERCLIP_MAX_PARALLEL_HTTP2_BRIDGE_REQUESTS` sets the cap on parallel
+admitted streams. A stream that arrives after the cap is full waits in a
+first-in-first-out queue for a released slot.
+
+`PAPERCLIP_MAX_LIVE_HTTP2_BRIDGE_SESSIONS` sets the cap on live bridge
+sessions. A session request never waits. When the cap is full, the host
+falls back to the file bridge at once. See "File-bridge fallback" below.
+
+An absent setting uses its default. A present invalid value — blank,
+whitespace-only, non-numeric, zero, negative, non-integer, or over 64 — does
+not stop the host from starting. The host rejects the value, logs it at
+error level, and uses the default instead.
+
+A valid range on one setting is not a bound on the pair. Each cap can pass
+its own range check, and the pair can still spend more than the host's
+reserved memory budget. So the host also checks a joint rule on the resolved
+pair before it uses either value:
+
+```text
+(maxParallel × 868,351) + (maxSessions × 16,777,216) ≤ 201,326,592
+```
+
+The host holds 201,326,592 bytes (192 MiB) in reserve out of a
+268,435,456-byte (256 MiB) memory target for the bridge. A resolved pair
+that spends the full reserved amount still leaves the remaining 25 percent
+of the target as headroom for object overhead and allocator behavior.
+
+A pair that fails the joint rule is refused as one unit: the host never
+keeps one operator value and one default from a refused pair. It logs the
+refused pair and the computed total at error level, and falls back to both
+defaults (64 parallel streams, 8 live sessions).
+
+#### File-bridge fallback
+
+When the live-session cap is full, the host closes the partial sandbox
+channel and falls back to the file bridge instead of the HTTP/2 bridge. The
+fallback event records the `host_session_capacity` reason in the
+`fallback_reason` dimension above. The sandbox request still completes; it
+uses the file bridge transport instead of a live HTTP/2 session.
+
 ### Dimension keys
 
 Counters carry no dimension labels. The guarded counter store keys each counter
@@ -662,7 +719,7 @@ key never reaches a sink by accident.
 | `provider` | string | no | `daytona`, or `other` for any other plugin key. |
 | `transport` | string | no | `duplex`, `http2`, or `file`. `duplex` names the retired bespoke frame protocol; `http2` names the Node HTTP/2 session over the sandbox channel; a fallback record uses `file`. |
 | `outcome` | string | yes | `ok` or `error`. |
-| `fallback_reason` | string | yes | `gate_off`, `capability_absent`, `route_busy`, `entrypoint_sync_failed`, `broker_construction_failed`, `channel_open_failed`, `ready_invalid`, `ready_nonce_mismatch`, `ready_timeout`, `contaminated`, `aggregate_bytes_exceeded`, or `preface_missing`. It rides only a fallback record. `route_busy` marks the process-scoped route ceiling full. `entrypoint_sync_failed` and `broker_construction_failed` mark the named build step. `channel_open_failed` marks a failed channel open. `aggregate_bytes_exceeded` marks a readiness handshake, or an `http2` post-preface pre-bind buffer, where the host fell back because the process aggregate byte ceiling had no room. `preface_missing` marks a missing or an invalid HTTP/2 client connection preface inside the bounded readiness buffer: the host found no valid preface after the accepted READY line, aborted the `http2` open, and moved the run to the file bridge (`queue_v1`) one time. |
+| `fallback_reason` | string | yes | `gate_off`, `capability_absent`, `route_busy`, `entrypoint_sync_failed`, `broker_construction_failed`, `channel_open_failed`, `ready_invalid`, `ready_nonce_mismatch`, `ready_timeout`, `contaminated`, `aggregate_bytes_exceeded`, `preface_missing`, or `host_session_capacity`. It rides only a fallback record. `route_busy` marks the process-scoped route ceiling full. `entrypoint_sync_failed` and `broker_construction_failed` mark the named build step. `channel_open_failed` marks a failed channel open. `aggregate_bytes_exceeded` marks a readiness handshake, or an `http2` post-preface pre-bind buffer, where the host fell back because the process aggregate byte ceiling had no room. `preface_missing` marks a missing or an invalid HTTP/2 client connection preface inside the bounded readiness buffer: the host found no valid preface after the accepted READY line, aborted the `http2` open, and moved the run to the file bridge (`queue_v1`) one time. `host_session_capacity` marks a full live HTTP/2 bridge session cap: every host-wide session slot was in use, so the host never bound the channel to an HTTP/2 session and moved the run to the file bridge instead. See [HTTP/2 bridge admission gate](#http2-bridge-admission-gate) above. |
 | `loss_class` | string | yes | `pre_dispatch` or `post_dispatch`, relative to the first request dispatch. It rides only a loss record. |
 | `loss_reason` | string | yes | `stdin_eof`, `provider_exit`, `heartbeat_timeout`, `rpc_failure`, `write_error`, `transport_closed`, or `other`. The host maps every loss cause to one of these values, so no raw provider text reaches a sink. `write_error` marks a rejected host-to-sandbox write. `transport_closed` marks a reason-less provider transport close with no exit data. It rides only a loss record. |
 

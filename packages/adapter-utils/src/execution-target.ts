@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
@@ -43,7 +44,9 @@ import {
 import {
   createHttp2BridgeServer,
   type Http2BridgeForwardHandler,
+  type Http2BridgeServerHandle,
 } from "./http2-bridge-server.js";
+import { getHttp2BridgeAdmissionGate, type Http2BridgeAdmissionGate } from "./http2-bridge-admission.js";
 import {
   createSandboxRunLogTailFactory,
   type SandboxRunLogTailFactory,
@@ -88,13 +91,36 @@ import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export function postedIssueCommentLogMarker(method: string, requestPath: string, status: number, body: string) {
+/**
+ * The decode limit for {@link postedIssueCommentLogMarker}. The response body
+ * is untrusted output, so the host never decodes more than this many bytes of
+ * it to build one log line, and it never allocates a second full-size string
+ * for a body over this limit.
+ */
+export const POSTED_COMMENT_MARKER_DECODE_LIMIT_BYTES = 4096;
+
+const CANONICAL_LOWERCASE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function postedIssueCommentLogMarker(
+  method: string,
+  requestPath: string,
+  status: number,
+  body: Buffer | string,
+) {
   if (method !== "POST" || !/^\/api\/issues\/[^/]+\/comments$/.test(requestPath) || status < 200 || status >= 300) {
     return null;
   }
+  const bodyBytes = typeof body === "string" ? Buffer.byteLength(body, "utf8") : body.length;
+  if (bodyBytes > POSTED_COMMENT_MARKER_DECODE_LIMIT_BYTES) {
+    return null;
+  }
+  const decoded =
+    typeof body === "string" ? body : body.toString("utf8", 0, POSTED_COMMENT_MARKER_DECODE_LIMIT_BYTES);
   try {
-    const parsed = JSON.parse(body) as { id?: unknown };
-    return typeof parsed.id === "string" && parsed.id.length > 0 ? `comment id: ${parsed.id}\n` : null;
+    const parsed = JSON.parse(decoded) as { id?: unknown };
+    return typeof parsed.id === "string" && CANONICAL_LOWERCASE_UUID_PATTERN.test(parsed.id)
+      ? `comment id: ${parsed.id}\n`
+      : null;
   } catch {
     return null;
   }
@@ -1505,7 +1531,8 @@ function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
 }
 
 /**
- * Read the forward response body into a string. The reader bounds the body with
+ * Read the forward response body into one `Buffer`. The reader carries the raw
+ * bytes end to end and holds no separate string copy. It bounds the body with
  * two controls. The per-request `maxBodyBytes` limit rejects a body larger than
  * the configured per-request ceiling. The optional host aggregate byte ledger
  * bounds the retained bytes across all live routes.
@@ -1524,7 +1551,7 @@ async function readBridgeForwardResponseBody(
   response: Response,
   maxBodyBytes: number,
   ledger?: DuplexAggregateByteLedger | null,
-): Promise<string> {
+): Promise<Buffer> {
   const rawContentLength = response.headers.get("content-length");
   if (rawContentLength) {
     const contentLength = Number.parseInt(rawContentLength, 10);
@@ -1534,7 +1561,7 @@ async function readBridgeForwardResponseBody(
   }
 
   if (!response.body) {
-    return "";
+    return Buffer.alloc(0);
   }
 
   const reader = response.body.getReader();
@@ -1579,7 +1606,7 @@ async function readBridgeForwardResponseBody(
       }
       tokens.push(concatToken);
     }
-    return Buffer.concat(chunks, totalBytes).toString("utf8");
+    return Buffer.concat(chunks, totalBytes);
   } finally {
     if (ledger) {
       for (const token of tokens) {
@@ -3517,6 +3544,45 @@ export const __http2PrefaceScanTesting = {
 };
 
 /**
+ * Reserve one live-session admission slot, then bind the channel to the
+ * HTTP/2 server. Returns `null` at once when the cap is already full; the
+ * caller must never bind the channel in that case. `bindChannel` is
+ * synchronous, so a bind failure releases the reserved slot before it
+ * re-throws the original error — the reservation never outlives a channel
+ * that never bound. On success, the returned `boundDuplex` carries a
+ * `close` listener that releases the same slot; `release` is idempotent,
+ * so a caller may also call it again on a later teardown path with no
+ * second slot freed.
+ */
+function bindHttp2BridgeSessionWithAdmission(
+  gate: Http2BridgeAdmissionGate,
+  http2Server: Http2BridgeServerHandle,
+  channel: CommandManagedDuplexChannel,
+): { boundDuplex: Duplex; release: () => void } | null {
+  const release = gate.tryAcquireSession();
+  if (!release) return null;
+  let boundDuplex: Duplex;
+  try {
+    boundDuplex = http2Server.bindChannel(channel);
+  } catch (error) {
+    release();
+    throw error;
+  }
+  boundDuplex.on("close", release);
+  return { boundDuplex, release };
+}
+
+/**
+ * Test-only surface for {@link bindHttp2BridgeSessionWithAdmission}. A test
+ * drives the reserve-then-bind-then-release cycle, including a forced bind
+ * failure, with a fake gate and a fake server handle, without the whole
+ * bridge. Production code never reads this export.
+ */
+export const __http2BridgeSessionAdmissionTesting = {
+  bindHttp2BridgeSessionWithAdmission,
+};
+
+/**
  * The terminal run disposition for the `http2_v1` path, in the same shape as
  * {@link DuplexBrokerRunDisposition}. A `failed` disposition means a terminal
  * loss ordered before an orderly completion, so the run must not report
@@ -4153,6 +4219,18 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // forward budget (30 s) when the caller sets no option, so current behavior
   // does not change.
   const forwardTimeoutMs = input.forwardTimeoutMs ?? DEFAULT_DUPLEX_BROKER_BUDGETS.forwardTimeoutMs;
+  // The in-sandbox HTTP/2 gateway's own wait for one response frame, passed
+  // through `PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS` below. It must stay above
+  // `forwardTimeoutMs`: the host bounds its own forward call at that budget,
+  // so a host response that lands right at that deadline still needs time to
+  // cross back over the stream before the gateway gives up. This mirrors the
+  // gap `DEFAULT_DUPLEX_BROKER_BUDGETS` already reserves between its
+  // `forwardTimeoutMs` (30 s) and `gatewayWaitMs` (35 s) entries. The result
+  // stays finite; the gateway never waits forever after the settings
+  // handshake.
+  const http2GatewayResponseTimeoutMs =
+    forwardTimeoutMs +
+    (DEFAULT_DUPLEX_BROKER_BUDGETS.gatewayWaitMs - DEFAULT_DUPLEX_BROKER_BUDGETS.forwardTimeoutMs);
 
   const runtimeRootDir =
     input.runtimeRootDir?.trim().length
@@ -4225,14 +4303,17 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       path: string;
       query: string;
       headers: Record<string, string>;
-      /** The file bridge passes the whole request body here as one string. */
-      body?: string;
+      /**
+       * The file bridge passes the whole request body here as one string. The
+       * http2 path passes the raw request bytes with no string round trip.
+       */
+      body?: string | Uint8Array;
     },
     signal?: AbortSignal,
     options?: {
       suppressDebugLog?: boolean;
     },
-  ): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
+  ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> => {
     const method = request.method.trim().toUpperCase() || "GET";
     // The per-request debug log prints the method, the path, and the query. The
     // duplex path suppresses it, so no route or query rides a log line there. The
@@ -4257,14 +4338,22 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     // Build the request-body init. A GET or a HEAD carries no body. The file
-    // bridge passes the whole body as one string.
+    // bridge passes the whole body as one string; the http2 path passes the
+    // raw request bytes.
     const forwardInit: RequestInit = {
       method,
       headers,
       signal: forwardSignal,
     };
-    if (method !== "GET" && method !== "HEAD" && typeof request.body === "string") {
-      forwardInit.body = request.body;
+    if (
+      method !== "GET" &&
+      method !== "HEAD" &&
+      (typeof request.body === "string" || request.body instanceof Uint8Array)
+    ) {
+      // `fetch` accepts a `Uint8Array` body at runtime. The DOM `BodyInit` type
+      // pins the typed-array generic to a concrete `ArrayBuffer`, so a
+      // `Buffer`'s wider `ArrayBufferLike` generic needs this assertion.
+      forwardInit.body = request.body as BodyInit;
     }
     const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), forwardInit);
     if (emitDebugLog) {
@@ -4285,7 +4374,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // non-retryable 504 and marks the outcome indeterminate, exactly like an
     // aborted in-flight forward. The in-sandbox server maps the indeterminate 504
     // to a non-retryable 409 for both the file bridge and the duplex broker.
-    let responseBody: string;
+    let responseBody: Buffer;
     try {
       responseBody = await readBridgeForwardResponseBody(
         response,
@@ -4300,9 +4389,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         return {
           status: 502,
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            error: error instanceof Error ? error.message : String(error),
-          }),
+          body: Buffer.from(
+            JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          ),
         };
       }
       return {
@@ -4311,11 +4402,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           "content-type": "application/json",
           "x-paperclip-bridge-outcome": "indeterminate",
         },
-        body: JSON.stringify({
-          error: error instanceof Error ? error.message : String(error),
-          outcome: "indeterminate",
-          retryable: false,
-        }),
+        body: Buffer.from(
+          JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+            outcome: "indeterminate",
+            retryable: false,
+          }),
+        ),
       };
     }
     const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
@@ -4546,7 +4639,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                   path: request.pathname,
                   query: request.query,
                   headers: request.headers,
-                  body: request.body.toString("utf8"),
+                  body: request.body,
                 },
                 undefined,
                 { suppressDebugLog: true },
@@ -4590,60 +4683,94 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             stop: () => prefaceScan.scanned.stop(),
             close: () => prefaceScan.scanned.close(),
           };
-          const boundDuplex = http2Server.bindChannel(channelForHttp2Server);
-          // Also catches the `Duplex` this wrapper destroys when the bounded
-          // read backpressure queue overflows post-bind, so that loss still
-          // reaches `recordHttp2Loss` the same way any other write fault does.
-          boundDuplex.on("error", () => recordHttp2Loss("write_error"));
-
-          duplexChannelOpen.ready();
-          await onLog(
-            "stdout",
-            "[paperclip] Sandbox HTTP/2 transport ready; serving the host-assigned origin.\n",
+          // Reserve one live-session slot before the bind, not after: the
+          // host must hold the full wrapper budget for the whole session
+          // before the wrapper exists. `tryAcquireSession` never waits; a
+          // caller that waited here would hold a partly-open channel for an
+          // unbounded time.
+          const admittedSession = bindHttp2BridgeSessionWithAdmission(
+            getHttp2BridgeAdmissionGate(),
+            http2Server,
+            channelForHttp2Server,
           );
-          // Stream run logs on the http2 path with the same gate and the same
-          // log line as the file path. The http2 path starts no file-bridge
-          // worker, so create the log directory before the tail starts.
-          let duplexRunLogTail: SandboxRunLogTailFactory | null = null;
-          if (target.transport === "sandbox" && target.streamRunLogs !== false) {
-            const duplexLogsDir = sandboxCallbackBridgeDirectories(queueDir).logsDir;
-            await ensureSandboxRunLogDirectory({
-              runner,
-              remoteCwd: target.remoteCwd,
-              logsDir: duplexLogsDir,
-              shellCommand,
-              timeoutMs: bridgeTimeoutMs,
-            });
-            duplexRunLogTail = createSandboxRunLogTailFactory({
-              runner,
-              remoteCwd: target.remoteCwd,
-              logsDir: duplexLogsDir,
-              shellCommand,
-            });
-            await onLog("stdout", "[paperclip] Sandbox run log streaming enabled for this run.\n");
+          if (!admittedSession) {
+            // Fail closed, the same shape as a missing preface: close the
+            // partial channel inside the cleanup budget, then select the
+            // file bridge. The host never bound this channel to an HTTP/2
+            // session, so no request reached it or any endpoint.
+            gate.disposePendingReplay();
+            await closeDuplexChannelWithinBudget(openedChannel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
+            duplexChannelOpen.fallback("host_session_capacity");
+            await onLog(
+              "stderr",
+              "[paperclip] The host HTTP/2 bridge live session cap is full (host_session_capacity). Using the file bridge.\n",
+            );
+          } else {
+            const { boundDuplex, release: releaseSessionSlot } = admittedSession;
+            // Also catches the `Duplex` this wrapper destroys when the bounded
+            // read backpressure queue overflows post-bind, so that loss still
+            // reaches `recordHttp2Loss` the same way any other write fault does.
+            boundDuplex.on("error", () => recordHttp2Loss("write_error"));
+
+            duplexChannelOpen.ready();
+            await onLog(
+              "stdout",
+              "[paperclip] Sandbox HTTP/2 transport ready; serving the host-assigned origin.\n",
+            );
+            // Stream run logs on the http2 path with the same gate and the same
+            // log line as the file path. The http2 path starts no file-bridge
+            // worker, so create the log directory before the tail starts.
+            let duplexRunLogTail: SandboxRunLogTailFactory | null = null;
+            if (target.transport === "sandbox" && target.streamRunLogs !== false) {
+              const duplexLogsDir = sandboxCallbackBridgeDirectories(queueDir).logsDir;
+              await ensureSandboxRunLogDirectory({
+                runner,
+                remoteCwd: target.remoteCwd,
+                logsDir: duplexLogsDir,
+                shellCommand,
+                timeoutMs: bridgeTimeoutMs,
+              });
+              duplexRunLogTail = createSandboxRunLogTailFactory({
+                runner,
+                remoteCwd: target.remoteCwd,
+                logsDir: duplexLogsDir,
+                shellCommand,
+              });
+              await onLog("stdout", "[paperclip] Sandbox run log streaming enabled for this run.\n");
+            }
+            return {
+              env: {
+                PAPERCLIP_API_URL: sandboxOrigin,
+                PAPERCLIP_API_KEY: bridgeToken,
+                PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
+                // Without this, the generated gateway falls back to its own
+                // default wait, which equals the host's default forward
+                // budget and gives a near-deadline response no headroom to
+                // cross back over the stream before the gateway gives up.
+                PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: String(http2GatewayResponseTimeoutMs),
+              },
+              runLogTail: duplexRunLogTail,
+              readRunDisposition: (): DuplexBrokerRunDisposition => dispositionLatch.disposition,
+              // Atomically read the latch and mark the orderly completion for the
+              // ACP success-eligible terminal, so no await separates the read from
+              // the mark and a teardown loss cannot slip in between.
+              settleRunDisposition: (): DuplexBrokerRunDisposition => dispositionLatch.settleRunDisposition(),
+              markOrderlyCompletion: (): void => dispositionLatch.markOrderlyCompletion(),
+              stop: async () => {
+                // Close the HTTP/2 server's sessions, then the channel, before
+                // lease release, so no live provider session remains when the
+                // caller releases the lease.
+                await http2Server.close();
+                await closeDuplexChannelWithinBudget(openedChannel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
+                // Idempotent: releases the session slot here too, in case the
+                // bound `Duplex` never emits `close` on this exact teardown
+                // path. A second call from the `close` listener above frees
+                // no second slot.
+                releaseSessionSlot();
+                await bridgeAsset.cleanup();
+              },
+            };
           }
-          return {
-            env: {
-              PAPERCLIP_API_URL: sandboxOrigin,
-              PAPERCLIP_API_KEY: bridgeToken,
-              PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
-            },
-            runLogTail: duplexRunLogTail,
-            readRunDisposition: (): DuplexBrokerRunDisposition => dispositionLatch.disposition,
-            // Atomically read the latch and mark the orderly completion for the
-            // ACP success-eligible terminal, so no await separates the read from
-            // the mark and a teardown loss cannot slip in between.
-            settleRunDisposition: (): DuplexBrokerRunDisposition => dispositionLatch.settleRunDisposition(),
-            markOrderlyCompletion: (): void => dispositionLatch.markOrderlyCompletion(),
-            stop: async () => {
-              // Close the HTTP/2 server's sessions, then the channel, before
-              // lease release, so no live provider session remains when the
-              // caller releases the lease.
-              await http2Server.close();
-              await closeDuplexChannelWithinBudget(openedChannel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
-              await bridgeAsset.cleanup();
-            },
-          };
         }
       }
     }
@@ -4669,7 +4796,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request, options) => forwardBridgeRequest(request, options?.signal),
+      // The file bridge response file holds the body as a JSON string field, so
+      // this call site converts the forwarded bytes to a string here. It is the
+      // one place on the file bridge path that creates a string copy.
+      handleRequest: async (request, options) => {
+        const result = await forwardBridgeRequest(request, options?.signal);
+        return { status: result.status, headers: result.headers, body: result.body.toString("utf8") };
+      },
     });
     server = await startSandboxCallbackBridgeServer({
       runner,

@@ -108,7 +108,11 @@ export type DuplexOutcomeValue = "ok" | "error";
  * names a missing or an invalid HTTP/2 client connection preface inside the
  * bounded readiness buffer: the host found no valid preface after the
  * accepted READY line, aborted the HTTP/2 open, and moved the run to
- * `queue_v1` one time.
+ * `queue_v1` one time. The `host_session_capacity` reason names a full live
+ * HTTP/2 bridge session cap: every host-wide session slot was in use, so the
+ * host never bound the channel to an HTTP/2 session. This differs from
+ * `route_busy`, which names a full worker-manager route ceiling, a separate
+ * cap on a separate resource.
  */
 export type DuplexFallbackReason =
   | "gate_off"
@@ -122,7 +126,8 @@ export type DuplexFallbackReason =
   | "ready_timeout"
   | "contaminated"
   | "aggregate_bytes_exceeded"
-  | "preface_missing";
+  | "preface_missing"
+  | "host_session_capacity";
 
 /** The class of a terminal loss, relative to the first request dispatch. */
 export type DuplexLossClass = "pre_dispatch" | "post_dispatch";

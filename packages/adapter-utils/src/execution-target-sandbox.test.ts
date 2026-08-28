@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import http2 from "node:http2";
 import net from "node:net";
-import { duplexPair, type Duplex } from "node:stream";
+import { duplexPair, Duplex } from "node:stream";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -13,6 +13,7 @@ import { getSandboxDuplexGatewayCodecSource } from "./sandbox-callback-bridge.js
 
 import {
   __duplexReadinessTesting,
+  __http2BridgeSessionAdmissionTesting,
   __http2PrefaceScanTesting,
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
   adapterExecutionTargetDuplexObservabilityRecorder,
@@ -25,6 +26,7 @@ import {
   formatAdapterExecutionTimeoutStartLogLine,
   parseAdapterExecutionTarget,
   postedIssueCommentLogMarker,
+  POSTED_COMMENT_MARKER_DECODE_LIMIT_BYTES,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -56,7 +58,13 @@ import {
   decodeDuplexLine,
   encodeDuplexFrame,
 } from "./duplex-frame-codec.js";
-import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "./bridge-transport-contract.js";
+import { DEFAULT_DUPLEX_BROKER_BUDGETS, DUPLEX_CHANNEL_LOST_ERROR_CODE } from "./bridge-transport-contract.js";
+import {
+  configureHttp2BridgeAdmissionGate,
+  getHttp2BridgeAdmissionGate,
+  Http2BridgeAdmissionGate,
+} from "./http2-bridge-admission.js";
+import type { Http2BridgeServerHandle } from "./http2-bridge-server.js";
 import {
   DUPLEX_AGGREGATE_BYTE_LEDGER_METRIC_NAMES,
   DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL,
@@ -119,10 +127,46 @@ describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
 
   it("records successful issue comment ids for attribution recovery", () => {
-    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, '{"id":"comment-1"}'))
-      .toBe("comment id: comment-1\n");
-    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 401, '{"id":"comment-1"}'))
-      .toBeNull();
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, `{"id":"${uuid}"}`)).toBe(
+      `comment id: ${uuid}\n`,
+    );
+    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 401, `{"id":"${uuid}"}`)).toBeNull();
+    // The function accepts a `Buffer` body, matching the bytes the http2 path
+    // hands it after it drops the string round trip.
+    expect(
+      postedIssueCommentLogMarker(
+        "POST",
+        "/api/issues/issue-1/comments",
+        201,
+        Buffer.from(`{"id":"${uuid}"}`, "utf8"),
+      ),
+    ).toBe(`comment id: ${uuid}\n`);
+  });
+
+  it("the comment marker returns null for an identifier that is not a canonical UUID", () => {
+    expect(
+      postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, '{"id":"comment-1"}'),
+    ).toBeNull();
+    // Uppercase hex is a valid UUID, but not a canonical *lowercase* UUID.
+    expect(
+      postedIssueCommentLogMarker(
+        "POST",
+        "/api/issues/issue-1/comments",
+        201,
+        '{"id":"550E8400-E29B-41D4-A716-446655440000"}',
+      ),
+    ).toBeNull();
+  });
+
+  it("the comment marker returns null for a body past the decode limit", () => {
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    const oversized = Buffer.from(
+      JSON.stringify({ id: uuid, padding: "x".repeat(POSTED_COMMENT_MARKER_DECODE_LIMIT_BYTES) }),
+      "utf8",
+    );
+    expect(oversized.length).toBeGreaterThan(POSTED_COMMENT_MARKER_DECODE_LIMIT_BYTES);
+    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, oversized)).toBeNull();
   });
 
   afterEach(async () => {
@@ -132,6 +176,14 @@ describe("sandbox adapter execution targets", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  // The host HTTP/2 bridge admission gate is one process-wide singleton
+  // (`getHttp2BridgeAdmissionGate`). A test that configures a small session
+  // cap, or reserves a session slot directly, must not leak that state into
+  // a later test in this file.
+  afterEach(() => {
+    configureHttp2BridgeAdmissionGate({});
   });
 
   function createLocalSandboxRunner() {
@@ -3264,10 +3316,10 @@ describe("sandbox adapter execution targets", () => {
    */
   function http2TestRequest(
     session: http2.ClientHttp2Session,
-    request: { method: string; path: string; headers?: Record<string, string>; body?: string },
-  ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    request: { method: string; path: string; headers?: Record<string, string>; body?: string | Buffer },
+  ): Promise<{ status: number; headers: Record<string, string>; body: string; bodyBytes: Buffer }> {
     return new Promise((resolve, reject) => {
-      const body = Buffer.from(request.body ?? "", "utf8");
+      const body = Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body ?? "", "utf8");
       const stream = session.request(
         { ":method": request.method, ":path": request.path, ...request.headers },
         { endStream: body.length === 0 },
@@ -3284,7 +3336,10 @@ describe("sandbox adapter execution targets", () => {
         }
       });
       stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-      stream.once("end", () => resolve({ status, headers, body: Buffer.concat(chunks).toString("utf8") }));
+      stream.once("end", () => {
+        const bodyBytes = Buffer.concat(chunks);
+        resolve({ status, headers, body: bodyBytes.toString("utf8"), bodyBytes });
+      });
       stream.once("error", (error) => reject(error));
       if (body.length > 0) stream.end(body);
       else if (!stream.writableEnded) stream.end();
@@ -3294,7 +3349,10 @@ describe("sandbox adapter execution targets", () => {
   // Start a host API server that records each forwarded request, so a test can
   // assert the real token and the run id reach the host, or that a rejected
   // request never forwards.
-  async function startRecordingApiServer(): Promise<{
+  async function startRecordingApiServer(options?: {
+    /** Overrides the default `{ ok: true }` JSON reply with these raw bytes. */
+    responseBody?: Buffer;
+  }): Promise<{
     origin: string;
     requests: Array<{
       method: string;
@@ -3302,6 +3360,7 @@ describe("sandbox adapter execution targets", () => {
       auth: string | null;
       runId: string | null;
       headers: Record<string, string>;
+      body: Buffer;
     }>;
     close: () => Promise<void>;
   }> {
@@ -3311,21 +3370,28 @@ describe("sandbox adapter execution targets", () => {
       auth: string | null;
       runId: string | null;
       headers: Record<string, string>;
+      body: Buffer;
     }> = [];
+    const responseBody = options?.responseBody ?? Buffer.from(JSON.stringify({ ok: true }), "utf8");
     const server = createServer((req, res) => {
-      const headers: Record<string, string> = {};
-      for (const [key, value] of Object.entries(req.headers)) {
-        if (typeof value === "string") headers[key] = value;
-      }
-      requests.push({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
-        auth: req.headers.authorization ?? null,
-        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
-        headers,
+      const bodyChunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => bodyChunks.push(chunk));
+      req.on("end", () => {
+        const headers: Record<string, string> = {};
+        for (const [key, value] of Object.entries(req.headers)) {
+          if (typeof value === "string") headers[key] = value;
+        }
+        requests.push({
+          method: req.method ?? "GET",
+          url: req.url ?? "/",
+          auth: req.headers.authorization ?? null,
+          runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+          headers,
+          body: Buffer.concat(bodyChunks),
+        });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(responseBody);
       });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -3458,6 +3524,109 @@ describe("sandbox adapter execution targets", () => {
     // Teardown closed the channel before lease release, then stopped the child.
     expect(control.closeCount).toBeGreaterThanOrEqual(1);
     expect(control.stopCount).toBeGreaterThanOrEqual(1);
+  }, 20000);
+
+  it("the HTTP/2 path forwards malformed UTF-8 request bytes to the host API unchanged", async () => {
+    // A lone continuation byte and a truncated multi-byte sequence: bytes no
+    // UTF-8 decode-then-encode round trip preserves.
+    const malformed = Buffer.from([0x80, 0xc3, 0x28, 0xff, 0xfe, 0x00]);
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-req-bytes-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-req-bytes",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+      await http2TestRequest(sessionRef.current!, {
+        method: "POST",
+        path: "/api/issues/issue-1/comments",
+        headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/octet-stream" },
+        body: malformed,
+      });
+      await waitForCondition(() => api.requests.length >= 1, "the host to forward the http2 request", 4000);
+      expect(api.requests[0].body.equals(malformed)).toBe(true);
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it("the HTTP/2 path returns malformed UTF-8 host response bytes to the sandbox unchanged", async () => {
+    const malformed = Buffer.from([0xff, 0xfe, 0x80, 0x81, 0x00, 0x01]);
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-resp-bytes-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer({ responseBody: malformed });
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-resp-bytes",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+      const response = await http2TestRequest(sessionRef.current!, {
+        method: "GET",
+        path: "/api/agents/me",
+        headers: { authorization: `Bearer ${bridgeToken}` },
+      });
+      expect(response.status).toBe(200);
+      expect(response.bodyBytes.equals(malformed)).toBe(true);
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await api.close();
+    }
   }, 20000);
 
   it("falls back to the file bridge when a post-READY pre-bind flood exceeds the aggregate ceiling", async () => {
@@ -5213,10 +5382,11 @@ describe("sandbox adapter execution targets", () => {
       effectiveCapabilities: duplexCapabilities(true),
     };
 
-    // A forward budget past the default response budget (32 s). The http2 path
-    // holds no nested-budget derivation (that budget set belonged to the retired
-    // duplex_v1 broker only), so a large forward budget must still select and
-    // serve normally.
+    // A forward budget past the default response budget (32 s). The host's
+    // own forward call may run for up to this whole budget, so the gateway's
+    // own response wait must carry headroom above it — otherwise the gateway
+    // gives up on a still-valid host response before it arrives.
+    const forwardTimeoutMs = 60_000;
     const bridge = await startAdapterExecutionTargetPaperclipBridge({
       runId: "run-budget",
       target,
@@ -5225,10 +5395,17 @@ describe("sandbox adapter execution targets", () => {
       hostApiToken: "real-run-jwt",
       hostApiUrl: api.origin,
       enableSandboxDuplexBridge: true,
-      forwardTimeoutMs: 60_000,
+      forwardTimeoutMs,
     });
     try {
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      // The gateway response wait carries the same headroom over the forward
+      // budget that `DEFAULT_DUPLEX_BROKER_BUDGETS` reserves between
+      // `forwardTimeoutMs` and `gatewayWaitMs`, so it scales with a custom
+      // forward budget instead of staying pinned at the 30 s default.
+      const expectedHeadroomMs =
+        DEFAULT_DUPLEX_BROKER_BUDGETS.gatewayWaitMs - DEFAULT_DUPLEX_BROKER_BUDGETS.forwardTimeoutMs;
+      expect(bridge?.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS).toBe(String(forwardTimeoutMs + expectedHeadroomMs));
       await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
       const response = await http2TestRequest(sessionRef.current!, {
         method: "GET",
@@ -5240,6 +5417,118 @@ describe("sandbox adapter execution targets", () => {
       sessionRef.current?.close();
       await bridge?.stop();
       await api.close();
+    }
+  }, 20000);
+
+  it("gives the in-sandbox http2 gateway response wait headroom over the default forward budget", async () => {
+    // With no forward-budget override, the gateway wait must still carry
+    // headroom above the default 30 s forward budget, not collapse to the
+    // same value. A response that lands right at the forward deadline needs
+    // this gap to cross back over the stream before the gateway gives up.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-default-budget-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      ctx.emitReady();
+      ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-default-budget",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      const responseTimeoutMs = Number(bridge?.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS);
+      expect(Number.isFinite(responseTimeoutMs)).toBe(true);
+      expect(responseTimeoutMs).toBeGreaterThan(DEFAULT_DUPLEX_BROKER_BUDGETS.forwardTimeoutMs);
+    } finally {
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it("delivers a host response that lands right before the forward deadline", async () => {
+    // The host response completes near, but under, the forward deadline. The
+    // gateway must still deliver it: the headroom on its own wait, not the
+    // forward budget itself, is what this test proves.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-near-deadline-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const forwardTimeoutMs = 300;
+    const nearDeadlineDelayMs = forwardTimeoutMs - 50;
+    const api = createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      }, nearDeadlineDelayMs);
+    });
+    await new Promise<void>((resolve, reject) => {
+      api.once("error", reject);
+      api.listen(0, "127.0.0.1", () => resolve());
+    });
+    const apiAddress = api.address();
+    if (!apiAddress || typeof apiAddress === "string") {
+      throw new Error("Expected the near-deadline API server to listen on a TCP port.");
+    }
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-near-deadline",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${apiAddress.port}`,
+      enableSandboxDuplexBridge: true,
+      forwardTimeoutMs,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+      const response = await http2TestRequest(sessionRef.current!, {
+        method: "GET",
+        path: "/api/agents/me",
+        headers: { authorization: `Bearer ${bridgeToken}` },
+      });
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({ ok: true });
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await new Promise<void>((resolve) => api.close(() => resolve()));
     }
   }, 20000);
 
@@ -5388,6 +5677,291 @@ describe("sandbox adapter execution targets", () => {
       await api.close();
     }
   }, 20000);
+
+  it("a run past the live session cap binds no HTTP/2 session and uses the file bridge", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-session-cap-mode-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    const { runner, control } = makeHttp2SelectionRunner((ctx) => {
+      ctx.emitReady();
+      // A valid client preface still arrives — the session cap, not a
+      // preface failure, is what must turn this run away.
+      ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    // Fill the one live-session slot the cap allows, before the run even
+    // starts, so the run below finds no free slot.
+    configureHttp2BridgeAdmissionGate({ maxSessions: 1 });
+    const releasePreexistingSession = getHttp2BridgeAdmissionGate().tryAcquireSession();
+    expect(releasePreexistingSession).not.toBeNull();
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-session-cap-mode",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      expect(control.openCount).toBe(1);
+      // The live-session cap was already full: the host never bound this
+      // channel to an HTTP/2 session, so the run serves over the file bridge.
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+    } finally {
+      releasePreexistingSession?.();
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it("a refused session disposes the pending replay and closes the partial channel inside the cleanup budget", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-session-cap-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    const { runner, control } = makeHttp2SelectionRunner((ctx) => {
+      ctx.emitReady();
+      ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    configureHttp2BridgeAdmissionGate({ maxSessions: 1 });
+    const releasePreexistingSession = getHttp2BridgeAdmissionGate().tryAcquireSession();
+    expect(releasePreexistingSession).not.toBeNull();
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-session-cap-cleanup",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      // The refused session closed the partial channel inside the bounded
+      // cleanup budget: no live provider session remains.
+      expect(control.closeCount + control.stopCount).toBeGreaterThanOrEqual(1);
+    } finally {
+      releasePreexistingSession?.();
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it("the fallback for a full session cap reports host_session_capacity", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-session-cap-reason-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      ctx.emitReady();
+      ctx.connectHttp2();
+    });
+    const { recorder, counters } = createRecordingDuplexRecorder();
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    configureHttp2BridgeAdmissionGate({ maxSessions: 1 });
+    const releasePreexistingSession = getHttp2BridgeAdmissionGate().tryAcquireSession();
+    expect(releasePreexistingSession).not.toBeNull();
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-session-cap-reason",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+      duplexObservabilityRecorder: recorder,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      const fallback = counters.find((c) => c.metric === DUPLEX_COUNTER_FALLBACK_TOTAL);
+      expect(fallback?.dimensions.fallback_reason).toBe("host_session_capacity");
+    } finally {
+      releasePreexistingSession?.();
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it("a closed session frees its slot for the next run", async () => {
+    configureHttp2BridgeAdmissionGate({ maxSessions: 1 });
+
+    const rootDir1 = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-session-reuse-1-"));
+    cleanupDirs.push(rootDir1);
+    const remoteCwd1 = path.join(rootDir1, "workspace");
+    await mkdir(remoteCwd1, { recursive: true });
+    const api1 = await startRecordingApiServer();
+    const sessionRef1: { current: http2.ClientHttp2Session | null } = { current: null };
+    const { runner: runner1 } = makeHttp2SelectionRunner((ctx) => {
+      ctx.emitReady();
+      sessionRef1.current = ctx.connectHttp2();
+    });
+    const target1: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd: remoteCwd1,
+      timeoutMs: 30_000,
+      runner: runner1,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+    const bridge1 = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-session-reuse-1",
+      target: target1,
+      runtimeRootDir: path.join(remoteCwd1, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api1.origin,
+      enableSandboxDuplexBridge: true,
+    });
+    expect(bridge1?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+    // The first run holds the one session slot the cap allows.
+    expect(getHttp2BridgeAdmissionGate().activeSessionCount).toBe(1);
+
+    await bridge1?.stop();
+    sessionRef1.current?.close();
+    await api1.close();
+    // `stop()` released the slot, either through the bound `Duplex`'s
+    // `close` event or the idempotent safety-net release inside `stop()`.
+    expect(getHttp2BridgeAdmissionGate().activeSessionCount).toBe(0);
+
+    const rootDir2 = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-session-reuse-2-"));
+    cleanupDirs.push(rootDir2);
+    const remoteCwd2 = path.join(rootDir2, "workspace");
+    await mkdir(remoteCwd2, { recursive: true });
+    const api2 = await startRecordingApiServer();
+    const sessionRef2: { current: http2.ClientHttp2Session | null } = { current: null };
+    const { runner: runner2 } = makeHttp2SelectionRunner((ctx) => {
+      ctx.emitReady();
+      sessionRef2.current = ctx.connectHttp2();
+    });
+    const target2: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd: remoteCwd2,
+      timeoutMs: 30_000,
+      runner: runner2,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+    const bridge2 = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-session-reuse-2",
+      target: target2,
+      runtimeRootDir: path.join(remoteCwd2, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api2.origin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      // The freed slot let a second run select the HTTP/2 transport again.
+      expect(bridge2?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+    } finally {
+      sessionRef2.current?.close();
+      await bridge2?.stop();
+      await api2.close();
+    }
+  }, 20000);
+
+  describe("bindHttp2BridgeSessionWithAdmission", () => {
+    function fakeChannelForAdmissionTest(): CommandManagedDuplexChannel {
+      return {
+        write: () => {},
+        onData: () => {},
+        onExit: () => {},
+        stop: () => {},
+        close: async () => {},
+      };
+    }
+
+    it("a bind failure frees the session slot exactly one time", () => {
+      const gate = new Http2BridgeAdmissionGate({ maxParallel: 4, maxSessions: 4 });
+      const bindError = new Error("simulated http2 bindChannel failure");
+      const fakeHandle: Http2BridgeServerHandle = {
+        server: {} as unknown as http2.Http2Server,
+        bindChannel: () => {
+          throw bindError;
+        },
+        close: async () => {},
+      };
+      expect(() =>
+        __http2BridgeSessionAdmissionTesting.bindHttp2BridgeSessionWithAdmission(
+          gate,
+          fakeHandle,
+          fakeChannelForAdmissionTest(),
+        ),
+      ).toThrow(bindError);
+      // The reservation never outlives a channel that never bound.
+      expect(gate.activeSessionCount).toBe(0);
+    });
+
+    it("the host reserves the session slot before bindChannel, not after", () => {
+      const gate = new Http2BridgeAdmissionGate({ maxParallel: 4, maxSessions: 4 });
+      const order: string[] = [];
+      const originalTryAcquireSession = gate.tryAcquireSession.bind(gate);
+      gate.tryAcquireSession = () => {
+        order.push("reserve");
+        return originalTryAcquireSession();
+      };
+      const fakeDuplex = new Duplex({
+        read() {},
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      });
+      const fakeHandle: Http2BridgeServerHandle = {
+        server: {} as unknown as http2.Http2Server,
+        bindChannel: () => {
+          order.push("bind");
+          return fakeDuplex;
+        },
+        close: async () => {},
+      };
+      const result = __http2BridgeSessionAdmissionTesting.bindHttp2BridgeSessionWithAdmission(
+        gate,
+        fakeHandle,
+        fakeChannelForAdmissionTest(),
+      );
+      expect(result).not.toBeNull();
+      expect(order).toEqual(["reserve", "bind"]);
+    });
+  });
 
   it("test_the_host_writes_no_byte_before_the_ready_line_is_accepted", async () => {
     // The launch wrapper gives the gateway no start acknowledgment (accepted
