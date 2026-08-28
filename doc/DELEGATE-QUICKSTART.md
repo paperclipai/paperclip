@@ -10,9 +10,11 @@ From a clean clone:
 ./setup-delegate
 ```
 
-The setup command installs dependencies, builds Paperclip, enables the low-resource Delegate experience, configures the local Paperclip MCP server in installed Claude Code and Codex clients, installs the `plan-my-day` skill, and starts Paperclip.
+The setup command installs dependencies, builds Paperclip, and asks which signed-in harness should execute delegated work. It also asks whether to use that harness's default model or a specific model id, plus the name of the personal workspace.
 
-On first run, complete Paperclip's onboarding. Create one generalist agent with Claude Code or Codex. Delegate mode automatically disables timer heartbeats and limits the new agent to one concurrent run.
+It then starts Paperclip and deterministically creates or reuses one personal company and one Generalist agent. The agent uses the chosen harness and model, disables timer heartbeats, and runs at most one task concurrently. Their ids are stored in the instance's `delegate-profile.json` and pinned in both Claude Code and Codex MCP configuration, so the planning agent never guesses among companies.
+
+Re-running setup reuses the stored profile. To deliberately change the harness, model, or workspace name, run with `PAPERCLIP_DELEGATE_RECONFIGURE=true`.
 
 After onboarding, open Claude Code or Codex and say:
 
@@ -36,4 +38,4 @@ Press `Ctrl+C` in the terminal running Paperclip.
 - `/today` shows Needs you, Ready to review, Working, Up next, and Done today.
 - The user accepts submitted work or requests changes.
 
-Delegate mode does not include notifications or calendar integrations.
+Delegate mode does not include notifications or calendar integrations. Setup and infrastructure selection are deterministic; the LLM is used only to interpret inputs and shape the day plan.

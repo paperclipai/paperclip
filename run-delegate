@@ -4,8 +4,19 @@ set -euo pipefail
 delegate_repo_root="$(cd "$(dirname "$0")" && pwd)"
 cd "$delegate_repo_root"
 
+delegate_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
+delegate_instance="${PAPERCLIP_INSTANCE_ID:-default}"
+delegate_instance_dir="$delegate_home/instances/$delegate_instance"
+delegate_env_path="$delegate_instance_dir/.env"
+
+export PAPERCLIP_HOME="$delegate_home"
+export PAPERCLIP_INSTANCE_ID="$delegate_instance"
+export PAPERCLIP_CONFIG="${PAPERCLIP_CONFIG:-$delegate_instance_dir/config.json}"
 export PAPERCLIP_DELEGATE_MODE=true
 export PAPERCLIP_DB_BACKUP_ENABLED=false
-export PAPERCLIP_OPEN_ON_LISTEN=true
+export PAPERCLIP_OPEN_ON_LISTEN="${PAPERCLIP_OPEN_ON_LISTEN:-true}"
 
-exec pnpm paperclipai run
+exec "$(command -v node)" \
+  --env-file-if-exists="$delegate_env_path" \
+  "$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs" \
+  "$delegate_repo_root/server/src/index.ts"
