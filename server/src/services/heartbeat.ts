@@ -13961,10 +13961,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const issueId = readNonEmptyString(marker.issueId);
       const issueStatus = readNonEmptyString(marker.issueStatus);
+      const interactionId = readNonEmptyString(marker.interactionId);
+      const kind = readNonEmptyString(marker.kind);
+      const reason = kind === "interaction_withdrawn"
+        ? "Question withdrawn while waiting for operator input"
+        : kind === "interaction_cancelled"
+          ? "Cancelled while waiting for operator input"
+          : "Task closed while waiting for operator input";
       try {
-        await cancelRunInternal(request.id, "Task closed while waiting for operator input", {
+        await cancelRunInternal(request.id, reason, {
           resultJson: {
-            ...(issueStatus ? { cancelledByIssueStatus: issueStatus } : {}),
+            ...(kind === "interaction_withdrawn" && interactionId
+              ? { withdrawnInteractionId: interactionId }
+              : {}),
+            ...(kind === "interaction_cancelled" && interactionId
+              ? { cancelledInteractionId: interactionId }
+              : {}),
+            ...((!kind || kind === "issue_terminal") && issueStatus
+              ? { cancelledByIssueStatus: issueStatus }
+              : {}),
             ...(issueId ? { cancelledIssueId: issueId } : {}),
           },
         });

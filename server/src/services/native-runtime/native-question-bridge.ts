@@ -54,6 +54,14 @@ export interface NativeQuestionAuthorizationIdentity extends NativeQuestionIdent
   issueId: string;
 }
 
+export type NativeQuestionCancellationCause =
+  | { kind: "issue_terminal"; issueStatus: string }
+  | { kind: "interaction_withdrawn"; interactionId: string }
+  | { kind: "interaction_cancelled"; interactionId: string };
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type NativeQuestionMutationDb = Pick<Db | DbTransaction, "select" | "update">;
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -171,7 +179,7 @@ function canonicalResponse(
 }
 
 async function authorizedNativeRun(
-  db: Db,
+  db: Pick<Db | DbTransaction, "select">,
   interaction: NativeQuestionAuthorizationIdentity,
 ) {
   const requestId = requestIdForInteraction(interaction);
@@ -384,16 +392,16 @@ export async function nativeQuestionRunToCancel(
  * strand a native run after its question has expired.
  */
 export async function requestNativeQuestionRunCancellation(
-  db: Db,
+  db: NativeQuestionMutationDb,
   interaction: NativeQuestionAuthorizationIdentity,
-  issueStatus: string,
+  cause: NativeQuestionCancellationCause,
 ): Promise<string | null> {
   const run = await authorizedNativeRun(db, interaction);
   if (!run || !["queued", "running"].includes(run.status)) return null;
   const marker = JSON.stringify({
     version: 1,
     issueId: interaction.issueId,
-    issueStatus,
+    ...cause,
     requestedAt: new Date().toISOString(),
   });
   return db.update(heartbeatRuns).set({

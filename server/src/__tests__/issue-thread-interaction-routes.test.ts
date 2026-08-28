@@ -48,11 +48,13 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   cancelRun: vi.fn(async () => null),
 }));
-const mockNativeQuestionRunToCancel = vi.hoisted(() => vi.fn(async () => null as string | null));
+const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
+  vi.fn(async () => null as string | null)
+);
 
 vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
-  nativeQuestionRunToCancel: mockNativeQuestionRunToCancel,
+  requestNativeQuestionRunCancellation: mockRequestNativeQuestionRunCancellation,
   validateNativeQuestionResponseInput: vi.fn(),
 }));
 const mockQuestionResponseDeliveries = vi.hoisted(() => ({
@@ -287,6 +289,20 @@ async function createApp(actor: Record<string, unknown> = {
   return app;
 }
 
+async function resolveMockInteraction(
+  args: unknown[],
+  interaction: Record<string, unknown>,
+) {
+  const mutationOptions = args[4] as {
+    afterResolveInTransaction?: (
+      tx: Record<string, unknown>,
+      resolved: Record<string, unknown>,
+    ) => Promise<void>;
+  } | undefined;
+  await mutationOptions?.afterResolveInTransaction?.({}, interaction);
+  return interaction;
+}
+
 describe.sequential("issue thread interaction routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -298,7 +314,7 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockInteractionService.getForIssue.mockReset();
     mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
-    mockNativeQuestionRunToCancel.mockResolvedValue(null);
+    mockRequestNativeQuestionRunCancellation.mockResolvedValue(null);
     mockResolveTaskWatchdogMutationScope.mockReset();
     mockResolveCoreTrustPreset.mockReset();
     mockAccessDecide.mockReset();
@@ -326,7 +342,7 @@ describe.sequential("issue thread interaction routes", () => {
       status: "pending",
       payload: { version: 1, questions: [] },
     });
-    mockInteractionService.withdrawInteraction.mockResolvedValue({
+    mockInteractionService.withdrawInteraction.mockImplementation((...args) => resolveMockInteraction(args, {
       id: "interaction-withdraw",
       companyId: "company-1",
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -336,7 +352,7 @@ describe.sequential("issue thread interaction routes", () => {
       continuationPolicy: "wake_assignee",
       payload: { version: 1, prompt: "Proceed?" },
       result: { version: 1, outcome: "withdrawn", reason: "Replanning" },
-    });
+    }));
     mockInteractionService.recordSecretProposalExecutionResult.mockImplementation(
       async (_issue, _interactionId, _proposalId, execution) => ({
         ...(await mockInteractionService.acceptInteraction.mock.results.at(-1)?.value)?.interaction,
@@ -499,7 +515,7 @@ describe.sequential("issue thread interaction routes", () => {
       },
       newlyResolvedItemIds: ["docs"],
     });
-    mockInteractionService.cancelQuestions.mockResolvedValue({
+    mockInteractionService.cancelQuestions.mockImplementation((...args) => resolveMockInteraction(args, {
       id: "interaction-2",
       companyId: "company-1",
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -528,7 +544,7 @@ describe.sequential("issue thread interaction routes", () => {
       createdAt: "2026-04-20T12:00:00.000Z",
       updatedAt: "2026-04-20T12:05:00.000Z",
       resolvedAt: "2026-04-20T12:05:00.000Z",
-    });
+    }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
@@ -862,6 +878,7 @@ describe.sequential("issue thread interaction routes", () => {
       "interaction-withdraw",
       { reason: "Replanning" },
       expect.objectContaining({ userId: "local-board" }),
+      expect.objectContaining({ afterResolveInTransaction: expect.any(Function) }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
       payload: expect.objectContaining({ interactionStatus: "cancelled" }),
@@ -872,7 +889,7 @@ describe.sequential("issue thread interaction routes", () => {
   });
 
   it("cancels the bound native run when its question is withdrawn", async () => {
-    mockInteractionService.withdrawInteraction.mockResolvedValueOnce({
+    mockInteractionService.withdrawInteraction.mockImplementationOnce((...args) => resolveMockInteraction(args, {
       id: "interaction-withdraw",
       companyId: "company-1",
       issueId: ISSUE_ID,
@@ -883,14 +900,19 @@ describe.sequential("issue thread interaction routes", () => {
       continuationPolicy: "none",
       payload: { version: 1, questions: [] },
       result: { version: 1, answers: [], cancelled: true },
-    });
-    mockNativeQuestionRunToCancel.mockResolvedValueOnce(RUN_1);
+    }));
+    mockRequestNativeQuestionRunCancellation.mockResolvedValueOnce(RUN_1);
 
     const res = await request(await createApp())
       .post(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw/withdraw`)
       .send({ reason: "No longer needed" });
 
     expect(res.status).toBe(200);
+    expect(mockRequestNativeQuestionRunCancellation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "interaction-withdraw", sourceRunId: RUN_1 }),
+      { kind: "interaction_withdrawn", interactionId: "interaction-withdraw" },
+    );
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
       RUN_1,
       "Question withdrawn while waiting for operator input",
@@ -900,6 +922,34 @@ describe.sequential("issue thread interaction routes", () => {
           withdrawnByActorType: "user",
         }),
       }),
+    );
+  });
+
+  it("keeps a durable withdrawal intent when immediate native cancellation fails", async () => {
+    mockInteractionService.withdrawInteraction.mockImplementationOnce((...args) => resolveMockInteraction(args, {
+      id: "interaction-withdraw",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "ask_user_questions",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      status: "cancelled",
+      continuationPolicy: "none",
+      payload: { version: 1, questions: [] },
+      result: { version: 1, answers: [], cancelled: true },
+    }));
+    mockRequestNativeQuestionRunCancellation.mockResolvedValueOnce(RUN_1);
+    mockHeartbeatService.cancelRun.mockRejectedValueOnce(new Error("process unavailable"));
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-withdraw/withdraw`)
+      .send({ reason: "No longer needed" });
+
+    expect(res.status).toBe(200);
+    expect(mockRequestNativeQuestionRunCancellation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "interaction-withdraw" }),
+      { kind: "interaction_withdrawn", interactionId: "interaction-withdraw" },
     );
   });
 
@@ -960,6 +1010,7 @@ describe.sequential("issue thread interaction routes", () => {
       "interaction-withdraw",
       {},
       expect.objectContaining({ agentId: ASSIGNEE_AGENT_ID, runId: RUN_WATCHDOG }),
+      expect.objectContaining({ afterResolveInTransaction: expect.any(Function) }),
     );
     expect(res.status).toBe(200);
   });
@@ -989,6 +1040,7 @@ describe.sequential("issue thread interaction routes", () => {
       "interaction-2",
       {},
       expect.objectContaining({ userId: "local-board" }),
+      expect.objectContaining({ afterResolveInTransaction: expect.any(Function) }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
@@ -1007,6 +1059,28 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.thread_interaction_cancelled",
+      }),
+    );
+  });
+
+  it("durably marks a board-cancelled native question before cancelling its run", async () => {
+    mockRequestNativeQuestionRunCancellation.mockResolvedValueOnce(RUN_2);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-2/cancel`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockRequestNativeQuestionRunCancellation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "interaction-2", sourceRunId: RUN_2 }),
+      { kind: "interaction_cancelled", interactionId: "interaction-2" },
+    );
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      RUN_2,
+      "Cancelled while waiting for operator input",
+      expect.objectContaining({
+        resultJson: expect.objectContaining({ cancelledInteractionId: "interaction-2" }),
       }),
     );
   });

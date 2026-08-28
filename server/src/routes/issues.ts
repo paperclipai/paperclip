@@ -212,7 +212,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import {
   deliverNativeQuestionResponse,
-  nativeQuestionRunToCancel,
+  requestNativeQuestionRunCancellation,
   validateNativeQuestionResponseInput,
 } from "../services/native-runtime/native-question-bridge.js";
 import {
@@ -11858,14 +11858,28 @@ export function issueRoutes(
       await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
-      const interaction = await interactionSvc.withdrawInteraction(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        runId: actor.runId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
-      if (interaction.kind === "ask_user_questions") {
-        const nativeRunId = await nativeQuestionRunToCancel(db, interaction);
-        if (nativeRunId) {
+      let nativeRunId: string | null = null;
+      const interaction = await interactionSvc.withdrawInteraction(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          runId: actor.runId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        {
+          afterResolveInTransaction: async (tx, resolved) => {
+            if (resolved.kind !== "ask_user_questions") return;
+            nativeRunId = await requestNativeQuestionRunCancellation(tx, resolved, {
+              kind: "interaction_withdrawn",
+              interactionId: resolved.id,
+            });
+          },
+        },
+      );
+      if (nativeRunId) {
+        try {
           await heartbeat.cancelRun(nativeRunId, "Question withdrawn while waiting for operator input", {
             resultJson: {
               withdrawnInteractionId: interaction.id,
@@ -11873,6 +11887,11 @@ export function issueRoutes(
               withdrawnByActorId: actor.actorId,
             },
           });
+        } catch (err) {
+          logger.warn(
+            { err, runId: nativeRunId, interactionId: interaction.id },
+            "native question withdrawal cancellation deferred to recovery sweep",
+          );
         }
       }
       await logActivity(db, {
@@ -11922,10 +11941,25 @@ export function issueRoutes(
       assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      let nativeRunId: string | null = null;
+      const interaction = await issueThreadInteractionService(db).cancelQuestions(
+        issue,
+        interactionId,
+        req.body,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        {
+          afterResolveInTransaction: async (tx, resolved) => {
+            if (resolved.kind !== "ask_user_questions") return;
+            nativeRunId = await requestNativeQuestionRunCancellation(tx, resolved, {
+              kind: "interaction_cancelled",
+              interactionId: resolved.id,
+            });
+          },
+        },
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -11948,9 +11982,8 @@ export function issueRoutes(
         },
       });
 
-      if (interaction.kind === "ask_user_questions") {
-        const nativeRunId = await nativeQuestionRunToCancel(db, interaction);
-        if (nativeRunId) {
+      if (nativeRunId) {
+        try {
           await heartbeat.cancelRun(nativeRunId, "Cancelled while waiting for operator input", {
             resultJson: {
               cancelledByActorType: "user",
@@ -11958,6 +11991,11 @@ export function issueRoutes(
               cancelledInteractionId: interaction.id,
             },
           });
+        } catch (err) {
+          logger.warn(
+            { err, runId: nativeRunId, interactionId: interaction.id },
+            "native question board cancellation deferred to recovery sweep",
+          );
         }
       }
 

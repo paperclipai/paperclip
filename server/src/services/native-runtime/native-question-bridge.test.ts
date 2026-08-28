@@ -26,6 +26,7 @@ import {
   nativeQuestionRunToCancel,
   projectNativeRuntimeRequest,
   registerNativeQuestionCommandTarget,
+  requestNativeQuestionRunCancellation,
   validateNativeQuestionResponseInput,
 } from "./native-question-bridge.js";
 import {
@@ -383,6 +384,55 @@ describeEmbeddedPostgres("native question bridge", () => {
       status: "cancelled",
       resultJson: {
         cancelledByIssueStatus: "done",
+        cancelledIssueId: issueId,
+      },
+    });
+  });
+
+  it("recovers an explicit question withdrawal committed with its cancellation intent", async () => {
+    await seed();
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    await issueThreadInteractionService(db).withdrawInteraction(
+      { id: issueId, companyId },
+      interaction!.id,
+      { reason: "No longer needed" },
+      { userId: "operator-1" },
+      {
+        afterResolveInTransaction: async (tx, withdrawn) => {
+          await expect(requestNativeQuestionRunCancellation(tx, withdrawn, {
+            kind: "interaction_withdrawn",
+            interactionId: withdrawn.id,
+          })).resolves.toBe(runId);
+        },
+      },
+    );
+
+    const [markedRun] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(markedRun?.contextSnapshot).toMatchObject({
+      nativeQuestionCancellation: {
+        version: 1,
+        kind: "interaction_withdrawn",
+        interactionId: interaction!.id,
+        issueId,
+      },
+    });
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const [cancelledRun] = await db.select({
+      status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(cancelledRun).toMatchObject({
+      status: "cancelled",
+      resultJson: {
+        withdrawnInteractionId: interaction!.id,
         cancelledIssueId: issueId,
       },
     });

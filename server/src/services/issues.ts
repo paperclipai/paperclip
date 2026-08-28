@@ -7969,7 +7969,7 @@ export function issueService(db: Db) {
                   const runId = await requestNativeQuestionRunCancellation(
                     tx,
                     nativeQuestion,
-                    updated.status,
+                    { kind: "issue_terminal", issueStatus: updated.status },
                   );
                   if (runId) {
                     queuedPostCommitActions.push({

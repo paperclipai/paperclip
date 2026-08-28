@@ -133,6 +133,14 @@ export type IssueThreadInteractionServiceOptions = {
   now?: () => Date;
 };
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type InteractionResolutionMutationOptions = {
+  afterResolveInTransaction?: (
+    tx: DbTransaction,
+    interaction: IssueThreadInteraction,
+  ) => Promise<void>;
+};
+
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
 const GITHUB_PULL_REQUEST_SHORTHAND_PATTERN = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9][0-9]*)\b/g;
 const MERGE_CONFIRMATION_INTENT_PATTERN = /^(?:please\s+)?(?:confirm(?:\s+that)?\s+.{0,80}\s+)?(?:merge|merged)\b|\bready\s+to\s+merge\b/i;
@@ -3490,6 +3498,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       interactionId: string,
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       assertIssueOpenForInteractionResolution(issue);
       const data = withdrawIssueThreadInteractionSchema.parse(input);
@@ -3555,6 +3564,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           ))
           .returning();
         if (!row) throw interactionAlreadyResolvedError();
+        await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(row));
         return row;
       });
 
@@ -3637,6 +3647,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       interactionId: string,
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       assertIssueOpenForInteractionResolution(issue);
       const data = cancelIssueThreadInteractionSchema.parse(input);
@@ -3658,32 +3669,35 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       }
 
       const reason = data.reason?.trim() || null;
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const updated = await db.transaction(async (tx) => {
+        const resolvedAt = new Date();
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: {
+              version: 1,
+              answers: [],
+              cancelled: true,
+              cancellationReason: reason,
+              summaryMarkdown: null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        if (!row) throw interactionAlreadyResolvedError();
+        await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(row));
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const cancelled = hydrateInteraction(updated);
