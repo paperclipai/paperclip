@@ -25,14 +25,12 @@
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
         "serverUrl": "https://mcp.linear.app/mcp",
-        "authorizationEndpoint": "https://linear.app/oauth/authorize",
-        "tokenEndpoint": "https://api.linear.app/oauth/token",
         "scopesHint": [
           "read",
           "write"
         ]
       },
-      "guidanceMd": "Register a Linear OAuth app and add Paperclip's redirect URI before connecting.",
+      "guidanceMd": "Connect Linear directly. Paperclip discovers Linear's MCP authorization server and registers this instance automatically.",
       "riskTier": "S2",
       "requiredResourceFilters": [
         "workspace",

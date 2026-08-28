@@ -1,5 +1,5 @@
 /** OAuth apps that are safe to connect directly through the MCP OAuth broker. */
-export const MCP_DIRECT_OAUTH_CONNECT_SLUGS = ["notion"] as const;
+export const MCP_DIRECT_OAUTH_CONNECT_SLUGS = ["notion", "linear"] as const;
 
 export function isMcpDirectOAuthConnectSlug(slug: string | null | undefined): boolean {
   return MCP_DIRECT_OAUTH_CONNECT_SLUGS.some((allowedSlug) => allowedSlug === slug);
