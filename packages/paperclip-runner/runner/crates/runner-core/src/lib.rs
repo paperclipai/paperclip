@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod acpx_event_payload;
 pub mod acpx_event_scope;
 pub mod acpx_sidecar_transport;
 pub mod codex_provider;

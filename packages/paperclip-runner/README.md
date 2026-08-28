@@ -65,6 +65,11 @@ also requires its optional or mandatory run and turn scope to match the active
 execution. Process and diagnostic events can remain global. All operational,
 tool, input, permission, and terminal events require the exact active binding.
 
+A package-local payload boundary decodes events only after that scope check. It
+validates control identities, terminal status, question sets, and the admitted
+runtime event types and bounded fields. It redacts diagnostic and retained
+event values again before they can enter provider state.
+
 Run the complete contract gate with:
 
 ```sh
