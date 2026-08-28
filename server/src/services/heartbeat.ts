@@ -2519,6 +2519,68 @@ const heartbeatRunIssueSummaryColumns = {
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
 
+// Hot dispatcher / claim-loop projection. Skips TOAST-stored columns
+// (`usage_json`, `log_store`, `log_ref`, `log_bytes`, `log_sha256`,
+// `log_compressed`) so Postgres does not detoast them on every heartbeat
+// across concurrent backends (BTCAAAAA-37843).
+export const HEARTBEAT_RUN_DISPATCHER_OMITTED_COLUMNS = [
+  "usage_json",
+  "log_store",
+  "log_ref",
+  "log_bytes",
+  "log_sha256",
+  "log_compressed",
+] as const;
+export const heartbeatRunDispatcherColumns = {
+  id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
+  agentId: heartbeatRuns.agentId,
+  invocationSource: heartbeatRuns.invocationSource,
+  triggerDetail: heartbeatRuns.triggerDetail,
+  status: heartbeatRuns.status,
+  startedAt: heartbeatRuns.startedAt,
+  finishedAt: heartbeatRuns.finishedAt,
+  error: heartbeatRuns.error,
+  wakeupRequestId: heartbeatRuns.wakeupRequestId,
+  exitCode: heartbeatRuns.exitCode,
+  signal: heartbeatRuns.signal,
+  resultJson: heartbeatRuns.resultJson,
+  sessionIdBefore: heartbeatRuns.sessionIdBefore,
+  sessionIdAfter: heartbeatRuns.sessionIdAfter,
+  stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
+  stderrExcerpt: heartbeatRuns.stderrExcerpt,
+  errorCode: heartbeatRuns.errorCode,
+  externalRunId: heartbeatRuns.externalRunId,
+  processPid: heartbeatRuns.processPid,
+  processGroupId: heartbeatRuns.processGroupId,
+  processStartedAt: heartbeatRuns.processStartedAt,
+  lastOutputAt: heartbeatRuns.lastOutputAt,
+  lastOutputSeq: heartbeatRuns.lastOutputSeq,
+  lastOutputStream: heartbeatRuns.lastOutputStream,
+  lastOutputBytes: heartbeatRuns.lastOutputBytes,
+  retryOfRunId: heartbeatRuns.retryOfRunId,
+  processLossRetryCount: heartbeatRuns.processLossRetryCount,
+  scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+  scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+  scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+  issueCommentStatus: heartbeatRuns.issueCommentStatus,
+  issueCommentSatisfiedByCommentId: heartbeatRuns.issueCommentSatisfiedByCommentId,
+  issueCommentRetryQueuedAt: heartbeatRuns.issueCommentRetryQueuedAt,
+  livenessState: heartbeatRuns.livenessState,
+  livenessReason: heartbeatRuns.livenessReason,
+  continuationAttempt: heartbeatRuns.continuationAttempt,
+  lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+  nextAction: heartbeatRuns.nextAction,
+  contextSnapshot: heartbeatRuns.contextSnapshot,
+  createdAt: heartbeatRuns.createdAt,
+  updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+type HeartbeatRunDispatcherRow = Omit<
+  typeof heartbeatRuns.$inferSelect,
+  "usageJson" | "logStore" | "logRef" | "logBytes" | "logSha256" | "logCompressed"
+>;
+
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
@@ -12485,7 +12547,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function cancelQueuedRunForHeartbeatDailyCap(
-    run: typeof heartbeatRuns.$inferSelect,
+    run: HeartbeatRunDispatcherRow,
     dailyCapBlock: NonNullable<Awaited<ReturnType<typeof getHeartbeatDailyCapBlock>>>,
   ) {
     const now = new Date();
@@ -12623,7 +12685,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function listQueuedRunDependencyReadiness(
     companyId: string,
-    queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
+    queuedRuns: Array<HeartbeatRunDispatcherRow>,
   ) {
     const issueIds = [...new Set(
       queuedRuns
@@ -12644,7 +12706,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
+  async function claimQueuedRun(run: HeartbeatRunDispatcherRow, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
@@ -12803,7 +12865,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function cancelQueuedRunForBlockedDependencies(
-    run: typeof heartbeatRuns.$inferSelect,
+    run: HeartbeatRunDispatcherRow,
     issueId: string,
     unresolvedBlockerIssueIds: string[],
   ) {
@@ -12877,7 +12939,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
   async function evaluateQueuedRunStaleness(
-    run: typeof heartbeatRuns.$inferSelect,
+    run: HeartbeatRunDispatcherRow,
     issueId: string,
     context: Record<string, unknown>,
   ): Promise<QueuedRunStaleness> {
@@ -13042,7 +13104,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function cancelQueuedRunForStaleIssue(
-    run: typeof heartbeatRuns.$inferSelect,
+    run: HeartbeatRunDispatcherRow,
     issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
@@ -14027,8 +14089,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
+      // BTCAAAAA-37843: project only the columns the dispatcher consumes so
+      // Postgres does not detoast `usage_json`, `log_store`, `log_ref`,
+      // `log_bytes`, `log_sha256`, `log_compressed` on every heartbeat across
+      // concurrent backends.
       const queuedRuns = await db
-        .select()
+        .select(heartbeatRunDispatcherColumns)
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.agentId, agentId),
@@ -14076,7 +14142,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      const claimedRuns: Array<HeartbeatRunDispatcherRow> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
@@ -14151,7 +14217,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // claimQueuedRun can also leave the run queued when dependencies are unresolved.
         return;
       }
-      run = claimed;
+      // Re-fetch the full row so `run` keeps its original (wider) projection
+      // shape that downstream executeRun logic expects.
+      const refreshed = await getRun(runId);
+      if (!refreshed) return;
+      run = refreshed;
     }
 
     activeRunExecutions.add(run.id);
