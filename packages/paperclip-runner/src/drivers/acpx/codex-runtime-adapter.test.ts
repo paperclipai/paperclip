@@ -267,7 +267,11 @@ describe("Codex ACPX runtime adapter", () => {
     const signal = new AbortController().signal;
 
     expect(
-      port.startTurn({ text: "Complete the task.", requestId: "turn-1", signal }),
+      port.startTurn({
+        text: "Complete the task.",
+        requestId: "turn-1",
+        signal,
+      }),
     ).toBe(turn);
     expect(runtime.startTurn).toHaveBeenCalledWith({
       handle: HANDLE,
@@ -276,6 +280,91 @@ describe("Codex ACPX runtime adapter", () => {
       requestId: "turn-1",
       signal,
     });
+  });
+
+  it("projects only ephemeral MCP bindings and applies fail-closed permissions", async () => {
+    const runtime = fakeRuntime();
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const port = await openCodexAcpxRuntime(
+      {
+        ...openOptions(fakeCommand()),
+        permissionMode: "deny-all",
+        mcpServers: [
+          {
+            name: "paperclip",
+            url: "http://127.0.0.1:3210/mcp",
+            bearerToken: "bridge-secret",
+            runnerOwned: true,
+          },
+        ],
+      },
+      {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        createRuntime: (options) => {
+          runtimeOptions = options;
+          return runtime;
+        },
+      },
+    );
+
+    expect(runtimeOptions?.mcpServers).toEqual([
+      {
+        type: "http",
+        name: "paperclip",
+        url: "http://127.0.0.1:3210/mcp",
+        headers: [{ name: "Authorization", value: "Bearer bridge-secret" }],
+      },
+    ]);
+    await expect(
+      runtimeOptions?.onPermissionRequest?.(
+        {
+          sessionId: "session-1",
+          inferredKind: "execute",
+          raw: { _meta: { is_mcp_tool_approval: true } },
+        },
+        { signal: new AbortController().signal },
+      ),
+    ).resolves.toEqual({ outcome: "allow_once" });
+    await expect(
+      runtimeOptions?.onPermissionRequest?.(
+        {
+          sessionId: "session-1",
+          inferredKind: "execute",
+          raw: {},
+        },
+        { signal: new AbortController().signal },
+      ),
+    ).resolves.toEqual({ outcome: "reject_once" });
+    expect(
+      JSON.stringify(vi.mocked(runtime.ensureSession).mock.calls),
+    ).not.toContain("bridge-secret");
+    await port.close({ reason: "complete" });
+  });
+
+  it("delegates permissions that require an unavailable coordinator", async () => {
+    const runtime = fakeRuntime();
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: (options) => {
+        runtimeOptions = options;
+        return runtime;
+      },
+    });
+
+    await expect(
+      runtimeOptions?.onPermissionRequest?.(
+        {
+          sessionId: "session-1",
+          inferredKind: "write",
+          raw: {},
+        },
+        { signal: new AbortController().signal },
+      ),
+    ).resolves.toBeUndefined();
+    await port.close({ reason: "complete" });
   });
 
   it("fails closed and closes the session when ACPX omits recovery identity", async () => {
@@ -1177,6 +1266,7 @@ function openOptions(
       OMITTED: undefined,
     },
     systemInstructions: "Use Paperclip tools.",
+    mcpServers: [],
   };
 }
 

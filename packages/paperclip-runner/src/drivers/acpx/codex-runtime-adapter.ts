@@ -18,6 +18,7 @@ import type {
   AcpxRuntimePortIdentity,
   AcpxRuntimePortOpenOptions,
 } from "./runtime-host.js";
+import { decideAcpxPermission } from "./permission-policy.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -142,6 +143,11 @@ export async function openCodexAcpxRuntime(
       await baseStore.save(record);
     },
   };
+  const runnerOwnedMcpServerNames = new Set(
+    options.mcpServers
+      .filter((server) => server.runnerOwned)
+      .map((server) => server.name),
+  );
   const runtime = createRuntime({
     cwd: options.cwd,
     sessionStore,
@@ -158,6 +164,28 @@ export async function openCodexAcpxRuntime(
       escalate: options.permissionPolicy.escalate
         ? [...options.permissionPolicy.escalate]
         : undefined,
+    },
+    mcpServers: options.mcpServers.map((server) => ({
+      type: "http" as const,
+      name: server.name,
+      url: server.url,
+      headers: [
+        { name: "Authorization", value: `Bearer ${server.bearerToken}` },
+      ],
+    })),
+    onPermissionRequest: async (request) => {
+      const disposition = decideAcpxPermission(
+        options.profile.agent,
+        options.permissionMode,
+        request,
+        {
+          runnerOwnedMcpServerNames,
+          allConfiguredMcpServersAreRunnerOwned:
+            options.mcpServers.length > 0 &&
+            options.mcpServers.every((server) => server.runnerOwned),
+        },
+      );
+      return disposition === "delegate" ? undefined : { outcome: disposition };
     },
     spawnEnvironment: () => definedEnvironment(options.launchEnvironment),
     spawnCwd: options.cwd,

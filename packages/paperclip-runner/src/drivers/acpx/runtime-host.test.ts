@@ -111,6 +111,78 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
+  it("owns an authenticated semantic bridge without persisting its secret", async () => {
+    const fixture = await hostFixture();
+    const handler = vi.fn(async ({ tool }) => ({ tool, ok: true }));
+    let bridge:
+      | { url: string; bearerToken: string; name: string; runnerOwned: boolean }
+      | undefined;
+    const host = await AcpxRuntimeHost.open(
+      {
+        ...fixture.options,
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        permissionMode: "deny-all",
+        environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+        semanticTools: {
+          tools: [
+            {
+              name: "documents.read",
+              description: "Read one document.",
+              inputSchema: {
+                type: "object",
+                properties: { id: { type: "string" } },
+                required: ["id"],
+                additionalProperties: false,
+              },
+            },
+          ],
+          handler,
+        },
+      },
+      fixture.dependencies({
+        openRuntime: async (options) => {
+          bridge = options.mcpServers[0];
+          return runtimePort();
+        },
+      }),
+    );
+
+    expect(bridge).toMatchObject({
+      name: "paperclip",
+      runnerOwned: true,
+    });
+    expect(new URL(bridge!.url).hostname).toBe("127.0.0.1");
+    const response = await fetch(bridge!.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${bridge!.bearerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "call-1",
+        method: "tools/call",
+        params: { name: "documents.read", arguments: { id: "doc-1" } },
+      }),
+    });
+    expect(await response.json()).toMatchObject({
+      result: { content: [{ text: '{"tool":"documents.read","ok":true}' }] },
+    });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(JSON.stringify(host.persistedEnvironment())).not.toContain(
+      bridge!.bearerToken,
+    );
+
+    await host.close({ reason: "complete" });
+    await expect(
+      fetch(bridge!.url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bridge!.bearerToken}` },
+      }),
+    ).rejects.toThrow();
+  });
+
   it("selects and verifies Claude's qualified reported model", async () => {
     const fixture = await hostFixture();
     let selected = false;
