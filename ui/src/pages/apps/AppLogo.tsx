@@ -41,7 +41,7 @@ export function AppLogo({
   size = 36,
   className,
 }: AppLogoProps) {
-  const [failed, setFailed] = useState(false);
+  const [failedLogoUrls, setFailedLogoUrls] = useState<ReadonlySet<string>>(() => new Set());
   const lookupKey = brandKey?.trim() || name;
   const [localAssetResult, setLocalAssetResult] = useState<{
     lookupKey: string;
@@ -57,6 +57,14 @@ export function AppLogo({
   const resolvedLogoUrl = localLookupComplete
     ? localAssets?.light ?? (allowRemoteFallback ? logoUrl : null)
     : null;
+  const lightLogoUrl = resolvedLogoUrl && !failedLogoUrls.has(resolvedLogoUrl)
+    ? resolvedLogoUrl
+    : null;
+  const requestedDarkLogoUrl = localAssets?.dark ?? null;
+  const darkLogoUrl = requestedDarkLogoUrl && !failedLogoUrls.has(requestedDarkLogoUrl)
+    ? requestedDarkLogoUrl
+    : lightLogoUrl;
+  const fallbackLogoUrl = lightLogoUrl ?? darkLogoUrl;
 
   useEffect(() => {
     let active = true;
@@ -73,42 +81,46 @@ export function AppLogo({
   }, [lookupKey]);
 
   useEffect(() => {
-    setFailed(false);
+    setFailedLogoUrls(new Set());
   }, [resolvedLogoUrl, localAssets?.dark]);
 
-  if (resolvedLogoUrl && !failed) {
+  const markLogoFailed = (url: string) => {
+    setFailedLogoUrls((current) => new Set(current).add(url));
+  };
+
+  if (fallbackLogoUrl) {
     return (
       <span
         className={cn("inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted", className)}
         style={dimension}
       >
-        {localAssets?.dark ? (
+        {lightLogoUrl && darkLogoUrl && lightLogoUrl !== darkLogoUrl ? (
           <>
             <img
-              src={resolvedLogoUrl}
+              src={lightLogoUrl}
               alt=""
               width={size}
               height={size}
               className="h-full w-full object-contain dark:hidden"
-              onError={() => setFailed(true)}
+              onError={() => markLogoFailed(lightLogoUrl)}
             />
             <img
-              src={localAssets.dark}
+              src={darkLogoUrl}
               alt=""
               width={size}
               height={size}
               className="hidden h-full w-full object-contain dark:block"
-              onError={() => setFailed(true)}
+              onError={() => markLogoFailed(darkLogoUrl)}
             />
           </>
         ) : (
           <img
-            src={resolvedLogoUrl}
+            src={fallbackLogoUrl}
             alt=""
             width={size}
             height={size}
             className="h-full w-full object-contain"
-            onError={() => setFailed(true)}
+            onError={() => markLogoFailed(fallbackLogoUrl)}
           />
         )}
       </span>

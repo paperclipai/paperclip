@@ -57,6 +57,43 @@ describe("AppLogo local brand assets", () => {
     expect(images[1]?.className).toContain("dark:block");
   });
 
+  it.each([
+    { failedIndex: 0, survivingAsset: "/brands/apps/github-dark.svg" },
+    { failedIndex: 1, survivingAsset: "/brands/apps/github.svg" },
+  ])("keeps the valid theme asset when image $failedIndex fails", async ({ failedIndex, survivingAsset }) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        schemaVersion: 1,
+        providers: [{
+          slug: "github",
+          provider: "GitHub",
+          localAsset: "/brands/apps/github.svg",
+          darkAsset: "/brands/apps/github-dark.svg",
+        }],
+      }),
+    }));
+    root = createRoot(container);
+
+    await act(async () => {
+      root.render(<AppLogo name="GitHub" />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const failedImage = container.querySelectorAll("img")[failedIndex];
+    expect(failedImage).toBeTruthy();
+
+    await act(async () => {
+      failedImage!.dispatchEvent(new Event("error", { bubbles: true }));
+    });
+
+    const remainingImages = Array.from(container.querySelectorAll("img"));
+    expect(remainingImages).toHaveLength(1);
+    expect(remainingImages[0]?.getAttribute("src")).toBe(survivingAsset);
+    expect(remainingImages[0]?.className).not.toContain("dark:hidden");
+    expect(remainingImages[0]?.className).not.toContain("dark:block");
+  });
+
   it("does not request a remote logo while the local manifest lookup is pending", async () => {
     let resolveResponse!: (value: {
       ok: boolean;
