@@ -77,7 +77,7 @@ jobs:
           [[ "$EVENT_REPOSITORY" == 'paperclipai/paperclip' ]] || fail_closed 'unexpected repository'
           [[ "$EVENT_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected repository ID'
           [[ "$EVENT_BASE_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected base repository ID'
-          [[ "$EVENT_BASE_REF" == 'master' ]] || fail_closed 'unexpected base branch'
+          [[ -n "$EVENT_BASE_REF" ]] || fail_closed 'missing base branch'
           [[ "$EVENT_ACTION" =~ ^(opened|reopened|synchronize)$ ]] || fail_closed 'unsupported pull_request action'
 
           jq -e '
