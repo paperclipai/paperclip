@@ -2735,6 +2735,51 @@ export function agentRoutes(
     return "absent";
   }
 
+  // The codex_local branch of the auth-signal read. The host filesystem check
+  // (`evaluateCodexCredentialReadiness` against `process.env`) describes only
+  // the Paperclip host, so it is authoritative for the null-environment and
+  // "local" driver cases, where the host is the execution target. For a
+  // non-local environment (a sandbox), the host's own credential state says
+  // nothing about that sandbox, so the route checks the environment's own
+  // OPENAI_API_KEY binding instead and otherwise reports "unknown" -- never
+  // "present" from a host login the sandbox does not share.
+  async function evaluateCodexAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (environment && environment.driver !== "local") {
+        const environmentEnv = Object.fromEntries(
+          Object.entries(parseObject(environment.envVars)).filter(
+            ([key]) => !isForbiddenConfigEnvKey(key),
+          ),
+        );
+        const apiKeyBinding = environmentEnv.OPENAI_API_KEY;
+        if (apiKeyBinding !== undefined) {
+          const resolution = await secretsSvc.resolveEnvBindings(
+            companyId,
+            { OPENAI_API_KEY: apiKeyBinding },
+            buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+          );
+          if (asNonEmptyString(resolution.env.OPENAI_API_KEY)) {
+            return "present";
+          }
+        }
+        return "unknown";
+      }
+    }
+
+    const readiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId,
+      configuredCodexHome: null,
+      configuredApiKey: null,
+    });
+    return readiness.ready ? "present" : "absent";
+  }
+
   // The cheap host-local authentication signal for one adapter type. The route
   // reads host-local state only: a stored Claude login, a resolved environment
   // env var, or the local Codex credential readiness check. It leases no
@@ -2759,13 +2804,7 @@ export function agentRoutes(
         if (type === "claude_local") {
           status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
         } else if (type === "codex_local") {
-          const readiness = await evaluateCodexCredentialReadiness({
-            env: process.env,
-            companyId,
-            configuredCodexHome: null,
-            configuredApiKey: null,
-          });
-          status = readiness.ready ? "present" : "absent";
+          status = await evaluateCodexAuthSignal(req, companyId, environmentId);
         }
       } catch {
         // A failed read is never a claim that the credential is absent. Report
