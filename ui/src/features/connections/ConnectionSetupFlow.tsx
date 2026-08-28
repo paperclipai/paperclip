@@ -163,15 +163,29 @@ function appConnectHref(
   appKey: string,
   step: Step,
   credentialSource: ToolConnectionCredentialSource,
-  existing?: { resumeConnectionId?: string | null; reconnectConnectionId?: string | null },
+  existing?: {
+    resumeConnectionId?: string | null;
+    reconnectConnectionId?: string | null;
+    interactionId?: string | null;
+  },
 ): string {
   const stage = ROUTE_STAGE_BY_STEP[step] ?? "setup";
   const params = new URLSearchParams({ source: appKey, stage });
   if (existing?.resumeConnectionId) params.set("resume", existing.resumeConnectionId);
   if (existing?.reconnectConnectionId) params.set("reconnect", existing.reconnectConnectionId);
+  if (existing?.interactionId) params.set("intent", existing.interactionId);
   const path = credentialSource === "vercel_connect" ? "/apps/vercel-connect" : "/apps/connect";
   return `${path}?${params.toString()}`;
 }
+
+function withConnectionIntent(href: string, interactionId?: string | null): string {
+  if (!interactionId) return href;
+  const [path, query = ""] = href.split("?", 2);
+  const params = new URLSearchParams(query);
+  params.set("intent", interactionId);
+  return `${path}?${params.toString()}`;
+}
+
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
 
 // Access comes before credentials so the reader knows what identity and reach
@@ -372,6 +386,9 @@ export function ConnectionSetupFlow({
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const [searchParams] = useSearchParams();
+  const connectionIntentId = interactionId?.trim()
+    || searchParams.get("intent")?.trim()
+    || null;
   const appKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
   const sourceSlug = searchParams.get("source")?.trim() || null;
   const createNewConnection = searchParams.get("new") === "1";
@@ -502,9 +519,9 @@ export function ConnectionSetupFlow({
   }, [host, onPhaseChange]);
 
   useEffect(() => {
-    if (host !== "dialog" || !interactionId) return;
+    if (host !== "dialog" || !connectionIntentId) return;
     const receiveOAuthOutcome = (event: MessageEvent) => {
-      const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, interactionId);
+      const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, connectionIntentId);
       if (outcome === "connected") {
         onComplete?.({ resolvedByCallback: true });
         return;
@@ -519,7 +536,7 @@ export function ConnectionSetupFlow({
     };
     window.addEventListener("message", receiveOAuthOutcome);
     return () => window.removeEventListener("message", receiveOAuthOutcome);
-  }, [host, interactionId, onComplete, onOAuthDeclined]);
+  }, [connectionIntentId, host, onComplete, onOAuthDeclined]);
 
   const resetGenericAuthState = () => {
     setLinkAuthMode("auto");
@@ -548,11 +565,11 @@ export function ConnectionSetupFlow({
       setCredentials({});
       setConnectResult(null);
       setStep("key");
-      navigate("/apps/connect?byo=1&source=zapier");
+      navigate(withConnectionIntent("/apps/connect?byo=1&source=zapier", connectionIntentId));
       return;
     }
     if (credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(picked)) {
-      navigate(appSourceConnectHref(picked.slug));
+      navigate(appSourceConnectHref(picked.slug, connectionIntentId));
       return;
     }
     setEntry(picked);
@@ -579,8 +596,8 @@ export function ConnectionSetupFlow({
     setStep("access");
     navigate(
       credentialSource === "vercel_connect"
-        ? vercelConnectSourceHref(picked.slug)
-        : appSourceConnectHref(picked.slug),
+        ? withConnectionIntent(vercelConnectSourceHref(picked.slug), connectionIntentId)
+        : appSourceConnectHref(picked.slug, connectionIntentId),
     );
   };
 
@@ -605,11 +622,12 @@ export function ConnectionSetupFlow({
     setInstallChoice(requestedAgentId ? "specific" : "all");
     setGrantKind("organization");
     setStep("gallery");
-    navigate(
+    navigate(withConnectionIntent(
       credentialSource === "vercel_connect"
         ? vercelConnectSourceHref()
         : byoOnly ? "/apps/byo" : "/apps/connect?byo=1",
-    );
+      connectionIntentId,
+    ));
   };
 
   useEffect(() => {
@@ -717,6 +735,7 @@ export function ConnectionSetupFlow({
       navigate(appConnectHref(entry.slug, nextStep, credentialSource, {
         resumeConnectionId,
         reconnectConnectionId,
+        interactionId: connectionIntentId,
       }));
     }
   };
@@ -727,7 +746,7 @@ export function ConnectionSetupFlow({
     // scoped, while a personal one must put its token back on that user grant.
     mutationFn: (connection: ToolConnection) => toolsApi.startOAuth(connection.id, {
       asCurrentUser: connection.credentialPolicy === "per_user",
-      ...(interactionId ? { interactionId } : {}),
+      ...(connectionIntentId ? { interactionId: connectionIntentId } : {}),
     }),
     onSuccess: ({ authorizationUrl }) => {
       // The endpoint chose this address, so it is checked here too — this is the
@@ -991,10 +1010,10 @@ export function ConnectionSetupFlow({
       setEntry(null);
       setStep("gallery");
       if (reconnectConnectionId) return;
-      navigate(
+      navigate(withConnectionIntent(
         credentialSource === "vercel_connect" ? vercelConnectSourceHref() : "/apps/connect",
-        { replace: true },
-      );
+        connectionIntentId,
+      ), { replace: true });
       return;
     }
 

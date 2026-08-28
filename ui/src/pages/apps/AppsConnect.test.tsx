@@ -1855,16 +1855,16 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     await act(async () => {
-      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     expect(mockNavigate).toHaveBeenCalledWith(
-      `/apps/connect?byo=1&appKey=zapier&stage=access&intent=${interactionId}`,
+      `/apps/connect?source=github&intent=${interactionId}`,
     );
 
     await passAccessStep();
     expect(mockNavigate).toHaveBeenCalledWith(
-      `/apps/connect?byo=1&appKey=zapier&stage=setup&intent=${interactionId}`,
+      `/apps/connect?source=github&stage=setup&intent=${interactionId}`,
     );
   });
 
