@@ -113,6 +113,7 @@ import {
   validateToolContent,
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
+import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -4925,14 +4926,26 @@ export function createToolGatewayService(
   }
 
   async function waitForActionRequestExecution(actionRequestId: string) {
-    const deadline = Date.now() + ACTION_REQUEST_EXECUTION_WAIT_MS;
+    let deadline = Date.now() + ACTION_REQUEST_EXECUTION_WAIT_MS;
     while (true) {
-      const [row] = await db
-        .select()
+      const [match] = await db
+        .select({
+          actionRequest: toolActionRequests,
+          invocationStatus: toolInvocations.status,
+          invocationStartedAt: toolInvocations.startedAt,
+        })
         .from(toolActionRequests)
+        .innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
         .where(eq(toolActionRequests.id, actionRequestId))
         .limit(1);
+      const row = match?.actionRequest;
       if (!row || row.status !== "executing") return row ?? null;
+      deadline = extendApprovedExecutionWaitDeadline({
+        currentDeadlineMs: deadline,
+        invocationStatus: match.invocationStatus,
+        invocationStartedAt: match.invocationStartedAt,
+        executionWaitMs: ACTION_REQUEST_EXECUTION_WAIT_MS,
+      });
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       await new Promise((resolve) => setTimeout(
