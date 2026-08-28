@@ -591,6 +591,7 @@ export function AppDetail() {
         connection={connection}
         logoEntry={logoEntry}
         brandKey={brandKey}
+        allowRemoteLogo={applicationsQuery.isSuccess}
         status={status}
         actionCount={actionCount}
         owner={owner}
@@ -763,6 +764,7 @@ function AppDetailHeader({
   connection,
   logoEntry,
   brandKey,
+  allowRemoteLogo,
   status,
   actionCount,
   owner,
@@ -778,6 +780,7 @@ function AppDetailHeader({
   connection: ToolConnection;
   logoEntry: AppGalleryDisplayEntry | null;
   brandKey: string | null;
+  allowRemoteLogo: boolean;
   status: StatusInfo;
   actionCount: number | null;
   owner: ConnectionOwnerProfile | null;
@@ -795,7 +798,13 @@ function AppDetailHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex items-center gap-3">
-        <AppLogo name={appName} brandKey={brandKey} logoUrl={appDefinitionLogoUrl(logoEntry)} size={44} />
+        <AppLogo
+          name={appName}
+          brandKey={brandKey}
+          logoUrl={appDefinitionLogoUrl(logoEntry)}
+          allowRemoteFallback={allowRemoteLogo}
+          size={44}
+        />
         <div>
           {renaming ? (
             <form

@@ -23,6 +23,7 @@ interface AppLogoProps {
   name: string;
   brandKey?: string | null;
   logoUrl?: string | null;
+  allowRemoteFallback?: boolean;
   size?: number;
   className?: string;
 }
@@ -32,7 +33,14 @@ interface AppLogoProps {
  * favicon when available, falling back to a coloured letter tile (deterministic
  * colour per app name) when the image is missing or fails to load.
  */
-export function AppLogo({ name, brandKey, logoUrl, size = 36, className }: AppLogoProps) {
+export function AppLogo({
+  name,
+  brandKey,
+  logoUrl,
+  allowRemoteFallback = true,
+  size = 36,
+  className,
+}: AppLogoProps) {
   const [failed, setFailed] = useState(false);
   const lookupKey = brandKey?.trim() || name;
   const [localAssetResult, setLocalAssetResult] = useState<{
@@ -46,7 +54,9 @@ export function AppLogo({ name, brandKey, logoUrl, size = 36, className }: AppLo
   // Do not expose a remote caller URL until the local manifest has had a
   // chance to resolve this provider. Otherwise the browser requests the
   // remote asset during the first render even when a bundled mark exists.
-  const resolvedLogoUrl = localLookupComplete ? localAssets?.light ?? logoUrl : null;
+  const resolvedLogoUrl = localLookupComplete
+    ? localAssets?.light ?? (allowRemoteFallback ? logoUrl : null)
+    : null;
 
   useEffect(() => {
     let active = true;

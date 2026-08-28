@@ -121,6 +121,50 @@ describe("AppLogo local brand assets", () => {
     expect(container.querySelector("img")?.getAttribute("src")).toBe("/brands/apps/github.svg");
   });
 
+  it("does not expose a remote logo before a stable provider key arrives", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        schemaVersion: 1,
+        providers: [{
+          slug: "github",
+          provider: "GitHub",
+          localAsset: "/brands/apps/github.svg",
+        }],
+      }),
+    }));
+    root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <AppLogo
+          name="Dotta's source control"
+          logoUrl="https://remote.example/github.svg"
+          allowRemoteFallback={false}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("img")).toBeNull();
+
+    await act(async () => {
+      root.render(
+        <AppLogo
+          name="Dotta's source control"
+          brandKey="github"
+          logoUrl="https://remote.example/github.svg"
+          allowRemoteFallback
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("/brands/apps/github.svg");
+  });
+
   it("keeps the caller logo when the manifest has no matching provider", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
