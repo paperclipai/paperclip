@@ -120,6 +120,26 @@ jobs:
           live_merge_sha="$(jq -r '.merge_commit_sha // empty' <<< "$pr_json")"
           is_commit_sha "$live_merge_sha" || fail_closed 'current pull request has no valid merge SHA'
 
+          base_ref_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/git/ref/heads/$EVENT_BASE_REF" 2>/dev/null)" \
+            || fail_closed 'could not inspect the current base branch'
+          live_base_ref_sha="$(jq -r '.object.sha // empty' <<< "$base_ref_json")"
+          is_commit_sha "$live_base_ref_sha" || fail_closed 'current base branch has no valid commit SHA'
+
+          base_comparison="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/compare/$EVENT_BASE_SHA...$live_base_ref_sha" 2>/dev/null)" \
+            || fail_closed 'could not compare the triggering and current base branches'
+          jq -e \
+            --arg event_base_sha "$EVENT_BASE_SHA" '
+              .merge_base_commit.sha == $event_base_sha and
+              (.status == "ahead" or .status == "identical")
+            ' <<< "$base_comparison" >/dev/null 2>&1 \
+            || fail_closed 'current base branch does not descend from the triggering base snapshot'
+
           event_merge_json="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
@@ -137,12 +157,11 @@ jobs:
             local expected_sha="$2"
             jq -e \
               --arg expected_sha "$expected_sha" \
-              --arg base_sha "$EVENT_BASE_SHA" \
               --arg head_sha "$EVENT_HEAD_SHA" '
                 .sha == $expected_sha and
                 (.parents | length) == 2 and
-                .parents[0].sha == $base_sha and
                 .parents[1].sha == $head_sha and
+                (.parents[0].sha | test("^[0-9a-f]{40}$")) and
                 (.tree.sha | test("^[0-9a-f]{40}$"))
               ' <<< "$merge_json" >/dev/null 2>&1
           }
@@ -151,6 +170,28 @@ jobs:
             || fail_closed 'event merge commit does not match the current base and head'
           validate_merge_commit "$live_merge_json" "$live_merge_sha" \
             || fail_closed 'current merge commit does not match the triggering base and head'
+
+          event_merge_parent="$(jq -r '.parents[0].sha' <<< "$event_merge_json")"
+          live_merge_parent="$(jq -r '.parents[0].sha' <<< "$live_merge_json")"
+          [[ "$event_merge_parent" == "$live_merge_parent" ]] \
+            || fail_closed 'current merge commit uses a different base merge parent'
+
+          if [[ "$event_merge_parent" != "$live_base_ref_sha" ]]; then
+            base_merge_json="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "/repos/paperclipai/paperclip/git/commits/$event_merge_parent" 2>/dev/null)" \
+              || fail_closed 'could not inspect the stacked base merge commit'
+            jq -e \
+              --arg expected_sha "$event_merge_parent" \
+              --arg live_base_ref_sha "$live_base_ref_sha" '
+                .sha == $expected_sha and
+                (.parents | length) == 2 and
+                any(.parents[]; .sha == $live_base_ref_sha) and
+                (.tree.sha | test("^[0-9a-f]{40}$"))
+              ' <<< "$base_merge_json" >/dev/null 2>&1 \
+              || fail_closed 'stacked base merge commit does not contain the current base branch'
+          fi
 
           event_merge_tree="$(jq -r '.tree.sha' <<< "$event_merge_json")"
           live_merge_tree="$(jq -r '.tree.sha' <<< "$live_merge_json")"
