@@ -15,11 +15,13 @@ import type {
 import { toPublicAdapterAuthSessionStatus } from "@paperclipai/shared";
 import {
   CODEX_DEVICE_LOGIN_COMMAND as DEFAULT_CODEX_LOGIN_COMMAND,
+  parseDeviceLoginPrompt,
   runDeviceLogin,
   type DeviceLoginOutcome as RunnerDeviceLoginOutcome,
   type DeviceLoginPrompt,
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
+import type { AdapterLoginPrompt } from "@paperclipai/adapter-utils";
 import {
   createLoginPtyTransport,
   type LoginPtySessionOpener,
@@ -67,8 +69,18 @@ export const DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE =
  */
 export const LOGIN_LEASE_SESSION_TAG_KEY = "adapterLoginSessionId";
 
-/** The default Codex adapter type for a login session. */
-export const CODEX_DEVICE_LOGIN_ADAPTER_TYPE: AgentAdapterType = "codex_local";
+/**
+ * The closed set of displayed-code adapter types. The shared
+ * `adapter_auth_sessions` table also holds a Claude setup-token row. That row
+ * uses a different login panel mode. So every store read and every reaper scan
+ * filters to this set, instead of trusting the raw row's own value. No route
+ * makes a row of an adapter type outside `codex_local` reachable yet. A later
+ * phase widens the set of reachable adapters, with no change to this filter.
+ */
+export const DISPLAYED_CODE_ADAPTER_TYPES: readonly AgentAdapterType[] = [
+  "codex_local",
+  "grok_local",
+];
 
 /**
  * The provider delete result the service observes on a terminal path. The
@@ -304,12 +316,18 @@ export interface AdapterAuthSessionStore {
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
   /**
-   * Read a session by its public session id, scoped to the company and the Codex
-   * device-login adapter. The predicate carries the company id, so a query never
-   * keys on the public session id alone, and a foreign-company caller reads
-   * nothing. It never accepts the internal primary-key `id`.
+   * Read a session by its public session id, scoped to the company. The
+   * predicate carries the company id, so a query never keys on the public
+   * session id alone, and a foreign-company caller reads nothing. It never
+   * accepts the internal primary-key `id`. `adapterType` scopes the read to one
+   * requested adapter type. When the caller omits it, the read scopes to every
+   * displayed-code adapter type.
    */
-  getByPublicId(publicSessionId: string, companyId: string): Promise<AdapterAuthSessionRow | null>;
+  getByPublicId(
+    publicSessionId: string,
+    companyId: string,
+    adapterType?: AgentAdapterType,
+  ): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
    *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
    *  row inside this lock, so a reclaim never interleaves with a live credential
@@ -531,11 +549,12 @@ export function createDbAdapterAuthSessionStore(
       const row = rows[0];
       return row ? toRow(row) : null;
     },
-    async getByPublicId(publicSessionId, companyId) {
-      // The predicate carries the company id and the Codex device-login adapter,
-      // so a read never keys on the public session id alone. A foreign-company or
-      // foreign-adapter caller reads nothing. The internal primary-key `id` never
-      // matches, so a caller cannot address a row by the internal id.
+    async getByPublicId(publicSessionId, companyId, adapterType) {
+      // The predicate carries the company id, so a read never keys on the public
+      // session id alone. A foreign-company caller reads nothing. The internal
+      // primary-key `id` never matches, so a caller cannot address a row by the
+      // internal id. The adapter predicate scopes the read to the one requested
+      // type, or, when the caller omits it, to every displayed-code adapter type.
       const rows = await db
         .select()
         .from(adapterAuthSessions)
@@ -543,7 +562,9 @@ export function createDbAdapterAuthSessionStore(
           and(
             eq(adapterAuthSessions.publicSessionId, publicSessionId),
             eq(adapterAuthSessions.companyId, companyId),
-            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            adapterType
+              ? eq(adapterAuthSessions.adapterType, adapterType)
+              : inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
           ),
         )
         .limit(1);
@@ -563,8 +584,8 @@ export function createDbAdapterAuthSessionStore(
         .where(
           and(
             // The shared table also holds the setup-token rows, so every reaper
-            // scan filters by the device-login adapter to reach only Codex rows.
-            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            // scan filters by the closed set of displayed-code adapter types.
+            inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
             inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_ACTIVE_STATUSES]),
             isNotNull(adapterAuthSessions.expiresAt),
             lte(adapterAuthSessions.expiresAt, nowAt),
@@ -583,7 +604,7 @@ export function createDbAdapterAuthSessionStore(
         .from(adapterAuthSessions)
         .where(
           and(
-            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
             eq(adapterAuthSessions.status, "cleanup_pending"),
           ),
         );
@@ -595,7 +616,7 @@ export function createDbAdapterAuthSessionStore(
         .from(adapterAuthSessions)
         .where(
           and(
-            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
             isNotNull(adapterAuthSessions.providerLeaseId),
           ),
         );
@@ -703,6 +724,62 @@ export function terminalCleanupWrite(
 }
 
 // ---------------------------------------------------------------------------
+// The host-owned displayed-code login profile. `runLogin` resolves one profile
+// per login from the trusted adapter type, so a host-owned map, not the runner
+// package, chooses the command, the home variable name, the prompt parser, and
+// the timeout for each displayed-code adapter.
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-adapter values a displayed-code login run needs. `homeEnvVar` names
+ * the environment variable the sandbox login pseudo-terminal opener sets to the
+ * server-controlled session home, for example `CODEX_HOME`. The credential file
+ * name under that home stays the same for every adapter.
+ */
+export interface DisplayedCodeLoginProfile {
+  /** The login command the sandbox pseudo-terminal runs. */
+  command: string;
+  /** The environment variable name the login command reads its home from. */
+  homeEnvVar: string;
+  /** Parses the authorization prompt from the login output. Returns null when
+   *  the output holds no prompt yet. */
+  parsePrompt(output: string): AdapterLoginPrompt | null;
+  /** The host timeout for the sandbox login command. */
+  timeoutMs: number;
+  /** The mandatory credential promotion for this adapter. */
+  promotion: CredentialPromotion;
+}
+
+/** A promotion placeholder for a profile map entry. The service always resolves
+ *  the real promotion from {@link DeviceLoginServiceDeps.promotion} before it
+ *  runs a login, so this value never runs in production. */
+const UNCONFIGURED_PROMOTION: CredentialPromotion = {
+  promote() {
+    throw new Error("device login: no credential promotion is configured for this adapter.");
+  },
+};
+
+/**
+ * The host-owned profile for every displayed-code adapter type. `AgentAdapterType`
+ * covers every adapter, not only the displayed-code ones. So the map is a partial
+ * record: a lookup for an adapter type with no entry yields `undefined`. Only the
+ * `codex_local` entry is reachable today. The map holds the current Codex values
+ * under adapter-neutral member names, so a later phase adds a second entry with
+ * no shape change here.
+ */
+export const DISPLAYED_CODE_PROFILES: Readonly<
+  Partial<Record<AgentAdapterType, DisplayedCodeLoginProfile>>
+> = {
+  codex_local: {
+    command: DEFAULT_CODEX_LOGIN_COMMAND,
+    homeEnvVar: "CODEX_HOME",
+    parsePrompt: parseDeviceLoginPrompt,
+    timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
+    promotion: UNCONFIGURED_PROMOTION,
+  },
+};
+
+// ---------------------------------------------------------------------------
 // The service.
 // ---------------------------------------------------------------------------
 
@@ -721,6 +798,19 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
   const now = deps.now ?? (() => new Date());
   const recordActivity = deps.recordActivity ?? (() => {});
 
+  /**
+   * Resolve the displayed-code profile for one login, with this service
+   * instance's injected promotion in place of the map's placeholder. Falls back
+   * to the `codex_local` profile for an adapter type with no entry of its own,
+   * so a login for an adapter type outside the map keeps running the same
+   * command and parser it always did before the map existed. Only `codex_local`
+   * is reachable through the route admission gate today.
+   */
+  function resolveProfile(adapterType: AgentAdapterType): DisplayedCodeLoginProfile {
+    const staticProfile = DISPLAYED_CODE_PROFILES[adapterType] ?? DISPLAYED_CODE_PROFILES.codex_local!;
+    return { ...staticProfile, promotion };
+  }
+
   // The one-time prompt per session. The service holds it in memory only. The
   // owner read path returns it; it never reaches the durable row or an activity
   // record.
@@ -735,7 +825,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     // caller cannot address the row by the internal id.
     const publicSessionId = randomUUID();
     const startedAt = now();
-    const ttlSeconds = input.ttlSeconds ?? DEVICE_LOGIN_TIMEOUT_MS / 1000;
+    const ttlSeconds = input.ttlSeconds ?? resolveProfile(input.adapterType).timeoutMs / 1000;
     const expiresAt = new Date(startedAt.getTime() + ttlSeconds * 1000);
     const base = {
       sessionId,
@@ -837,6 +927,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     activity: (phase: LoginSessionActivityPhase) => void;
   }): Promise<DeviceLoginOutcome> {
     const { input, sessionId, lease, activity } = ctx;
+    const profile = resolveProfile(input.adapterType);
 
     // Serialize every status write for this session, so a late write from a
     // callback never overwrites a later transition. Each write runs after the
@@ -873,8 +964,17 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     let outcome: RunnerDeviceLoginOutcome;
     try {
       const result = await runDeviceLogin(lease.driver, {
-        command: DEFAULT_CODEX_LOGIN_COMMAND,
-        timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
+        command: profile.command,
+        timeoutMs: profile.timeoutMs,
+        // `RunDeviceLoginOptions.parsePrompt` keeps the runner's own required-code
+        // prompt shape. The profile parser returns the wider adapter-neutral
+        // shape, so this adapts one call's result without widening the runner's
+        // own `onPrompt` contract. Every `codex_local` prompt carries a code, so
+        // this is a no-op today.
+        parsePrompt: (output) => {
+          const prompt = profile.parsePrompt(output);
+          return prompt && prompt.code !== undefined ? { url: prompt.url, code: prompt.code } : null;
+        },
         signal: input.signal,
         authPath: lease.authPath,
         onPrompt: (prompt) => {
@@ -926,7 +1026,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
         if (!credential || credential.length === 0) {
           throw new Error("missing_credential");
         }
-        await promotion.promote(credential, {
+        await profile.promotion.promote(credential, {
           sessionId,
           companyId: input.companyId,
           startedByUserId: input.startedByUserId,

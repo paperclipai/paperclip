@@ -1,9 +1,9 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import {
   ADAPTER_AUTH_ACTIVE_STATUSES,
-  CODEX_DEVICE_LOGIN_ADAPTER_TYPE,
+  DISPLAYED_CODE_ADAPTER_TYPES,
   decodePendingTerminal,
   LOGIN_LEASE_SESSION_TAG_KEY,
   observeSandboxDelete,
@@ -317,8 +317,9 @@ export function createProductionLoginSessionReaperRuntime(
         .where(
           and(
             // The shared table also holds the setup-token rows. Filter by the
-            // device-login adapter, so the orphan sweep reads only Codex rows.
-            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            // closed set of displayed-code adapter types, so the orphan sweep
+            // reads only displayed-code rows.
+            inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
             inArray(adapterAuthSessions.status, [
               ...ADAPTER_AUTH_ACTIVE_STATUSES,
               "cleanup_pending",

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { adapterAuthSessions, companies, createDb, environments } from "@paperclipai/db";
+import { adapterAuthSessions, companies, createDb, environmentLeases, environments } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
 import { DEVICE_LOGIN_URL } from "@paperclipai/adapter-codex-local/server";
 import {
@@ -12,6 +12,9 @@ import {
   AdapterAuthSessionConflictError,
   buildSandboxLoginDriver,
   DEVICE_LOGIN_TIMEOUT_MS,
+  DISPLAYED_CODE_ADAPTER_TYPES,
+  DISPLAYED_CODE_PROFILES,
+  LOGIN_LEASE_SESSION_TAG_KEY,
   createDeviceLoginService,
   createDbAdapterAuthSessionStore,
   sessionLoginHomePath,
@@ -27,6 +30,7 @@ import {
 } from "../services/device-login-service.ts";
 import {
   createDeviceLoginReaper,
+  createProductionLoginSessionReaperRuntime,
   type LoginSessionCleanupRuntime,
 } from "../services/device-login-reaper.ts";
 
@@ -1389,6 +1393,211 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
 
       controller.abort();
       await started.completed;
+    });
+  });
+
+  describe("the displayed-code adapter scope", () => {
+    it("reads a session row of a second displayed-code adapter by its public id", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const store = createDbAdapterAuthSessionStore(db);
+      const publicSessionId = randomUUID();
+      await db.insert(adapterAuthSessions).values({
+        id: randomUUID(),
+        companyId,
+        environmentId,
+        adapterType: "grok_local",
+        startedByUserId: OWNER_A,
+        publicSessionId,
+        status: "starting",
+        expiresAt: new Date(Date.now() + 60_000),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const row = await store.getByPublicId(publicSessionId, companyId);
+      expect(row).not.toBeNull();
+      expect(row?.adapterType).toBe("grok_local");
+    });
+
+    it("the expiry scan and the cleanup scan include a row of a second displayed-code adapter", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const store = createDbAdapterAuthSessionStore(db);
+      const past = new Date(Date.now() - 60_000);
+      const expiredId = randomUUID();
+      await db.insert(adapterAuthSessions).values({
+        id: expiredId,
+        companyId,
+        environmentId,
+        adapterType: "grok_local",
+        startedByUserId: OWNER_A,
+        publicSessionId: randomUUID(),
+        status: "starting",
+        expiresAt: past,
+        createdAt: past,
+        updatedAt: past,
+      });
+      const pendingId = randomUUID();
+      await db.insert(adapterAuthSessions).values({
+        id: pendingId,
+        companyId,
+        environmentId,
+        adapterType: "grok_local",
+        startedByUserId: OWNER_A,
+        publicSessionId: randomUUID(),
+        status: "cleanup_pending",
+        failureReason: "failed|login_command_failed",
+        finishedAt: past,
+        createdAt: past,
+        updatedAt: past,
+      });
+
+      const expired = await store.listExpiredActiveSessions(new Date());
+      expect(expired.map((row) => row.id)).toContain(expiredId);
+
+      const pending = await store.listCleanupPendingSessions();
+      expect(pending.map((row) => row.id)).toContain(pendingId);
+    });
+
+    it("the orphan lease scan includes a session row of a second displayed-code adapter, and excludes a Claude setup-token row", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const reaperRuntime = createProductionLoginSessionReaperRuntime({
+        db,
+        // The orphan scan under test reads only the store and the lease list; it
+        // never reaches the environment runtime driver.
+        environmentRuntime: {} as never,
+      });
+
+      // A grok_local session row that still owns its lease. `grok_local` is in
+      // the displayed-code adapter set, so the scan's candidate query reaches
+      // this row's environment.
+      const grokSessionId = randomUUID();
+      await db.insert(adapterAuthSessions).values({
+        id: randomUUID(),
+        companyId,
+        environmentId,
+        adapterType: "grok_local",
+        startedByUserId: OWNER_A,
+        publicSessionId: randomUUID(),
+        providerLeaseId: "grok-lease-1",
+        status: "waiting_for_user",
+        expiresAt: new Date(Date.now() + 60_000),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(environmentLeases).values({
+        companyId,
+        environmentId,
+        status: "active",
+        providerLeaseId: "grok-lease-1",
+        metadata: { [LOGIN_LEASE_SESSION_TAG_KEY]: grokSessionId },
+      });
+
+      // A Claude setup-token row in a second environment, in the shared
+      // `cleanup_pending` state the two login flows both use. `claude_local` is
+      // outside the displayed-code adapter set, and no other row makes this
+      // second environment a scan candidate, so the scan must never read it.
+      const claudeEnvironmentId = await seedEnvironment(companyId);
+      const claudeSessionId = randomUUID();
+      await db.insert(adapterAuthSessions).values({
+        id: randomUUID(),
+        companyId,
+        environmentId: claudeEnvironmentId,
+        adapterType: "claude_local",
+        startedByUserId: OWNER_B,
+        publicSessionId: randomUUID(),
+        providerLeaseId: "claude-lease-1",
+        status: "cleanup_pending",
+        failureReason: "failed",
+        finishedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(environmentLeases).values({
+        companyId,
+        environmentId: claudeEnvironmentId,
+        status: "active",
+        providerLeaseId: "claude-lease-1",
+        metadata: { [LOGIN_LEASE_SESSION_TAG_KEY]: claudeSessionId },
+      });
+
+      const tagged = await reaperRuntime.listTaggedLeases();
+      const taggedProviderLeaseIds = tagged.map((lease) => lease.providerLeaseId);
+      expect(taggedProviderLeaseIds).toContain("grok-lease-1");
+      expect(taggedProviderLeaseIds).not.toContain("claude-lease-1");
+    });
+
+    it("carries the CODEX_HOME variable name on the codex_local profile", () => {
+      // The home variable name has no consuming call site yet in this phase; the
+      // profile only carries it, ready for a later phase to read it.
+      expect(DISPLAYED_CODE_PROFILES.codex_local?.homeEnvVar).toBe("CODEX_HOME");
+    });
+
+    it("runLogin and the start ttl read the command, the parser, and the timeout from the resolved profile", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const store = createDbAdapterAuthSessionStore(db);
+      const originalProfile = DISPLAYED_CODE_PROFILES.codex_local!;
+      const customPrompt = { url: "https://example.test/device", code: "ZZZZ-99999" };
+      const customTimeoutMs = 12_345_000;
+      const capturedCommands: string[] = [];
+      // The map is a plain object at runtime; only its TypeScript type reads
+      // `Readonly`. Mutate the one entry for this test, then restore it, so no
+      // other test in this file observes the override.
+      const profiles = DISPLAYED_CODE_PROFILES as Record<string, typeof originalProfile>;
+      profiles.codex_local = {
+        ...originalProfile,
+        command: "custom-login-command",
+        timeoutMs: customTimeoutMs,
+        parsePrompt: (output) => (output.includes("MARKER") ? customPrompt : null),
+      };
+      try {
+        const runtime: LoginSessionRuntime = {
+          async acquireLoginLease(input) {
+            return {
+              providerLeaseId: `lease-${input.sessionId}`,
+              authPath: sessionCredentialPath(input.sessionId),
+              driver: {
+                start: (command, onData) => {
+                  capturedCommands.push(command);
+                  onData("a MARKER line\n");
+                  return new Promise<{ exitCode: number | null }>(() => {});
+                },
+                readFile: async () => Buffer.from("{}"),
+                dispose: async () => {},
+              },
+              deleteSandbox: async () => ({ outcome: "deleted" }),
+              release: async () => {},
+            };
+          },
+        };
+        const service = makeService({ store, runtime });
+        const controller = new AbortController();
+        const started = await service.start({
+          companyId,
+          environmentId,
+          adapterType: ADAPTER_TYPE,
+          startedByUserId: OWNER_A,
+          signal: controller.signal,
+        });
+
+        // The start ttl read: `session.expiresAt` reflects the profile's
+        // `timeoutMs`, not the fixed `DEVICE_LOGIN_TIMEOUT_MS`.
+        const expectedExpiresAt = Date.now() + customTimeoutMs;
+        expect(Math.abs(new Date(started.session.expiresAt).getTime() - expectedExpiresAt)).toBeLessThan(
+          5000,
+        );
+
+        // `runLogin`: the driver received the profile's command, and the
+        // profile's parser produced the owner-visible prompt.
+        await waitForStatus(store, started.session.sessionId, companyId, "waiting_for_user");
+        const owner = await service.readOwnerSession(started.session.sessionId, companyId, OWNER_A);
+        expect(capturedCommands).toEqual(["custom-login-command"]);
+        expect(owner?.prompt).toEqual(customPrompt);
+
+        controller.abort();
+        await started.completed;
+      } finally {
+        profiles.codex_local = originalProfile;
+      }
     });
   });
 });
