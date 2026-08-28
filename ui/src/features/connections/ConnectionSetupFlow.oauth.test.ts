@@ -6,6 +6,7 @@ import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
   isVercelConnectUnavailable,
   readConnectionIntentOAuthOutcome,
+  retainedReconnectMatches,
   requestedConnectionEntry,
 } from "./ConnectionSetupFlow";
 
@@ -125,5 +126,49 @@ describe("retained reconnect definition lookup", () => {
       available: false,
       retainedReconnectMatches: false,
     })).toBe(true);
+  });
+});
+
+describe("retained reconnect target matching", () => {
+  const connection = { applicationId: "app-1" } as ToolConnection;
+  const application = { id: "app-1", applicationKey: "custom-mcp" } as ToolApplication;
+
+  it("accepts a generic reconnect only for its exact retained application", () => {
+    expect(retainedReconnectMatches({
+      requestedAppKey: undefined,
+      byo: true,
+      applicationId: "app-1",
+      reconnectConnection: connection,
+      reconnectApplication: application,
+    })).toBe(true);
+    expect(retainedReconnectMatches({
+      requestedAppKey: undefined,
+      byo: true,
+      applicationId: "app-other",
+      reconnectConnection: connection,
+      reconnectApplication: application,
+    })).toBe(false);
+  });
+
+  it("keeps curated reconnects bound to their provider", () => {
+    const curated = {
+      id: "app-1",
+      applicationKey: "github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+    expect(retainedReconnectMatches({
+      requestedAppKey: "github",
+      byo: false,
+      applicationId: "app-1",
+      reconnectConnection: connection,
+      reconnectApplication: curated,
+    })).toBe(true);
+    expect(retainedReconnectMatches({
+      requestedAppKey: "notion",
+      byo: false,
+      applicationId: "app-1",
+      reconnectConnection: connection,
+      reconnectApplication: curated,
+    })).toBe(false);
   });
 });

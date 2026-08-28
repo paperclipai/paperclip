@@ -120,6 +120,26 @@ export function requestedConnectionEntry(input: {
   return getConnectableAppDefinition(input.requestedAppKey);
 }
 
+export function retainedReconnectMatches(input: {
+  requestedAppKey: string | undefined;
+  byo: boolean;
+  applicationId: string | undefined;
+  reconnectConnection: ToolConnection | null;
+  reconnectApplication: ToolApplication | null;
+}): boolean {
+  if (
+    !input.reconnectConnection
+    || !input.reconnectApplication
+    || input.reconnectConnection.applicationId !== input.reconnectApplication.id
+  ) return false;
+  if (input.requestedAppKey) {
+    return appApplicationSourceSlug(input.reconnectApplication) === input.requestedAppKey;
+  }
+  // Generic MCP applications intentionally have no provider slug. Their
+  // reconnect URL instead carries the exact retained application identity.
+  return input.byo && input.applicationId === input.reconnectApplication.id;
+}
+
 export function isVercelConnectUnavailable(input: {
   credentialSource: ToolConnectionCredentialSource;
   available: boolean;
@@ -635,12 +655,13 @@ export function ConnectionSetupFlow({
       : null,
     [applicationsQuery.data, reconnectConnection],
   );
-  const reconnectSourceMatches = Boolean(
-    reconnectConnection
-    && reconnectApplication
-    && requestedAppKey
-    && appApplicationSourceSlug(reconnectApplication) === requestedAppKey,
-  );
+  const reconnectSourceMatches = retainedReconnectMatches({
+    requestedAppKey,
+    byo,
+    applicationId: prefill.applicationId,
+    reconnectConnection,
+    reconnectApplication,
+  });
   const resumeConnection = useMemo(
     () => resumeConnectionId
       ? (connectionsQuery.data?.connections ?? []).find((connection) => connection.id === resumeConnectionId) ?? null
@@ -1212,7 +1233,7 @@ export function ConnectionSetupFlow({
     !connectionsQuery.isFetchedAfterMount
     || !applicationsQuery.isFetchedAfterMount
     || galleryQuery.isLoading
-    || !entry
+    || Boolean(requestedAppKey && !entry)
   )) {
     return (
       <div className="mx-auto max-w-xl space-y-4" aria-label="Loading retained connection setup">
