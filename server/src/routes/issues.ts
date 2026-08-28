@@ -4004,6 +4004,7 @@ export function issueRoutes(
       assigneeUserId: string | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
+      responsibleUserId?: string | null;
     },
   ) {
     if (req.actor.type !== "agent") return true;
@@ -4066,15 +4067,24 @@ export function issueRoutes(
     return body?.kind === "request_confirmation" || body?.kind === "request_checkbox_confirmation";
   }
 
-  function humanOwnedIssueMutationError(issue: { id: string; assigneeUserId: string | null }) {
+  function humanOwnedIssueMutationError(
+    issue: {
+      id: string;
+      assigneeUserId: string | null;
+      responsibleUserId?: string | null;
+    },
+    humanOwnerUserId: string | null,
+  ) {
     return {
       error: "Agent mutation of a human-assigned issue requires an accepted request_confirmation from the human assignee",
       details: {
         issueId: issue.id,
         assigneeUserId: issue.assigneeUserId,
+        responsibleUserId: issue.responsibleUserId ?? null,
+        humanOwnerUserId,
         authorizationHint:
           "Create a request_confirmation or request_checkbox_confirmation on this issue with payload.authorizationScope "
-          + "covering the requested mutation, then wait for the assigned human user to accept it.",
+          + "covering the requested mutation, then wait for the human owner to accept it.",
         securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
       },
     };
@@ -4149,9 +4159,11 @@ export function issueRoutes(
       id: string;
       companyId: string;
       assigneeUserId: string | null;
+      responsibleUserId?: string | null;
     },
+    humanOwnerUserId: string | null,
   ) {
-    if (!issue.assigneeUserId) return null;
+    if (!humanOwnerUserId) return null;
     const requestedClass = requestedHumanMutationClass(req);
     const minResolvedAt = new Date(Date.now() - HUMAN_ASSIGNED_ISSUE_MUTATION_GRANT_TTL_MS);
     const rows = await db
@@ -4167,7 +4179,7 @@ export function issueRoutes(
         eq(issueThreadInteractions.issueId, issue.id),
         inArray(issueThreadInteractions.kind, ["request_confirmation", "request_checkbox_confirmation"]),
         eq(issueThreadInteractions.status, "accepted"),
-        eq(issueThreadInteractions.resolvedByUserId, issue.assigneeUserId),
+        eq(issueThreadInteractions.resolvedByUserId, humanOwnerUserId),
         isNull(issueThreadInteractions.resolvedByAgentId),
         gte(issueThreadInteractions.resolvedAt, minResolvedAt),
       ))
@@ -4199,7 +4211,13 @@ export function issueRoutes(
   async function logAuthorizedMutation(
     grant: NonNullable<Awaited<ReturnType<typeof findHumanMutationGrant>>>,
     req: Request,
-    issue: { id: string; companyId: string; assigneeUserId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeUserId: string | null;
+      responsibleUserId?: string | null;
+    },
+    humanOwnerUserId: string,
   ) {
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -4217,6 +4235,9 @@ export function issueRoutes(
         action: grant.action,
         actorAgentId: actor.agentId,
         runId: actor.runId,
+        assigneeUserId: issue.assigneeUserId,
+        responsibleUserId: issue.responsibleUserId ?? null,
+        humanOwnerUserId,
       },
     });
   }
@@ -4228,23 +4249,28 @@ export function issueRoutes(
       id: string;
       companyId: string;
       assigneeUserId: string | null;
+      responsibleUserId?: string | null;
       title?: string | null;
     },
   ) {
     if (req.actor.type !== "agent") return true;
     if (isCommentOnlyMutation(req)) return true;
     if (isHumanAssignedIssueInteractionBootstrap(req)) return true;
-    if (issue.assigneeUserId === null) {
-      if (!(await isHumanGateIssueForMutationGuard(issue))) return true;
-      res.status(403).json(humanOwnedIssueMutationError(issue));
+    const isTitleMarkedHumanGate = issue.assigneeUserId === null
+      && await isHumanGateIssueForMutationGuard(issue);
+    if (issue.assigneeUserId === null && !isTitleMarkedHumanGate) return true;
+    const humanOwnerUserId = issue.assigneeUserId
+      ?? (isTitleMarkedHumanGate ? issue.responsibleUserId ?? null : null);
+    if (humanOwnerUserId === null) {
+      res.status(403).json(humanOwnedIssueMutationError(issue, null));
       return false;
     }
-    const grant = await findHumanMutationGrant(req, issue);
+    const grant = await findHumanMutationGrant(req, issue, humanOwnerUserId);
     if (grant) {
-      await logAuthorizedMutation(grant, req, issue);
+      await logAuthorizedMutation(grant, req, issue, humanOwnerUserId);
       return true;
     }
-    res.status(403).json(humanOwnedIssueMutationError(issue));
+    res.status(403).json(humanOwnedIssueMutationError(issue, humanOwnerUserId));
     return false;
   }
 
@@ -4444,6 +4470,7 @@ export function issueRoutes(
       companyId: string;
       parentId?: string | null;
       assigneeUserId?: string | null;
+      responsibleUserId?: string | null;
       title?: string | null;
     },
     opts: { allowWatchdogIssue?: boolean } = {},
@@ -4453,13 +4480,20 @@ export function issueRoutes(
     if (scope.kind === "none") return true;
     const result = await taskWatchdogScopeAllowsIssueMutation(db, scope, issue, opts);
     if (result.kind !== "invalid") {
+      const loadedIssue = issue.assigneeUserId === undefined || issue.responsibleUserId === undefined
+        ? await svc.getById(issue.id)
+        : null;
       const assigneeUserId = issue.assigneeUserId !== undefined
         ? issue.assigneeUserId
-        : (await svc.getById(issue.id))?.assigneeUserId ?? null;
+        : loadedIssue?.assigneeUserId ?? null;
+      const responsibleUserId = issue.responsibleUserId !== undefined
+        ? issue.responsibleUserId
+        : loadedIssue?.responsibleUserId ?? null;
       if (!(await assertHumanAssignedIssueMutationAllowed(req, res, {
         id: issue.id,
         companyId: issue.companyId,
         assigneeUserId,
+        responsibleUserId,
         title: issue.title as string | null | undefined,
       }))) {
         return false;
