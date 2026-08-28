@@ -7275,6 +7275,65 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       };
     },
 
+    // Which-tools-win (allow/deny policy) is a narrowest-scope-overrides question, handled by
+    // getEffectiveProfilesForAgent above. Which-connections-attach (runtime MCP server wiring) is
+    // a union question instead: an agent-scoped app install must not silently detach a
+    // company-scoped one just because both happen to resolve through the same binding precedence.
+    // See BRO-2550.
+    getUnionPermittedConnectionIdsForAgent: async (companyId: string, agentId: string): Promise<Set<string>> => {
+      await assertOptionalAgent(companyId, agentId, "Tool profile effective agent");
+      const allBindings = await db
+        .select()
+        .from(toolProfileBindings)
+        .where(eq(toolProfileBindings.companyId, companyId))
+        .orderBy(asc(toolProfileBindings.priority), asc(toolProfileBindings.createdAt));
+      const matchingBindings = allBindings.filter((binding) =>
+        (binding.targetType === "company" && binding.targetId === companyId)
+        || (binding.targetType === "agent" && binding.targetId === agentId)
+      );
+      if (matchingBindings.length === 0) return new Set();
+      const profileIds = profileIdsInBindingOrder(matchingBindings);
+      const profiles = await db
+        .select()
+        .from(toolProfiles)
+        .where(and(eq(toolProfiles.companyId, companyId), inArray(toolProfiles.id, profileIds)));
+      const activeProfiles = profiles.filter((profile) => profile.status === "active");
+      if (activeProfiles.length === 0) return new Set();
+      const activeProfileIds = activeProfiles.map((profile) => profile.id);
+      const [entries, catalog] = await Promise.all([
+        db
+          .select()
+          .from(toolProfileEntries)
+          .where(and(eq(toolProfileEntries.companyId, companyId), inArray(toolProfileEntries.profileId, activeProfileIds))),
+        db
+          .select()
+          .from(toolCatalogEntries)
+          .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"))),
+      ]);
+      const entriesByProfile = new Map<string, Array<typeof toolProfileEntries.$inferSelect>>();
+      for (const entry of entries) {
+        const list = entriesByProfile.get(entry.profileId) ?? [];
+        list.push(entry);
+        entriesByProfile.set(entry.profileId, list);
+      }
+      const connectionIds = new Set<string>();
+      for (const profile of activeProfiles) {
+        const profileEntries = entriesByProfile.get(profile.id) ?? [];
+        const includes = profileEntries.filter((entry) => entry.effect === "include");
+        const excludes = profileEntries.filter((entry) => entry.effect === "exclude");
+        for (const catalogEntry of catalog) {
+          if (excludes.some((entry) => profileEntryMatchesCatalog(entry, catalogEntry))) continue;
+          if (profile.defaultAction === "allow" || includes.some((entry) => profileEntryMatchesCatalog(entry, catalogEntry))) {
+            connectionIds.add(catalogEntry.connectionId);
+          }
+        }
+        for (const entry of includes) {
+          if (entry.connectionId) connectionIds.add(entry.connectionId);
+        }
+      }
+      return connectionIds;
+    },
+
     mintConnectionTokenForAgent: async (input: {
       connectionId: string;
       companyId: string;

@@ -155,6 +155,116 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
   });
 
+  it("attaches a company-scoped connection alongside an agent-scoped one for the same agent (BRO-2550)", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({
+      name: `Runtime MCP scope union ${randomUUID()}`,
+      issuePrefix: `RU${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Runtime MCP Scope Union Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-scope-union-${randomUUID().slice(0, 8)}`,
+      name: "Runtime MCP Scope Union App",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [companyScopedConnection, agentScopedConnection] = await db.insert(toolConnections).values([
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Company Installed MCP",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "active",
+        enabled: true,
+        config: { url: "https://company-installed.example.test/mcp" },
+      },
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Agent Installed MCP",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "active",
+        enabled: true,
+        config: { url: "https://agent-installed.example.test/mcp" },
+      },
+    ]).returning();
+    const [companyProfile, agentProfile] = await db.insert(toolProfiles).values([
+      {
+        companyId: company!.id,
+        profileKey: `app:${companyScopedConnection!.id}`,
+        name: "Company Installed MCP",
+        defaultAction: "deny",
+      },
+      {
+        companyId: company!.id,
+        profileKey: `app:${agentScopedConnection!.id}`,
+        name: "Agent Installed MCP",
+        defaultAction: "deny",
+      },
+    ]).returning();
+    await db.insert(toolProfileEntries).values([
+      {
+        companyId: company!.id,
+        profileId: companyProfile!.id,
+        selectorType: "connection",
+        effect: "include",
+        applicationId: application!.id,
+        connectionId: companyScopedConnection!.id,
+      },
+      {
+        companyId: company!.id,
+        profileId: agentProfile!.id,
+        selectorType: "connection",
+        effect: "include",
+        applicationId: application!.id,
+        connectionId: agentScopedConnection!.id,
+      },
+    ]);
+    await db.insert(toolProfileBindings).values([
+      {
+        companyId: company!.id,
+        profileId: companyProfile!.id,
+        targetType: "company",
+        targetId: company!.id,
+      },
+      {
+        companyId: company!.id,
+        profileId: agentProfile!.id,
+        targetType: "agent",
+        targetId: agent!.id,
+      },
+    ]);
+    await db.insert(toolConnectionInstalls).values([
+      {
+        companyId: company!.id,
+        connectionId: companyScopedConnection!.id,
+        targetType: "company",
+        targetId: company!.id,
+      },
+      {
+        companyId: company!.id,
+        connectionId: agentScopedConnection!.id,
+        targetType: "agent",
+        targetId: agent!.id,
+      },
+    ]);
+
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
+
+    expect(servers).toHaveLength(2);
+    const connectionIds = servers.map((server) => server.connectionId).sort();
+    expect(connectionIds).toEqual([companyScopedConnection!.id, agentScopedConnection!.id].sort());
+  });
+
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP diagnostic ${randomUUID()}`,

@@ -162,6 +162,7 @@ import { projectService } from "./projects.js";
 import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
+import { mcpGatewayApiEndpointPath } from "./mcp-gateway-endpoints.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
@@ -3377,16 +3378,19 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
 }): Promise<AdapterRuntimeMcpServer[]> {
-  const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(
+  const toolAccess = toolAccessService(input.db);
+  const effective = await toolAccess.getEffectiveProfilesForAgent(
     input.agent.companyId,
     input.agent.id,
   );
-  const permittedConnectionIds = new Set([
-    ...effective.entries
-      .filter((entry) => entry.effect === "include" && entry.connectionId)
-      .map((entry) => entry.connectionId!),
-    ...effective.allowedTools.map((tool) => tool.connectionId),
-  ]);
+  // Which MCP servers attach is a union question across scope tiers, not a narrowest-wins
+  // one: an agent-scoped app install must not silently detach a company-scoped app from that
+  // agent. getEffectiveProfilesForAgent resolves narrowest-wins for tool-level allow/deny
+  // policy instead, so it is the wrong source for this set. See BRO-2550.
+  const permittedConnectionIds = await toolAccess.getUnionPermittedConnectionIdsForAgent(
+    input.agent.companyId,
+    input.agent.id,
+  );
   const installedConnectionIds = new Set(effective.installedConnections.map((connection) => connection.id));
   const permittedConnections = permittedConnectionIds.size > 0
     ? await input.db
@@ -3487,7 +3491,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     });
     servers.push({
       name: connection.name,
-      url: `${paperclipApiBaseUrl()}/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      url: `${paperclipApiBaseUrl()}${mcpGatewayApiEndpointPath(gateway.id)}`,
       token: token.token,
       connectionId: connection.id,
     });
@@ -3585,7 +3589,7 @@ async function createManagedMcpRunConfig(input: {
     managedGateways.push({
       id: gateway.id,
       name: gateway.name,
-      endpointPath: `/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      endpointPath: mcpGatewayApiEndpointPath(gateway.id),
       bearerToken: token.token,
       tokenPrefix: token.tokenPrefix,
     });

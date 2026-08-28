@@ -25,6 +25,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { isMcpGatewayProtocolPath } from "../services/mcp-gateway-endpoints.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
 const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
@@ -64,6 +65,26 @@ function hashToken(token: string) {
 
 function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
+}
+
+/**
+ * The MCP gateway protocol endpoints carry their own bearer credential — a
+ * `pcgw_` gateway token minted by the tool gateway — and authenticate it inside
+ * the route handler (`namedGatewaySessionFromBearer`). They never read
+ * `req.actor`.
+ *
+ * Without this carve-out the generic bearer path below treats a gateway token
+ * as a failed board/agent credential and rejects the request with 401 before
+ * the route runs. That is silent from the caller's side: an MCP client just
+ * sees the server fail to initialize and registers zero tools, so every
+ * Paperclip-managed MCP server disappears from every agent session even though
+ * the connection is enabled and healthy (BRO-2546).
+ */
+const GATEWAY_BEARER_TOKEN_PREFIX = "pcgw_";
+
+export function isMcpGatewayProtocolRequest(input: { path: string; token: string }): boolean {
+  if (!input.token.startsWith(GATEWAY_BEARER_TOKEN_PREFIX)) return false;
+  return isMcpGatewayProtocolPath(input.path);
 }
 
 function invalidAgentTokenMessage(token: string) {
@@ -285,6 +306,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const token = authHeader!.slice("bearer".length).trim();
     if (!token) {
       next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
+      return;
+    }
+
+    if (isMcpGatewayProtocolRequest({ path: req.path, token })) {
+      // Hand the credential to the gateway route untouched. Force "none" rather
+      // than falling through with the ambient actor so a gateway token can
+      // never inherit the implicit board actor that local_trusted mode seeds
+      // above — the route resolves its own company/agent scope from the token.
+      req.actor = { type: "none", source: "none" };
+      next();
       return;
     }
 
