@@ -592,6 +592,50 @@ impl AcpxProviderSession {
         Ok(())
     }
 
+    pub fn suspend(
+        &mut self,
+        reason: &str,
+    ) -> Result<AcpxProviderSessionIdentity, LocalRunnerError> {
+        self.ensure_open()?;
+        if self.state.active_turn_id().is_some() || self.state.has_pending_requests() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider session is not at a safe suspension point",
+            ));
+        }
+        let response = match self.transport.request(
+            GeneratedAcpxSidecarCommand::SessionSuspend,
+            json!({"reason":bounded_reason(reason)}),
+        ) {
+            Ok(response) => response,
+            Err(error) => return Err(self.fail_closed(error)),
+        };
+        let identity = response
+            .get("identity")
+            .cloned()
+            .ok_or_else(|| LocalRunnerError::invalid("ACPX suspension omitted its identity"))
+            .and_then(|value| {
+                serde_json::from_value::<AcpxProviderSessionIdentity>(value).map_err(|error| {
+                    LocalRunnerError::invalid(format!(
+                        "ACPX suspension identity is invalid: {error}"
+                    ))
+                })
+            });
+        let identity = match identity {
+            Ok(identity) => identity,
+            Err(error) => return Err(self.fail_closed(error)),
+        };
+        if response.get("suspended").and_then(Value::as_bool) != Some(true)
+            || identity != self.identity
+        {
+            return Err(self.fail_closed(LocalRunnerError::invalid(
+                "ACPX sidecar did not confirm the exact suspended session",
+            )));
+        }
+        self.closed = true;
+        self.transport.shutdown()?;
+        Ok(identity)
+    }
+
     pub fn shutdown(&mut self, reason: &str) -> Result<(), LocalRunnerError> {
         if self.closed {
             return self.terminate_transport();

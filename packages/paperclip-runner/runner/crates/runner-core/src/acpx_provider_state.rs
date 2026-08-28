@@ -150,6 +150,12 @@ impl AcpxProviderState {
             .rotate_settled_turn_identities_after_provider_restart()
     }
 
+    pub fn has_pending_requests(&self) -> bool {
+        !self.pending_tools.is_empty()
+            || !self.pending_permissions.is_empty()
+            || !self.pending_inputs.is_empty()
+    }
+
     pub fn begin_turn(&mut self, turn_id: impl Into<String>) -> Result<(), LocalRunnerError> {
         if self.scope.active_turn_id().is_some()
             || !self.pending_tools.is_empty()
