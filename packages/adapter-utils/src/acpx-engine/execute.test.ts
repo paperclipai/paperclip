@@ -6543,4 +6543,227 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       vi.useRealTimers();
     }
   });
+
+  it("never leaks the child stderr tail into logs or the acpx.error payload after a startup-timeout guard trip", async () => {
+    const secretMarker = "sandbox-secret-marker-timeout-7d2e";
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runStderrDir, "run-guard-timeout.log"),
+      `leaked credential: ${secretMarker}\n`,
+      "utf8",
+    );
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () =>
+        ({
+          // Never settles on its own; only the guard's deadline can end it.
+          ensureSession: () => new Promise(() => {}),
+          startTurn: () => ({
+            events: (async function* () {})(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        }) as never,
+    });
+
+    try {
+      vi.useFakeTimers();
+      const resultPromise = execute({
+        runId: "run-guard-timeout",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+        context: {},
+        onLog: async (stream: "stdout" | "stderr", text: string) => {
+          logs.push({ stream, text });
+        },
+        onMeta: async () => {},
+      } as never);
+      await flushSetupThenAdvanceTimersByTimeAsync(ACPX_HANDSHAKE_TIMEOUT_MS + 50);
+      const result = await resultPromise;
+
+      expect(result.errorCode).toBe("acpx_handshake_timeout");
+      for (const entry of logs) {
+        expect(entry.text).not.toContain(secretMarker);
+      }
+      expect(JSON.stringify(result)).not.toContain(secretMarker);
+      const errorLogLine = logs.find((entry) => entry.text.includes("\"type\":\"acpx.error\""));
+      expect(errorLogLine).toBeTruthy();
+      const errorPayload = JSON.parse(errorLogLine!.text.trim());
+      expect(errorPayload.childStderrTail).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never leaks the child stderr tail into logs or the acpx.error payload after a transport-lost guard trip", async () => {
+    const secretMarker = "sandbox-secret-marker-transport-4b91";
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runStderrDir, "run-guard-transport-lost.log"),
+      `leaked credential: ${secretMarker}\n`,
+      "utf8",
+    );
+
+    const runner = createLocalSandboxRunner();
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner,
+    };
+
+    // A minimal run-disposition latch, matching the real bridge transport: once
+    // the loss is ordered, every later read still reports it.
+    let lossOrdered = false;
+    const readDisposition = () => ({ failed: lossOrdered, lossReason: lossOrdered ? "provider_exit" : null });
+    const bridgeHandle = {
+      env: {
+        PAPERCLIP_API_URL: "http://127.0.0.1:1",
+        PAPERCLIP_API_KEY: "bridge-token",
+        PAPERCLIP_API_BRIDGE_MODE: "http2_v1",
+      },
+      readRunDisposition: () => readDisposition(),
+      settleRunDisposition: () => readDisposition(),
+      markOrderlyCompletion: () => {},
+      stop: async () => {},
+    };
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
+      async () => bridgeHandle as never,
+    );
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
+      async () => ({ agentCommand: null, stop: async () => {} }) as never,
+    );
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () =>
+        ({
+          // Never settles on its own; only the guard's transport-loss poll can
+          // end it.
+          ensureSession: () => new Promise(() => {}),
+          startTurn: () => ({
+            events: (async function* () {})(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          setConfigOption: async () => {},
+          close: async () => {},
+        }) as never,
+    });
+
+    // Real timers: the sandbox lane spawns a real staging subprocess, whose
+    // completion callbacks run on the real event loop, not through fake
+    // timers. The loss is ordered up front, before `ensureSession` ever runs.
+    const resultPromise = execute({
+      runId: "run-guard-transport-lost",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget,
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+    lossOrdered = true;
+    const result = await resultPromise;
+
+    expect(result.errorCode).toBe("acpx_handshake_transport_lost");
+    for (const entry of logs) {
+      expect(entry.text).not.toContain(secretMarker);
+    }
+    expect(JSON.stringify(result)).not.toContain(secretMarker);
+    const errorLogLine = logs.find((entry) => entry.text.includes("\"type\":\"acpx.error\""));
+    expect(errorLogLine).toBeTruthy();
+    const errorPayload = JSON.parse(errorLogLine!.text.trim());
+    expect(errorPayload.childStderrTail).toBeUndefined();
+  }, 10000);
+
+  it("never leaks a sandbox-provided value from a late close rejection into logs or the result", async () => {
+    const secretMarker = "sandbox-secret-marker-late-close-2a7f";
+    const root = await makeTempRoot();
+    const lateHandle = {
+      backendSessionId: "backend-session",
+      agentSessionId: "agent-session",
+      runtimeSessionName: "runtime-session",
+    };
+    let resolveEnsure!: (handle: unknown) => void;
+    const ensureSessionPromise = new Promise((resolve) => {
+      resolveEnsure = resolve;
+    });
+    const logs: Array<{ stream: string; text: string }> = [];
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (err: unknown) => unhandledRejections.push(err);
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      vi.useFakeTimers();
+      const execute = createAcpxEngineExecutor({
+        createRuntime: () =>
+          ({
+            ensureSession: () => ensureSessionPromise,
+            startTurn: () => ({
+              events: (async function* () {})(),
+              result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+              cancel: async () => {},
+            }),
+            close: async () => {
+              throw new Error(`leaked credential: ${secretMarker}`);
+            },
+          }) as never,
+      });
+      const resultPromise = execute({
+        runId: "run-late-close-rejection",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+        context: {},
+        onLog: async (stream: "stdout" | "stderr", text: string) => {
+          logs.push({ stream, text });
+        },
+        onMeta: async () => {},
+      } as never);
+      await flushSetupThenAdvanceTimersByTimeAsync(ACPX_HANDSHAKE_TIMEOUT_MS + 1);
+      const result = await resultPromise;
+      expect(result.errorCode).toBe("acpx_handshake_timeout");
+
+      // The run has already settled (the fence is sealed), and only now does the
+      // abandoned promise resolve into a real handle, as if a compromised
+      // sandbox child forged a late handle. The engine's own close attempt on
+      // that handle then rejects with a value carrying a secret-like marker.
+      resolveEnsure(lateHandle);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      for (const entry of logs) {
+        expect(entry.text).not.toContain(secretMarker);
+      }
+      expect(JSON.stringify(result)).not.toContain(secretMarker);
+      const lateCloseLog = logs.find((entry) => entry.text.includes("acpx_handshake_late_close_failed"));
+      expect(lateCloseLog).toBeTruthy();
+      expect(unhandledRejections).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+      vi.useRealTimers();
+    }
+  });
 });

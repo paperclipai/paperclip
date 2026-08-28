@@ -3065,16 +3065,25 @@ async function emitAcpxFailure(input: {
   // acpx.error payload. Used by the turn path to surface the self-describing
   // adapter execution timeout message instead of the raw underlying error.
   messageOverride?: string;
+  // Skip the child stderr tail entirely: do not read the child stderr log, do
+  // not write the `onLog` line, and do not add `childStderrTail` to the
+  // `acpx.error` payload. Used by the handshake-guard failure route: the
+  // child can hold `ensureSession()` open until the guard fires and write
+  // chosen bytes to its own stderr first, so this route must never let those
+  // sandbox-provided bytes become durable host run-log content.
+  suppressChildStderrTail?: boolean;
 }): Promise<{
   classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
   message: string;
   childStderrTail: string | null;
 }> {
-  const { ctx, prepared, err, phase, messageOverride } = input;
+  const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
   const rawMessage = err instanceof Error ? err.message : String(err);
   const message = messageOverride ?? rawMessage;
   const classified = classifyError(err, phase);
-  const childStderrTail = await readChildStderrTail({ logPath: prepared.childStderrLogPath });
+  const childStderrTail = suppressChildStderrTail
+    ? null
+    : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
   if (childStderrTail) {
     await ctx.onLog(
       "stderr",
@@ -3901,6 +3910,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // placeholder by then (or skipped closing because the channel was
         // already known lost), so this is the one close for this real handle,
         // not a second one.
+        // A rejected close comes from inside the sandbox (a forged late handle
+        // can make `runtime.close` reject with chosen bytes). It crosses the
+        // sandbox-to-host trust boundary, so it must never reach the run log,
+        // the result, or a classification: log the fixed closed code only.
+        // The catch stays attached so the promise stays observed and no
+        // unhandled rejection can occur.
         const closeLateHandshakeHandle = (lateHandle: AcpRuntimeHandle): void => {
           if (isHandshakeTransportLost()) return;
           void runtime
@@ -3909,7 +3924,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               reason: "paperclip late handshake cleanup",
               discardPersistentState: false,
             })
-            .catch((closeErr) => recordTeardownError("runtime-close", closeErr));
+            .catch(() =>
+              ctx
+                .onLog(
+                  "stderr",
+                  "[paperclip] ACPX handshake late close failed: acpx_handshake_late_close_failed\n",
+                )
+                .catch(() => {}),
+            );
         };
         // The late rejection comes from inside the sandbox. It crosses the
         // sandbox-to-host trust boundary, so it must never reach the run log,
@@ -4053,6 +4075,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             // message `classifyError` classified — the ensure_session phase
             // never gets a chance to summarize it differently.
             ...(guardTripped && err instanceof Error ? { messageOverride: err.message } : {}),
+            // A compromised child can hold ensureSession open until the guard
+            // fires, then write chosen bytes to its own stderr. Suppress the
+            // child stderr tail on this route only, so those sandbox-provided
+            // bytes never reach the run log or the acpx.error payload.
+            ...(guardTripped ? { suppressChildStderrTail: true } : {}),
           });
           capturedResult = {
             exitCode: 1,
