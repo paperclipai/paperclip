@@ -22,9 +22,11 @@ export const DUPLEX_FRAME_VERSION = 2;
 /**
  * The default maximum size of one frame, in bytes. The decoder rejects a longer
  * frame with a `frame_too_large` protocol error. The value matches the per-chunk
- * character bound of the host duplex route.
+ * byte bound of the host duplex route, and the host body limit for one HTTP/2
+ * bridge stream ({@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES} in
+ * `sandbox-callback-bridge.ts`).
  */
-export const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 1_000_000;
+export const DEFAULT_MAX_DUPLEX_FRAME_BYTES = 262_144;
 
 /**
  * The READY control frame. The gateway sends it one time after it binds the

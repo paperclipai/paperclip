@@ -5689,6 +5689,87 @@ describe("sandbox adapter execution targets", () => {
     }
   }, 20000);
 
+  it("aborts the host forward and its response-body read when the sandbox stream closes", async () => {
+    // The mock host answers with headers at once, then holds the response
+    // body open with no further chunk and no end. The read stays pending
+    // until the outbound fetch itself aborts. If the abort never reaches
+    // this connection, `hostConnectionClosed` never resolves and the test
+    // times out instead of failing fast — the assertion is: it does resolve,
+    // quickly, once the sandbox stream closes.
+    let sawRequest = false;
+    let resolveHostConnectionClosed: (() => void) | undefined;
+    const hostConnectionClosed = new Promise<void>((resolve) => {
+      resolveHostConnectionClosed = resolve;
+    });
+    const api = createServer((req, res) => {
+      sawRequest = true;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.on("close", () => resolveHostConnectionClosed!());
+    });
+    await new Promise<void>((resolve, reject) => {
+      api.once("error", reject);
+      api.listen(0, "127.0.0.1", () => resolve());
+    });
+    const apiAddress = api.address();
+    if (!apiAddress || typeof apiAddress === "string") {
+      throw new Error("Expected the mock host server to listen on a TCP port.");
+    }
+    const apiOrigin = `http://127.0.0.1:${apiAddress.port}`;
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-abort-forward-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-abort-forward",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: apiOrigin,
+      enableSandboxDuplexBridge: true,
+      // Far longer than this test waits, so only the sandbox-side stream
+      // close — not this ceiling — can end the forward here.
+      forwardTimeoutMs: 60_000,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+      const clientStream = sessionRef.current!.request({
+        ":method": "GET",
+        ":path": "/api/agents/me",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      clientStream.end();
+      await waitForCondition(() => sawRequest, "the mock host to receive the forwarded request", 4000);
+      // The sandbox side closes its stream while the host forward and its
+      // response-body read are both still in flight.
+      clientStream.close(http2.constants.NGHTTP2_CANCEL);
+      await hostConnectionClosed;
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await new Promise<void>((resolve) => api.close(() => resolve()));
+    }
+  }, 20000);
+
   // ---------------------------------------------------------------------------
   // Real-PTY replay.
   //
@@ -6524,6 +6605,30 @@ describe("duplex readiness gate replay-buffer reservation", () => {
     // The gate's own token is gone; only the downstream token remains live.
     expect(ledger.liveTokenCount).toBe(1);
     expect(ledger.bytesInUse).toBe(suffixBytes);
+  });
+
+  it("caps the post-READY replay buffer without the aggregate ledger", async () => {
+    const { channel, control } = makeFakeReadinessChannel();
+    const readinessBufferCapBytes = DEFAULT_MAX_DUPLEX_FRAME_BYTES + 4_096;
+    // No ledger: only the buffer's own direct byte cap can end the channel
+    // here. This proves the cap holds even when no aggregate ledger is
+    // present, unlike the ledger-only check this replaces.
+    const gate = __duplexReadinessTesting.createReadinessGate(channel, {
+      nonce: READY_NONCE,
+      timeoutMs: 5_000,
+    });
+    // The READY line arrives alone, so the pending suffix starts empty.
+    control.emitData(readyLine());
+    expect((await gate.ready).ok).toBe(true);
+    // A post-READY chunk one byte over the cap floods the replay buffer
+    // before the broker binds.
+    control.emitData("x".repeat(readinessBufferCapBytes + 1));
+    expect(gate.replayOverflowed()).toBe(true);
+    expect(control.stopCount).toBe(1);
+    // Binding the broker replays nothing, because the gate dropped the buffer.
+    const replayed: string[] = [];
+    gate.brokerChannel.onData((chunk) => replayed.push(Buffer.from(chunk).toString("utf8")));
+    expect(replayed).toEqual([]);
   });
 });
 

@@ -3836,13 +3836,25 @@ function createDuplexReadinessGate(
       return;
     }
     if (readyOk) {
-      // READY already passed; hold the bytes until the broker binds. Reserve the
+      // READY already passed; hold the bytes until the broker binds. Bound this
+      // buffer directly against {@link DUPLEX_READINESS_BUFFER_CAP_BYTES} before
+      // any ledger reservation, the same way the preface-scan gate's own
+      // post-preface replay buffer bounds itself: a worker that keeps sending
+      // bytes after READY, faster than the broker can bind, cannot grow this
+      // buffer past the cap even with no aggregate ledger present. Reserve the
       // exact UTF-8 bytes under `readiness_replay` before the append, so the replay
-      // buffer counts toward the aggregate ceiling. A refusal fails closed: the gate
-      // drops the pending buffer, releases the replay tokens, stops the channel, and
-      // sets the overflow flag. The caller reads the flag and selects the file bridge
-      // with the aggregate marker, because `ready` already resolved before this
-      // synchronous post-READY chunk arrived.
+      // buffer also counts toward the aggregate ceiling. A refusal fails closed: the
+      // gate drops the pending buffer, releases the replay tokens, stops the
+      // channel, and sets the overflow flag. The caller reads the flag and selects
+      // the file bridge with the aggregate marker, because `ready` already resolved
+      // before this synchronous post-READY chunk arrived.
+      if (pending.length + chunk.byteLength > DUPLEX_READINESS_BUFFER_CAP_BYTES) {
+        replayOverflow = true;
+        pending = READINESS_EMPTY_BUFFER;
+        releaseReplayTokens();
+        channel.stop();
+        return;
+      }
       if (ledger) {
         const token = ledger.reserve("readiness_replay", chunk.byteLength);
         if (!token) {
@@ -4548,7 +4560,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                   headers: request.headers,
                   body: request.body.toString("utf8"),
                 },
-                undefined,
+                request.signal,
                 { suppressDebugLog: true },
               );
               duplexObservability.recordRequest({ latencyMs: Date.now() - dispatchStartMs, outcome: "ok" });

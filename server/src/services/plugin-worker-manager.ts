@@ -193,14 +193,21 @@ const LOGIN_PTY_OPEN_FAILED = "LOGIN_PTY_OPEN_FAILED";
 // login pseudo-terminal route, but it carries no command allowlist and adds seven
 // explicit bounds the pseudo-terminal route lacks. Each bound ends the route when
 // it passes the limit, so a faulty or hostile worker cannot flood the host.
-/** The default maximum characters for one duplex channel data notification. */
-const MAX_DUPLEX_CHANNEL_CHUNK_CHARS = 1_000_000;
+/** The default maximum characters for one duplex channel data notification. This
+ * matches the host duplex frame bound ({@link DEFAULT_MAX_DUPLEX_FRAME_BYTES} in
+ * `duplex-frame-codec.ts`), so one chunk always fits inside one frame. */
+const MAX_DUPLEX_CHANNEL_CHUNK_CHARS = 262_144;
 /**
- * The default maximum cumulative characters the host buffers for one duplex
- * channel route before a data listener attaches. A worker that streams data
- * before the consumer binds cannot grow the host buffer without limit.
+ * The default maximum cumulative bytes the host retains, on one duplex channel
+ * route, for input the worker has not yet delivered: the pre-bind hold (before
+ * the worker session id binds), the post-bind buffered queue (bound, before a
+ * data listener attaches), and the terminal buffer (a route that ended before
+ * a listener attached). All three representations share this one route-local
+ * bound, so a worker cannot grow any of them past it. This bound is a fixed
+ * share of the fixed per-route byte budget the host now bounds every duplex
+ * retention site against; it holds no measurement of real traffic.
  */
-const MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS = 8 * 1024 * 1024;
+export const DUPLEX_ROUTE_INPUT_MAX_BYTES = 393_216;
 /**
  * The default maximum number of data frames the host buffers for one duplex
  * channel route before a data listener attaches.
@@ -229,8 +236,21 @@ const DUPLEX_CHANNEL_PRE_BIND_HOLD_MARGIN_FRAMES = 1;
  * unbounded number of pending requests.
  */
 const MAX_DUPLEX_CHANNEL_PENDING_REQUESTS = 256;
-/** The default maximum characters for one host→worker duplex channel write. */
-const MAX_DUPLEX_CHANNEL_WRITE_CHARS = 1_000_000;
+/** The default maximum characters for one host→worker duplex channel write. This
+ * matches the host duplex frame bound, so one write always fits inside one
+ * frame. */
+const MAX_DUPLEX_CHANNEL_WRITE_CHARS = 262_144;
+/**
+ * The default maximum cumulative bytes the host retains, on one duplex channel
+ * route, for a host→worker write the worker has not yet acknowledged: the raw
+ * write payload and the serialized child-stdin frame the host built from it.
+ * This bound is route-local and independent of the pending-request count
+ * bound above; a worker that never replies still cannot make one route hold
+ * an unbounded number of write bytes, even under a raised pending-request
+ * count. This bound is a fixed share of the fixed per-route byte budget; it
+ * holds no measurement of real traffic.
+ */
+export const DUPLEX_ROUTE_PENDING_WRITE_MAX_BYTES = 393_216;
 /**
  * The default maximum number of protocol errors for one duplex channel route.
  * A protocol error is one malformed or mismatched data frame. The route ends
@@ -504,6 +524,9 @@ export interface WorkerStartOptions {
     maxPendingRequests?: number;
     /** Max characters for one host→worker duplex channel write. */
     maxWriteChars?: number;
+    /** Max cumulative bytes the host retains, for one route, for a
+     * host→worker write pending the worker's acknowledgement. */
+    maxPendingWriteBytes?: number;
     /** Max number of protocol errors for one route before the route ends. */
     maxProtocolErrors?: number;
     /** Max cumulative bytes the host forwards for one route over its whole life. */
@@ -935,7 +958,7 @@ export function createPluginWorkerHandle(
     options.duplexChannelLimits?.maxChunkChars ?? MAX_DUPLEX_CHANNEL_CHUNK_CHARS;
   const maxDuplexChannelPreBindChars =
     options.duplexChannelLimits?.maxPreBindBufferedChars ??
-    MAX_DUPLEX_CHANNEL_PRE_BIND_CHARS;
+    DUPLEX_ROUTE_INPUT_MAX_BYTES;
   const maxDuplexChannelPreBindFrames =
     options.duplexChannelLimits?.maxPreBindBufferedFrames ??
     MAX_DUPLEX_CHANNEL_PRE_BIND_FRAMES;
@@ -949,6 +972,8 @@ export function createPluginWorkerHandle(
     MAX_DUPLEX_CHANNEL_PENDING_REQUESTS;
   const maxDuplexChannelWriteChars =
     options.duplexChannelLimits?.maxWriteChars ?? MAX_DUPLEX_CHANNEL_WRITE_CHARS;
+  const maxDuplexRoutePendingWriteBytes =
+    options.duplexChannelLimits?.maxPendingWriteBytes ?? DUPLEX_ROUTE_PENDING_WRITE_MAX_BYTES;
   const maxDuplexChannelProtocolErrors =
     options.duplexChannelLimits?.maxProtocolErrors ??
     MAX_DUPLEX_CHANNEL_PROTOCOL_ERRORS;
@@ -1828,6 +1853,13 @@ export function createPluginWorkerHandle(
     // hold. Each held event carries the aggregate byte token that reserved its raw
     // bytes; the host never retains the original arbitrary notification graph.
     preBind: HeldDuplexEvent[];
+    // The cumulative raw bytes `preBind` holds. `DUPLEX_ROUTE_INPUT_MAX_BYTES`
+    // bounds this route-local counter, so a worker cannot flood the pre-bind
+    // hold with bytes the frame-count ceiling alone does not catch (a handful
+    // of large frames, each well under the frame-count limit). This counter
+    // covers only the hold; the post-bind buffered queue counts its own bytes
+    // in `bufferedChars`, against the same named bound.
+    preBindBytes: number;
     // The single bounded exit event that arrived before the bind. An exit never
     // consumes a data hold slot, so a worker that batches an exit among enough data
     // frames to fill the hold cannot crowd out a data frame. The bind replays the
@@ -1837,6 +1869,19 @@ export function createPluginWorkerHandle(
     // holds, across the pre-bind, buffered, and terminal-buffered representations.
     // The byte cleanup releases every token here exactly once.
     retainedTokens: Set<ReservationToken>;
+    // The cumulative raw payload bytes of every host→worker write this route
+    // has sent but the worker has not yet acknowledged. The window this
+    // counter tracks spans both retained representations of a pending write:
+    // the raw payload the pending request object holds, and the serialized
+    // child-stdin frame the host builds from it and writes before the request
+    // settles. `DUPLEX_ROUTE_PENDING_WRITE_MAX_BYTES` bounds this route-local
+    // counter, independent of `pendingRequests` and of the aggregate byte
+    // ledger: a worker that never replies cannot make one route hold an
+    // unbounded number of write bytes, even under a raised pending-request
+    // count. `sendBoundedRequest` increments it before the send and
+    // decrements it once the request settles, on every path: a reply, a
+    // rejection, a timeout, a worker exit, or a shutdown.
+    pendingWriteBytes: number;
   }
   // The live duplex routes on this worker, keyed by the exact
   // `{ hostRouteId, workerSessionId }` pair. The host binds one pair once, at
@@ -1939,6 +1984,7 @@ export function createPluginWorkerHandle(
     }
     route.retainedTokens.clear();
     route.preBind = [];
+    route.preBindBytes = 0;
     route.preBindExit = null;
     route.buffered = [];
     route.bufferedChars = 0;
@@ -2070,6 +2116,7 @@ export function createPluginWorkerHandle(
       }
     }
     route.preBind = [];
+    route.preBindBytes = 0;
     route.preBindExit = null;
     if (route.buffered.length > 0) {
       terminalDuplexRoutes.add(route);
@@ -2350,6 +2397,14 @@ export function createPluginWorkerHandle(
       recordDuplexChannelProtocolError(route);
       return;
     }
+    // The route-local input bound covers the pre-bind hold directly. A handful
+    // of large frames can pass the frame-count ceiling above while still
+    // flooding the host with bytes, so this route ends at once on the byte
+    // bound, the same way the post-bind buffered queue already does.
+    if (route.preBindBytes + chunk.byteLength > maxDuplexChannelPreBindChars) {
+      void terminalizeDuplexChannelRoute(route);
+      return;
+    }
     // Reserve the exact retained raw byte count before the host holds the event.
     const reserved = reserveRouteBytes(route, "pre_bind_event", chunk.byteLength);
     if (reserved === null) {
@@ -2364,6 +2419,7 @@ export function createPluginWorkerHandle(
       chunk,
       token: reserved === "no-ledger" ? null : reserved,
     });
+    route.preBindBytes += chunk.byteLength;
   }
 
   // Replay the frames a route held before it bound. The route is live now, so the
@@ -2376,6 +2432,7 @@ export function createPluginWorkerHandle(
   function replayPreBindDuplexFrames(route: DuplexChannelRoute): void {
     const held = route.preBind;
     route.preBind = [];
+    route.preBindBytes = 0;
     for (const event of held) {
       if (route.terminalized) {
         // The route ended mid-replay. Release the remaining held tokens, so the
@@ -2486,8 +2543,10 @@ export function createPluginWorkerHandle(
       terminalized: false,
       settleWait,
       preBind: [],
+      preBindBytes: 0,
       preBindExit: null,
       retainedTokens: new Set<ReservationToken>(),
+      pendingWriteBytes: 0,
     };
     // Reserve one aggregate route slot before any work. When the process-scoped
     // ceiling is full, reject with the fixed route-busy error and open nothing, so
@@ -2579,6 +2638,16 @@ export function createPluginWorkerHandle(
         void terminalizeDuplexChannelRoute(route);
         return;
       }
+      // The route-local pending-write byte bound, independent of the pending-
+      // request count above and of the aggregate byte ledger below: a worker
+      // that never replies cannot make one route hold an unbounded number of
+      // write bytes, even under a raised pending-request count. A stop
+      // request carries no payload, so it never counts against this bound.
+      const pendingWriteBytesToCharge = method === "duplexChannelWrite" ? writeByteCount ?? 0 : 0;
+      if (route.pendingWriteBytes + pendingWriteBytesToCharge > maxDuplexRoutePendingWriteBytes) {
+        void terminalizeDuplexChannelRoute(route);
+        return;
+      }
       // Reserve the exact raw byte count of a host→worker write against the
       // aggregate ledger before `callInternal` retains the payload. A pending write
       // RPC holds `params.data` until it settles, so this reservation bounds the
@@ -2602,6 +2671,7 @@ export function createPluginWorkerHandle(
         }
       }
       route.pendingRequests += 1;
+      route.pendingWriteBytes += pendingWriteBytesToCharge;
       // Meter the child-stdin transport buffer only for a duplex write. A stop
       // request carries a tiny fixed frame that the host never lets grow, so it
       // does not meter or reject. The write path reserves the serialized frame in
@@ -2622,6 +2692,11 @@ export function createPluginWorkerHandle(
         })
         .finally(() => {
           route.pendingRequests -= 1;
+          // Release the route-local pending-write bytes one time, after the RPC
+          // settles on any path: success, error, timeout, worker exit, or
+          // shutdown. This mirrors the aggregate token release below, but stays
+          // local to this route and independent of the aggregate ledger.
+          route.pendingWriteBytes -= pendingWriteBytesToCharge;
           // Release the pending-write token one time, after the RPC settles on any
           // path: success, error, timeout, worker exit, or shutdown. The token is
           // not in `route.retainedTokens`, so route terminalization never releases
