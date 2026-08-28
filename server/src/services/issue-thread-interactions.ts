@@ -434,6 +434,25 @@ function isEquivalentCreateRequest(
 }
 
 /**
+ * Derive the "lineage" grouping of an idempotency key by dropping its last
+ * `:`-delimited segment, e.g. `confirmation:{issueId}:pr:5` and
+ * `confirmation:{issueId}:pr:6` both belong to lineage
+ * `confirmation:{issueId}:pr`. Keys need at least three segments (a real
+ * prefix, an identifying middle portion, and a trailing
+ * variant/version) to participate in the AGE-906 re-issuance-escalation
+ * check below — this avoids treating two-segment keys that merely share a
+ * common human-chosen first segment (e.g. two unrelated
+ * `addressed:second` / `addressed:board-only` idempotency keys picked for
+ * unrelated test cases) as the same logical request lineage.
+ */
+function deriveIssueThreadInteractionIdempotencyLineage(key: string | null | undefined): string | null {
+  if (!key) return null;
+  const segments = key.split(":");
+  if (segments.length < 3) return null;
+  return segments.slice(0, -1).join(":");
+}
+
+/**
  * Parse a stored interaction `result` blob tolerantly. Rows persisted by older
  * builds can carry a `result` shape that predates the current schema — e.g. a
  * legacy `outcome` value ("withdrawn_by_creator") no longer in the enum.
@@ -1489,6 +1508,38 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * AGE-906: find a still-pending interaction that shares idempotency lineage
+   * with `idempotencyKey` (same purpose, e.g. a re-issued
+   * `confirmation:{issueId}:pr:{n}` after a rebase), addressed to the same
+   * agent, but under a *different* exact idempotency key. Re-issuing to a
+   * non-responding addressee over and over would otherwise silently re-arm
+   * an identical pending card each time forever — never escalating. This
+   * only reports the fact; callers decide whether/how to widen coverage.
+   */
+  async function findStaleIdempotencyLineageInteraction(args: {
+    issueId: string;
+    companyId: string;
+    idempotencyKey: string;
+    addresseeAgentId: string;
+  }) {
+    const lineage = deriveIssueThreadInteractionIdempotencyLineage(args.idempotencyKey);
+    if (!lineage) return null;
+    const candidates = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, args.companyId),
+        eq(issueThreadInteractions.issueId, args.issueId),
+        eq(issueThreadInteractions.status, "pending"),
+        eq(issueThreadInteractions.addresseeAgentId, args.addresseeAgentId),
+        isNotNull(issueThreadInteractions.idempotencyKey),
+        ne(issueThreadInteractions.idempotencyKey, args.idempotencyKey),
+      ));
+    return candidates.find((row) =>
+      deriveIssueThreadInteractionIdempotencyLineage(row.idempotencyKey) === lineage) ?? null;
+  }
+
   async function getForIssue(issue: { id: string; companyId: string }, interactionId: string) {
     const current = await db
       .select()
@@ -2328,6 +2379,40 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
       }
 
+      // AGE-906: a *different* idempotency key sharing lineage with an
+      // existing pending card addressed to the same agent means this is a
+      // repeat re-issuance to a still-non-responding addressee (e.g. a PR
+      // confirmation re-created after a rebase). Re-arming an identical
+      // agent-locked card again would silently repeat forever; widen the
+      // resolver audience instead so any agent (or a human) can unblock the
+      // issue, and drop the addressee lock that would otherwise keep
+      // excluding everyone else from resolving it. This never auto-approves
+      // or auto-rejects the card — it only widens who may act on it.
+      let insertPolicy = policy;
+      let insertAddresseeAgentId = normalizedData.addresseeAgentId ?? null;
+      // Never override an explicit, already-restrictive request for this
+      // specific card (e.g. an explicit human_only/board_only ask) — widening
+      // is only for silently re-arming an identical agent-locked default, not
+      // for second-guessing an explicit stricter request.
+      if (normalizedData.idempotencyKey && insertAddresseeAgentId && policy.requestedResolverPolicy !== "human_only") {
+        const staleLineageMatch = await findStaleIdempotencyLineageInteraction({
+          issueId: issue.id,
+          companyId: issue.companyId,
+          idempotencyKey: normalizedData.idempotencyKey,
+          addresseeAgentId: insertAddresseeAgentId,
+        });
+        if (staleLineageMatch) {
+          insertAddresseeAgentId = null;
+          insertPolicy = resolveInteractionPolicy({
+            kind: data.kind,
+            requested: "anyone",
+            governance,
+            hasToolAction: false,
+            hasSecretProposal: false,
+          });
+        }
+      }
+
       if (data.sourceCommentId) {
         const sourceComment = await db
           .select({
@@ -2398,17 +2483,17 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               kind: data.kind,
               status: "pending",
               continuationPolicy: data.continuationPolicy,
-              requestedResolverPolicy: policy.requestedResolverPolicy,
-              effectiveResolverPolicy: policy.effectiveResolverPolicy,
-              resolverPolicyProvenance: policy.resolverPolicyProvenance,
-              effectiveResolverPolicySource: policy.effectiveResolverPolicySource,
+              requestedResolverPolicy: insertPolicy.requestedResolverPolicy,
+              effectiveResolverPolicy: insertPolicy.effectiveResolverPolicy,
+              resolverPolicyProvenance: insertPolicy.resolverPolicyProvenance,
+              effectiveResolverPolicySource: insertPolicy.effectiveResolverPolicySource,
               idempotencyKey: data.idempotencyKey ?? null,
               sourceCommentId: data.sourceCommentId ?? null,
               sourceRunId: data.sourceRunId ?? null,
               title: data.title ?? null,
               summary: data.summary ?? null,
               createdByAgentId: actor.agentId ?? null,
-              addresseeAgentId: data.addresseeAgentId ?? null,
+              addresseeAgentId: insertAddresseeAgentId,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
             })

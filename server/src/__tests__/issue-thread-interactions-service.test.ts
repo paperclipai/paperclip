@@ -426,6 +426,97 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("widens resolver policy instead of silently re-arming a repeat idempotency-lineage confirmation to the same non-responding agent (AGE-906)", async () => {
+    const { companyId, issueId, goalId } = await seedConfirmationIssue("Repeat re-issuance widens coverage");
+    const creatorAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const otherRunId = randomUUID();
+    await db.insert(agents).values([
+      { id: creatorAgentId, companyId, name: "Creator", role: "engineer", status: "active" },
+      { id: addresseeAgentId, companyId, name: "Non-responding addressee", role: "engineer", status: "active" },
+      { id: otherAgentId, companyId, name: "Other agent", role: "engineer", status: "active" },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date("2026-07-25T12:00:00.000Z"),
+    });
+
+    const basePayload = {
+      version: 1 as const,
+      prompt: "Ready to merge PR #5?",
+    };
+
+    const first = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation" as const,
+        addresseeAgentId,
+        continuationPolicy: "wake_assignee" as const,
+        idempotencyKey: `confirmation:${issueId}:pr:5`,
+        payload: basePayload,
+      },
+      { agentId: creatorAgentId },
+    );
+    expect(first).toMatchObject({
+      addresseeAgentId,
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+    });
+
+    // The addressee never resolves it. A rebase re-issues the confirmation
+    // under a new idempotency key in the same lineage (`...:pr:6`), still
+    // addressed to the same agent. This must not just re-arm an identical
+    // agent-locked card — it must widen the audience so someone else (or a
+    // human) can act.
+    const second = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation" as const,
+        addresseeAgentId,
+        continuationPolicy: "wake_assignee" as const,
+        idempotencyKey: `confirmation:${issueId}:pr:6`,
+        payload: basePayload,
+      },
+      { agentId: creatorAgentId },
+    );
+    expect(second.addresseeAgentId).toBeNull();
+    expect(second).toMatchObject({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+    });
+
+    // With the addressee lock dropped, an unrelated agent can now resolve it.
+    const accepted = await interactionsSvc.acceptInteraction(
+      { id: issueId, companyId, projectId: null, goalId },
+      second.id,
+      {},
+      { agentId: otherAgentId, runId: otherRunId },
+    );
+    expect(accepted.interaction.status).toBe("accepted");
+    expect(accepted.interaction.resolvedByAgentId).toBe(otherAgentId);
+
+    // A fresh, unrelated idempotency key addressed to the same agent is a
+    // brand-new request, not a repeat re-issuance, and keeps the addressee
+    // lock as normal.
+    const unrelated = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation" as const,
+        addresseeAgentId,
+        continuationPolicy: "wake_assignee" as const,
+        idempotencyKey: `confirmation:${issueId}:plan:1`,
+        payload: { version: 1 as const, prompt: "Approve the plan?" },
+      },
+      { agentId: creatorAgentId },
+    );
+    expect(unrelated.addresseeAgentId).toBe(addresseeAgentId);
+  });
+
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

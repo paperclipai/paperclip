@@ -4417,6 +4417,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           companyId: issueThreadInteractions.companyId,
           issueId: issueThreadInteractions.issueId,
           status: issueThreadInteractions.status,
+          createdAt: issueThreadInteractions.createdAt,
+          addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+          resolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
         })
         .from(issueThreadInteractions)
         .where(eq(issueThreadInteractions.status, "pending")),
