@@ -12975,7 +12975,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
-        await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+        await cancelRunForStaleIssue(run, issueId, staleness);
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -13452,7 +13452,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { stale: false };
   }
 
-  async function cancelQueuedRunForStaleIssue(
+  async function cancelRunForStaleIssue(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
@@ -14639,9 +14639,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
+    if (issueId && issueContext && isResolvedInteractionContinuationWakeContext(context)) {
+      try {
+        // Claim the issue under the same in_progress predicate used by the
+        // queued-run staleness gate. This is the final atomic guard before
+        // dispatch: an operator parking the issue after claim but before this
+        // checkout must not be overwritten by the continuation.
+        await issuesSvc.checkout(issueId, agent.id, ["in_progress"], run.id);
+        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+      } catch (error) {
+        if (!isCheckoutConflictError(error)) throw error;
+        const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+        if (staleness.stale) {
+          await cancelRunForStaleIssue(run, issueId, staleness);
+          return;
+        }
+        throw error;
+      }
+      issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+    }
     if (
       issueId &&
       issueContext &&
+      !isResolvedInteractionContinuationWakeContext(context) &&
       shouldAutoCheckoutIssueForWake({
         contextSnapshot: context,
         issueStatus: issueContext.status,

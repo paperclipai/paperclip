@@ -428,6 +428,77 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("does not re-open a resolved connection-intent issue parked after claim", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Connection intent parked between claim and checkout",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        interactionId: randomUUID(),
+        interactionKind: "connection_intent",
+        interactionStatus: "accepted",
+        interactionResolvedAt: "2026-08-28T13:30:00.000Z",
+        mutation: "interaction",
+        source: "connection_intent.resolved",
+      },
+    });
+
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION park_connection_intent_after_claim()
+      RETURNS trigger AS $trigger$
+      BEGIN
+        IF NEW.id = '${runId}'::uuid AND NEW.status = 'running' THEN
+          UPDATE issues SET status = 'backlog' WHERE id = '${issueId}'::uuid;
+        END IF;
+        RETURN NEW;
+      END;
+      $trigger$ LANGUAGE plpgsql;
+
+      CREATE TRIGGER park_connection_intent_after_claim
+      AFTER UPDATE OF status ON heartbeat_runs
+      FOR EACH ROW EXECUTE FUNCTION park_connection_intent_after_claim();
+    `));
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    expect(wakeup).toMatchObject({ status: "skipped", error: expect.stringContaining("no longer in_progress") });
+    expect(issue?.status).toBe("backlog");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
