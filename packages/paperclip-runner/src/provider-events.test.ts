@@ -96,6 +96,27 @@ describe("provider-neutral events", () => {
     expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
   });
 
+  it("normalizes malformed or non-positive Codex plan revisions", () => {
+    for (const revision of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const event = canonicalProviderEventsFromCodex("turn/plan/updated", {
+        turnId: "turn-revision",
+        revision,
+        plan: [{ step: "Ship it", status: "inProgress" }],
+      })[0]!;
+      expect(event.payload.revision).toBe(1);
+      expect(validatePrpEvent(envelope(event))).toEqual({
+        ok: true,
+        event: expect.any(Object),
+        issues: [],
+      });
+    }
+    expect(canonicalProviderEventsFromCodex("turn/plan/updated", {
+      turnId: "turn-revision",
+      revision: 7,
+      plan: [],
+    })[0]?.payload.revision).toBe(7);
+  });
+
   it("marks a turn plan complete when every native step is complete", () => {
     const event = canonicalProviderEventsFromCodex("turn/plan/updated", {
       turnId: "turn-1",

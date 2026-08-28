@@ -274,10 +274,11 @@ function turnPlanPayload(params: Record<string, unknown>): Record<string, unknow
   });
   const planComplete = steps.length > 0 && steps.every((step) => step.status === "completed");
   const planId = safeId(text(params.turnId), "turn-plan");
+  const revision = Number(params.revision);
   return {
     schema: "paperclip.plan.updated.v1",
     planId,
-    revision: Number.isSafeInteger(params.revision) ? Number(params.revision) : 1,
+    revision: Number.isSafeInteger(revision) && revision > 0 ? revision : 1,
     explanation: text(params.explanation).slice(0, 4000) || null,
     steps,
     complete: planComplete,
