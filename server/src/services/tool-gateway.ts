@@ -143,6 +143,11 @@ export function isConnectionGrantAudienceAllowed(
 // `tool_timeout` even though the approval succeeded. Give approved executions
 // the full permitted headroom instead.
 const APPROVED_EXECUTION_TIMEOUT_MS = 60_000;
+const ACTION_REQUEST_EXECUTION_POLL_MS = 25;
+// Concurrent consumers must wait at least as long as the provider execution
+// they are joining. The extra grace lets the owner persist the terminal request
+// state after the provider timeout/result settles.
+const ACTION_REQUEST_EXECUTION_WAIT_MS = APPROVED_EXECUTION_TIMEOUT_MS + 5_000;
 // The gateway creates an ask-first request in two steps: it inserts the row
 // with a null signature, then it signs the row and sets the expiry. A concurrent
 // matching call can observe the row in this window. A null signature alone does
@@ -4920,17 +4925,24 @@ export function createToolGatewayService(
   }
 
   async function waitForActionRequestExecution(actionRequestId: string) {
-    for (let attempt = 0; attempt < 500; attempt += 1) {
+    const deadline = Date.now() + ACTION_REQUEST_EXECUTION_WAIT_MS;
+    while (true) {
       const [row] = await db
         .select()
         .from(toolActionRequests)
         .where(eq(toolActionRequests.id, actionRequestId))
         .limit(1);
       if (!row || row.status !== "executing") return row ?? null;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Math.min(ACTION_REQUEST_EXECUTION_POLL_MS, remainingMs),
+      ));
     }
     throw new ToolGatewayHttpError(409, "Approved tool action is still executing", "action_execution_in_progress", {
       actionRequestId,
+      waitMs: ACTION_REQUEST_EXECUTION_WAIT_MS,
     });
   }
 
