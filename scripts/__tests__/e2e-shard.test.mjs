@@ -14,6 +14,7 @@ const durationsManifest = path.join(repoRoot, "scripts", "e2e-shard-durations.js
 const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.ts");
 const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
 const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
+const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
 
 const SHARD_COUNT = 3;
 
@@ -179,5 +180,29 @@ test("the trusted PR workflow passes the shard's spec filter to Playwright witho
     workflow,
     /pnpm run test:e2e \$specs/,
     "pr-trusted.yml e2e_shards must invoke `pnpm run test:e2e $specs`",
+  );
+});
+
+test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  assert.match(
+    workflow,
+    /pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile/,
+    "the policy job must validate the complete merge tree instead of only the current PR layer",
+  );
+  assert.match(
+    workflow,
+    /cmp -s "\$RUNNER_TEMP\/pnpm-lock\.before\.yaml" pnpm-lock\.yaml/,
+    "the policy job must upload a lockfile only when regeneration changed it",
+  );
+
+  const restoreSteps = workflow.match(
+    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
+  ) ?? [];
+  assert.equal(restoreSteps.length, 6, "every downstream install job must restore a required regenerated artifact");
+  assert.doesNotMatch(
+    workflow,
+    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,
+    "a missing artifact must fail after the policy job says it uploaded one",
   );
 });

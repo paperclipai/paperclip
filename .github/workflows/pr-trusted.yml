@@ -296,22 +296,20 @@ jobs:
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
-      - name: Validate dependency resolution when manifests change
+      - name: Validate dependency resolution and regenerate stale lockfile
         id: regen_lockfile
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
-          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$|^patches/'
-          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
-            echo "regenerated=1" >> "$GITHUB_OUTPUT"
-          else
+          cp pnpm-lock.yaml "$RUNNER_TEMP/pnpm-lock.before.yaml"
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          if cmp -s "$RUNNER_TEMP/pnpm-lock.before.yaml" pnpm-lock.yaml; then
             echo "regenerated=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "regenerated=1" >> "$GITHUB_OUTPUT"
           fi
 
-      # Manifest-only PRs (where pnpm-lock.yaml stays at base because the policy
-      # job above blocks committing it) need the regenerated lockfile for the
-      # downstream `pnpm install --frozen-lockfile` steps. Upload it here so
-      # every job consumes the same hash without recomputing.
+      # Manifest-only and stacked PRs keep pnpm-lock.yaml at the default branch.
+      # Upload a regenerated copy whenever the checked-out merge tree needs one.
+      # Every downstream job then consumes the same hash without recomputing.
       - name: Upload regenerated lockfile for downstream jobs
         if: steps.regen_lockfile.outputs.regenerated == '1'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -339,8 +337,8 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -425,8 +423,8 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -486,8 +484,8 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -550,8 +548,8 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -586,8 +584,8 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -663,8 +661,8 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
