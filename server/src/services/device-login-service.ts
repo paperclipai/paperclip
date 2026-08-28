@@ -21,6 +21,10 @@ import {
   type DeviceLoginPrompt,
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
+import {
+  GROK_DEVICE_LOGIN_COMMAND as DEFAULT_GROK_LOGIN_COMMAND,
+  parseGrokDeviceLoginPrompt,
+} from "@paperclipai/adapter-grok-local/server";
 import type { AdapterLoginPrompt } from "@paperclipai/adapter-utils";
 import {
   createLoginPtyTransport,
@@ -762,10 +766,17 @@ const UNCONFIGURED_PROMOTION: CredentialPromotion = {
 /**
  * The host-owned profile for every displayed-code adapter type. `AgentAdapterType`
  * covers every adapter, not only the displayed-code ones. So the map is a partial
- * record: a lookup for an adapter type with no entry yields `undefined`. Only the
- * `codex_local` entry is reachable today. The map holds the current Codex values
- * under adapter-neutral member names, so a later phase adds a second entry with
- * no shape change here.
+ * record: a lookup for an adapter type with no entry yields `undefined`. Both the
+ * `codex_local` entry and the `grok_local` entry are reachable today: the route
+ * admission gate in `agents.ts` and the `login-command.ts` closed key map now
+ * cover `grok_local` too.
+ *
+ * `homeEnvVar` names the environment variable the sandbox login pseudo-terminal
+ * opener sets, for documentation only: no code reads this member today. The
+ * opener (`composeLaunchLine` in the Daytona plugin) holds its own fixed
+ * `CODEX_HOME` / `GROK_HOME` mapping, keyed off the closed login command key,
+ * not off this profile. This matches the existing `codex_local` entry, whose
+ * `homeEnvVar` has been unread the same way since phase 1.
  */
 export const DISPLAYED_CODE_PROFILES: Readonly<
   Partial<Record<AgentAdapterType, DisplayedCodeLoginProfile>>
@@ -774,6 +785,13 @@ export const DISPLAYED_CODE_PROFILES: Readonly<
     command: DEFAULT_CODEX_LOGIN_COMMAND,
     homeEnvVar: "CODEX_HOME",
     parsePrompt: parseDeviceLoginPrompt,
+    timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
+    promotion: UNCONFIGURED_PROMOTION,
+  },
+  grok_local: {
+    command: DEFAULT_GROK_LOGIN_COMMAND,
+    homeEnvVar: "GROK_HOME",
+    parsePrompt: parseGrokDeviceLoginPrompt,
     timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
     promotion: UNCONFIGURED_PROMOTION,
   },
@@ -803,8 +821,9 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
    * instance's injected promotion in place of the map's placeholder. Falls back
    * to the `codex_local` profile for an adapter type with no entry of its own,
    * so a login for an adapter type outside the map keeps running the same
-   * command and parser it always did before the map existed. Only `codex_local`
-   * is reachable through the route admission gate today.
+   * command and parser it always did before the map existed. `codex_local` and
+   * `grok_local` are reachable through the route admission gate today; the
+   * fallback stays in place for a future adapter type with no profile entry.
    */
   function resolveProfile(adapterType: AgentAdapterType): DisplayedCodeLoginProfile {
     const staticProfile = DISPLAYED_CODE_PROFILES[adapterType] ?? DISPLAYED_CODE_PROFILES.codex_local!;

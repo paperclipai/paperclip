@@ -91,6 +91,18 @@ async function waitForStatus(
 const PROMPT_OUTPUT = `Open ${DEVICE_LOGIN_URL} in your browser.\nEnter the one-time code below:\nABCD-EFGHI\n`;
 const PROMPT_CODE = "ABCD-EFGHI";
 
+// A valid Grok device-login output. The Grok parser requires the `user_code`
+// query to equal the code that stands alone on its own line after the
+// preamble. The Codex parser accepts none of this shape.
+const GROK_CODE = "WXYZ-ABCD";
+const GROK_DEVICE_LOGIN_URL = `https://accounts.x.ai/oauth2/device?user_code=${GROK_CODE}`;
+const GROK_PROMPT_OUTPUT = [
+  "To sign in, open this URL in your browser:",
+  `  ${GROK_DEVICE_LOGIN_URL}`,
+  "Confirm this code in your browser:",
+  `  ${GROK_CODE}`,
+].join("\n");
+
 type ExecController = { onStdout: (chunk: string) => void; input: AcquireLoginLeaseInput };
 type ExecBehavior = (c: ExecController) => Promise<{ exitCode: number | null }>;
 
@@ -352,6 +364,74 @@ describe("device login service", () => {
     expect(activity.map((event) => event.phase)).toContain("prompt_surfaced");
     expect(JSON.stringify(activity)).not.toContain(DEVICE_LOGIN_URL);
     expect(JSON.stringify(activity)).not.toContain(PROMPT_CODE);
+  });
+
+  it("gives a Grok prompt to a grok_local session, and the session surfaces the Grok code and URL", async () => {
+    // This proves the Grok parser ran: the profile map resolves the parser from
+    // the trusted adapter type, so a `grok_local` session runs the Grok parser,
+    // not the Codex parser.
+    const store = createMemoryStore();
+    const execGrokSuccess: ExecBehavior = async ({ onStdout }) => {
+      onStdout(GROK_PROMPT_OUTPUT);
+      return { exitCode: 0 };
+    };
+    const { runtime } = createFakeRuntime({ exec: execGrokSuccess, authBytes: Buffer.from("{}") });
+    const companyId = randomUUID();
+    const service = makeService({ store, runtime });
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: "grok_local",
+      startedByUserId: OWNER_A,
+    });
+
+    await waitForStatus(store, session.sessionId, companyId, "waiting_for_user");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const owner = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(owner?.prompt).toEqual({ url: GROK_DEVICE_LOGIN_URL, code: GROK_CODE });
+
+    await completed;
+  });
+
+  it("gives the same Grok prompt to a codex_local session, and the session surfaces no prompt", async () => {
+    // This proves the Codex parser stays strict: a Grok-shaped prompt never
+    // satisfies the Codex parser's origin, path, and code-length rules, so the
+    // row never leaves `starting` and the owner read carries no prompt.
+    const store = createMemoryStore();
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const execGrokGated: ExecBehavior = async ({ onStdout }) => {
+      onStdout(GROK_PROMPT_OUTPUT);
+      await gate;
+      return { exitCode: 0 };
+    };
+    const { runtime } = createFakeRuntime({ exec: execGrokGated, authBytes: Buffer.from("{}") });
+    const companyId = randomUUID();
+    const service = makeService({ store, runtime });
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+
+    // Give the run several event-loop turns. The row must never reach
+    // `waiting_for_user`, because the Codex parser never matches the Grok
+    // prompt.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    expect(row?.status).toBe("starting");
+
+    const owner = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(owner?.prompt).toBeNull();
+
+    releaseGate();
+    await completed;
   });
 
   it("fails closed and never promotes when a success outcome carries no credential", async () => {
