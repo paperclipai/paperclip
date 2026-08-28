@@ -6108,4 +6108,22 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     fake.emitLoss("provider_exit");
     expect(fake.readDisposition().failed).toBe(false);
   });
+
+  it("releases the runtime locally and places no remote close call once the duplex channel is lost", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    let closeCalls = 0;
+    const runtime = runtimeWithControlledResult(() => fake.emitLoss("provider_exit"));
+    // A close call with no deadline of its own would hang forever on a dead
+    // channel. The test times out if the teardown still places the call.
+    runtime.close = () => {
+      closeCalls += 1;
+      return new Promise(() => {});
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    expect(closeCalls).toBe(0);
+  });
 });

@@ -2405,6 +2405,10 @@ interface RuntimeSettlementPlan {
   // Cancel the running turn with this reason before the close (the turn-error
   // path cancels before it closes). Null on every other path.
   readonly cancelTurnReason: string | null;
+  // True when the duplex control channel is already known lost. The settlement
+  // then releases the runtime locally and places no remote close call, because
+  // that call has no deadline of its own and would block on the dead channel.
+  readonly skipRemoteClose: boolean;
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -3803,6 +3807,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             dropWarmEntry: true,
             recordCloseError: true,
             cancelTurnReason: null,
+            skipRemoteClose: false,
           };
           await emitPhase("ensure_session", ensureSessionPhaseStart, "failed");
           const { classified, message } = await emitAcpxFailure({
@@ -3839,6 +3844,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             dropWarmEntry: false,
             recordCloseError: true,
             cancelTurnReason: null,
+            skipRemoteClose: false,
           };
           await emitPhase("ensure_session", ensureSessionPhaseStart, "failed");
           capturedResult = {
@@ -3922,6 +3928,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           dropWarmEntry: true,
           recordCloseError: true,
           cancelTurnReason: null,
+          skipRemoteClose: false,
         };
         await emitPhase("configure_session", configureSessionStart, "failed");
         const { classified, message } = await emitAcpxFailure({
@@ -4175,6 +4182,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           dropWarmEntry: false,
           recordCloseError: false,
           cancelTurnReason: null,
+          skipRemoteClose: channelLost,
         };
 
         const errorMessage = timedOut
@@ -4313,6 +4321,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           dropWarmEntry: true,
           recordCloseError: true,
           cancelTurnReason: preEmitMessage,
+          skipRemoteClose: false,
         };
         // Emit the failure best-effort. `turnFinalize` must not reject, so a
         // failing emission never propagates: the settlement owns the teardown, and
@@ -4420,12 +4429,25 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             dropWarmEntry: false,
             recordCloseError: true,
             cancelTurnReason: null,
+            skipRemoteClose: false,
           };
           // Cancel a running turn before the close (the turn-error path).
           if (settlement.cancelTurnReason && activeTurn) {
             await activeTurn.cancel({ reason: settlement.cancelTurnReason }).catch(() => {});
           }
           const existing = warmHandles.get(prepared.sessionKey);
+          // The control channel is already known lost, so no remote call can
+          // reach the backend. Release the local bookkeeping only and place no
+          // `runtime.close(...)` call — that call has no deadline of its own
+          // and would block on the dead channel.
+          if (settlement.skipRemoteClose) {
+            if (warmHandleMatches(existing, runtime, settlement.handle) && existing) {
+              clearWarmHandleTimer(existing);
+              warmHandles.delete(prepared.sessionKey);
+              flushChildStderr(existing.childStderrState);
+            }
+            return;
+          }
           if (
             settlement.mode === "warm_or_close" &&
             warmHandleMatches(existing, runtime, settlement.handle) &&
