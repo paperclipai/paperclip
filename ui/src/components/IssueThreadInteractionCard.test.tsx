@@ -137,7 +137,7 @@ describe("IssueThreadInteractionCard", () => {
       link.textContent === "Connect a new Notion identity",
     );
     expect(connectLink?.getAttribute("href")).toBe(
-      "/apps/connect?byo=1&source=notion&intent=interaction-connection-intent-default",
+      "/apps/connect?byo=1&appKey=notion&intent=interaction-connection-intent-default",
     );
   });
 
