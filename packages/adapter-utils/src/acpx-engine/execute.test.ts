@@ -36,6 +36,7 @@ import {
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
+import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
 import { runChildProcess } from "../server-utils.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
 import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
@@ -214,6 +215,20 @@ async function runExecutor(
 
   expect(result.exitCode).toBe(0);
   return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
+}
+
+// Under `vi.useFakeTimers()`, the setup work before a run reaches its
+// `ensureSession` call (staging, warm-handle lookups, real `fs` calls) still
+// runs through ordinary promise chains, not timers. `advanceTimersByTimeAsync`
+// only drains microtasks in the windows between the timer ticks it processes;
+// with no timer due yet, a single call can return before that setup chain
+// finishes unwinding. Flushing a few zero-length advances first lets it fully
+// unwind before the real, deadline-length advance below.
+async function flushSetupThenAdvanceTimersByTimeAsync(ms: number): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  await vi.advanceTimersByTimeAsync(ms);
 }
 
 // A recording span, used only in tests. It captures the span name, the parent
@@ -6167,5 +6182,365 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // boundary and saw the loss the settlement snapshot missed, so it
     // released the runtime locally and placed no remote close call.
     expect(closeCalls).toBe(0);
+  });
+
+  it("ends a pending handshake with a closed transport-lost code when the duplex channel is lost before ensureSession settles", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    // `ensureSession` never settles on its own; only the guard can end it.
+    const runtime = {
+      ensureSession: () => new Promise(() => {}),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({ status: "completed" as const, stopReason: "end_turn" }),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    // Real timers: the sandbox lane spawns a real staging subprocess, whose
+    // completion callbacks run on the real event loop, not through fake
+    // timers. The poll interval is short (a fixed host constant well under a
+    // second), so this converges quickly without needing the deadline to
+    // fire — the loss is ordered up front, before `ensureSession` ever runs.
+    const resultPromise = runRemote(fake.handle, runtime, sandbox);
+    fake.emitLoss("provider_exit");
+    const result = await resultPromise;
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.errorCode).toBe("acpx_handshake_transport_lost");
+    expect(result.resultJson).toMatchObject({ phase: "ensure_session" });
+    // Distinct from a session-identity failure and from the deadline code.
+    expect(result.errorCode).not.toBe("acpx_session_init_failed");
+    expect(result.errorCode).not.toBe("acpx_handshake_timeout");
+  }, 10000);
+});
+
+describe("ACPX startup handshake guard and late-completion fence", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("ends a handshake that stays pending past the startup deadline with a closed timeout code", async () => {
+    const root = await makeTempRoot();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () =>
+        ({
+          // Never settles on its own; only the guard's deadline can end it.
+          ensureSession: () => new Promise(() => {}),
+          startTurn: () => ({
+            events: (async function* () {})(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        }) as never,
+    });
+
+    try {
+      vi.useFakeTimers();
+      const resultPromise = execute({
+        runId: "run-handshake-timeout",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      await flushSetupThenAdvanceTimersByTimeAsync(ACPX_HANDSHAKE_TIMEOUT_MS + 50);
+      const result = await resultPromise;
+
+      // The run terminalizes promptly on its own; no server restart needed.
+      expect(result.exitCode).not.toBe(0);
+      expect(result.errorCode).toBe("acpx_handshake_timeout");
+      expect(result.resultJson).toMatchObject({ phase: "ensure_session" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never promotes a late ensureSession resolution into the live handle after a guard rejection", async () => {
+    const root = await makeTempRoot();
+    let resolveEnsure!: (handle: unknown) => void;
+    const ensureSessionPromise = new Promise((resolve) => {
+      resolveEnsure = resolve;
+    });
+    const startTurn = vi.fn(() => ({
+      events: (async function* () {
+        yield { type: "done", stopReason: "end_turn" };
+      })(),
+      result: Promise.resolve({ status: "completed" as const, stopReason: "end_turn" }),
+      cancel: async () => {},
+    }));
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () =>
+        ({
+          ensureSession: () => ensureSessionPromise,
+          startTurn,
+          close: async () => {},
+        }) as never,
+    });
+
+    try {
+      vi.useFakeTimers();
+      const resultPromise = execute({
+        runId: "run-no-promotion",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      await flushSetupThenAdvanceTimersByTimeAsync(ACPX_HANDSHAKE_TIMEOUT_MS + 50);
+      const result = await resultPromise;
+
+      expect(result.errorCode).toBe("acpx_handshake_timeout");
+      // The run settled as a pre-turn handshake failure; the turn never ran,
+      // which it could only do with a promoted, live session handle.
+      expect(result.resultJson).toMatchObject({ phase: "ensure_session" });
+      expect(startTurn).not.toHaveBeenCalled();
+
+      // The abandoned promise now resolves. It must still never start a turn.
+      resolveEnsure({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(startTurn).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a late-resolving real handle exactly once, whether it arrives before or after settlement seals", async () => {
+    const lateHandle = {
+      backendSessionId: "backend-session",
+      agentSessionId: "agent-session",
+      runtimeSessionName: "runtime-session",
+    };
+
+    async function runAbandonedHandshake(): Promise<{
+      closeSpy: ReturnType<typeof vi.fn>;
+      resolveEnsure: (handle: unknown) => void;
+      resultPromise: Promise<unknown>;
+    }> {
+      const root = await makeTempRoot();
+      let resolveEnsure!: (handle: unknown) => void;
+      const ensureSessionPromise = new Promise((resolve) => {
+        resolveEnsure = resolve;
+      });
+      const closeSpy = vi.fn(async () => {});
+      const execute = createAcpxEngineExecutor({
+        createRuntime: () =>
+          ({
+            ensureSession: () => ensureSessionPromise,
+            startTurn: () => ({
+              events: (async function* () {})(),
+              result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+              cancel: async () => {},
+            }),
+            close: closeSpy,
+          }) as never,
+      });
+      const resultPromise = execute({
+        runId: "run-fence-close",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      await flushSetupThenAdvanceTimersByTimeAsync(ACPX_HANDSHAKE_TIMEOUT_MS + 1);
+      return { closeSpy, resolveEnsure, resultPromise };
+    }
+
+    try {
+      vi.useFakeTimers();
+
+      // Order A: the late resolution lands as soon as possible after the
+      // guard rejects, ahead of the settlement steps that follow it.
+      {
+        const { closeSpy, resolveEnsure, resultPromise } = await runAbandonedHandshake();
+        resolveEnsure(lateHandle);
+        await resultPromise;
+        expect(closeSpy).toHaveBeenCalledTimes(1);
+        expect(closeSpy).toHaveBeenCalledWith(expect.objectContaining({ handle: lateHandle }));
+      }
+
+      // Order B: the run fully settles first (so settlement has already
+      // sealed the fence), and only then does the late resolution land.
+      {
+        const { closeSpy, resolveEnsure, resultPromise } = await runAbandonedHandshake();
+        await resultPromise;
+        expect(closeSpy).not.toHaveBeenCalled();
+        resolveEnsure(lateHandle);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(closeSpy).toHaveBeenCalledTimes(1);
+        expect(closeSpy).toHaveBeenCalledWith(expect.objectContaining({ handle: lateHandle }));
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("discards the reuse decision and leaves no warm entry after a guard rejection", async () => {
+    const root = await makeTempRoot();
+    const warmHandles = new Map();
+    const execute = createAcpxEngineExecutor({
+      warmHandles,
+      createRuntime: () =>
+        ({
+          ensureSession: () => new Promise(() => {}),
+          startTurn: () => ({
+            events: (async function* () {})(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        }) as never,
+    });
+
+    try {
+      vi.useFakeTimers();
+      const resultPromise = execute({
+        runId: "run-discard-reuse",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: {
+          agent: "custom",
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          mode: "persistent",
+          warmHandleIdleMs: 60_000,
+        },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      await flushSetupThenAdvanceTimersByTimeAsync(ACPX_HANDSHAKE_TIMEOUT_MS + 50);
+      const result = await resultPromise;
+
+      expect(result.errorCode).toBe("acpx_handshake_timeout");
+      expect(warmHandles.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the session-identity mismatch code unchanged and distinct from both new handshake-guard codes", async () => {
+    class FakeAcpRuntimeError extends Error {
+      readonly code = "ACP_SESSION_INIT_FAILED";
+      constructor(message: string) {
+        super(message);
+        this.name = "AcpRuntimeError";
+      }
+    }
+    const root = await makeTempRoot();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () =>
+        ({
+          ensureSession: async () => {
+            throw new FakeAcpRuntimeError("session/new failed: backend rejected initialize");
+          },
+          startTurn: () => ({
+            events: (async function* () {})(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-session-mismatch",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    expect(result.errorCode).not.toBe("acpx_handshake_timeout");
+    expect(result.errorCode).not.toBe("acpx_handshake_transport_lost");
+
+    // A normal cold start and session establishment stay unaffected.
+    const { result: coldStartResult } = await runExecutor({
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir: path.join(root, "state-cold"),
+    });
+    expect(coldStartResult.exitCode).toBe(0);
+    expect(coldStartResult.errorCode ?? null).toBeNull();
+  });
+
+  it("never leaks a sandbox-provided value from a late ensureSession rejection into logs, the result, or a classification", async () => {
+    const secretMarker = "sandbox-secret-marker-9f3c1a";
+    const root = await makeTempRoot();
+    let rejectEnsure!: (err: unknown) => void;
+    const ensureSessionPromise = new Promise((_resolve, reject) => {
+      rejectEnsure = reject;
+    });
+    const logs: Array<{ stream: string; text: string }> = [];
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (err: unknown) => unhandledRejections.push(err);
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      vi.useFakeTimers();
+      const execute = createAcpxEngineExecutor({
+        createRuntime: () =>
+          ({
+            ensureSession: () => ensureSessionPromise,
+            startTurn: () => ({
+              events: (async function* () {})(),
+              result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+              cancel: async () => {},
+            }),
+            close: async () => {},
+          }) as never,
+      });
+      const resultPromise = execute({
+        runId: "run-late-rejection",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+        context: {},
+        onLog: async (stream: "stdout" | "stderr", text: string) => {
+          logs.push({ stream, text });
+        },
+        onMeta: async () => {},
+      } as never);
+      await flushSetupThenAdvanceTimersByTimeAsync(ACPX_HANDSHAKE_TIMEOUT_MS + 1);
+      const result = await resultPromise;
+      expect(result.errorCode).toBe("acpx_handshake_timeout");
+
+      // The abandoned promise now rejects with a value carrying a secret-like
+      // marker, as if a compromised sandbox child placed it there.
+      rejectEnsure(new Error(`leaked credential: ${secretMarker}`));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      for (const entry of logs) {
+        expect(entry.text).not.toContain(secretMarker);
+      }
+      expect(JSON.stringify(result)).not.toContain(secretMarker);
+      const lateRejectionLog = logs.find((entry) => entry.text.includes("acpx_handshake_late_rejection"));
+      expect(lateRejectionLog).toBeTruthy();
+      expect(unhandledRejections).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+      vi.useRealTimers();
+    }
   });
 });
