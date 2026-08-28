@@ -872,7 +872,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string, agentId?: string | null) {
-    const [run, deferredWake] = await Promise.all([
+    const [run, lockedRun, deferredWake] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -881,6 +881,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      // A coalesced or unscoped wake stamps `contextSnapshot.issueId` with a
+      // different issue (or nothing) while still holding this issue's checkout /
+      // execution lock. The locks, not the snapshot, are the authoritative path.
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .innerJoin(
+          issues,
+          or(
+            eq(issues.checkoutRunId, heartbeatRuns.id),
+            eq(issues.executionRunId, heartbeatRuns.id),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
             agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
           ),
         )
@@ -901,7 +925,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || lockedRun || deferredWake);
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -941,13 +965,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function wasTodoHandedBackDuringOrAfterLatestRun(
+  async function hadTodoHandBackRecoveryActionSince(
     issue: typeof issues.$inferSelect,
-    latestRun: LatestIssueRun,
+    since: Date,
   ) {
-    if (issue.status !== "todo" || latestRun?.status !== "succeeded") return false;
-    const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
-
     return db
       .select({ id: issueRecoveryActions.id })
       .from(issueRecoveryActions)
@@ -957,11 +978,60 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueRecoveryActions.sourceIssueId, issue.id),
           eq(issueRecoveryActions.status, "resolved"),
           eq(issueRecoveryActions.outcome, "handed_back"),
-          gte(issueRecoveryActions.resolvedAt, runBeganAt),
+          gte(issueRecoveryActions.resolvedAt, since),
         ),
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  async function wasTodoHandedBackDuringOrAfterLatestRun(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    if (issue.status !== "todo" || latestRun?.status !== "succeeded") return false;
+    return hadTodoHandBackRecoveryActionSince(issue, latestRun.startedAt ?? latestRun.createdAt);
+  }
+
+  // A standing loop parking itself back to `todo` is a valid disposition, and a
+  // later wake flips the issue back to `in_progress`. Read the transition, not
+  // the current status.
+  async function didLatestRunParkIssueToTodo(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    if (latestRun?.status !== "succeeded") return false;
+    const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+
+    const parked = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, issue.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issue.id),
+          eq(activityLog.action, "issue.updated"),
+          gte(activityLog.createdAt, runBeganAt),
+          sql`(
+            (
+              ${activityLog.details} ->> 'status' = 'todo'
+              AND ${activityLog.details} -> '_previous' ->> 'status' IS NOT NULL
+              AND ${activityLog.details} -> '_previous' ->> 'status' <> 'todo'
+            )
+            OR
+            (
+              ${activityLog.details} -> 'changes' -> 'status' ->> 'to' = 'todo'
+              AND ${activityLog.details} -> 'changes' -> 'status' ->> 'from' IS NOT NULL
+              AND ${activityLog.details} -> 'changes' -> 'status' ->> 'from' <> 'todo'
+            )
+          )`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+
+    return parked || hadTodoHandBackRecoveryActionSince(issue, runBeganAt);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
@@ -3559,6 +3629,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
+      standingParkExempted: 0,
       operatorCancelExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
@@ -4140,34 +4211,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
-          // GGU-809: skip escalation if the assignee has shown visible progress
-          // (comment or attachment) within the exemption window. Falling
-          // through here lets the normal continuation-retry path enqueue the
-          // next wake, which is the correct behaviour for batch workflows.
-          const exempted = await hasRecentVisibleProgress(
-            issue.companyId,
-            issue.id,
-            agentId,
-            STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
-          );
-          if (!exempted) {
-            const updated = await escalateStrandedAssignedIssue({
-              issue,
-              previousStatus: "in_progress",
-              latestRun: successfulRun,
-              comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
-            });
-            if (updated) {
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-            } else {
-              result.skipped += 1;
+          if (await didLatestRunParkIssueToTodo(issue, successfulRun)) {
+            result.standingParkExempted += 1;
+          } else {
+            // GGU-809: skip escalation if the assignee has shown visible progress
+            // (comment or attachment) within the exemption window. Falling
+            // through here lets the normal continuation-retry path enqueue the
+            // next wake, which is the correct behaviour for batch workflows.
+            const exempted = await hasRecentVisibleProgress(
+              issue.companyId,
+              issue.id,
+              agentId,
+              STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+            );
+            if (!exempted) {
+              const updated = await escalateStrandedAssignedIssue({
+                issue,
+                previousStatus: "in_progress",
+                latestRun: successfulRun,
+                comment:
+                  "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+                  "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              });
+              if (updated) {
+                result.escalated += 1;
+                result.issueIds.push(issue.id);
+              } else {
+                result.skipped += 1;
+              }
+              continue;
             }
-            continue;
+            result.recentProgressExempted += 1;
           }
-          result.recentProgressExempted += 1;
         }
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
