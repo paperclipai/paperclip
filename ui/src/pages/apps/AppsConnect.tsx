@@ -1903,8 +1903,12 @@ function KeyStep({
     (f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0,
   );
   const configFields = [...(method?.tenantFields ?? []), ...(method?.extensionFields ?? [])];
-  const standardConfigFields = configFields.filter((field) => field.advanced !== true);
-  const advancedConfigFields = configFields.filter((field) => field.advanced === true);
+  const standardConfigFields = configFields.filter(
+    (field) => field.hidden !== true && field.advanced !== true,
+  );
+  const advancedConfigFields = configFields.filter(
+    (field) => field.hidden !== true && field.advanced === true,
+  );
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const configFilled = configFields.every((field) => {
     if (!field.required) return true;

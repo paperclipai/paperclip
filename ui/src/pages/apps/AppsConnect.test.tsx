@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +23,7 @@ const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
+const MEM0 = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "mem0")!;
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -73,14 +74,6 @@ vi.mock("@/context/ToastContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
 
 async function flushReact() {
   await act(async () => {
@@ -157,12 +150,14 @@ async function gotoLinkFrame(container: HTMLDivElement, url: string) {
 
 describe("AppsConnect — Connect with a link (M4 frame)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: Root | null;
 
   beforeEach(() => {
     mockSearch.value = "";
     mockParams.appKey = undefined;
     container = document.createElement("div");
     document.body.appendChild(container);
+    mountedRoot = null;
     listGalleryMock.mockResolvedValue({
       apps: [
         ZAPIER,
@@ -195,7 +190,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ]);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (mountedRoot) {
+      await act(async () => mountedRoot?.unmount());
+    }
     document.body.removeChild(container);
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -203,6 +201,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   async function render(queryClient?: QueryClient, byoOnly = false) {
     const root = createRoot(container);
+    mountedRoot = root;
     const client = queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
@@ -259,14 +258,15 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   // -------------------------------------------------------------------------
 
   it("asks both access questions before the credential and defaults per auth kind", async () => {
-    mockParams.appKey = "zapier";
+    mockParams.appKey = "mem0";
+    listGalleryMock.mockResolvedValueOnce({ apps: [MEM0] });
     await render();
 
     expect(container.textContent).toContain("Access");
     expect(container.textContent).toContain("Who is this credential for?");
     expect(container.textContent).toContain("Which agents can use this connection?");
     // Nothing about the credential is on screen yet.
-    expect(container.textContent).not.toContain("Connect Zapier");
+    expect(container.textContent).not.toContain("Connect Mem0");
 
     const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
     const justMe = radios.find((r) => r.textContent?.includes("Just me"));
@@ -282,7 +282,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("blocks Continue until Agents I pick has at least one agent", async () => {
-    mockParams.appKey = "zapier";
+    mockParams.appKey = "mem0";
+    listGalleryMock.mockResolvedValueOnce({ apps: [MEM0] });
     await render();
 
     // "Agents I pick" with nothing picked is not a usable connection, so the
@@ -300,7 +301,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("keeps the access selections when the wizard moves backward", async () => {
-    mockParams.appKey = "zapier";
+    mockParams.appKey = "mem0";
+    listGalleryMock.mockResolvedValueOnce({ apps: [MEM0] });
     await render();
 
     await act(async () => {
@@ -320,7 +322,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonByText("Save and continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    expect(container.textContent).toContain("Connect Zapier");
+    expect(container.textContent).toContain("Connect Mem0");
 
     await act(async () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -340,7 +342,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    *
    * A homogeneous fixture cannot tell those two apart: if every app on screen
    * is API-key-only, a blanket rule and a per-method predicate produce exactly
-   * the same DOM. So both live in one gallery here — Zapier, whose only method
+   * the same DOM. So both live in one gallery here — Mem0, whose only method
    * is an API key, and PostHog, whose methods are identity-bearing sign-in plus
    * a key its own label calls *personal*. The two mounts must disagree about
    * the default, which no blanket rule can do.
@@ -350,7 +352,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    * grant, so disabling it would describe the product wrongly.
    */
   it("decides the identity default per method, and keeps a personal key submittable", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [ZAPIER, POSTHOG] });
+    listGalleryMock.mockResolvedValue({ apps: [MEM0, POSTHOG] });
 
     const identityChoices = () => {
       const radios = Array.from(
@@ -365,22 +367,22 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // --- API-key-only method: shared by default, personal still offered ------
     let root = await render();
     await act(async () => {
-      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("Mem0")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    const zapier = identityChoices();
-    expect(zapier.wholeOrg?.getAttribute("aria-checked")).toBe("true");
-    expect(zapier.justMe?.getAttribute("aria-checked")).toBe("false");
+    const mem0 = identityChoices();
+    expect(mem0.wholeOrg?.getAttribute("aria-checked")).toBe("true");
+    expect(mem0.justMe?.getAttribute("aria-checked")).toBe("false");
     // Present, and genuinely selectable — not the disabled-with-reason state.
-    expect(zapier.justMe).toBeTruthy();
-    expect(zapier.justMe?.disabled).toBe(false);
+    expect(mem0.justMe).toBeTruthy();
+    expect(mem0.justMe?.disabled).toBe(false);
     expect(document.body.textContent).not.toContain(
       "This connection method supports a shared organization credential only.",
     );
 
     await act(async () => {
-      zapier.justMe?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      mem0.justMe?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     await act(async () => {
@@ -395,7 +397,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
-    await act(async () => setInputValue(keyField!, "zapier-personal-token"));
+    await act(async () => setInputValue(keyField!, "mem0-personal-token"));
     await flushReact();
     await act(async () => {
       buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -406,7 +408,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // a personal grant. A disabled "Just me" would make this unreachable.
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
-      galleryKey: "zapier",
+      galleryKey: "mem0",
       grantKind: "user",
     });
 
@@ -522,12 +524,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    const projectInput = container.querySelector<HTMLInputElement>('input[placeholder="12345"]');
     const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
     const advanced = buttonByText("Advanced");
-    expect(projectInput).toBeTruthy();
     expect(keyInput).toBeTruthy();
-    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional numeric project ID"]'))
+      .toBeNull();
+    expect(container.querySelector('[role="switch"]')).toBeNull();
     expect(advanced?.getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("Feature groups");
     expect(container.textContent).not.toContain("Individual tools");
@@ -541,7 +543,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(advanced?.getAttribute("aria-expanded")).toBe("true");
     expect(container.textContent).toContain("Feature groups");
     expect(container.textContent).toContain("Individual tools");
-    expect(container.textContent).toContain("Tool response mode");
+    expect(container.textContent).not.toContain("Tool response mode");
+    const projectInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Optional numeric project ID"]',
+    );
+    expect(projectInput).toBeTruthy();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
 
     await act(async () => {
       setInputValue(projectInput!, "12345");
@@ -1222,10 +1229,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("leaving the default name connects with the app name", async () => {
+    listGalleryMock.mockResolvedValueOnce({ apps: [MEM0] });
     await render();
 
     await act(async () => {
-      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("Mem0")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     await passAccessStep();
@@ -1239,21 +1247,22 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(connectAppMock).toHaveBeenCalledTimes(1);
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=zapier&stage=access");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=mem0&stage=access");
     const [, input] = connectAppMock.mock.calls[0];
-    expect(input).toMatchObject({ galleryKey: "zapier", name: "Zapier" });
+    expect(input).toMatchObject({ galleryKey: "mem0", name: "Mem0" });
   });
 
   it("a custom name in the gallery step is sent to the connect mutation", async () => {
+    listGalleryMock.mockResolvedValueOnce({ apps: [MEM0] });
     await render();
 
     await act(async () => {
-      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("Mem0")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     await passAccessStep();
 
-    await act(async () => setInputValue(nameInputFrom(container)!, "Zapier (stdio smoke)"));
+    await act(async () => setInputValue(nameInputFrom(container)!, "Mem0 (stdio smoke)"));
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
     await act(async () => setInputValue(keyField!, "secret-key"));
     await flushReact();
@@ -1264,7 +1273,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     const [, input] = connectAppMock.mock.calls[0];
-    expect(input).toMatchObject({ galleryKey: "zapier", name: "Zapier (stdio smoke)" });
+    expect(input).toMatchObject({ galleryKey: "mem0", name: "Mem0 (stdio smoke)" });
   });
 
   it("a custom name on the Google Sheets step is sent to the connect mutation", async () => {
@@ -1346,12 +1355,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
  */
 describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: Root | null;
 
   beforeEach(() => {
     mockSearch.value = "";
     mockParams.appKey = undefined;
     container = document.createElement("div");
     document.body.appendChild(container);
+    mountedRoot = null;
     listGalleryMock.mockResolvedValue({ apps: [ZAPIER] });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
@@ -1373,7 +1384,10 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (mountedRoot) {
+      await act(async () => mountedRoot?.unmount());
+    }
     document.body.removeChild(container);
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -1381,6 +1395,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
 
   async function render() {
     const root = createRoot(container);
+    mountedRoot = root;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
