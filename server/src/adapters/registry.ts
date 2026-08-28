@@ -83,6 +83,8 @@ import {
   syncGrokSkills,
   testEnvironment as grokTestEnvironment,
   sessionCodec as grokSessionCodec,
+  GROK_DEVICE_LOGIN_COMMAND,
+  parseGrokDeviceLoginPrompt,
 } from "@paperclipai/adapter-grok-local/server";
 import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
@@ -230,6 +232,24 @@ const codexLoginCapability: AdapterLoginCapability = {
   getCommand: () => CODEX_DEVICE_LOGIN_COMMAND,
   parsePrompt: (output) => {
     const prompt = parseDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
+// The Grok interactive login capability. Grok runs `grok login --device-auth`
+// on a real pseudo-terminal, the same way Codex does. The flow shows a
+// one-time code that the user enters in the browser. The caller sets the
+// host-side timeout. The device-login flow writes its credential inside the
+// sandbox, so the capability declares no terminal credential capture and no
+// completion claim. `getCommand` is descriptive only: the login path selects
+// the real command from the closed key map in `login-command.ts`, never from
+// this member.
+const grokLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => GROK_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseGrokDeviceLoginPrompt(output);
     return prompt ? { url: prompt.url, code: prompt.code } : null;
   },
 };
@@ -466,6 +486,7 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
+  loginCapability: grokLoginCapability,
 };
 
 const kimiLocalAdapter: ServerAdapterModule = {
