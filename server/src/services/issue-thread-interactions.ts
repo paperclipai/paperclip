@@ -1378,6 +1378,86 @@ async function assertRequestConfirmationTargetIsCurrent(db: Db | any, args: {
   }
 }
 
+
+export type AssigneeAgentStalenessCheck = {
+  stale: boolean;
+  isUntargeted: boolean;
+  staleTarget: RequestConfirmationTarget | null;
+  currentTarget: RequestConfirmationTarget | null;
+};
+
+export async function checkAssigneeAgentStaleness(db: Db | any, row: IssueThreadInteractionRow): Promise<AssigneeAgentStalenessCheck> {
+  if (!isTargetBoundInteractionKind(row.kind) || row.status !== "pending") {
+    return { stale: false, isUntargeted: false, staleTarget: null, currentTarget: null };
+  }
+  const interaction = hydrateInteraction(row) as TargetBoundInteraction;
+  const target = interaction.payload.target ?? null;
+  if (!target) return { stale: true, isUntargeted: true, staleTarget: null, currentTarget: null };
+  if (target.type !== "issue_document") return { stale: false, isUntargeted: false, staleTarget: null, currentTarget: null };
+
+  const snapshot = await getIssueDocumentTargetSnapshot(db, {
+    companyId: row.companyId,
+    issueId: row.issueId,
+    target,
+  });
+  const isCurrent =
+    snapshot
+    && snapshot.latestRevisionId === target.revisionId
+    && (!target.revisionNumber || snapshot.latestRevisionNumber === target.revisionNumber);
+  if (isCurrent) return { stale: false, isUntargeted: false, staleTarget: null, currentTarget: null };
+
+  const currentTarget = buildIssueDocumentTargetFromSnapshot({
+    issueId: row.issueId,
+    snapshot,
+  });
+  return { stale: true, isUntargeted: false, staleTarget: target, currentTarget };
+}
+
+function buildAssigneeAgentExpiredResult(row: IssueThreadInteractionRow, reason: string) {
+  switch (row.kind) {
+    case "request_confirmation":
+      return {
+        version: 1,
+        outcome: "stale_target",
+        reason,
+        staleTarget: null,
+      } as const;
+    case "request_checkbox_confirmation":
+      return {
+        version: 1,
+        outcome: "stale_target",
+        reason,
+        staleTarget: null,
+      } as const;
+    case "request_item_verdicts": {
+      const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
+      return {
+        version: 1,
+        outcome: "stale_target",
+        reason,
+        complete: false,
+        items: interaction.result?.items ?? [],
+        staleTarget: null,
+      } as const;
+    }
+    case "ask_user_questions":
+      return {
+        version: 1,
+        answers: [],
+        cancelled: true,
+        cancellationReason: reason,
+        summaryMarkdown: null,
+      } as const;
+    default:
+      return {
+        version: 1,
+        outcome: "stale_target",
+        reason,
+        staleTarget: null,
+      } as const;
+  }
+}
+
 async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
@@ -1388,16 +1468,14 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   if (!target) return null;
   if (target.type !== "issue_document") return null;
 
+  const { stale } = await checkAssigneeAgentStaleness(db, args.row);
+  if (!stale) return null;
+
   const snapshot = await getIssueDocumentTargetSnapshot(db, {
     companyId: args.row.companyId,
     issueId: args.row.issueId,
     target,
   });
-  const isCurrent =
-    snapshot
-    && snapshot.latestRevisionId === target.revisionId
-    && (!target.revisionNumber || snapshot.latestRevisionNumber === target.revisionNumber);
-  if (isCurrent) return null;
 
   const now = new Date();
   const currentTarget = buildIssueDocumentTargetFromSnapshot({
@@ -3306,6 +3384,61 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const withdrawn = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, withdrawn);
       return withdrawn;
+    },
+
+    expireStaleInteractionForAssigneeAgent: async (
+      issue: { id: string; companyId: string; assigneeAgentId: string | null },
+      interactionId: string,
+      actor: InteractionActor,
+    ): Promise<IssueThreadInteraction> => {
+      if (!actor.agentId) {
+        throw forbidden("Only agent actors can expire stale interactions through this route");
+      }
+      if (issue.assigneeAgentId !== actor.agentId) {
+        throw forbidden("Only the current assignee agent of an issue can expire its pending interaction cards");
+      }
+      const current = await getPendingInteractionForResolution({ issue, interactionId });
+      const row: IssueThreadInteractionRow = current;
+      if (row.kind === "suggest_tasks") {
+        throw unprocessable("suggest_tasks interactions cannot be expired by the assignee agent");
+      }
+      if (row.createdByAgentId === actor.agentId) {
+        throw unprocessable("Agents cannot expire their own interactions through this route; use the normal resolution flow");
+      }
+      const staleness = await checkAssigneeAgentStaleness(db, row);
+      if (!staleness.stale) {
+        throw conflict("Interaction is not provably stale (targeted at a current plan revision); only a board actor can resolve it");
+      }
+      const reason = staleness.isUntargeted
+        ? "Stale untargeted card expired by the issue assignee agent"
+        : "Card targets a superseded plan document revision; expired by the issue assignee agent";
+
+      const now = new Date();
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "expired",
+          result: buildAssigneeAgentExpiredResult(row, reason),
+          resolvedByAgentId: actor.agentId,
+          resolvedByUserId: null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      await touchIssue(db, issue.id);
+      const expired = hydrateInteraction(updated);
+      await emitInteractionResolvedTelemetry(db, expired);
+      return expired;
     },
 
     answerQuestions: async (
