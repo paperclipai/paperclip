@@ -2971,19 +2971,41 @@ rl.on("line", (line) => {
     const otherCompany = await createCompany(db);
     const otherAgent = await createAgent(db, otherCompany.id);
     const { run: otherRun } = await createIssueAndRun(db, otherCompany.id, otherAgent.id);
-    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
-      body: {
-        jsonrpc: "2.0",
-        id: fakeRequest.body?.id,
-        result: {
-          content: [{ type: "text", text: "connected ok" }],
-          structuredContent: {
-            receivedArguments: (fakeRequest.body?.params as Record<string, unknown> | undefined)?.arguments,
-            leakedToken: "sk-connected-mcp-secret-123456",
+    let pauseApprovedExecution = false;
+    let approvedExecutionReached!: () => void;
+    const approvedExecutionStarted = new Promise<void>((resolve) => {
+      approvedExecutionReached = resolve;
+    });
+    let releaseApprovedExecution = () => {};
+    const approvedExecutionRelease = new Promise<void>((resolve) => {
+      releaseApprovedExecution = resolve;
+    });
+    const fake = await startFakeRemoteMcpServer(async (fakeRequest) => {
+      const requestArguments = (fakeRequest.body?.params as Record<string, unknown> | undefined)?.arguments;
+      if (
+        pauseApprovedExecution
+        && requestArguments
+        && typeof requestArguments === "object"
+        && (requestArguments as Record<string, unknown>).key === "approved"
+      ) {
+        pauseApprovedExecution = false;
+        approvedExecutionReached();
+        await approvedExecutionRelease;
+      }
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: {
+            content: [{ type: "text", text: "connected ok" }],
+            structuredContent: {
+              receivedArguments: requestArguments,
+              leakedToken: "sk-connected-mcp-secret-123456",
+            },
           },
         },
-      },
-    }));
+      };
+    });
 
     try {
       const denyTool = await createRemoteMcpTool(db, company.id, {
@@ -3131,12 +3153,28 @@ rl.on("line", (line) => {
         })
         .where(eq(issueThreadInteractions.id, approvalRequest.interactionId!));
 
-      await expect(gateway.executeTool({
+      pauseApprovedExecution = true;
+      const approvedExecution = gateway.executeTool({
         sessionToken: session.token,
         tool: approvalToolName,
         parameters: { key: "approved", value: "tampered" },
         approvedActionRequestId: approvalRequest.id,
-      })).resolves.toMatchObject({
+      });
+      await approvedExecutionStarted;
+      const [executingApproval] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, approvalRequest.id));
+      expect(executingApproval.status).toBe("executing");
+
+      const concurrentRetry = gateway.executeTool({
+        sessionToken: session.token,
+        tool: approvalToolName,
+        parameters: { key: "approved", value: "original" },
+      });
+      releaseApprovedExecution();
+
+      await expect(approvedExecution).resolves.toMatchObject({
         status: "completed",
         tool: approvalToolName,
         result: {
@@ -3146,6 +3184,10 @@ rl.on("line", (line) => {
             },
           },
         },
+      });
+      await expect(concurrentRetry).resolves.toMatchObject({
+        status: "replayed",
+        result: expect.anything(),
       });
       expect(fake.requests.at(-1)!.body).toMatchObject({
         params: {
@@ -3345,6 +3387,7 @@ rl.on("line", (line) => {
       expect(persisted).toContain("shopify");
       expect(persisted).toContain("kv_set");
     } finally {
+      releaseApprovedExecution();
       await fake.close();
     }
   });

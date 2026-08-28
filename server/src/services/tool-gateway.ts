@@ -6663,20 +6663,20 @@ export function createToolGatewayService(
             toolName: storedInvocation.toolName,
           });
         }
-        const [consumed] = await db
+        const claimedAt = new Date();
+        const [claimed] = await db
           .update(toolActionRequests)
           .set({
-            status: "executed",
+            status: "executing",
             resolvedByAgentId: session.agentId,
-            resolvedAt: new Date(),
-            updatedAt: new Date(),
+            updatedAt: claimedAt,
           })
           .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "approved")))
           .returning();
-        if (!consumed) {
+        if (!claimed) {
           throw new ToolGatewayHttpError(409, "Tool action request was already consumed", "action_already_consumed");
         }
-        await reflectToolActionInteractionLifecycle({ actionRequestId: consumed.id, status: "executing" });
+        await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "executing" });
         invocationId = storedInvocation.id as typeof invocationId;
         effectiveParameters = storedParameters;
         effectiveArgumentsSummary = storedArgumentValidation.summary;
@@ -6826,6 +6826,7 @@ export function createToolGatewayService(
           sensitiveMode: "redact",
           promptInjectionMode: "block",
         });
+        const completedAt = new Date();
         await db
           .update(toolInvocations)
           .set({
@@ -6833,15 +6834,25 @@ export function createToolGatewayService(
             resultHash: resultValidation.summary.sha256 ?? null,
             resultSummary: resultValidation.summary,
             resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
-            completedAt: new Date(),
-            updatedAt: new Date(),
+            completedAt,
+            updatedAt: completedAt,
           })
           .where(eq(toolInvocations.id, invocationId));
         if (input.approvedActionRequestId) {
-          await reflectToolActionInteractionLifecycle({
-            actionRequestId: input.approvedActionRequestId,
-            status: "executed",
-          });
+          const [executedRequest] = await db
+            .update(toolActionRequests)
+            .set({ status: "executed", resolvedAt: completedAt, updatedAt: completedAt })
+            .where(and(
+              eq(toolActionRequests.id, input.approvedActionRequestId),
+              eq(toolActionRequests.status, "executing"),
+            ))
+            .returning({ id: toolActionRequests.id });
+          if (executedRequest) {
+            await reflectToolActionInteractionLifecycle({
+              actionRequestId: executedRequest.id,
+              status: "executed",
+            });
+          }
         }
         await writeToolCallEvent({
           invocationId,
@@ -6915,23 +6926,34 @@ export function createToolGatewayService(
         if (reasonCode === "elicitation_required") {
           throw normalizedError;
         }
+        const completedAt = new Date();
         await db
           .update(toolInvocations)
           .set({
             status: status === 504 ? "timed_out" : status === 429 ? "rate_limited" : "failed",
             errorCode: reasonCode,
             errorMessage: message,
-            completedAt: new Date(),
-            updatedAt: new Date(),
+            completedAt,
+            updatedAt: completedAt,
           })
           .where(eq(toolInvocations.id, invocationId));
         if (input.approvedActionRequestId) {
-          await reflectToolActionInteractionLifecycle({
-            actionRequestId: input.approvedActionRequestId,
-            status: "failed",
-            errorCode: reasonCode,
-            errorMessage: message,
-          });
+          const [failedRequest] = await db
+            .update(toolActionRequests)
+            .set({ status: "failed", resolvedAt: completedAt, updatedAt: completedAt })
+            .where(and(
+              eq(toolActionRequests.id, input.approvedActionRequestId),
+              eq(toolActionRequests.status, "executing"),
+            ))
+            .returning({ id: toolActionRequests.id });
+          if (failedRequest) {
+            await reflectToolActionInteractionLifecycle({
+              actionRequestId: failedRequest.id,
+              status: "failed",
+              errorCode: reasonCode,
+              errorMessage: message,
+            });
+          }
         }
         await writeToolCallEvent({
           invocationId,
