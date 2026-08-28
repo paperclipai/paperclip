@@ -110,6 +110,14 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getGeneral: vi.fn().mockResolvedValue({ subscriptionThrottle: undefined }),
+}));
+const mockSubscriptionThrottleService = vi.hoisted(() => ({
+  getBlock: vi.fn().mockResolvedValue(null),
+  getStatus: vi.fn().mockResolvedValue({ configured: false, enabled: false, active: false, usagePercent: 0, since: null, provider: "anthropic", estimatedCeilingTokens: 1_500_000, pausePercent: 80, resumePercent: 50 }),
+}));
+
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
@@ -120,7 +128,12 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/subscription-throttle.js", () => ({
+    subscriptionThrottleService: () => mockSubscriptionThrottleService,
   }));
 
   vi.doMock("../services/quota-windows.js", () => ({

@@ -17,9 +17,11 @@ import {
   agentService,
   issueService,
   heartbeatService,
+  instanceSettingsService,
   accessService,
   logActivity,
 } from "../services/index.js";
+import { subscriptionThrottleService } from "../services/subscription-throttle.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
@@ -63,6 +65,8 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+  const instanceSettings = instanceSettingsService(db);
+  const subscriptionThrottle = subscriptionThrottleService(db, instanceSettings);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -359,6 +363,14 @@ export function costRoutes(
     );
 
     res.json(company);
+  });
+
+  router.get("/companies/:companyId/costs/subscription-throttle", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const status = await subscriptionThrottle.getStatus(companyId);
+    res.json(status);
   });
 
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
