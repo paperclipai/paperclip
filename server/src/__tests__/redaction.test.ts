@@ -68,6 +68,10 @@ describe("redaction", () => {
           type: "plain",
           value: "sk-plain",
         },
+        INNOCUOUS_NAME: {
+          type: "plain",
+          value: "credential-without-a-secret-shaped-key",
+        },
         PAPERCLIP_API_URL: "http://localhost:3100",
       },
     };
@@ -90,6 +94,10 @@ describe("redaction", () => {
         key: "OPENAI_API_KEY",
       },
       OPENAI_API_KEY_PLAIN: {
+        type: "plain",
+        value: REDACTED_EVENT_VALUE,
+      },
+      INNOCUOUS_NAME: {
         type: "plain",
         value: REDACTED_EVENT_VALUE,
       },
