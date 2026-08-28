@@ -30,6 +30,8 @@ export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  subscriptionThrottleConfigSchema,
+  type SubscriptionThrottleConfig,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,

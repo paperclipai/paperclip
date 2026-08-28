@@ -25,6 +25,17 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+export const subscriptionThrottleConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  provider: z.string().min(1).default("anthropic"),
+  billingTypes: z.array(z.string().min(1)).min(1).default(["subscription_included", "subscription_overage"]),
+  windowHours: z.number().int().positive().default(5),
+  estimatedCeilingTokens: z.number().int().positive().default(1_500_000),
+  pausePercent: z.number().min(1).max(99).default(80),
+  resumePercent: z.number().min(1).max(99).default(50),
+  cachedWeight: z.number().min(0).max(1).default(0),
+});
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -35,6 +46,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),
+  // Subscription window throttle — gates claude_local dispatch before the
+  // shared 5h Anthropic window fills to 100% and kills in-flight runs.
+  subscriptionThrottle: subscriptionThrottleConfigSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
@@ -125,6 +139,7 @@ export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
     .optional(),
 }).strict();
 
+export type SubscriptionThrottleConfig = z.infer<typeof subscriptionThrottleConfigSchema>;
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 // The patch schema removes each default so an absent key stays absent. Declare
 // the type from the full settings type, so every field keeps its precise type.

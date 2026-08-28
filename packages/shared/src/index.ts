@@ -1639,6 +1639,8 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  subscriptionThrottleConfigSchema,
+  type SubscriptionThrottleConfig,
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
