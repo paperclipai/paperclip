@@ -21,6 +21,18 @@ export {
   type BuiltInAgentStatus,
 } from "./built-in-agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
+export {
+  ACTIVE_REVIEW_INSTRUCTION_MUTATION_DENIED,
+  REVIEW_RUNTIME_POLICY_SETTINGS_KEY,
+  activeReviewInstructionPolicyService,
+  applyPinnedReviewRuntimePolicyToAdapterConfig,
+  deriveReviewRuntimePolicy,
+  hashManagedInstructionContents,
+  isActiveReviewIssue,
+  isActiveReviewInstructionMutationDenied,
+  readPinnedReviewRuntimePolicy,
+  reviewRuntimePolicyWouldWeaken,
+} from "./active-review-instruction-policy.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { artifactReviewDocumentService } from "./artifact-review-documents.js";

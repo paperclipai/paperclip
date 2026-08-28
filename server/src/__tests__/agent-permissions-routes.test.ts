@@ -11,6 +11,12 @@ vi.mock("acpx/runtime", () => ({
   isAcpRuntimeError: vi.fn(() => false),
 }));
 
+vi.mock("../services/active-review-instruction-policy.js", () => ({
+  activeReviewInstructionPolicyService: () => ({
+    assertManagedInstructionMutationAllowed: mockAssertManagedInstructionMutationAllowed,
+  }),
+}));
+
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
 
@@ -92,6 +98,8 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
 }));
+
+const mockAssertManagedInstructionMutationAllowed = vi.hoisted(() => vi.fn());
 
 const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(),
@@ -180,6 +188,12 @@ function registerModuleMocks() {
   vi.doMock("../services/agent-instructions.js", () => ({
     agentInstructionsService: () => mockAgentInstructionsService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
+  }));
+
+  vi.doMock("../services/active-review-instruction-policy.js", () => ({
+    activeReviewInstructionPolicyService: () => ({
+      assertManagedInstructionMutationAllowed: mockAssertManagedInstructionMutationAllowed,
+    }),
   }));
 
   vi.doMock("../services/workspace-operations.js", () => ({
@@ -286,6 +300,7 @@ describe.sequential("agent permission routes", () => {
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
     vi.doUnmock("../services/agent-instructions.js");
+    vi.doUnmock("../services/active-review-instruction-policy.js");
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/approvals.js");
     vi.doUnmock("../services/budgets.js");
@@ -335,6 +350,8 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.cancelInvocationsForAgents.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
+    mockAssertManagedInstructionMutationAllowed.mockReset();
+    mockAssertManagedInstructionMutationAllowed.mockResolvedValue(undefined);
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();

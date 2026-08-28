@@ -472,6 +472,13 @@ type PaperclipWakeExecutionPrincipal = {
   userId: string | null;
 };
 
+type PaperclipWakeReviewRuntimePolicy = {
+  contentHash: string | null;
+  requireTrustedSourceTrust: boolean;
+  repositoryAccessRequired: boolean;
+  immutable: boolean;
+};
+
 type PaperclipWakeExecutionStage = {
   wakeRole: "reviewer" | "approver" | "executor" | null;
   stageId: string | null;
@@ -697,6 +704,7 @@ type PaperclipWakePayload = {
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
+  reviewRuntimePolicy: PaperclipWakeReviewRuntimePolicy | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   planReviewContext: PaperclipWakePlanReviewContext | null;
   documentReviewContext: PaperclipWakeDocumentReviewContext | null;
@@ -1258,6 +1266,21 @@ function normalizePaperclipWakeTaskWatchdog(value: unknown): PaperclipWakeTaskWa
   };
 }
 
+function normalizePaperclipWakeReviewRuntimePolicy(value: unknown): PaperclipWakeReviewRuntimePolicy | null {
+  const policy = parseObject(value);
+  const contentHash = asString(policy.contentHash, "").trim() || null;
+  const requireTrustedSourceTrust = asBoolean(policy.requireTrustedSourceTrust, false);
+  const repositoryAccessRequired = asBoolean(policy.repositoryAccessRequired, false);
+  const immutable = asBoolean(policy.immutable, false);
+  if (!contentHash && !requireTrustedSourceTrust && !repositoryAccessRequired && !immutable) return null;
+  return {
+    contentHash,
+    requireTrustedSourceTrust,
+    repositoryAccessRequired,
+    immutable: immutable || requireTrustedSourceTrust || repositoryAccessRequired,
+  };
+}
+
 function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExecutionStage | null {
   const stage = parseObject(value);
   const wakeRoleRaw = asString(stage.wakeRole, "").trim().toLowerCase();
@@ -1339,6 +1362,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => entry.trim())
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
+  const reviewRuntimePolicy = normalizePaperclipWakeReviewRuntimePolicy(payload.reviewRuntimePolicy);
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
   const planReviewContext = normalizePaperclipWakePlanReviewContext(payload.planReviewContext);
   const documentReviewContext = normalizePaperclipWakeDocumentReviewContext(payload.documentReviewContext);
@@ -1370,7 +1394,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !reviewRuntimePolicy && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1386,6 +1410,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     unresolvedBlockerIssueIds,
     unresolvedBlockerSummaries,
     executionStage,
+    reviewRuntimePolicy,
     continuationSummary,
     planReviewContext,
     documentReviewContext,
@@ -1626,6 +1651,15 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.reviewRuntimePolicy) {
+    lines.push("");
+    lines.push("Immutable run-time review policy (pinned at Review start; managed instruction files cannot relax it):");
+    lines.push(`- requireTrustedSourceTrust: ${normalized.reviewRuntimePolicy.requireTrustedSourceTrust ? "true" : "false"}`);
+    lines.push(`- repositoryAccessRequired: ${normalized.reviewRuntimePolicy.repositoryAccessRequired ? "true" : "false"}`);
+    if (normalized.reviewRuntimePolicy.contentHash) {
+      lines.push(`- pinnedInstructionContentHash: ${normalized.reviewRuntimePolicy.contentHash}`);
+    }
   }
   const issueDescription = normalized.issue?.description ?? null;
   // Resume deltas skip the description: the session already received the brief
