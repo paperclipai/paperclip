@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
+import { DEFAULT_EPHEMERAL_LEASE_TTL_MS } from "@paperclipai/shared";
 import {
   activityLog,
   agents,
@@ -128,6 +129,39 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: new Date(),
     });
     return companyId;
+  }
+
+  async function seedBareEnvironment(name: string) {
+    const environmentId = randomUUID();
+    await db.insert(environments).values({
+      id: environmentId,
+      name,
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "fixture.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return environmentId;
+  }
+
+  async function seedIssue(companyId: string, status: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue",
+      status,
+      priority: "medium",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return issueId;
   }
 
   it("acquires and releases a lease for a run", async () => {
@@ -1807,6 +1841,119 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
     const rows = await db.select().from(environments);
     expect(rows.filter((row) => row.driver === "ssh")).toHaveLength(2);
+  });
+
+  describe("reconcileOrphanedLeases", () => {
+    it("releases an ephemeral lease once its heartbeat run reaches a terminal status, even before expiresAt", async () => {
+      const { companyId, environmentId, runId } = await seedEnvironment();
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+
+      const lease = await svc.acquireLease({
+        companyId,
+        environmentId,
+        heartbeatRunId: runId,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      expect(lease.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+
+      await svc.reconcileOrphanedLeases();
+
+      const reconciled = await svc.getLeaseById(lease.id);
+      expect(reconciled?.status).toBe("released");
+      expect(reconciled?.releasedAt).not.toBeNull();
+      expect(reconciled?.failureReason).toBe("heartbeat_run_succeeded");
+    });
+
+    it("releases an ephemeral lease immediately when its issue is done and no heartbeat run is attached", async () => {
+      const companyId = await seedCompany();
+      const environmentId = await seedBareEnvironment("Terminal Issue No Run");
+      const issueId = await seedIssue(companyId, "done");
+
+      const lease = await svc.acquireLease({
+        companyId,
+        environmentId,
+        issueId,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      expect(lease.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+
+      await svc.reconcileOrphanedLeases();
+
+      const reconciled = await svc.getLeaseById(lease.id);
+      expect(reconciled?.status).toBe("released");
+      expect(reconciled?.failureReason).toBe("issue_terminal_done");
+    });
+
+    it("leaves an ephemeral lease active when its issue is done but its heartbeat run is still running", async () => {
+      const { companyId, environmentId, runId } = await seedEnvironment();
+      const issueId = await seedIssue(companyId, "done");
+
+      const lease = await svc.acquireLease({ companyId, environmentId, issueId, heartbeatRunId: runId });
+
+      await svc.reconcileOrphanedLeases();
+
+      const reconciled = await svc.getLeaseById(lease.id);
+      expect(reconciled?.status).toBe("active");
+    });
+
+    it("leaves a retain_on_failure lease active after its run fails", async () => {
+      const { companyId, environmentId, runId } = await seedEnvironment();
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+      const lease = await svc.acquireLease({
+        companyId,
+        environmentId,
+        heartbeatRunId: runId,
+        leasePolicy: "retain_on_failure",
+        expiresAt,
+      });
+
+      await svc.reconcileOrphanedLeases();
+
+      const reconciled = await svc.getLeaseById(lease.id);
+      expect(reconciled?.status).toBe("active");
+    });
+
+    it("expires an ephemeral lease with no expiresAt once it outlives the default TTL", async () => {
+      const companyId = await seedCompany();
+      const environmentId = await seedBareEnvironment("TTL Expiry Fixture");
+      const acquiredAt = new Date();
+      const lease = await svc.acquireLease({ companyId, environmentId });
+      // No provider attested an expiry, so the row carries none and the TTL
+      // measured from acquiredAt is the only bound on it.
+      expect(lease.expiresAt).toBeNull();
+
+      // No terminal issue and no dead run apply here, so the TTL clause is the
+      // only reason this row is selected: pass a `now` past acquiredAt + TTL
+      // instead of back-dating acquiredAt itself.
+      const reconcileAt = new Date(acquiredAt.getTime() + DEFAULT_EPHEMERAL_LEASE_TTL_MS + 60_000);
+      await svc.reconcileOrphanedLeases(reconcileAt);
+
+      const reconciled = await svc.getLeaseById(lease.id);
+      expect(reconciled?.status).toBe("expired");
+      expect(reconciled?.failureReason).toBe("lease_ttl_expired");
+    });
+
+    it("records an activity log row with the reconciler actor for each lease transition", async () => {
+      const companyId = await seedCompany();
+      const environmentId = await seedBareEnvironment("Activity Log Fixture");
+      const issueId = await seedIssue(companyId, "done");
+
+      const lease = await svc.acquireLease({ companyId, environmentId, issueId });
+
+      await svc.reconcileOrphanedLeases();
+
+      const [entry] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.entityId, lease.id));
+
+      expect(entry?.entityType).toBe("environment_lease");
+      expect(entry?.actorId).toBe("environment-lease-reconciler");
+      expect(entry?.action).toBe("environment.lease_released");
+      expect((entry?.details as Record<string, unknown> | null)?.reason).toBe("issue_terminal_done");
+    });
   });
 
   describe("acquireLease company-binding guard", () => {

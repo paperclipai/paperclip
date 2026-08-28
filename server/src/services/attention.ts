@@ -62,6 +62,7 @@ import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
+import { isStaleBlockedIssueAttention } from "./issue-rewake-throttle.js";
 import {
   decisionRetentionService,
   DEFAULT_DECISION_SHELF_DAYS,
@@ -1597,11 +1598,18 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const blockedTaskCount = blockedWorkCounts.get(terminalIssueId) ?? 0;
         const taskLabel = blockedTaskCount === 1 ? "task" : "tasks";
         const dedupKey = `blocker:${terminalIssueId}`;
+        const stale = isStaleBlockedIssueAttention({
+          now: new Date(serviceOptions.now?.() ?? Date.now()),
+          blockerUpdatedAt: candidate.terminalSummary.updatedAt,
+          unresolved: true,
+        });
         add(createItem({
           companyId,
           sourceKind: "blocker_attention",
           subject: issueSubject(prefix, candidate.terminalSummary),
-          whyNow: candidate.state === "needs_attention"
+          whyNow: stale
+            ? `Unresolved blocker is older than 72 hours and still blocks ${blockedTaskCount} ${taskLabel}; human attention is required.`
+            : candidate.state === "needs_attention"
             ? `Blocks ${blockedTaskCount} ${taskLabel} and needs human attention.`
             : `Blocks ${blockedTaskCount} ${taskLabel}; choose the next owner or action.`,
           decisionVerbs: decisionVerbs(
@@ -1610,7 +1618,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             { id: "nudge", label: "Nudge", description: "Wake or prompt the current owner." },
           ),
           inlineResolvable: false,
-          entryRule: `terminal blocker has a non-live blockerAttention.state = '${candidate.state}'`,
+          entryRule: stale
+            ? "blocked issue has an unresolved blocker older than 72 hours"
+            : `terminal blocker has a non-live blockerAttention.state = '${candidate.state}'`,
           exitRule: "The blocking tree becomes live or no open work remains blocked.",
           dedupKey,
           severity: "high",
