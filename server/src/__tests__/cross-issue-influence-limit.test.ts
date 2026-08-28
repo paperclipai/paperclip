@@ -10,6 +10,8 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  /** ID of an issue whose checkoutRunId matches the run, or null for none. */
+  checkoutIssueId: string | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -18,21 +20,30 @@ function counterDb(
       from: () => ({
         where: () => {
           if (Object.keys(selection).includes("count")) {
+            // activity_log count query
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          if (Object.keys(selection).includes("contextSnapshot")) {
+            // heartbeat_runs FOR UPDATE lock query
+            return {
+              for: () => ({
+                then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
+                  id: "11111111-1111-4111-8111-111111111111",
+                  companyId: "22222222-2222-4222-8222-222222222222",
+                  agentId: "33333333-3333-4333-8333-333333333333",
+                  responsibleUserId: "user-1",
+                  contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+                  ...runOverrides,
+                }]),
+              }),
+            };
+          }
+          // issues secondary checkout lookup (only has "id" in selection)
           return {
-            for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
-            }),
+            then: (resolve: (rows: unknown[]) => unknown) =>
+              resolve(checkoutIssueId ? [{ id: checkoutIssueId }] : []),
           };
         },
       }),
@@ -198,7 +209,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("fails closed when the persisted run has no source issue and no checkout record matches", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -211,6 +222,21 @@ describe("cross-issue influence limit rollout", () => {
       status: 403,
       details: { code: "cross_issue_influence_run_context_required" },
     });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("allows timer-checkout own-issue writes when the checkout record matches the target", async () => {
+    // Reproduces CUB-396: timer-woken run has no issueId in contextSnapshot but
+    // holds the checkout lock on the issue it is trying to write to.
+    const fake = counterDb(0, { contextSnapshot: {} }, "55555555-5555-4555-8555-555555555555");
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).resolves.toBeNull();
     expect(fake.inserted).toEqual([]);
   });
 });
