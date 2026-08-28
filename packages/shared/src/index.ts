@@ -270,6 +270,7 @@ export {
   recommendedDefaultsForApp,
 } from "./app-definitions.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
+export { estimateSubscriptionCostCents, type ModelPriceRate } from "./model-pricing.js";
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {

@@ -293,7 +293,7 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { estimateSubscriptionCostCents, extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -3861,8 +3861,22 @@ function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
 }
 
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
-  if (billingType === "subscription_included") return 0;
+function normalizeBilledCostCents(
+  costUsd: number | null | undefined,
+  billingType: BillingType,
+  usage: { provider: string | null | undefined; model: string | null | undefined; inputTokens: number; outputTokens: number; cachedInputTokens: number },
+): number {
+  if (billingType === "subscription_included") {
+    return (
+      estimateSubscriptionCostCents({
+        provider: usage.provider,
+        model: usage.model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+      }) ?? 0
+    );
+  }
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
 }
@@ -3872,9 +3886,24 @@ export function resolveLedgerCostStatus(input: {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  billingType?: BillingType;
+  provider?: string | null;
+  model?: string | null;
 }): CostStatus {
   const hasTokenUsage = input.inputTokens > 0 || input.cachedInputTokens > 0 || input.outputTokens > 0;
-  return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+  if (input.costUsd != null) return "reported";
+  if (!hasTokenUsage) return "reported";
+  if (input.billingType === "subscription_included") {
+    const estimatedCents = estimateSubscriptionCostCents({
+      provider: input.provider,
+      model: input.model,
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      cachedInputTokens: input.cachedInputTokens,
+    });
+    return estimatedCents == null ? "unpriced" : "estimated";
+  }
+  return "unpriced";
 }
 
 export function resolveCacheAdjustedCostUsd(input: {
@@ -13958,15 +13987,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
+    const provider = result.provider ?? "unknown";
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType, {
+      provider,
+      model: result.model,
+      inputTokens,
+      outputTokens,
+      cachedInputTokens,
+    });
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
       inputTokens,
       cachedInputTokens,
       outputTokens,
+      billingType,
+      provider,
+      model: result.model,
     });
-    const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
 
@@ -16528,6 +16566,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 inputTokens: normalizedUsage?.inputTokens ?? 0,
                 cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
                 outputTokens: normalizedUsage?.outputTokens ?? 0,
+                billingType: normalizeLedgerBillingType(adapterResult.billingType),
+                provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
+                model: adapterResult.model,
               }),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
