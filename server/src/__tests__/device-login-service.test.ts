@@ -55,11 +55,27 @@ function createReaperRuntime() {
 // still supplies a promotion that accepts the credential.
 const passingPromotion: CredentialPromotion = { promote: () => {} };
 
-// Build the service with the passing promotion by default. A test that checks
-// the promotion path passes its own `promotion` to override the default.
+// Build the service with the passing promotion by default, applied to every
+// adapter type. A test that checks the promotion path passes its own
+// `promotion` to override the default for every adapter type, or its own
+// `promotionByAdapterType` to give each adapter type a distinct promotion (for
+// example, to prove a `grok_local` login never runs the Codex promotion).
 type ServiceDeps = Parameters<typeof createDeviceLoginService>[0];
-function makeService(deps: Omit<ServiceDeps, "promotion"> & { promotion?: CredentialPromotion }) {
-  return createDeviceLoginService({ promotion: passingPromotion, ...deps });
+function makeService(
+  deps: Omit<ServiceDeps, "promotionByAdapterType"> & {
+    promotion?: CredentialPromotion;
+    promotionByAdapterType?: ServiceDeps["promotionByAdapterType"];
+  },
+) {
+  const { promotion, promotionByAdapterType, ...rest } = deps;
+  return createDeviceLoginService({
+    promotionByAdapterType:
+      promotionByAdapterType ?? {
+        codex_local: promotion ?? passingPromotion,
+        grok_local: promotion ?? passingPromotion,
+      },
+    ...rest,
+  });
 }
 
 const ADAPTER_TYPE: AgentAdapterType = "codex_local";
@@ -432,6 +448,129 @@ describe("device login service", () => {
 
     releaseGate();
     await completed;
+  });
+
+  it("runs the Grok promotion (never the Codex one) for a grok_local login, and the Codex promotion (never the Grok one) for a codex_local login", async () => {
+    // This proves the promotion dispatch is adapter-scoped: `resolveProfile`
+    // must pick the promotion for the login's own adapter type, not always the
+    // same injected value. A test that only asserts the map carries a
+    // `grok_local` member would not prove this — it follows the value all the
+    // way to the call that runs it.
+    const codexPromoteCalls: string[] = [];
+    const grokPromoteCalls: string[] = [];
+    const service = makeService({
+      store: createMemoryStore(),
+      runtime: createFakeRuntime({ exec: execSuccess, authBytes: Buffer.from("{}") }).runtime,
+      promotionByAdapterType: {
+        codex_local: {
+          promote: (_bytes, context) => {
+            codexPromoteCalls.push(context.sessionId);
+          },
+        },
+        grok_local: {
+          promote: (_bytes, context) => {
+            grokPromoteCalls.push(context.sessionId);
+          },
+        },
+      },
+    });
+
+    const grokRun = await service.start({
+      companyId: randomUUID(),
+      environmentId: randomUUID(),
+      adapterType: "grok_local",
+      startedByUserId: OWNER_A,
+    });
+    await grokRun.completed;
+    expect(grokPromoteCalls).toHaveLength(1);
+    expect(codexPromoteCalls).toHaveLength(0);
+
+    const codexRun = await service.start({
+      companyId: randomUUID(),
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+    await codexRun.completed;
+    expect(codexPromoteCalls).toHaveLength(1);
+    expect(grokPromoteCalls).toHaveLength(1);
+  });
+
+  it("holds no prompt value, account email, or credential byte in an activity record, an API response, or a database row for a Grok session", async () => {
+    // A realistic Grok auth.json: the composite <issuer>::<uuid> identity key,
+    // a refresh token, and the personal fields the payload carries (email,
+    // name, ids). None of these may reach the service's own generic surfaces:
+    // the activity record, the session/owner API responses, or the database
+    // row. (The promotion's own log lines are proven redacted separately, in
+    // the grok-local `adapter-auth-promotion.test.ts` suite.)
+    const grokIssuer = "https://issuer.x.ai";
+    const grokUuid = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+    const grokEmail = "grok-user@example.com";
+    const refreshTokenSentinel = "SENTINEL_GROK_REFRESH_TOKEN";
+    const grokAuthBytes = Buffer.from(
+      JSON.stringify({
+        [`${grokIssuer}::${grokUuid}`]: {
+          key: "api-key-value",
+          refresh_token: refreshTokenSentinel,
+          expires_at: "2026-01-01T00:00:00Z",
+          oidc_issuer: grokIssuer,
+          oidc_client_id: "client-1",
+          email: grokEmail,
+          first_name: "Test",
+          last_name: "User",
+          user_id: "user-1",
+          principal_id: "principal-1",
+          team_id: "team-1",
+        },
+      }),
+    );
+
+    const store = createMemoryStore();
+    const activity: LoginSessionActivityEvent[] = [];
+    const { runtime } = createFakeRuntime({
+      exec: async ({ onStdout }) => {
+        onStdout(GROK_PROMPT_OUTPUT);
+        return { exitCode: 0 };
+      },
+      authBytes: grokAuthBytes,
+    });
+    const companyId = randomUUID();
+    const service = makeService({
+      store,
+      runtime,
+      recordActivity: (event) => activity.push(event),
+      promotionByAdapterType: { grok_local: { promote: () => {} } },
+    });
+
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: "grok_local",
+      startedByUserId: OWNER_A,
+    });
+    await waitForStatus(store, session.sessionId, companyId, "waiting_for_user");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const owner = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    const outcome = await completed;
+    expect(outcome.status).toBe("authenticated");
+
+    const forbidden = [grokEmail, refreshTokenSentinel, "api-key-value", grokUuid];
+    const activityText = JSON.stringify(activity);
+    const sessionText = JSON.stringify(session);
+    const ownerText = JSON.stringify(owner);
+    const outcomeText = JSON.stringify(outcome);
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    const rowText = JSON.stringify(row);
+    for (const secret of forbidden) {
+      expect(activityText).not.toContain(secret);
+      expect(sessionText).not.toContain(secret);
+      expect(ownerText).not.toContain(secret);
+      expect(outcomeText).not.toContain(secret);
+      expect(rowText).not.toContain(secret);
+    }
+    // The owner read still carries the (non-secret) device-login prompt.
+    expect(owner?.prompt).toEqual({ url: GROK_DEVICE_LOGIN_URL, code: GROK_CODE });
   });
 
   it("fails closed and never promotes when a success outcome carries no credential", async () => {

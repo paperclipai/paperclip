@@ -804,29 +804,43 @@ export const DISPLAYED_CODE_PROFILES: Readonly<
 export interface DeviceLoginServiceDeps {
   store: AdapterAuthSessionStore;
   runtime: LoginSessionRuntime;
-  /** The mandatory credential promotion. A successful login authenticates only
-   *  after this promotion resolves; a throw fails the session and writes nothing. */
-  promotion: CredentialPromotion;
+  /**
+   * The mandatory credential promotion, keyed by adapter type. A successful
+   * login authenticates only after the promotion for its own adapter type
+   * resolves; a throw fails the session and writes nothing. An adapter type
+   * with no entry falls back to the `codex_local` entry, matching the profile
+   * map's own fallback below. Keying by adapter type keeps each adapter's
+   * promotion running only for its own logins: a `grok_local` login never
+   * runs the Codex promotion, and a `codex_local` login never runs the Grok
+   * one.
+   */
+  promotionByAdapterType: Partial<Record<AgentAdapterType, CredentialPromotion>>;
   recordActivity?: LoginSessionActivityRecorder;
   now?: () => Date;
 }
 
 export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
-  const { store, runtime, promotion } = deps;
+  const { store, runtime, promotionByAdapterType } = deps;
   const now = deps.now ?? (() => new Date());
   const recordActivity = deps.recordActivity ?? (() => {});
 
   /**
    * Resolve the displayed-code profile for one login, with this service
-   * instance's injected promotion in place of the map's placeholder. Falls back
-   * to the `codex_local` profile for an adapter type with no entry of its own,
-   * so a login for an adapter type outside the map keeps running the same
-   * command and parser it always did before the map existed. `codex_local` and
-   * `grok_local` are reachable through the route admission gate today; the
-   * fallback stays in place for a future adapter type with no profile entry.
+   * instance's injected, adapter-scoped promotion in place of the map's
+   * placeholder. Falls back to the `codex_local` profile (and the
+   * `codex_local` promotion) for an adapter type with no entry of its own, so
+   * a login for an adapter type outside the map keeps running the same
+   * command, parser, and promotion it always did before the map existed.
+   * `codex_local` and `grok_local` are reachable through the route admission
+   * gate today; the fallback stays in place for a future adapter type with no
+   * profile entry.
    */
   function resolveProfile(adapterType: AgentAdapterType): DisplayedCodeLoginProfile {
     const staticProfile = DISPLAYED_CODE_PROFILES[adapterType] ?? DISPLAYED_CODE_PROFILES.codex_local!;
+    const promotion =
+      promotionByAdapterType[adapterType] ??
+      promotionByAdapterType.codex_local ??
+      UNCONFIGURED_PROMOTION;
     return { ...staticProfile, promotion };
   }
 
