@@ -160,12 +160,13 @@ export function accessService(db: Db) {
       for (const grant of grantRefs) {
         if (ownedGrantIds.has(grant.id)) continue;
         const grantAudience = grantMemberRefs.filter((member) => member.grantId === grant.id);
+        const remainingGrantAudience = grantAudience.filter((member) => member.subjectId !== userId);
         const hasSurvivingOrganizationAudience = grant.kind === "organization"
           && grant.status === "active"
           && (
-            grantAudience.length === 0
+            remainingGrantAudience.length === 0
               ? existingMemberUserIds.size > 0
-              : grantAudience.some((member) => existingMemberUserIds.has(member.subjectId))
+              : remainingGrantAudience.some((member) => existingMemberUserIds.has(member.subjectId))
           );
         for (const ref of grant.credentialSecretRefs) {
           if (!ownedSecretSet.has(ref.secretId)) continue;
@@ -174,7 +175,9 @@ export function accessService(db: Db) {
           } else if (grant.kind === "user" || hasSurvivingOrganizationAudience) {
             // A connection may temporarily carry separate user grants that
             // reference the same credential, or an organization grant may
-            // still have another persisted audience member. Pending,
+            // still have another persisted audience member. Removing the sole
+            // named audience member leaves an organization-wide grant, so keep
+            // its credential when another company member remains. Pending,
             // suspended, and archived memberships are intentionally included
             // because company access can reactivate each of them later.
             retainedSecretIds.add(ref.secretId);

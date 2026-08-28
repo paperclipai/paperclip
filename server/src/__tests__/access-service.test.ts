@@ -372,20 +372,6 @@ describeEmbeddedPostgres("access service", () => {
       agentId: agent.id,
       createdByUserId: member.principalId,
     });
-    const organizationGrant = await db.insert(connectionGrants).values({
-      companyId: company.id,
-      connectionId: connection.id,
-      kind: "organization",
-      isDefault: true,
-      credentialSecretRefs: [{ secretId: secret.id, configPath: "oauth.access_token" }],
-    }).returning().then((rows) => rows[0]!);
-    await db.insert(connectionGrantMembers).values({
-      companyId: company.id,
-      grantId: organizationGrant.id,
-      subjectType: "user",
-      subjectId: member.principalId,
-    });
-
     await accessService(db).archiveMember(company.id, member.id, {
       reassignment: { assigneeUserId: owner.principalId },
     });
@@ -395,12 +381,6 @@ describeEmbeddedPostgres("access service", () => {
     expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id))).toHaveLength(0);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))
       .toEqual([expect.objectContaining({ status: "revoked", credentialSecretRefs: [] })]);
-    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
-      .toEqual([expect.objectContaining({
-        status: "needs_reauthorization",
-        isDefault: false,
-        credentialSecretRefs: [],
-      })]);
     expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
       .toEqual([expect.objectContaining({
         status: "draft",
@@ -499,24 +479,15 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
   });
 
-  it("retains an organization credential for an archived audience member that can be reactivated", async () => {
+  it("retains an organization credential when its sole named audience member is archived", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
-    const [departing, surviving] = await db.insert(companyMemberships).values([
-      {
-        companyId: company.id,
-        principalType: "user" as const,
-        principalId: `departing-org-${randomUUID()}`,
-        status: "active" as const,
-        membershipRole: "member" as const,
-      },
-      {
-        companyId: company.id,
-        principalType: "user" as const,
-        principalId: `surviving-org-${randomUUID()}`,
-        status: "archived" as const,
-        membershipRole: "member" as const,
-      },
-    ]).returning();
+    const departing = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: `departing-org-${randomUUID()}`,
+      status: "active",
+      membershipRole: "member",
+    }).returning().then((rows) => rows[0]!);
     const application = await db.insert(toolApplications).values({
       companyId: company.id,
       applicationKey: `shared-org-${randomUUID()}`,
@@ -545,7 +516,7 @@ describeEmbeddedPostgres("access service", () => {
     const secret = await db.insert(companySecrets).values({
       companyId: company.id,
       scope: "user",
-      ownerUserId: departing!.principalId,
+      ownerUserId: departing.principalId,
       userSecretDefinitionId: definition.id,
       key: `shared-org-${randomUUID()}`,
       name: "Shared organization token",
@@ -556,7 +527,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       connectionId: connection.id,
       kind: "user",
-      subjectUserId: departing!.principalId,
+      subjectUserId: departing.principalId,
       status: "active",
       credentialSecretRefs,
     });
@@ -568,22 +539,14 @@ describeEmbeddedPostgres("access service", () => {
       isDefault: true,
       credentialSecretRefs,
     }).returning().then((rows) => rows[0]!);
-    await db.insert(connectionGrantMembers).values([
-      {
-        companyId: company.id,
-        grantId: organizationGrant.id,
-        subjectType: "user" as const,
-        subjectId: departing!.principalId,
-      },
-      {
-        companyId: company.id,
-        grantId: organizationGrant.id,
-        subjectType: "user" as const,
-        subjectId: surviving!.principalId,
-      },
-    ]);
+    await db.insert(connectionGrantMembers).values({
+      companyId: company.id,
+      grantId: organizationGrant.id,
+      subjectType: "user",
+      subjectId: departing.principalId,
+    });
 
-    await accessService(db).archiveMember(company.id, departing!.id, {
+    await accessService(db).archiveMember(company.id, departing.id, {
       reassignment: { assigneeUserId: owner.principalId },
     });
 
@@ -592,15 +555,15 @@ describeEmbeddedPostgres("access service", () => {
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
       .toEqual([expect.objectContaining({ status: "active", isDefault: true, credentialSecretRefs })]);
     expect(await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.grantId, organizationGrant.id)))
-      .toEqual([expect.objectContaining({ subjectId: surviving!.principalId })]);
+      .toHaveLength(0);
     expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
 
-    await accessService(db).setUserCompanyAccess(surviving!.principalId, [company.id]);
+    await accessService(db).setUserCompanyAccess(departing.principalId, [company.id]);
 
     expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))
       .toHaveLength(1);
-    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.id, surviving!.id)))
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.id, departing.id)))
       .toEqual([expect.objectContaining({ status: "active" })]);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
       .toEqual([expect.objectContaining({ status: "active", credentialSecretRefs })]);
