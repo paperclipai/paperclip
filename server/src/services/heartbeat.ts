@@ -216,6 +216,7 @@ import {
   instanceSettingsService,
   resolveWorktreeRunExecutionActivation,
 } from "./instance-settings.js";
+import { subscriptionThrottleService } from "./subscription-throttle.js";
 import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
@@ -6840,6 +6841,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const subscriptionThrottle = subscriptionThrottleService(db, instanceSettings);
   const recovery = recoveryService(db, { enqueueWakeup });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
@@ -12659,6 +12661,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    const throttleBlock = await subscriptionThrottle.getBlock(run.companyId);
+    if (throttleBlock) {
+      // Do NOT cancel — leave the run queued so it is retried on the next timer tick
+      // once the subscription window usage drops below the resume threshold.
+      logger.info(
+        { runId: run.id, companyId: run.companyId, usagePercent: throttleBlock.usagePercent },
+        "claimQueuedRun: deferring queued run due to subscription throttle; run stays queued",
+      );
+      return null;
+    }
+
     const dailyCapBlock = await getHeartbeatDailyCapBlock(agent, parseHeartbeatPolicy(agent), {
       excludeRunId: run.id,
       checkRunCap: true,
@@ -18079,6 +18092,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
       });
+    }
+
+    const throttleBlock = await subscriptionThrottle.getBlock(agent.companyId);
+    if (throttleBlock) {
+      await writeSkippedHeartbeatRequest("subscription_throttle", {
+        provider: throttleBlock.provider,
+        usagePercent: throttleBlock.usagePercent,
+      });
+      if (opts.requestedByActorType === "user") {
+        throw conflict(throttleBlock.reason, { code: "subscription_throttle" });
+      }
+      return null;
     }
 
     const invokability = await getAgentInvokability(agent);
