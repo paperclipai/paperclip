@@ -847,8 +847,8 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   it("test_the_host_body_budget_matches_the_stream_limit", () => {
     // The multiplier counts every retained `Buffer` and string copy of one
     // live forward's request and response body: four exact `Buffer` rows,
-    // plus two string rows modeled at up to two bytes for the body limit
-    // (`sandbox-callback-bridge.ts`)'s each UTF-16 code unit, for an
+    // plus two string rows. Each string row applies two bytes to each UTF-16
+    // code unit of the body limit (`sandbox-callback-bridge.ts`), for an
     // accounting peak of eight times the body limit for one live forward.
     // `test_live_forward_work_never_passes_the_stream_limit` proves the
     // count of live forwards never passes `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS`,

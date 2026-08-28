@@ -650,4 +650,19 @@ key never reaches a sink by accident.
 
 To add a name or an enum value, extend the literal constant in
 `duplex-observability.ts` first, then update the test that asserts the closed set.
+
+### Known behavior: aggregate retained body bytes
+
+The HTTP/2 bridge bounds retained body bytes for one route only. Each route
+holds up to 8,388,608 bytes (8 MiB) at its own peak (see
+`HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`). The host
+process admits up to 128 concurrent routes (see
+`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). The
+process can therefore retain up to 1,073,741,824 bytes (1 GiB) of body data
+across every route at the same time.
+
+This is accepted, known behavior. The process tracks no aggregate byte
+ledger across routes: a per-route bound stops one busy route from starving
+another route's own budget, but the host enforces no smaller ceiling on the
+sum across every route.
 Keep every dimension low-cardinality and free of user content.

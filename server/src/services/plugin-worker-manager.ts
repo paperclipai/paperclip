@@ -3415,6 +3415,14 @@ export interface PluginWorkerManagerOptions {
  * The default process-scoped aggregate ceiling for concurrent duplex channel
  * routes. It caps the manager-wide resource, not one agent's run budget. The host
  * reports an explicit route-busy outcome when the ceiling is full.
+ *
+ * Known aggregate behavior: this ceiling bounds route count only, not
+ * retained bytes. Each HTTP/2 bridge route bounds its own retained body
+ * bytes to 8,388,608 bytes (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in
+ * `http2-bridge-server.ts`), so this route ceiling caps the process's
+ * aggregate retained body bytes at 128 * 8,388,608 = 1,073,741,824 bytes
+ * (1 GiB). This is accepted, known behavior, not a defect: the process
+ * tracks no aggregate byte ledger across routes.
  */
 export const DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES = 128;
 

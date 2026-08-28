@@ -60,6 +60,15 @@ export const HTTP2_BRIDGE_ENABLE_PUSH = false;
  * in-flight-body budget: `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 *
  * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 8 * 262,144
  * bytes = 8,388,608 bytes for one route.
+ *
+ * Known aggregate behavior: this budget applies to one route only. The host
+ * process admits up to `DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` (128, in
+ * `plugin-worker-manager.ts`) routes at the same time, and each route holds
+ * its own 8,388,608-byte peak. The process can therefore retain up to
+ * 1,073,741,824 bytes (1 GiB) of live body data across every route at once.
+ * This document accepts that ceiling: the host tracks no process-wide byte
+ * total, so no single route can starve another route's own budget, but the
+ * host also enforces no smaller sum across every route.
  */
 export const HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS = 4;
 /** One decompressed header list. The Node default is 65535. */

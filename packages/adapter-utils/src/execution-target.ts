@@ -1479,6 +1479,11 @@ function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
 /**
  * Read the forward response body into a string. The per-request `maxBodyBytes`
  * limit rejects a body larger than the configured per-request ceiling.
+ *
+ * This function reserves no process-wide byte budget: it enforces only the
+ * one request's own ceiling. See the "Known behavior: aggregate retained
+ * body bytes" section in `doc/observability.md` for the accepted aggregate
+ * ceiling this leaves across every concurrent route.
  */
 async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<string> {
   const rawContentLength = response.headers.get("content-length");
