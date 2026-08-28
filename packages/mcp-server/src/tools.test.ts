@@ -1,15 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { PaperclipApiClient } from "./client.js";
+import { createPaperclipMcpServer } from "./index.js";
 import { createToolDefinitions } from "./tools.js";
 
-function makeClient() {
-  return new PaperclipApiClient({
+function makeConfig() {
+  return {
     apiUrl: "http://localhost:3100/api",
     apiKey: "token-123",
     companyId: "11111111-1111-1111-1111-111111111111",
     agentId: "22222222-2222-2222-2222-222222222222",
     runId: "33333333-3333-3333-3333-333333333333",
-  });
+  };
+}
+
+function makeClient() {
+  return new PaperclipApiClient(makeConfig());
 }
 
 function getTool(name: string) {
@@ -28,6 +35,29 @@ function mockJsonResponse(body: unknown, status = 200) {
 describe("paperclip MCP tools", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("lists every tool through the MCP protocol", async () => {
+    const { server, tools } = createPaperclipMcpServer(makeConfig());
+    const client = new Client({ name: "paperclip-test", version: "0.1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+    try {
+      const listed = await client.listTools();
+      expect(listed.tools.map((tool) => tool.name)).toEqual(tools.map((tool) => tool.name));
+      const createIssueSchema = listed.tools.find((tool) => tool.name === "paperclipCreateIssue")
+        ?.inputSchema as { properties?: Record<string, { anyOf?: unknown[] }> } | undefined;
+      for (const field of ["neededAt", "reviewBy"]) {
+        expect(createIssueSchema?.properties?.[field]?.anyOf).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: "string", format: "date-time" }),
+          expect.objectContaining({ type: "null" }),
+        ]));
+      }
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 
   it("adds auth headers and run id to mutating requests", async () => {

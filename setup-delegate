@@ -39,17 +39,28 @@ for (const [key, value] of Object.entries(desired)) {
 fs.writeFileSync(file, `${next.join("\n")}\n`, { mode: 0o600 });
 NODE
 
-delegate_api_url="${PAPERCLIP_API_URL:-http://127.0.0.1:3100}"
-delegate_mcp_entry="$delegate_repo_root/packages/mcp-server/dist/stdio.js"
+delegate_config_path="$delegate_home/instances/$delegate_instance/config.json"
+delegate_configured_port=""
+if [[ -f "$delegate_config_path" ]]; then
+  delegate_configured_port="$(DELEGATE_CONFIG_PATH="$delegate_config_path" node -e '
+    const fs = require("node:fs");
+    const config = JSON.parse(fs.readFileSync(process.env.DELEGATE_CONFIG_PATH, "utf8"));
+    if (Number.isInteger(config.server?.port)) process.stdout.write(String(config.server.port));
+  ')"
+fi
+delegate_api_url="${PAPERCLIP_API_URL:-http://127.0.0.1:${delegate_configured_port:-3100}}"
+delegate_node="$(command -v node)"
+delegate_tsx="$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs"
+delegate_mcp_entry="$delegate_repo_root/packages/mcp-server/src/stdio.ts"
 
 if command -v codex >/dev/null 2>&1; then
   codex mcp remove paperclip >/dev/null 2>&1 || true
-  codex mcp add paperclip --env "PAPERCLIP_API_URL=$delegate_api_url" -- node "$delegate_mcp_entry"
+  codex mcp add paperclip --env "PAPERCLIP_API_URL=$delegate_api_url" -- "$delegate_node" "$delegate_tsx" "$delegate_mcp_entry"
 fi
 
 if command -v claude >/dev/null 2>&1; then
   claude mcp remove paperclip --scope user >/dev/null 2>&1 || true
-  claude mcp add --transport stdio --scope user paperclip --env "PAPERCLIP_API_URL=$delegate_api_url" -- node "$delegate_mcp_entry"
+  claude mcp add --transport stdio --scope user paperclip --env "PAPERCLIP_API_URL=$delegate_api_url" -- "$delegate_node" "$delegate_tsx" "$delegate_mcp_entry"
 fi
 
 delegate_skill_source="$delegate_repo_root/skills/plan-my-day"

@@ -9,6 +9,7 @@ import {
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
+  suggestedTaskDraftSchema,
   suggestTasksPayloadSchema,
   updateIssueSchema,
   upsertIssueDocumentSchema,
@@ -60,6 +61,42 @@ const goalIdSchema = z.string().guid();
 const approvalIdSchema = z.string().guid();
 const documentKeySchema = z.string().trim().min(1).max(64);
 const isoDateTime = z.string().datetime({ offset: true });
+const issueTimingToolShape = {
+  neededAt: isoDateTime.nullable().optional(),
+  reviewBy: isoDateTime.nullable().optional(),
+  estimatedReviewMinutes: z.number().int().min(1).max(8 * 60).nullable().optional(),
+};
+
+const suggestedTaskToolSchema = z.object({
+  ...suggestedTaskDraftSchema.shape,
+  ...issueTimingToolShape,
+}).superRefine((value, ctx) => {
+  if (value.assigneeAgentId && value.assigneeUserId) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Suggested tasks can only target one assignee",
+      path: ["assigneeAgentId"],
+    });
+  }
+});
+
+const suggestTasksToolPayloadSchema = z.object({
+  ...suggestTasksPayloadSchema.shape,
+  tasks: z.array(suggestedTaskToolSchema).min(1).max(50),
+}).superRefine((value, ctx) => {
+  const seenClientKeys = new Set<string>();
+  for (const [index, task] of value.tasks.entries()) {
+    if (seenClientKeys.has(task.clientKey)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "clientKey must be unique within one interaction",
+        path: ["tasks", index, "clientKey"],
+      });
+      continue;
+    }
+    seenClientKeys.add(task.clientKey);
+  }
+});
 
 const delegateTaskDraftSchema = z.object({
   clientKey: z.string().trim().min(1).max(120),
@@ -148,11 +185,15 @@ const upsertDocumentToolSchema = z.object({
 
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createIssueInputSchema);
+}).merge(createIssueInputSchema
+  .omit({ neededAt: true, reviewBy: true, estimatedReviewMinutes: true })
+  .extend(issueTimingToolShape));
 
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,
-}).merge(updateIssueSchema);
+}).merge(updateIssueSchema
+  .omit({ neededAt: true, reviewBy: true, estimatedReviewMinutes: true })
+  .extend(issueTimingToolShape));
 
 const checkoutIssueToolSchema = z.object({
   issueId: issueIdSchema,
@@ -172,7 +213,7 @@ const createSuggestTasksToolSchema = z.object({
   title: z.string().trim().max(240).nullable().optional(),
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
-  payload: suggestTasksPayloadSchema,
+  payload: suggestTasksToolPayloadSchema,
 });
 
 const createAskUserQuestionsToolSchema = z.object({
