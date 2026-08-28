@@ -105,17 +105,18 @@ jobs:
             --argjson repository_id 1170821064 \
             --argjson author_id "$EVENT_PR_AUTHOR_ID" \
             --arg base_ref "$EVENT_BASE_REF" \
-            --arg base_sha "$EVENT_BASE_SHA" \
             --arg head_sha "$EVENT_HEAD_SHA" \
             '
               .state == "open" and
               .user.id == $author_id and
               .base.repo.id == $repository_id and
               .base.ref == $base_ref and
-              .base.sha == $base_sha and
               .head.sha == $head_sha
             ' <<< "$pr_json" >/dev/null 2>&1 \
             || fail_closed 'current pull request state does not match the triggering event'
+
+          live_pr_base_sha="$(jq -r '.base.sha // empty' <<< "$pr_json")"
+          is_commit_sha "$live_pr_base_sha" || fail_closed 'current pull request has no valid base SHA'
 
           live_merge_sha="$(jq -r '.merge_commit_sha // empty' <<< "$pr_json")"
           is_commit_sha "$live_merge_sha" || fail_closed 'current pull request has no valid merge SHA'
@@ -127,6 +128,8 @@ jobs:
             || fail_closed 'could not inspect the current base branch'
           live_base_ref_sha="$(jq -r '.object.sha // empty' <<< "$base_ref_json")"
           is_commit_sha "$live_base_ref_sha" || fail_closed 'current base branch has no valid commit SHA'
+          [[ "$live_pr_base_sha" == "$live_base_ref_sha" ]] \
+            || fail_closed 'current pull request base changed during validation'
 
           base_comparison="$(gh api \
             -H 'Accept: application/vnd.github+json' \
