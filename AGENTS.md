@@ -37,7 +37,7 @@ Before making changes, read in this order:
 
 ## 4. Dev Setup (Auto DB)
 
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
+Use the embedded PostgreSQL server in dev by leaving `DATABASE_URL` unset. Set `DATABASE_URL` to run against an external PostgreSQL instead.
 
 ```sh
 pnpm install
@@ -48,6 +48,7 @@ This starts:
 
 - API: `http://localhost:3100`
 - UI: `http://localhost:3100` (served by API server in dev middleware mode)
+- Embedded PostgreSQL: port `54329` unless `database.embeddedPostgresPort` overrides it
 
 Quick checks:
 
@@ -56,12 +57,19 @@ curl http://localhost:3100/api/health
 curl http://localhost:3100/api/companies
 ```
 
-Reset local dev DB:
+Instance state (config, database, logs, secrets) lives outside the repo under `$PAPERCLIP_HOME/instances/$PAPERCLIP_INSTANCE_ID/`, defaulting to `~/.paperclip/instances/default/`. The embedded database directory is `db/` inside that instance root unless `database.embeddedPostgresDataDir` in the instance `config.json` points elsewhere.
+
+Reset local dev DB — stop the dev runner first, then delete the data directory:
 
 ```sh
-rm -rf data/pglite
+pnpm dev:stop
+rm -rf ~/.paperclip/instances/default/db
 pnpm dev
 ```
+
+Notes:
+- `database.mode: "pglite"` in an existing `config.json` is auto-migrated to `embedded-postgres`, carrying `pgliteDataDir`/`pglitePort` over to their embedded equivalents (`packages/db/src/runtime-config.ts`).
+- A killed run can leave an orphaned `postgres` process holding the embedded port. The next start then refuses with "Refusing to start a second postmaster" (`packages/db/src/embedded-postgres-lock.ts`); kill the orphan before retrying.
 
 ## 5. Core Engineering Rules
 
