@@ -12,7 +12,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const script = path.join(repoRoot, "scripts", "e2e-shard.mjs");
 const durationsManifest = path.join(repoRoot, "scripts", "e2e-shard-durations.json");
 const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.ts");
-const prWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
+const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
+const trustedPrWorkflow = path.join(repoRoot, ".github", "workflows", "pr-trusted.yml");
 
 const SHARD_COUNT = 3;
 
@@ -89,11 +90,20 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", () => {
+test("pr.yml calls the trusted PR workflow at an immutable SHA", () => {
+  const caller = readFileSync(prCallerWorkflow, "utf8");
+  assert.match(
+    caller,
+    /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@[0-9a-f]{40}/,
+    "pr.yml must call the trusted workflow at a full commit SHA",
+  );
+});
+
+test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
-  const workflow = readFileSync(prWorkflow, "utf8");
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = new Map();
   let current = null;
   for (const line of workflow.split("\n")) {
@@ -109,10 +119,14 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
   for (const [id, lines] of jobs) jobs.set(id, lines.join("\n"));
 
   const aggregate = jobs.get("e2e");
-  assert.ok(aggregate, "pr.yml must define an `e2e` job to satisfy branch protection");
+  assert.ok(aggregate, "pr-trusted.yml must define an `e2e` job to satisfy branch protection");
   assert.match(aggregate, /^ {4}name: e2e$/m, "the aggregate job must be named exactly `e2e`");
   assert.match(aggregate, /^ {4}if: \$\{\{ always\(\) \}\}$/m, "the aggregate must run even when a shard fails");
-  assert.match(aggregate, /^ {4}needs: \[e2e_shards\]$/m, "the aggregate must depend on the shard matrix");
+  assert.match(
+    aggregate,
+    /^ {4}needs: \[gate, e2e_shards\]$/m,
+    "the aggregate must depend on the runner gate and shard matrix",
+  );
   assert.match(
     aggregate,
     /test "\$E2E_SHARDS_RESULT" = "success"/,
@@ -120,7 +134,7 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
   );
 
   const shards = jobs.get("e2e_shards");
-  assert.ok(shards, "pr.yml must define the `e2e_shards` matrix job");
+  assert.ok(shards, "pr-trusted.yml must define the `e2e_shards` matrix job");
   const matrixEntries = [
     ...shards.matchAll(
       /^ {10}- shard_index: (?<shardIndex>\d+)\n {12}shard_count: (?<shardCount>\d+)\n {12}shard_label: (?<shardLabel>\d+\/\d+)$/gm,
@@ -143,17 +157,17 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
   }
 });
 
-test("pr.yml passes the shard's spec filter to Playwright without a literal --", () => {
+test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
-  const workflow = readFileSync(prWorkflow, "utf8");
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
   assert.ok(
     !/pnpm run test:e2e --\s/.test(workflow),
-    "pr.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
+    "pr-trusted.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
   );
   assert.match(
     workflow,
     /pnpm run test:e2e \$specs/,
-    "pr.yml e2e_shards must invoke `pnpm run test:e2e $specs`",
+    "pr-trusted.yml e2e_shards must invoke `pnpm run test:e2e $specs`",
   );
 });
