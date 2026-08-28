@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
@@ -58,8 +58,18 @@ export function accessService(db: Db) {
       eq(connectionGrantMembers.subjectType, "user"),
       inArray(connectionGrantMembers.grantId, departingAudienceGrantIds),
     ));
+    const activeOrganizationAudienceGrants = departingAudienceGrantIds.length === 0 ? [] : await tx.select({
+      id: connectionGrants.id,
+    }).from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, companyId),
+      eq(connectionGrants.kind, "organization"),
+      eq(connectionGrants.status, "active"),
+      inArray(connectionGrants.id, departingAudienceGrantIds),
+    ));
+    const activeOrganizationAudienceGrantIds = new Set(activeOrganizationAudienceGrants.map((grant) => grant.id));
     const soleAudienceGrantIds = new Set(departingAudienceGrantIds.filter((grantId) =>
-      affectedAudienceRows.filter((row) => row.grantId === grantId).length === 1,
+      activeOrganizationAudienceGrantIds.has(grantId)
+      && affectedAudienceRows.filter((row) => row.grantId === grantId).length === 1,
     ));
 
     const ownedGrants = await tx.select({
@@ -198,10 +208,11 @@ export function accessService(db: Db) {
             // A connection may temporarily carry separate user grants that
             // reference the same credential, or an organization grant may
             // still have another persisted audience member. A sole named
-            // audience is retained below as a blocked grant instead of being
-            // widened to company scope. Pending, suspended, and archived
-            // memberships are intentionally included because company access
-            // can reactivate each of them later.
+            // audience row stays persisted instead of being widened to company
+            // scope; both resolvers require current active membership, so the
+            // row remains dormant until company access is restored. Pending,
+            // suspended, and archived memberships are intentionally included
+            // because company access can reactivate each of them later.
             retainedSecretIds.add(ref.secretId);
             sharedConnectionSecretIds.add(ref.secretId);
           }
@@ -304,22 +315,10 @@ export function accessService(db: Db) {
       eq(connectionGrantMembers.companyId, companyId),
       eq(connectionGrantMembers.subjectType, "user"),
       eq(connectionGrantMembers.subjectId, userId),
+      soleAudienceGrantIds.size > 0
+        ? notInArray(connectionGrantMembers.grantId, [...soleAudienceGrantIds])
+        : undefined,
     ));
-    if (soleAudienceGrantIds.size > 0) {
-      // Zero persisted audience rows normally means organization-wide access.
-      // Removing the only named member must not silently widen that restricted
-      // grant, so preserve its credential for recovery but make it unusable
-      // until an operator chooses a new audience or reauthorizes it.
-      await tx.update(connectionGrants).set({
-        status: "needs_reauthorization",
-        updatedAt: now,
-      }).where(and(
-        eq(connectionGrants.companyId, companyId),
-        eq(connectionGrants.kind, "organization"),
-        eq(connectionGrants.status, "active"),
-        inArray(connectionGrants.id, [...soleAudienceGrantIds]),
-      ));
-    }
     if (removedDelegations.length > 0) {
       const connectionByGrant = new Map(ownedGrants.map((grant) => [grant.id, grant.connectionId]));
       await tx.insert(toolAccessAuditEvents).values(removedDelegations.map((delegation) => ({

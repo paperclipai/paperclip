@@ -479,7 +479,7 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
   });
 
-  it("blocks a restricted organization grant when its sole named audience member is archived", async () => {
+  it("keeps a sole organization audience dormant until its member is reactivated", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const departing = await db.insert(companyMemberships).values({
       companyId: company.id,
@@ -553,9 +553,9 @@ describeEmbeddedPostgres("access service", () => {
     expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))
       .toHaveLength(1);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
-      .toEqual([expect.objectContaining({ status: "needs_reauthorization", isDefault: true, credentialSecretRefs })]);
+      .toEqual([expect.objectContaining({ status: "active", isDefault: true, credentialSecretRefs })]);
     expect(await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.grantId, organizationGrant.id)))
-      .toHaveLength(0);
+      .toEqual([expect.objectContaining({ subjectId: departing.principalId })]);
     expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
 
@@ -566,7 +566,7 @@ describeEmbeddedPostgres("access service", () => {
     expect(await db.select().from(companyMemberships).where(eq(companyMemberships.id, departing.id)))
       .toEqual([expect.objectContaining({ status: "active" })]);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
-      .toEqual([expect.objectContaining({ status: "needs_reauthorization", credentialSecretRefs })]);
+      .toEqual([expect.objectContaining({ status: "active", credentialSecretRefs })]);
   });
 
   it("revokes delegated personal connection access when membership is suspended", async () => {
