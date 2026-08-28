@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
@@ -276,7 +276,7 @@ export function healthRoutes(
       const activeRunCount = await db
         .select({ count: count() })
         .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.status, ["queued", "running"]))
+        .where(eq(heartbeatRuns.status, "running"))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
       devServer = toDevServerHealthStatus(persistedDevServerStatus, {

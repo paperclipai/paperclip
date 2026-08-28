@@ -156,7 +156,10 @@ if (bindMode === "custom" && !bindHost) {
 
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  // Defaults to Vite dev middleware for local `pnpm dev` sessions, but
+  // respects an explicit override (e.g. a launchd-run production instance
+  // that wants to serve a built ui/dist bundle instead).
+  PAPERCLIP_UI_DEV_MIDDLEWARE: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE ?? "true",
 };
 
 if (mode === "dev") {

@@ -5,6 +5,8 @@ import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { heartbeatRuns } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { healthRoutes } from "../routes/health.js";
 
 const tempDirs: string[] = [];
@@ -120,6 +122,102 @@ describe("GET /health dev-server supervisor access", () => {
           lastRestartAt: "2026-03-20T11:30:00.000Z",
         },
       });
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+      } else {
+        process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
+      }
+      if (previousToken === undefined) {
+        delete process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
+      } else {
+        process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = previousToken;
+      }
+    }
+  });
+
+  it("only counts running heartbeat runs toward activeRunCount, not queued ones", async () => {
+    const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    const previousToken = process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
+    process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = createDevServerStatusFile({
+      dirty: true,
+      lastChangedAt: "2026-03-20T12:00:00.000Z",
+      changedPathCount: 1,
+      changedPathsSample: ["server/src/routes/health.ts"],
+      pendingMigrations: [],
+      lastRestartAt: "2026-03-20T11:30:00.000Z",
+    });
+    process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = "dev-runner-token";
+
+    let selectCall = 0;
+    const activeRunCountWhereArgs: unknown[] = [];
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => {
+        selectCall += 1;
+        if (selectCall === 1) {
+          return {
+            from: vi.fn(() => ({
+              where: vi.fn().mockResolvedValue([{ count: 1 }]),
+            })),
+          };
+        }
+        if (selectCall === 2) {
+          return {
+            from: vi.fn(() => ({
+              where: vi.fn().mockResolvedValue([
+                {
+                  id: "settings-1",
+                  general: {},
+                  experimental: { autoRestartDevServerWhenIdle: true },
+                  createdAt: new Date("2026-03-20T11:00:00.000Z"),
+                  updatedAt: new Date("2026-03-20T11:00:00.000Z"),
+                },
+              ]),
+            })),
+          };
+        }
+        return {
+          from: vi.fn((table: unknown) => ({
+            where: vi.fn((condition: unknown) => {
+              if (table === heartbeatRuns) {
+                activeRunCountWhereArgs.push(condition);
+              }
+              return Promise.resolve([{ count: 3 }]);
+            }),
+          })),
+        };
+      }),
+    } as unknown as Db;
+
+    try {
+      const app = express();
+      app.use((req, _res, next) => {
+        (req as any).actor = { type: "none", source: "none" };
+        next();
+      });
+      app.use(
+        "/health",
+        healthRoutes(db, {
+          deploymentMode: "authenticated",
+          deploymentExposure: "private",
+          authReady: true,
+          companyDeletionEnabled: true,
+          serverInfo: {
+            processStartedAt: "2026-03-20T11:00:00.000Z",
+            git: { available: false, unavailableReason: "git_unavailable" },
+          },
+        }),
+      );
+
+      const res = await request(app)
+        .get("/health")
+        .set("X-Paperclip-Dev-Server-Status-Token", "dev-runner-token");
+
+      expect(res.status).toBe(200);
+      expect(res.body.devServer.activeRunCount).toBe(3);
+      expect(activeRunCountWhereArgs).toHaveLength(1);
+      expect(activeRunCountWhereArgs[0]).toEqual(eq(heartbeatRuns.status, "running"));
     } finally {
       if (previousFile === undefined) {
         delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
