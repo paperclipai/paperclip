@@ -4436,11 +4436,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             await activeTurn.cancel({ reason: settlement.cancelTurnReason }).catch(() => {});
           }
           const existing = warmHandles.get(prepared.sessionKey);
+          // Re-read the duplex control-channel disposition here, at the
+          // boundary that places the remote call. The settlement snapshot
+          // above can predate a channel loss the bridge latches during the
+          // awaited finalization work between the snapshot and this point, so
+          // a stale `false` on the snapshot must not force a call onto a
+          // channel that is dead by now. The read is non-mutating and only
+          // adds a later-observed loss; it never clears the snapshot's `true`.
+          const remoteChannelLost =
+            settlement.skipRemoteClose || (prepared.paperclipBridge?.readRunDisposition?.().failed ?? false);
           // The control channel is already known lost, so no remote call can
           // reach the backend. Release the local bookkeeping only and place no
           // `runtime.close(...)` call — that call has no deadline of its own
           // and would block on the dead channel.
-          if (settlement.skipRemoteClose) {
+          if (remoteChannelLost) {
             if (warmHandleMatches(existing, runtime, settlement.handle) && existing) {
               clearWarmHandleTimer(existing);
               warmHandles.delete(prepared.sessionKey);

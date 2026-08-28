@@ -6126,4 +6126,46 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     expect(result.errorCode).toBe("duplex_channel_lost");
     expect(closeCalls).toBe(0);
   });
+
+  it("skips the remote close when the channel loses during the awaited turn-error finalization, after the settlement snapshot", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    let closeCalls = 0;
+    // The event stream errors out (a `turnFinalize` "error" input, not a
+    // "terminal" one), so the settlement snapshot never inspects the bridge
+    // disposition and always sets `skipRemoteClose: false`. Order the channel
+    // loss inside the event stream, right before it throws, so the loss
+    // latches strictly after that snapshot and before the end-session step
+    // reaches its remote-close boundary.
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          fake.emitLoss("provider_exit");
+          throw new Error("turn upstream boom");
+        })(),
+        result: Promise.resolve({ status: "completed" as const, stopReason: "end_turn" }),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      // A close call with no deadline of its own would hang forever on a dead
+      // channel. The test fails on a nonzero call count instead of timing out.
+      close: () => {
+        closeCalls += 1;
+        return new Promise(() => {});
+      },
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    // The end-session step re-read the disposition at the remote-close
+    // boundary and saw the loss the settlement snapshot missed, so it
+    // released the runtime locally and placed no remote close call.
+    expect(closeCalls).toBe(0);
+  });
 });
