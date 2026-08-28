@@ -7,6 +7,7 @@ import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte,
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   MODEL_PROFILE_KEYS,
@@ -7680,7 +7681,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (timeoutAt && input.now.getTime() >= timeoutAt.getTime()) {
       return "timeout_exceeded";
     }
-    const maxAttempts = input.monitor?.maxAttempts ?? null;
+    // Monitors re-arm themselves after each dispatch, so the attempt ceiling is
+    // what stops an otherwise unbounded monitor. The default only applies when
+    // the policy names no bound at all — a timeoutAt already terminates the
+    // monitor, and cutting it off at the ceiling would end it before its
+    // declared deadline.
+    const maxAttempts = input.monitor?.maxAttempts ??
+      (timeoutAt ? null : DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS);
     if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
       return "max_attempts_exhausted";
     }
@@ -8022,6 +8029,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       serviceName: monitor?.serviceName ?? null,
       timeoutAt: monitor?.timeoutAt ?? null,
       maxAttempts: monitor?.maxAttempts ?? null,
+      intervalSeconds: monitor?.intervalSeconds ?? null,
       recoveryPolicy: monitor?.recoveryPolicy ?? null,
     };
     const executionState = claimed.status === "in_review"
@@ -8102,14 +8110,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
+      const triggeredPatch = buildIssueMonitorTriggeredPatch({
+        issue: claimed,
+        policy,
+        triggeredAt: input.now,
+      });
+
       await db
         .update(issues)
         .set({
-          ...buildIssueMonitorTriggeredPatch({
-            issue: claimed,
-            policy,
-            triggeredAt: input.now,
-          }),
+          ...triggeredPatch,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, claimed.id));
@@ -8130,6 +8140,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           attemptCount: nextAttemptCount,
           notes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          rearmedNextCheckAt: triggeredPatch.monitorNextCheckAt?.toISOString() ?? null,
           source: input.activitySource,
         },
       });
