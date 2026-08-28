@@ -159,6 +159,23 @@ export function isConnectionDefinitionUnavailable(input: {
     && !(input.reconnectConnectionId && input.reconnectSourceMatches);
 }
 
+export function requestedConnectionSetupResolution(input: {
+  reconnectConnectionId: string | null | undefined;
+  hasRequestedEntry: boolean;
+  supportedMethodCount: number;
+  unsupportedOAuth: boolean;
+  vercelUnavailable: boolean;
+  definitionUnavailable: boolean;
+}): "ready" | "fallback" | "reconnect_unavailable" {
+  const unavailable = !input.hasRequestedEntry
+    || input.supportedMethodCount === 0
+    || input.unsupportedOAuth
+    || input.vercelUnavailable
+    || input.definitionUnavailable;
+  if (!unavailable) return "ready";
+  return input.reconnectConnectionId ? "reconnect_unavailable" : "fallback";
+}
+
 function appConnectHref(
   appKey: string,
   step: Step,
@@ -492,6 +509,7 @@ export function ConnectionSetupFlow({
   );
   const [existingConnectionPendingId, setExistingConnectionPendingId] = useState<string | null>(null);
   const [existingConnectionError, setExistingConnectionError] = useState<string | null>(null);
+  const [unavailableReconnectId, setUnavailableReconnectId] = useState<string | null>(null);
 
   const reserveOAuthPopup = useCallback(() => {
     if (host !== "dialog" || oauthPopupRef.current?.closed === false) return;
@@ -1006,16 +1024,29 @@ export function ConnectionSetupFlow({
       reconnectConnectionId,
       reconnectSourceMatches,
     });
-    if (!requestedEntry || methods.length === 0 || unsupportedOAuth || vercelUnavailable || definitionUnavailable) {
+    const setupResolution = requestedConnectionSetupResolution({
+      reconnectConnectionId,
+      hasRequestedEntry: Boolean(requestedEntry),
+      supportedMethodCount: methods.length,
+      unsupportedOAuth,
+      vercelUnavailable,
+      definitionUnavailable,
+    });
+    if (setupResolution !== "ready") {
       setEntry(null);
       setStep("gallery");
-      if (reconnectConnectionId) return;
+      if (setupResolution === "reconnect_unavailable" && reconnectConnectionId) {
+        setUnavailableReconnectId(reconnectConnectionId);
+        return;
+      }
       navigate(withConnectionIntent(
         credentialSource === "vercel_connect" ? vercelConnectSourceHref() : "/apps/connect",
         connectionIntentId,
       ), { replace: true });
       return;
     }
+    setUnavailableReconnectId(null);
+    if (!requestedEntry) return;
 
     if (entry?.slug !== requestedEntry.slug) {
       setEntry(requestedEntry);
@@ -1263,6 +1294,20 @@ export function ConnectionSetupFlow({
             Back to apps
           </Button>
         </div>
+      </div>
+    );
+  }
+
+  if (reconnectConnectionId && unavailableReconnectId === reconnectConnectionId) {
+    return (
+      <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+        <h2 className="text-lg font-semibold text-foreground">This connection can’t be reconnected</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Paperclip no longer has a supported setup method for this retained connection. The retained connection was not changed.
+        </p>
+        <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
+          Back to apps
+        </Button>
       </div>
     );
   }

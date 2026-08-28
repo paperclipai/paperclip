@@ -8,6 +8,7 @@ import {
   isVercelConnectUnavailable,
   readConnectionIntentOAuthOutcome,
   retainedReconnectMatches,
+  requestedConnectionSetupResolution,
   requestedConnectionEntry,
 } from "./ConnectionSetupFlow";
 
@@ -98,6 +99,41 @@ describe("retained reconnect definition lookup", () => {
       reconnectConnection: connection,
       applications: [githubApplication],
     })).toBeNull();
+  });
+
+  it("ends unavailable retained reconnects instead of leaving them loading", () => {
+    expect(requestedConnectionSetupResolution({
+      reconnectConnectionId: "connection-1",
+      hasRequestedEntry: false,
+      supportedMethodCount: 0,
+      unsupportedOAuth: false,
+      vercelUnavailable: false,
+      definitionUnavailable: false,
+    })).toBe("reconnect_unavailable");
+    expect(requestedConnectionSetupResolution({
+      reconnectConnectionId: "connection-1",
+      hasRequestedEntry: true,
+      supportedMethodCount: 0,
+      unsupportedOAuth: false,
+      vercelUnavailable: false,
+      definitionUnavailable: false,
+    })).toBe("reconnect_unavailable");
+    expect(requestedConnectionSetupResolution({
+      reconnectConnectionId: null,
+      hasRequestedEntry: false,
+      supportedMethodCount: 0,
+      unsupportedOAuth: false,
+      vercelUnavailable: false,
+      definitionUnavailable: false,
+    })).toBe("fallback");
+    expect(requestedConnectionSetupResolution({
+      reconnectConnectionId: "connection-1",
+      hasRequestedEntry: true,
+      supportedMethodCount: 1,
+      unsupportedOAuth: false,
+      vercelUnavailable: false,
+      definitionUnavailable: false,
+    })).toBe("ready");
   });
 
   it("does not expose a hidden provider without an exact reconnect target", () => {
