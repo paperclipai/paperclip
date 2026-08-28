@@ -124,7 +124,7 @@ afterEach(() => {
 });
 
 describe("IssueThreadInteractionCard", () => {
-  it("offers connection resolution actions to the addressed user", async () => {
+  it("opens the shared connection setup for the addressed user", async () => {
     connectionIntentsApiMocks.setupOptions.mockResolvedValue({ existingConnections: [] });
     const host = renderCard({
       interaction: pendingConnectionIntentInteraction,
@@ -141,12 +141,15 @@ describe("IssueThreadInteractionCard", () => {
       loadButton?.click();
       await Promise.resolve();
     });
-    const connectLink = Array.from(host.querySelectorAll("a")).find((link) =>
-      link.textContent === "Connect a new Notion identity",
+    await vi.waitFor(() =>
+      expect(connectionIntentsApiMocks.setupOptions).toHaveBeenCalledWith(
+        "interaction-connection-intent-default",
+      ),
     );
-    expect(connectLink?.getAttribute("href")).toBe(
-      "/apps/connect?source=notion&intent=interaction-connection-intent-default",
-    );
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(dialog?.textContent).toContain("Connect Notion");
+    expect(dialog?.textContent).toContain("Complete connection setup without leaving this task.");
   });
 
   it("keeps connection resolution controls exclusive to the addressed user", () => {
