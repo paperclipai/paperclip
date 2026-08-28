@@ -52,8 +52,20 @@ vi.mock("@/api/tools", () => ({
 }));
 
 vi.mock("@/pages/apps/AppLogo", () => ({
-  AppLogo: ({ name, brandKey }: { name: string; brandKey?: string | null }) => (
-    <span data-app-logo={name} data-brand-key={brandKey ?? ""} />
+  AppLogo: ({
+    name,
+    brandKey,
+    allowRemoteFallback,
+  }: {
+    name: string;
+    brandKey?: string | null;
+    allowRemoteFallback?: boolean;
+  }) => (
+    <span
+      data-app-logo={name}
+      data-brand-key={brandKey ?? ""}
+      data-allow-remote-fallback={allowRemoteFallback ? "true" : "false"}
+    />
   ),
 }));
 
@@ -198,6 +210,32 @@ describe("AppConnectionSidebar", () => {
     await renderSidebar();
 
     expect(container.querySelector("[data-app-logo]")?.getAttribute("data-brand-key")).toBe("github");
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("true");
+  });
+
+  it("keeps remote fallback disabled until the stable application key resolves", async () => {
+    let resolveApplications!: (value: {
+      applications: Array<{ id: string; applicationKey: string; name: string; status: string }>;
+    }) => void;
+    mockToolsApi.getConnection.mockResolvedValue(connection({ name: "Dotta's source control" }));
+    mockToolsApi.listApplications.mockReturnValueOnce(new Promise((resolve) => {
+      resolveApplications = resolve;
+    }));
+
+    await renderSidebar();
+
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-brand-key")).toBe("");
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("false");
+
+    await act(async () => {
+      resolveApplications({
+        applications: [{ id: "app-1", applicationKey: "github", name: "GitHub", status: "active" }],
+      });
+    });
+    await flushReact();
+
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-brand-key")).toBe("github");
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("true");
   });
 
   it("renders application-mode tabs under the not-connected app route", async () => {
