@@ -1,4 +1,5 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -130,9 +131,13 @@ export function assertUsableGrokAuthShape(authBytes: Buffer): GrokAuthPayload {
  *
  * - `promoted`: the helper wrote the company home, either seeding an empty home
  *   or refreshing the same account's credential.
- * - `kept_foreign_identity`: a DIFFERENT account already occupies the company
- *   home. The helper never clobbers an occupied home, so it wrote nothing. This
- *   is NOT a successful authentication; the caller must fail the session.
+ * - `kept_foreign_identity`: the company home is occupied and this step could
+ *   not confirm it holds the same account — either a DIFFERENT account already
+ *   occupies it, or the existing file is present but this step cannot read it
+ *   as a usable Grok credential (an unreadable or unparseable file fails
+ *   closed the same way). The helper never clobbers an occupied home, so it
+ *   wrote nothing. This is NOT a successful authentication; the caller must
+ *   fail the session.
  * - `not_sole_owner`: the sole-active-owner gate rejected the write. Nothing
  *   was written.
  * - `background_skipped`: the user-initiated gate rejected the write (an
@@ -189,19 +194,69 @@ function requireSafeCompanyId(companyId: string): string {
   return trimmed;
 }
 
-/** Reads the existing home's identity key, or null when the home is absent,
- *  unreadable, or holds no usable credential. A read failure is treated as no
- *  occupant, so a corrupt or missing file never blocks a fresh write. */
-async function readExistingIdentityKey(authPath: string): Promise<string | null> {
-  const existingBytes = await readFile(authPath).catch(() => null);
-  if (!existingBytes) return null;
+/**
+ * The existing home's state, read before a write decision.
+ *
+ * - `absent`: no file at the path. This is an empty slot.
+ * - `identity`: the file is present, readable, and holds a usable Grok
+ *   payload. `identityKey` is that payload's composite key.
+ * - `unreadable`: the file is present, but the read failed, the JSON parse
+ *   failed, or the payload is not a usable Grok payload. The caller must
+ *   treat this the same as an occupied home with an unknown account: it
+ *   fails closed and never overwrites the file.
+ */
+type ExistingHomeState = { kind: "absent" } | { kind: "identity"; identityKey: string } | { kind: "unreadable" };
+
+function isEnoentError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+/** Reads the existing home's state at `authPath`. A read failure other than
+ *  a missing file, an invalid-JSON payload, or a non-Grok payload all
+ *  resolve to `unreadable`, so the caller fails closed on any of them. Only
+ *  a missing file resolves to `absent`. */
+async function readExistingHomeState(authPath: string): Promise<ExistingHomeState> {
+  let existingBytes: Buffer;
+  try {
+    existingBytes = await readFile(authPath);
+  } catch (error) {
+    return isEnoentError(error) ? { kind: "absent" } : { kind: "unreadable" };
+  }
   let existingJson: unknown;
   try {
     existingJson = JSON.parse(existingBytes.toString("utf8"));
   } catch {
-    return null;
+    return { kind: "unreadable" };
   }
-  return parseGrokAuthPayload(existingJson)?.identityKey ?? null;
+  const payload = parseGrokAuthPayload(existingJson);
+  return payload ? { kind: "identity", identityKey: payload.identityKey } : { kind: "unreadable" };
+}
+
+/**
+ * Writes `authBytes` to `authPath` atomically. It stages the bytes into a
+ * private (0600) temporary file in the same directory, then renames that
+ * file over `authPath`. The rename is an atomic same-directory swap, so a
+ * reader never observes a torn file, and a process that stops mid-write
+ * leaves the destination untouched. The temporary file is always removed,
+ * so a failed write never leaves stray bytes behind.
+ */
+async function writeAuthFileAtomically(authPath: string, authBytes: Buffer): Promise<void> {
+  const stagedTempPath = path.join(
+    path.dirname(authPath),
+    `.auth-${process.pid}-${randomUUID()}.tmp`,
+  );
+  // `wx` + explicit mode create the temp file private (0600) and fail if it
+  // already exists, so the write never goes through a pre-existing symlink.
+  const handle = await open(stagedTempPath, "wx", PRIVATE_FILE_MODE);
+  try {
+    await handle.writeFile(authBytes);
+    await handle.close();
+    await rename(stagedTempPath, authPath);
+    await chmod(authPath, PRIVATE_FILE_MODE);
+  } finally {
+    await handle.close().catch(() => undefined);
+    await rm(stagedTempPath, { force: true }).catch(() => undefined);
+  }
 }
 
 /**
@@ -246,12 +301,20 @@ export async function promoteGrokDeviceLoginCredential(
     return "not_sole_owner";
   }
 
-  // 5. Never clobber an occupied home that holds a different account. A
-  //    read failure on the existing file is treated as no occupant.
+  // 5. Never clobber an occupied home. A present file that this step cannot
+  //    read as the same identity — absent from a read failure, invalid JSON,
+  //    or a non-Grok payload — is treated as a foreign identity, so the
+  //    promotion fails closed and writes nothing.
   const companyHome = resolveManagedGrokHomeDir(env, companyId);
   const authPath = path.join(companyHome, AUTH_FILE_NAME);
-  const existingIdentityKey = await readExistingIdentityKey(authPath);
-  if (existingIdentityKey && existingIdentityKey !== payload.identityKey) {
+  const existingState = await readExistingHomeState(authPath);
+  if (existingState.kind === "unreadable") {
+    await log(
+      "[paperclip] Grok device-login promotion: kept the company credential home (the existing file is present but this step cannot read it as a usable Grok credential).",
+    );
+    return "kept_foreign_identity";
+  }
+  if (existingState.kind === "identity" && existingState.identityKey !== payload.identityKey) {
     await log(
       "[paperclip] Grok device-login promotion: kept the company credential home (the login is a different account than the one already set for this company).",
     );
@@ -261,13 +324,12 @@ export async function promoteGrokDeviceLoginCredential(
   // 6. Write the company credential home. `mkdir` applies `mode` only when it
   //    creates the directory, so an explicit `chmod` follows it. This keeps
   //    the directory mode exact both for a new home and for a home that
-  //    already existed at a broader mode. The explicit `chmod` after the
-  //    write does the same job for the file mode, regardless of the process
-  //    umask.
+  //    already existed at a broader mode. The write itself is atomic: it
+  //    stages the bytes into a private temporary file in the same directory,
+  //    then renames that file over `auth.json`.
   await mkdir(companyHome, { recursive: true, mode: PRIVATE_DIR_MODE });
   await chmod(companyHome, PRIVATE_DIR_MODE);
-  await writeFile(authPath, authBytes, { mode: PRIVATE_FILE_MODE });
-  await chmod(authPath, PRIVATE_FILE_MODE);
+  await writeAuthFileAtomically(authPath, authBytes);
   await log("[paperclip] Grok device-login promotion: wrote the company credential home at mode 0600.");
   return "promoted";
 }

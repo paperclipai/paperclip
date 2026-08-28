@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -371,6 +371,81 @@ describe("grok device-login credential promotion", () => {
     const authPath = companyHomeAuthPath(env, COMPANY_A);
     const written = JSON.parse(await readFile(authPath, "utf8"));
     expect(written[`${ISSUER}::${UUID_A}`].refresh_token).toBe(`${TOKEN_SENTINEL}-second`);
+  });
+
+  // ---------------------------------------------------------------------
+  // Fail closed on an unreadable or unparseable existing home.
+  // ---------------------------------------------------------------------
+
+  it("keeps a home whose auth.json holds corrupt JSON, and writes nothing", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const companyHome = resolveManagedGrokHomeDir(env, COMPANY_A);
+    await mkdir(companyHome, { recursive: true, mode: 0o700 });
+    const authPath = path.join(companyHome, "auth.json");
+    const corruptBytes = Buffer.from("{not valid json");
+    await writeFile(authPath, corruptBytes, { mode: 0o600 });
+
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(outcome).toBe("kept_foreign_identity");
+
+    const afterBytes = await readFile(authPath);
+    expect(afterBytes.equals(corruptBytes)).toBe(true);
+  });
+
+  it("keeps a home whose auth.json holds a well-formed but unusable payload, and writes nothing", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const companyHome = resolveManagedGrokHomeDir(env, COMPANY_A);
+    await mkdir(companyHome, { recursive: true, mode: 0o700 });
+    const authPath = path.join(companyHome, "auth.json");
+    const unusableBytes = Buffer.from(JSON.stringify({ some_fixed_key: { key: "k" } }));
+    await writeFile(authPath, unusableBytes, { mode: 0o600 });
+
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(outcome).toBe("kept_foreign_identity");
+
+    const afterBytes = await readFile(authPath);
+    expect(afterBytes.equals(unusableBytes)).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // Atomic write.
+  // ---------------------------------------------------------------------
+
+  it("leaves no staged temporary file in the company home after a successful promotion", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const outcome = await promoteGrokDeviceLoginCredential({
+      authBytes: grokAuth({ uuid: UUID_A }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(outcome).toBe("promoted");
+
+    const companyHome = resolveManagedGrokHomeDir(env, COMPANY_A);
+    const entries = await readdir(companyHome);
+    expect(entries).toEqual(["auth.json"]);
   });
 
   // ---------------------------------------------------------------------
