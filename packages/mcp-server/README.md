@@ -32,11 +32,13 @@ node packages/mcp-server/dist/stdio.js
 
 Read tools:
 
+- `paperclipListCompanies`
 - `paperclipMe`
 - `paperclipInboxLite`
 - `paperclipListAgents`
 - `paperclipGetAgent`
 - `paperclipListIssues`
+- `paperclipGetMyWork`
 - `paperclipGetIssue`
 - `paperclipGetHeartbeatContext`
 - `paperclipListComments`
@@ -58,6 +60,10 @@ Read tools:
 
 Write tools:
 
+- `paperclipCreateTask`
+- `paperclipProposeDayPlan`
+- `paperclipApproveDayPlan`
+- `paperclipReviewTask`
 - `paperclipCreateIssue`
 - `paperclipUpdateIssue`
 - `paperclipCheckoutIssue`

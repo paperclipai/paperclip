@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+delegate_repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$delegate_repo_root"
+
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 24 || (major === 24 && minor < 11)) { console.error(`Node 24.11+ is required; found ${process.version}`); process.exit(1); }'
+
+corepack enable >/dev/null 2>&1 || true
+pnpm install --frozen-lockfile
+pnpm --filter @paperclipai/mcp-server build
+pnpm build
+
+delegate_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
+delegate_instance="${PAPERCLIP_INSTANCE_ID:-default}"
+delegate_env_path="$delegate_home/instances/$delegate_instance/.env"
+mkdir -p "$(dirname "$delegate_env_path")"
+
+DELEGATE_ENV_PATH="$delegate_env_path" node <<'NODE'
+const fs = require("node:fs");
+const file = process.env.DELEGATE_ENV_PATH;
+const desired = {
+  PAPERCLIP_DELEGATE_MODE: "true",
+  PAPERCLIP_DB_BACKUP_ENABLED: "false",
+};
+const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8").split(/\r?\n/) : [];
+const seen = new Set();
+const next = current.filter(Boolean).map((line) => {
+  const key = line.split("=", 1)[0]?.trim();
+  if (key && Object.hasOwn(desired, key)) {
+    seen.add(key);
+    return `${key}=${desired[key]}`;
+  }
+  return line;
+});
+for (const [key, value] of Object.entries(desired)) {
+  if (!seen.has(key)) next.push(`${key}=${value}`);
+}
+fs.writeFileSync(file, `${next.join("\n")}\n`, { mode: 0o600 });
+NODE
+
+delegate_api_url="${PAPERCLIP_API_URL:-http://127.0.0.1:3100}"
+delegate_mcp_entry="$delegate_repo_root/packages/mcp-server/dist/stdio.js"
+
+if command -v codex >/dev/null 2>&1; then
+  codex mcp remove paperclip >/dev/null 2>&1 || true
+  codex mcp add paperclip --env "PAPERCLIP_API_URL=$delegate_api_url" -- node "$delegate_mcp_entry"
+fi
+
+if command -v claude >/dev/null 2>&1; then
+  claude mcp remove paperclip --scope user >/dev/null 2>&1 || true
+  claude mcp add --transport stdio --scope user paperclip --env "PAPERCLIP_API_URL=$delegate_api_url" -- node "$delegate_mcp_entry"
+fi
+
+delegate_skill_source="$delegate_repo_root/skills/plan-my-day"
+for delegate_skill_home in "${CODEX_HOME:-$HOME/.codex}/skills" "${CLAUDE_HOME:-$HOME/.claude}/skills"; do
+  mkdir -p "$delegate_skill_home/plan-my-day"
+  cp "$delegate_skill_source/SKILL.md" "$delegate_skill_home/plan-my-day/SKILL.md"
+done
+
+echo "Delegate mode is configured. Paperclip will open after onboarding and startup."
+exec "$delegate_repo_root/run-delegate"

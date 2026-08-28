@@ -24,6 +24,7 @@ import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { healthApi } from "../api/health";
 import {
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
@@ -373,6 +374,11 @@ function OnboardingWizardInner({
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
     : routeOnboardingOptions ?? {};
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    enabled: effectiveOnboardingOpen,
+  });
 
   // Sync disabled adapter types only when the wizard is visible. The wizard is
   // mounted globally, including on /auth, where protected adapter routes are
@@ -1345,7 +1351,11 @@ function OnboardingWizardInner({
         role: agentRole,
         adapterType,
         adapterConfig: buildAdapterConfig(),
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        runtimeConfig: buildNewAgentRuntimeConfig(
+          health?.features?.delegateMode
+            ? { heartbeatEnabled: false, maxConcurrentRuns: 1 }
+            : undefined,
+        )
       });
       if (hire.approval) {
         await approvalsApi.approve(

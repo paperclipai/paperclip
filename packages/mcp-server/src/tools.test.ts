@@ -122,6 +122,7 @@ describe("paperclip MCP tools", () => {
     );
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
+      allowDuplicate: false,
       title: "Assigned follow-up",
       workMode: "standard",
       priority: "medium",
@@ -253,6 +254,79 @@ describe("paperclip MCP tools", () => {
         tasks: [{ clientKey: "task-1", title: "One" }],
       },
     });
+  });
+
+  it("proposes a day plan without starting its tasks", async () => {
+    const planIssueId = "44444444-4444-4444-8444-444444444444";
+    const interactionId = "55555555-5555-4555-8555-555555555555";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({ id: planIssueId, title: "Plan for 2026-08-29" }))
+      .mockResolvedValueOnce(mockJsonResponse({ id: interactionId, kind: "suggest_tasks", status: "pending" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipProposeDayPlan");
+    await tool.execute({
+      date: "2026-08-29",
+      summary: "Prepare for the launch review.",
+      tasks: [{
+        clientKey: "launch-brief",
+        title: "Prepare launch brief",
+        reviewBy: "2026-08-29T14:30:00-04:00",
+        neededAt: "2026-08-29T15:00:00-04:00",
+        estimatedReviewMinutes: 15,
+      }],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, createInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(createInit.body))).toMatchObject({
+      title: "Plan for 2026-08-29",
+      status: "todo",
+      workMode: "planning",
+      idempotencyKey: "delegate-day-plan:2026-08-29",
+    });
+    const [interactionUrl, interactionInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(interactionUrl)).toBe(`http://localhost:3100/api/issues/${planIssueId}/interactions`);
+    expect(JSON.parse(String(interactionInit.body))).toMatchObject({
+      kind: "suggest_tasks",
+      continuationPolicy: "none",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        defaultParentId: planIssueId,
+        tasks: [{
+          clientKey: "launch-brief",
+          title: "Prepare launch brief",
+          assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+          estimatedReviewMinutes: 15,
+        }],
+      },
+    });
+  });
+
+  it("accepts or requests changes through the human review tool", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "issue-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const tool = getTool("paperclipReviewTask");
+
+    await tool.execute({ issueId: "PAP-12", verdict: "accept" });
+    await tool.execute({ issueId: "PAP-13", verdict: "request_changes", comment: "Add churn risk." });
+
+    expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toEqual({ status: "done" });
+    expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))).toEqual({
+      status: "todo",
+      comment: "Add churn risk.",
+      resume: true,
+    });
+  });
+
+  it("requires feedback when requesting changes", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const response = await getTool("paperclipReviewTask").execute({
+      issueId: "PAP-13",
+      verdict: "request_changes",
+    });
+    expect(response.content[0]?.text).toContain("Requesting changes requires a comment");
   });
 
   it("creates request_confirmation interactions with plan target payloads", async () => {

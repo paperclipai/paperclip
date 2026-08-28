@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   addIssueCommentSchema,
@@ -58,6 +59,56 @@ const projectIdSchema = z.string().min(1);
 const goalIdSchema = z.string().guid();
 const approvalIdSchema = z.string().guid();
 const documentKeySchema = z.string().trim().min(1).max(64);
+const isoDateTime = z.string().datetime({ offset: true });
+
+const delegateTaskDraftSchema = z.object({
+  clientKey: z.string().trim().min(1).max(120),
+  title: z.string().trim().min(1).max(240),
+  description: z.string().trim().max(20000).nullable().optional(),
+  priority: z.enum(["critical", "high", "medium", "low"]).optional(),
+  neededAt: isoDateTime.nullable().optional(),
+  reviewBy: isoDateTime.nullable().optional(),
+  estimatedReviewMinutes: z.number().int().min(1).max(8 * 60).nullable().optional(),
+});
+
+const proposeDayPlanSchema = z.object({
+  companyId: companyIdOptional,
+  date: z.string().date(),
+  summary: z.string().trim().min(1).max(20000),
+  tasks: z.array(delegateTaskDraftSchema).min(1).max(20),
+  projectId: z.string().guid().nullable().optional(),
+  goalId: z.string().guid().nullable().optional(),
+  assigneeAgentId: agentIdOptional,
+});
+
+const approveDayPlanSchema = z.object({
+  issueId: issueIdSchema,
+  interactionId: z.string().guid(),
+  selectedClientKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(20).optional(),
+});
+
+const createDelegateTaskSchema = z.object({
+  companyId: companyIdOptional,
+  title: z.string().trim().min(1).max(240),
+  description: z.string().trim().max(20000).nullable().optional(),
+  priority: z.enum(["critical", "high", "medium", "low"]).optional(),
+  neededAt: isoDateTime.nullable().optional(),
+  reviewBy: isoDateTime.nullable().optional(),
+  estimatedReviewMinutes: z.number().int().min(1).max(8 * 60).nullable().optional(),
+  projectId: z.string().guid().nullable().optional(),
+  goalId: z.string().guid().nullable().optional(),
+  assigneeAgentId: agentIdOptional,
+});
+
+const reviewDelegateTaskSchema = z.object({
+  issueId: issueIdSchema,
+  verdict: z.enum(["accept", "request_changes"]),
+  comment: z.string().trim().max(20000).nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (value.verdict === "request_changes" && !value.comment) {
+    ctx.addIssue({ code: "custom", path: ["comment"], message: "Requesting changes requires a comment" });
+  }
+});
 
 const listIssuesSchema = z.object({
   companyId: companyIdOptional,
@@ -196,6 +247,33 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function stableDayPlanKey(date: string, tasks: unknown) {
+  const digest = createHash("sha256").update(JSON.stringify(tasks)).digest("hex").slice(0, 16);
+  return `delegate-day-plan:${date}:${digest}`;
+}
+
+function groupDelegateIssues(rows: unknown) {
+  const issues = Array.isArray(rows)
+    ? rows.filter((row): row is Record<string, unknown> => (
+        Boolean(row)
+        && typeof row === "object"
+        && (row as Record<string, unknown>).workMode !== "planning"
+      ))
+    : [];
+  const completedToday = new Date().toISOString().slice(0, 10);
+  return {
+    needsYou: issues.filter((issue) => issue.status === "blocked"),
+    readyToReview: issues.filter((issue) => issue.status === "in_review"),
+    working: issues.filter((issue) => issue.status === "in_progress"),
+    upNext: issues.filter((issue) => issue.status === "todo" || issue.status === "backlog"),
+    doneToday: issues.filter((issue) => (
+      issue.status === "done"
+      && typeof issue.completedAt === "string"
+      && issue.completedAt.slice(0, 10) === completedToday
+    )),
+  };
+}
+
 function readCurrentExecutionWorkspace(context: unknown): Record<string, unknown> | null {
   if (!context || typeof context !== "object") return null;
   const workspace = (context as { currentExecutionWorkspace?: unknown }).currentExecutionWorkspace;
@@ -236,6 +314,12 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
 
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
   return [
+    makeTool(
+      "paperclipListCompanies",
+      "List Paperclip companies available to the local user",
+      z.object({}),
+      async () => client.requestJson("GET", "/companies"),
+    ),
     makeTool(
       "paperclipMe",
       "Get the current authenticated Paperclip actor details",
@@ -282,6 +366,16 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         }
         const qs = params.toString();
         return client.requestJson("GET", `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
+      },
+    ),
+    makeTool(
+      "paperclipGetMyWork",
+      "Get the user's work grouped into Needs you, Ready to review, Working, Up next, and Done today",
+      z.object({ companyId: companyIdOptional }),
+      async ({ companyId }) => {
+        const resolvedCompanyId = client.resolveCompanyId(companyId);
+        const rows = await client.requestJson("GET", `/companies/${resolvedCompanyId}/issues`);
+        return groupDelegateIssues(rows);
       },
     ),
     makeTool(
@@ -466,6 +560,87 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       createIssueToolSchema,
       async ({ companyId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+    ),
+    makeTool(
+      "paperclipCreateTask",
+      "Create one approved task for the personal worker",
+      createDelegateTaskSchema,
+      async ({ companyId, assigneeAgentId, ...body }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, {
+          body: {
+            ...body,
+            status: "todo",
+            workMode: "standard",
+            assigneeAgentId: client.resolveAgentId(assigneeAgentId),
+          },
+        }),
+    ),
+    makeTool(
+      "paperclipProposeDayPlan",
+      "Create a selectable day-plan version without starting work. A revised call creates a new version; approve only the latest interaction.",
+      proposeDayPlanSchema,
+      async ({ companyId, date, summary, tasks, projectId, goalId, assigneeAgentId }) => {
+        const resolvedCompanyId = client.resolveCompanyId(companyId);
+        const resolvedAgentId = client.resolveAgentId(assigneeAgentId);
+        const planIssue = await client.requestJson<Record<string, unknown>>(
+          "POST",
+          `/companies/${resolvedCompanyId}/issues`,
+          {
+            body: {
+              title: `Plan for ${date}`,
+              description: summary,
+              status: "todo",
+              workMode: "planning",
+              priority: "medium",
+              projectId: projectId ?? null,
+              goalId: goalId ?? null,
+              idempotencyKey: `delegate-day-plan:${date}`,
+              allowDuplicate: false,
+            },
+          },
+        );
+        const issueId = typeof planIssue.id === "string" ? planIssue.id : null;
+        if (!issueId) throw new Error("Paperclip did not return a day-plan issue id");
+        const proposedTasks = tasks.map((task) => ({ ...task, assigneeAgentId: resolvedAgentId }));
+        const interaction = await client.requestJson(
+          "POST",
+          `/issues/${encodeURIComponent(issueId)}/interactions`,
+          {
+            body: {
+              kind: "suggest_tasks",
+              idempotencyKey: stableDayPlanKey(date, proposedTasks),
+              title: `Plan for ${date}`,
+              summary,
+              continuationPolicy: "none",
+              resolverPolicy: "human_only",
+              payload: { version: 1, defaultParentId: issueId, tasks: proposedTasks },
+            },
+          },
+        );
+        return { planIssue, interaction };
+      },
+    ),
+    makeTool(
+      "paperclipApproveDayPlan",
+      "Approve selected tasks from a proposed day plan and start their assigned work",
+      approveDayPlanSchema,
+      async ({ issueId, interactionId, selectedClientKeys }) =>
+        client.requestJson(
+          "POST",
+          `/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/accept`,
+          { body: { selectedClientKeys } },
+        ),
+    ),
+    makeTool(
+      "paperclipReviewTask",
+      "Accept submitted work or request changes with a required comment",
+      reviewDelegateTaskSchema,
+      async ({ issueId, verdict, comment }) =>
+        client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, {
+          body: verdict === "accept"
+            ? { status: "done", ...(comment ? { comment } : {}) }
+            : { status: "todo", comment, resume: true },
+        }),
     ),
     makeTool(
       "paperclipUpdateIssue",

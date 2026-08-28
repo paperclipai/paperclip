@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+delegate_repo_root="$(cd "$(dirname "$0")" && pwd)"
+cd "$delegate_repo_root"
+
+export PAPERCLIP_DELEGATE_MODE=true
+export PAPERCLIP_DB_BACKUP_ENABLED=false
+export PAPERCLIP_OPEN_ON_LISTEN=true
+
+exec pnpm paperclipai run

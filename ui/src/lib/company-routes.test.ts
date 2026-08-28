@@ -7,6 +7,13 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it("keeps delegate Today and History inside the active company", () => {
+    expect(isBoardPathWithoutPrefix("/today")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/history")).toBe(true);
+    expect(applyCompanyPrefix("/today", "NAT")).toBe("/NAT/today");
+    expect(applyCompanyPrefix("/history", "NAT")).toBe("/NAT/history");
+  });
+
   it("treats execution workspace paths as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123/routines")).toBe(true);

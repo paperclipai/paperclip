@@ -301,6 +301,7 @@ export async function createApp(
     authPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    delegateMode?: boolean;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -409,6 +410,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      delegateMode: opts.delegateMode === true,
       databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );

@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
@@ -20,6 +21,8 @@ import { CloudAccessGate } from "./components/CloudAccessGate";
 import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
+import { Today } from "./pages/Today";
+import { History } from "./pages/History";
 import { Timeline } from "./pages/Timeline";
 import { Companies } from "./pages/Companies";
 import { AGENT_FILTER_TABS, Agents } from "./pages/Agents";
@@ -101,16 +104,26 @@ import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPa
 import { useCloudInstance } from "./hooks/useCloudInstance";
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
+import { healthApi } from "./api/health";
+import { queryKeys } from "./lib/queryKeys";
 
 const CompanyExport = lazy(() =>
   import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
 );
 
+function BoardHomeRoute() {
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get() });
+  if (health.isLoading) return <PaperclipLoading />;
+  return <Navigate to={health.data?.features?.delegateMode ? "today" : "dashboard"} replace />;
+}
+
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route index element={<BoardHomeRoute />} />
       <Route path="dashboard" element={<Dashboard />} />
+      <Route path="today" element={<Today />} />
+      <Route path="history" element={<History />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="timeline" element={<Timeline />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
@@ -527,8 +540,9 @@ export function OnboardingRoutePage() {
 function CompanyRootRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
   const location = useLocation();
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get() });
 
-  if (loading) {
+  if (loading || health.isLoading) {
     return <PaperclipLoading />;
   }
 
@@ -545,7 +559,8 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  const home = health.data?.features?.delegateMode ? "today" : "dashboard";
+  return <Navigate to={`/${targetCompany.issuePrefix}/${home}`} replace />;
 }
 
 function StatusCardsLegacyRedirect() {
@@ -648,6 +663,8 @@ export function App() {
           <Route path="instance/settings" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
+          <Route path="today" element={<UnprefixedBoardRedirect />} />
+          <Route path="history" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
