@@ -444,6 +444,71 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes.length).toBe(2);
   });
 
+  it("keeps a reviewed terminal subtree closed across watchdog-owned mutations and repeated ticks", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-TERMINAL", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({
+      checked: 1,
+      triggered: 1,
+    });
+    const [initialWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = initialWatchdog!.watchdogIssueId!;
+    const stoppedFingerprint = initialWatchdog!.lastObservedFingerprint;
+
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({
+      checked: 1,
+      triggered: 0,
+      alreadyReviewed: 1,
+    });
+
+    const later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: watchdogIssueId,
+      authorType: "agent",
+      body: "Watchdog-only evidence.",
+      createdAt: later,
+      updatedAt: later,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: watchdogIssueId, taskWatchdog: { stopFingerprint: stoppedFingerprint } },
+    });
+    await db.update(issues).set({ updatedAt: new Date(later.getTime() + 1_000) }).where(eq(issues.id, watchdogIssueId));
+
+    for (let tick = 0; tick < 3; tick += 1) {
+      expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({
+        checked: 1,
+        triggered: 0,
+        alreadyReviewed: 1,
+      });
+    }
+
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue).toMatchObject({ status: "done", originFingerprint: stoppedFingerprint });
+    const [stableWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(stableWatchdog).toMatchObject({
+      lastObservedFingerprint: stoppedFingerprint,
+      lastReviewedFingerprint: stoppedFingerprint,
+      triggerCount: 1,
+    });
+    expect(wakes).toHaveLength(1);
+    const watchdogIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(watchdogIssues).toHaveLength(1);
+  });
+
   it("suppresses a shrink-only stop after review when the snapshot round-trips through jsonb", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-SHRINK", status: "in_review" });
