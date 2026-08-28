@@ -870,6 +870,10 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     // real "no usable creation time" filesystem is not reachable in this
     // sandbox, so the test simulates the exact Stats shape instead.
     fakeBirthtime?: { target: "sessionDir" | "stdinDir"; mode: "zero" | "followCtime" };
+    // Extra environment variables for this wrapper process, merged in last.
+    // Used to drive the lease timing overrides directly, with no host bridge
+    // in front of the wrapper.
+    env?: Record<string, string>;
     // Makes the wrapper's own process observe a same-sandbox peer replacing
     // its birth-time probe file, through the preload above (PAP-5355). seq 1
     // is sessionDir's probe (the first one captureSessionIdentity() runs).
@@ -900,6 +904,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     };
     if (options?.maxRetries != null) env.PAPERCLIP_PROCESS_SESSION_STDIN_MAX_RETRIES = String(options.maxRetries);
     if (options?.terminateGraceMs != null) env.PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS = String(options.terminateGraceMs);
+    if (options?.env) Object.assign(env, options.env);
 
     const execArgv: string[] = [];
     if (options?.fakeBirthtime) {
@@ -1440,21 +1445,33 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
   });
 
   it("T10 the emitted wrapper strips its own session env vars from the child", async () => {
-    const wrapper = await startWrapperProcess({
-      outputToStdout: true,
-      command: process.execPath,
-      args: [
-        "-e",
-        "process.stdout.write(JSON.stringify(Object.keys(process.env).filter((k) => k.startsWith('PAPERCLIP_PROCESS_SESSION'))));process.exit(0)",
-      ],
-    });
-    await waitFor(() => wrapper.frames.some((frame) => frame.type === "exit"), 4_000);
-    const text = wrapper.frames
-      .filter((frame) => frame.type === "data" && frame.stream === "stdout" && typeof frame.data === "string")
-      .map((frame) => Buffer.from(frame.data as string, "base64").toString("utf8"))
-      .join("");
-    const leakedKeys = JSON.parse(text || "[]") as string[];
-    expect(leakedKeys).toEqual([]);
+    for (const outputToStdout of [true, false]) {
+      const wrapper = await startWrapperProcess({
+        outputToStdout,
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify(Object.keys(process.env).filter((k) => k.startsWith('PAPERCLIP_PROCESS_SESSION'))));process.exit(0)",
+        ],
+        // Drive all four of the wrapper's own session variables through the
+        // harness, so the assertion below proves the child sees none of
+        // them -- not just the two the harness happens to set by default.
+        env: {
+          PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "5000",
+          PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "15000",
+        },
+      });
+      // The stdout variant reports its frames on `wrapper.frames`; the
+      // event-file variant writes them under `eventsDir` instead.
+      const getFrames = async (): Promise<WrapperFrame[]> => (outputToStdout ? wrapper.frames : wrapper.readEventFiles());
+      await waitFor(async () => (await getFrames()).some((frame) => frame.type === "exit"), 4_000);
+      const text = (await getFrames())
+        .filter((frame) => frame.type === "data" && frame.stream === "stdout" && typeof frame.data === "string")
+        .map((frame) => Buffer.from(frame.data as string, "base64").toString("utf8"))
+        .join("");
+      const leakedKeys = JSON.parse(text || "[]") as string[];
+      expect(leakedKeys).toEqual([]);
+    }
   });
 
   it("T11 each wrapper source has exactly one spawn call site and every kill call is child.kill()", () => {
@@ -2133,4 +2150,567 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     const probePath = path.join(wrapper.sessionDir, `.paperclip-birthtime-probe-${wrapper.pid}-1`);
     expect((await lstat(probePath)).isFile()).toBe(true);
   }, 15_000);
+  // ---- PAP-5361: a host-refreshed lease bounds the wrapper's own lifetime,
+  // so a host crash cannot orphan it. The host writes and refreshes
+  // ".paperclip-session-lease" under sessionDir; the wrapper reads only its
+  // filesystem metadata (device, inode, modification time) on a monotonic
+  // clock, and never its content. -----------------------------------------
+
+  const LEASE_FILE_NAME = ".paperclip-session-lease";
+
+  it("T26 no refresh: the wrapper terminates itself and its child after the lease duration elapses", async () => {
+    for (const outputToStdout of [false, true]) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lease-no-refresh-"));
+      cleanupDirs.push(rootDir);
+      const pidFile = path.join(rootDir, "t21-child.pid");
+      const childPath = path.join(rootDir, "t21-child.mjs");
+      await writeFile(childPath, trackedChildSource(pidFile), "utf8");
+
+      const wrapper = await startWrapperProcess({
+        outputToStdout,
+        command: process.execPath,
+        args: [childPath],
+        terminateGraceMs: 200,
+        env: {
+          PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "100",
+          PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "400",
+        },
+      });
+
+      const pid = await waitForTrackedChildPid(pidFile);
+      // No lease file is ever written under sessionDir.
+      await expectWrapperAndTrackedChildToDie(wrapper, pid);
+      expect(wrapper.stderrText()).toMatch(/[Ll]ease expired/);
+    }
+  }, 20_000);
+
+  it("T27 a valid rename-based refresh resets the deadline, and the wrapper stays alive past the lease duration", async () => {
+    for (const outputToStdout of [false, true]) {
+      const wrapper = await startWrapperProcess({
+        outputToStdout,
+        terminateGraceMs: 200,
+        env: {
+          PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "100",
+          PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "400",
+        },
+      });
+      const leasePath = path.join(wrapper.sessionDir, LEASE_FILE_NAME);
+
+      let refreshing = true;
+      let refreshCount = 0;
+      const refresh = (async () => {
+        while (refreshing) {
+          // Mirrors the production shape: a fresh temp name, then a rename
+          // onto the fixed lease path.
+          const tempPath = `${leasePath}.${refreshCount}.tmp`;
+          await writeFile(tempPath, "", "utf8");
+          await rename(tempPath, leasePath);
+          refreshCount += 1;
+          await delay(120);
+        }
+      })();
+
+      // Refresh faster than the 400ms lease duration, for more than twice
+      // the duration in total. A wrapper that ignored the refresh would
+      // already have expired well before this returns.
+      await delay(950);
+      refreshing = false;
+      await refresh;
+
+      expect(refreshCount).toBeGreaterThan(2);
+      expect(wrapper.exitInfo().code).toBeNull();
+
+      // Let the wrapper expire on its own now that the refresh stopped, so
+      // the test leaves no lingering process.
+      await Promise.race([
+        wrapper.exited,
+        delay(4_000).then(() => {
+          throw new Error("The wrapper did not expire once the refresh stopped.");
+        }),
+      ]);
+    }
+  }, 20_000);
+
+  it("T28 a missing lease never resets the deadline, and ordinary stdin traffic does not substitute for it", async () => {
+    for (const outputToStdout of [false, true]) {
+      const wrapper = await startWrapperProcess({
+        outputToStdout,
+        terminateGraceMs: 200,
+        env: {
+          PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "100",
+          PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "400",
+        },
+      });
+
+      // Ordinary stdin traffic while the lease stays absent. Writing and
+      // deleting a stdin file changes stdinDir's own metadata, not the
+      // lease's, so this must not reset the deadline.
+      const finalPath = path.join(wrapper.stdinDir, "000000000001.json");
+      const tempPath = `${finalPath}.writing`;
+      await writeFile(
+        tempPath,
+        `${JSON.stringify({ type: "stdin", data: Buffer.from("hi", "utf8").toString("base64") })}\n`,
+        "utf8",
+      );
+      await rename(tempPath, finalPath);
+
+      await Promise.race([
+        wrapper.exited,
+        delay(4_000).then(() => {
+          throw new Error("The wrapper did not expire with a missing lease.");
+        }),
+      ]);
+      expect(wrapper.stderrText()).toMatch(/[Ll]ease expired/);
+    }
+  }, 20_000);
+
+  it("T29 a symbolic link at the lease path is never followed, its target stays unchanged, and the wrapper expires", async () => {
+    const { symlink } = await import("node:fs/promises");
+    for (const outputToStdout of [false, true]) {
+      const wrapper = await startWrapperProcess({
+        outputToStdout,
+        terminateGraceMs: 200,
+        env: {
+          PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "100",
+          PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "400",
+        },
+      });
+      const targetPath = path.join(wrapper.sessionDir, "lease-link-target");
+      await writeFile(targetPath, "untouched", "utf8");
+      const leasePath = path.join(wrapper.sessionDir, LEASE_FILE_NAME);
+      await symlink(targetPath, leasePath);
+
+      await Promise.race([
+        wrapper.exited,
+        delay(4_000).then(() => {
+          throw new Error("The wrapper did not expire with a symbolic link at the lease path.");
+        }),
+      ]);
+      expect(wrapper.stderrText()).toMatch(/[Ll]ease expired/);
+      expect(await readFile(targetPath, "utf8")).toBe("untouched");
+    }
+  }, 20_000);
+
+  it("T30 a directory at the lease path is never treated as a valid lease, and the wrapper expires", async () => {
+    for (const outputToStdout of [false, true]) {
+      const wrapper = await startWrapperProcess({
+        outputToStdout,
+        terminateGraceMs: 200,
+        env: {
+          PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "100",
+          PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "400",
+        },
+      });
+      const leasePath = path.join(wrapper.sessionDir, LEASE_FILE_NAME);
+      await mkdir(leasePath, { recursive: true });
+
+      await Promise.race([
+        wrapper.exited,
+        delay(4_000).then(() => {
+          throw new Error("The wrapper did not expire with a directory at the lease path.");
+        }),
+      ]);
+      expect(wrapper.stderrText()).toMatch(/[Ll]ease expired/);
+    }
+  }, 20_000);
+
+  // Pins the accepted residual (PAP-5354): a sandbox peer that
+  // touches the lease path defers this wrapper's expiry. This is not a
+  // capability the peer lacked -- it can already spawn its own long-lived
+  // work -- so a later change must not silently alter this shape.
+  it("T31 a peer that keeps touching the lease file defers this wrapper's expiry", async () => {
+    const { utimes } = await import("node:fs/promises");
+    for (const outputToStdout of [false, true]) {
+      const wrapper = await startWrapperProcess({
+        outputToStdout,
+        terminateGraceMs: 200,
+        env: {
+          PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "100",
+          PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "400",
+        },
+      });
+      const leasePath = path.join(wrapper.sessionDir, LEASE_FILE_NAME);
+      await writeFile(leasePath, "", "utf8");
+
+      let churning = true;
+      const churn = (async () => {
+        while (churning) {
+          await utimes(leasePath, new Date(), new Date()).catch(() => undefined);
+          await delay(120);
+        }
+      })();
+
+      // Keep touching for more than twice the lease duration; a wrapper
+      // that ignored the touch would already have expired.
+      await delay(950);
+      churning = false;
+      await churn;
+      expect(wrapper.exitInfo().code).toBeNull();
+
+      // Stop touching and let the wrapper expire normally, so the test
+      // leaves no lingering process.
+      await Promise.race([
+        wrapper.exited,
+        delay(4_000).then(() => {
+          throw new Error("The wrapper did not expire once the peer stopped touching the lease.");
+        }),
+      ]);
+    }
+  }, 20_000);
+
+  it("T32 each wrapper source has exactly one lease deadline declaration and one lease check call site, and the lease code adds no kill caller or numeric process identifier", () => {
+    for (const outputToStdout of [true, false]) {
+      const src = getProcessSessionRemoteSource({ outputToStdout });
+      const code = src
+        .split("\n")
+        .map((line) => line.replace(/\/\/.*$/, ""))
+        .join("\n");
+
+      const leaseDeadlineDeclarations = code.match(/\blet leaseDeadline = /g) ?? [];
+      expect(leaseDeadlineDeclarations.length).toBe(1);
+
+      const leaseCheckCallSites = code.match(/\bawait checkProcessSessionLease\(\)/g) ?? [];
+      expect(leaseCheckCallSites.length).toBe(1);
+      expect(code.indexOf("await checkProcessSessionLease();")).toBeLessThan(code.indexOf("await readStdinDirNames()"));
+
+      const killCallSites = [...code.matchAll(/[A-Za-z0-9_.$]*kill\(/g)].map((match) => match[0]);
+      expect(killCallSites.length).toBeGreaterThan(0);
+      for (const site of killCallSites) {
+        expect(site).toBe("child.kill(");
+      }
+
+      const leaseSectionStart = code.indexOf("const leaseFileName =");
+      const leaseSectionEnd = code.indexOf("async function terminate()");
+      expect(leaseSectionStart).toBeGreaterThan(0);
+      expect(leaseSectionEnd).toBeGreaterThan(leaseSectionStart);
+      const leaseSection = code.slice(leaseSectionStart, leaseSectionEnd);
+      expect(leaseSection).not.toContain("kill(");
+      expect(leaseSection).not.toMatch(/\bpid\b/i);
+    }
+  });
+
+  it("T33 an injected slow lease refresh in flight during stop() cannot recreate sessionDir after removal", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lease-host-race-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quiet-child.mjs");
+    await writeFile(childPath, "process.stdin.resume();\n", "utf8");
+
+    const completionOrder: string[] = [];
+    let counter = 0;
+    let sessionDir = "";
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }): Promise<RunProcessResult> => {
+        const script = input.args?.[1] ?? "";
+        if (script.startsWith("mkdir -p") && !sessionDir) {
+          const dirsMatch = /mkdir -p '([^']+)' '([^']+)'/.exec(script);
+          if (dirsMatch) sessionDir = path.posix.dirname(dirsMatch[1]);
+        }
+        if (script.includes("nohup node")) {
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null };
+        }
+        const isLeaseRefresh = script.includes("set -C") && script.includes(LEASE_FILE_NAME);
+        const isRemove = script.trim().startsWith("rm -rf");
+        if (isLeaseRefresh) {
+          // Simulate a slow remote exec for the refresh command: it is
+          // already in flight when stop() runs below.
+          await delay(500);
+        }
+        counter += 1;
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        const result = await runChildProcess(`lease-race-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+        if (isLeaseRefresh) completionOrder.push("refresh");
+        if (isRemove) completionOrder.push("remove");
+        return result;
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-lease-race",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    // Give the initial lease write (fired right after launch) time to start
+    // before stop() runs, so this exercises a refresh already in flight, not
+    // one stop() outruns before it ever starts.
+    await waitFor(() => completionOrder.length === 0 && sessionDir !== "", 4_000);
+    await delay(50);
+    await bridge!.stop();
+
+    // stop() awaits the whole refresh chain before it removes sessionDir, so
+    // the delayed refresh's own `mv` always finishes first.
+    expect(completionOrder).toEqual(["refresh", "remove"]);
+
+    expect(sessionDir).not.toBe("");
+    const stillThere = await readdir(sessionDir).catch(() => null);
+    expect(stillThere).toBeNull();
+  }, 15_000);
+
+  it("T34 the lease refresh command carries bypassSession and contains no mkdir", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lease-command-shape-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quiet-child.mjs");
+    await writeFile(childPath, "process.stdin.resume();\n", "utf8");
+
+    const calls: Array<{ script: string; bypassSession?: boolean }> = [];
+    let counter = 0;
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+        bypassSession?: boolean;
+      }): Promise<RunProcessResult> => {
+        const script = input.args?.[1] ?? "";
+        calls.push({ script, bypassSession: input.bypassSession });
+        if (script.includes("nohup node")) {
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null };
+        }
+        counter += 1;
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        return runChildProcess(`lease-shape-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-lease-shape",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+    await waitFor(() => calls.some((call) => call.script.includes("set -C")), 4_000);
+    await bridge!.stop();
+
+    const refreshCalls = calls.filter((call) => call.script.includes("set -C"));
+    expect(refreshCalls.length).toBeGreaterThan(0);
+    for (const call of refreshCalls) {
+      expect(call.bypassSession).toBe(true);
+      expect(call.script).not.toContain("mkdir");
+      expect(call.script).toContain("mv ");
+      // The rename must run only when the exclusive create succeeds: the
+      // create and the `mv` sit on the same line, joined by `&&`, not as
+      // two separate unconditional statements.
+      const createAndRenameLine = call.script.split("\n").find((line) => line.includes("mv "));
+      expect(createAndRenameLine).toMatch(/^: > .+&&\s*mv /);
+    }
+  }, 10_000);
+
+  it("T35 validation: a zero, a negative, a non-numeric, and a D<=P lease override pair all fall back to the defaults on the host and in the wrapper", async () => {
+    const invalidPairs: Array<[string, string]> = [
+      ["0", "900000"],
+      ["-1000", "900000"],
+      ["not-a-number", "900000"],
+      ["600000", "300000"],
+    ];
+
+    for (const [refreshRaw, ttlRaw] of invalidPairs) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lease-validate-"));
+      cleanupDirs.push(rootDir);
+      const scripts: string[] = [];
+      const runner = createLocalSandboxRunner(async (script) => {
+        scripts.push(script);
+      });
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner,
+      };
+
+      const prevRefresh = process.env.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS;
+      const prevTtl = process.env.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS;
+      process.env.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS = refreshRaw;
+      process.env.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS = ttlRaw;
+
+      let bridge;
+      try {
+        bridge = await startAdapterExecutionTargetProcessSessionBridge({
+          runId: `run-validate-${refreshRaw}-${ttlRaw}`,
+          target,
+          runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+          adapterKey: "acpx",
+          command: process.execPath,
+          args: ["-e", "process.stdin.resume();"],
+          cwd: rootDir,
+          env: {},
+          timeoutSec: 5,
+          onLog: async () => {},
+        });
+      } finally {
+        if (prevRefresh === undefined) delete process.env.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS;
+        else process.env.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS = prevRefresh;
+        if (prevTtl === undefined) delete process.env.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS;
+        else process.env.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS = prevTtl;
+      }
+      expect(bridge).not.toBeNull();
+
+      const nohupScript = scripts.find((script) => script.includes("nohup node"));
+      expect(nohupScript).toBeDefined();
+      expect(nohupScript).toContain("PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS='60000'");
+      expect(nohupScript).toContain("PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS='900000'");
+
+      await bridge!.stop();
+    }
+
+    // The wrapper side: an invalid override pair (P invalid, D alone would
+    // be a very short deadline if the wrapper only clamped D and ignored an
+    // invalid P) must fall the whole pair back to the 900s default, not a
+    // 50ms deadline.
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      terminateGraceMs: 200,
+      env: {
+        PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: "0",
+        PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: "50",
+      },
+    });
+    await delay(400);
+    expect(wrapper.exitInfo().code).toBeNull();
+    // Force a clean exit through the existing session-identity latch,
+    // instead of leaving the wrapper alive for the full 900s default.
+    await rm(wrapper.sessionDir, { recursive: true, force: true });
+    await Promise.race([
+      wrapper.exited,
+      delay(4_000).then(() => {
+        throw new Error("The wrapper did not exit after its session directory disappeared.");
+      }),
+    ]);
+  }, 30_000);
+
+  it("T36 the lease refresh exec carries its own short timeout, never the run's adapter timeout", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-lease-refresh-timeout-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "quiet-child.mjs");
+    await writeFile(childPath, "process.stdin.resume();\n", "utf8");
+
+    const refreshTimeoutsSeen: Array<number | undefined> = [];
+    let counter = 0;
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }): Promise<RunProcessResult> => {
+        const script = input.args?.[1] ?? "";
+        if (script.includes("nohup node")) {
+          return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null };
+        }
+        if (script.includes("set -C") && script.includes(LEASE_FILE_NAME)) {
+          refreshTimeoutsSeen.push(input.timeoutMs);
+        }
+        counter += 1;
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        return runChildProcess(`lease-refresh-timeout-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+      },
+    };
+    // Mirrors DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC (the 4-hour sandbox
+    // adapter execution timeout). No `timeoutSec` is passed to the bridge
+    // below, so this target value alone becomes the run's own `timeoutMs`.
+    const FOUR_HOUR_RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: FOUR_HOUR_RUN_TIMEOUT_MS,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-lease-refresh-timeout",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+    await waitFor(() => refreshTimeoutsSeen.length > 0, 4_000);
+    await bridge!.stop();
+
+    // The run's own adapter timeout must never reach the refresh exec: a
+    // stalled refresh bounded by it could make stop() wait up to 4 hours.
+    expect(refreshTimeoutsSeen.length).toBeGreaterThan(0);
+    for (const seen of refreshTimeoutsSeen) {
+      expect(seen).toBeDefined();
+      expect(seen).toBeLessThan(FOUR_HOUR_RUN_TIMEOUT_MS);
+      expect(seen).toBeLessThanOrEqual(10_000);
+    }
+  }, 10_000);
 });

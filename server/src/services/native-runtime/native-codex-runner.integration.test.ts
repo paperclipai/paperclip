@@ -90,6 +90,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let runtimeRoot: string | null = null;
   let server: Server | null = null;
+  let db: ReturnType<typeof createDb> | null = null;
 
   beforeAll(async () => {
     ensureRunnerTestBinaries();
@@ -107,13 +108,21 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();
     await closeServer(server);
+    // Close the postgres.js pool before stopping the embedded server. Stopping
+    // the server first tears the TCP connection down under the still-open
+    // client, and a batched write the driver scheduled via setImmediate can
+    // then fire after the connection dropped its socket — an unhandled
+    // `Cannot read properties of null (reading 'write')` that fails the run
+    // even though every test passed. `end()` waits for in-flight queries and
+    // closes the sockets from the client side first.
+    await db?.$client.end();
     await temporary?.cleanup();
     if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
   });
 
   it("returns a durable result and resumes the provider session on the next run", async () => {
     if (!temporary || !runtimeRoot) throw new Error("Vertical-slice fixture was not initialized");
-    const db = createDb(temporary.connectionString);
+    db = createDb(temporary.connectionString);
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();

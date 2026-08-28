@@ -1603,6 +1603,47 @@ const PROCESS_SESSION_AUTH_TIMEOUT_MS = 5_000;
 // not the child's full shutdown.
 const DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS = 3_000;
 
+// The host-refreshed lease that bounds the wrapper's own lifetime, so a host
+// crash cannot orphan it. See PROCESS_SESSION_STDIN_POLL_TAIL below for the
+// sandbox side of this contract: the wrapper reads the lease as filesystem
+// metadata only, never as content, and it never creates, opens, writes, or
+// removes the lease file itself. This host writes and refreshes the lease; it
+// never reads the lease back and never gates `sessionDir` cleanup on it, so
+// this adds no new sandbox-to-host data flow.
+const DEFAULT_PROCESS_SESSION_LEASE_REFRESH_MS = 60_000;
+const DEFAULT_PROCESS_SESSION_LEASE_TTL_MS = 900_000;
+// The lease refresh runs one small control-plane command (`set -C` + `mv`),
+// never the long-lived agent process, so it gets its own short exec budget
+// instead of the run's adapter execution timeout. That run timeout can run
+// up to the 4-hour sandbox default, or be unset (no bound at all) on other
+// targets, and `stop()` awaits the whole refresh chain before it removes
+// `sessionDir` — so a stalled refresh reusing that timeout could make
+// `stop()` wait for the run's own budget instead of a few seconds.
+const PROCESS_SESSION_LEASE_REFRESH_EXEC_TIMEOUT_MS = 10_000;
+// The name does not end in ".json", so no `.json`-only reader (the stdin
+// poller) ever lists it.
+const PROCESS_SESSION_LEASE_FILE_NAME = ".paperclip-session-lease";
+
+// Reads the refresh period and the lease duration from the environment.
+// Accept an override pair only when both values are positive finite integers
+// AND the duration exceeds the refresh period; reject the pair to both
+// defaults together, so an accepted override never pairs with a rejected one
+// into an unvalidated combination. The wrapper validates its own copy of the
+// resolved values with the same rule (see PROCESS_SESSION_STDIN_POLL_TAIL).
+function resolveProcessSessionLeaseTiming(): { refreshMs: number; ttlMs: number } {
+  const parsePositiveInt = (raw: string | undefined): number | null => {
+    if (!raw) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
+  };
+  const refreshOverride = parsePositiveInt(process.env.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS);
+  const ttlOverride = parsePositiveInt(process.env.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS);
+  if (refreshOverride !== null && ttlOverride !== null && ttlOverride > refreshOverride) {
+    return { refreshMs: refreshOverride, ttlMs: ttlOverride };
+  }
+  return { refreshMs: DEFAULT_PROCESS_SESSION_LEASE_REFRESH_MS, ttlMs: DEFAULT_PROCESS_SESSION_LEASE_TTL_MS };
+}
+
 function jsonLine(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
 }
@@ -1749,6 +1790,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const sessionDir = path.posix.join(bridgeRuntimeDir, sessionId);
   const stdinDir = path.posix.join(sessionDir, "stdin");
   const eventsDir = path.posix.join(sessionDir, "events");
+  const leaseTiming = resolveProcessSessionLeaseTiming();
+  const leasePath = path.posix.join(sessionDir, PROCESS_SESSION_LEASE_FILE_NAME);
   // The streamed wrapper writes its frames to stdout and rides a separate remote
   // path, so a warm sandbox can hold both wrapper scripts without the content
   // hash-skip gate thrashing when a run switches output mode.
@@ -1802,6 +1845,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           // wrapper and let it go; do not capture `$!`.
           `PAPERCLIP_PROCESS_SESSION_DIR=${shellQuote(sessionDir)} ` +
             `PAPERCLIP_PROCESS_SESSION_COMMAND_B64=${shellQuote(commandPayload)} ` +
+            `PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS=${shellQuote(String(leaseTiming.refreshMs))} ` +
+            `PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS=${shellQuote(String(leaseTiming.ttlMs))} ` +
             `nohup node ${shellQuote(remoteScriptPath)} >/dev/null 2>&1 < /dev/null &`,
         ].join("\n"),
       ),
@@ -1838,6 +1883,69 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // corrupts a large prompt on the stdin path.
   let stdinWriteChain: Promise<void> = Promise.resolve();
   let pollTimer: NodeJS.Timeout | null = null;
+  // Set permanently by `stop()`, before it clears the timer below and awaits
+  // the refresh chain. Once true, a refresh that is already chained (queued
+  // by the last timer tick before `stop()` ran) still resolves, but it
+  // returns without executing the remote command -- so no refresh can start
+  // after `stop()` begins removing `sessionDir`.
+  let leaseRefreshClosed = false;
+  let leaseRefreshTimer: NodeJS.Timeout | null = null;
+  // Serializes every refresh onto one chain, so `stop()` can await the whole
+  // active/queued chain before it removes `sessionDir`. Two concurrent
+  // refreshes could otherwise race a `stop()` removal and recreate
+  // `sessionDir` right after cleanup -- a fresh orphan on the exact path
+  // PAP-5307 made deterministic.
+  let leaseRefreshChain: Promise<void> = Promise.resolve();
+  const refreshProcessSessionLeaseOnce = async (): Promise<void> => {
+    if (leaseRefreshClosed) return;
+    // A fresh, unpredictable temporary name per refresh, so a peer cannot
+    // pre-create it and defeat the exclusive create below.
+    const tempPath = `${leasePath}.${randomBytes(9).toString("hex")}.tmp`;
+    const script = [
+      // `set -C` (noclobber) makes the shell open the redirect target with
+      // O_CREAT|O_EXCL: it fails on an existing file and on a symbolic
+      // link, so it can neither follow a link nor truncate a peer's file.
+      "set -C",
+      // The `&&` runs the rename only when the exclusive create above it
+      // succeeds. `mv` replaces the lease path by rename. A rename does not
+      // follow a symbolic link at the target, so a peer that pre-creates a
+      // link at the fixed lease path cannot redirect this write. This
+      // command contains no `mkdir`: when `stop()` already removed
+      // `sessionDir`, the create fails, the `&&` skips the rename, this
+      // refresh fails, and the wrapper expires -- the wanted outcome, not a
+      // defect.
+      `: > ${shellQuote(tempPath)} && mv ${shellQuote(tempPath)} ${shellQuote(leasePath)}`,
+    ].join("\n");
+    try {
+      await runner.execute({
+        command: shellCommand,
+        args: shellCommandArgs(script),
+        cwd: target.remoteCwd,
+        env: { PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge" },
+        // Bounded independently of the run's own `timeoutMs` -- see
+        // `PROCESS_SESSION_LEASE_REFRESH_EXEC_TIMEOUT_MS`.
+        timeoutMs: PROCESS_SESSION_LEASE_REFRESH_EXEC_TIMEOUT_MS,
+        // A busy persistent session must never queue this behind an
+        // in-run session command and starve the lease.
+        bypassSession: true,
+      });
+    } catch {
+      // Best-effort and non-fatal: a failed refresh leaves the wrapper's
+      // deadline unreset this cycle. Never retry with a following write;
+      // never throw out of the timer.
+    }
+  };
+  const queueProcessSessionLeaseRefresh = (): void => {
+    leaseRefreshChain = leaseRefreshChain.then(refreshProcessSessionLeaseOnce, refreshProcessSessionLeaseOnce);
+  };
+  const scheduleProcessSessionLeaseRefresh = (): void => {
+    if (leaseRefreshClosed) return;
+    leaseRefreshTimer = setTimeout(() => {
+      queueProcessSessionLeaseRefresh();
+      scheduleProcessSessionLeaseRefresh();
+    }, leaseTiming.refreshMs);
+    leaseRefreshTimer.unref?.();
+  };
   const pendingRemoteEvents: Array<{
     type?: string;
     stream?: "stdout" | "stderr";
@@ -2127,6 +2235,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             env: {
               PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
               PAPERCLIP_PROCESS_SESSION_COMMAND_B64: streamCommandPayload,
+              PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS: String(leaseTiming.refreshMs),
+              PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS: String(leaseTiming.ttlMs),
               PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
             },
             timeoutMs,
@@ -2156,6 +2266,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   } else {
     schedulePoll();
   }
+
+  // Write the lease once at bridge start, on both variants, then keep it
+  // refreshing on an unreferenced timer. The event-file variant's `mkdir -p`
+  // launch exec above already created `sessionDir`; the streamed variant's
+  // wrapper creates it inside the sandbox, so this first write can race that
+  // creation and fail. That failure is harmless: it leaves the deadline
+  // unreset for one cycle, well inside the default 900s lease duration.
+  queueProcessSessionLeaseRefresh();
+  scheduleProcessSessionLeaseRefresh();
 
   // `stop()` cannot rely on the long-lived poll above to observe a late
   // `shutdownAck`: that poll stops re-arming as soon as it forwards a
@@ -2198,6 +2317,13 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     agentCommand,
     stop: async () => {
       stopping = true;
+      // Close the lease refresh state permanently and clear its timer first,
+      // before any other teardown step. A refresh already chained by the
+      // last timer tick still resolves, but `refreshProcessSessionLeaseOnce`
+      // reads this flag and returns without running the remote command, so
+      // no refresh can start after this line.
+      leaseRefreshClosed = true;
+      if (leaseRefreshTimer) clearTimeout(leaseRefreshTimer);
       // End the `sandbox.agentProcess` span now, before the caller ends the run
       // root span, even if the remote command has not resolved yet.
       signalStopped();
@@ -2261,6 +2387,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
         ).catch(() => undefined);
       }
+      // Await the entire active/queued lease refresh chain before the
+      // removal below. `leaseRefreshClosed` (set at the top of `stop()`)
+      // already stops a chained refresh from running its remote command, but
+      // an in-flight one (its exec already sent) still needs to settle
+      // first, or its `mv` could land after this removal and recreate
+      // `sessionDir` -- a fresh orphan on the exact path PAP-5307 made
+      // deterministic.
+      await leaseRefreshChain.catch(() => undefined);
       // Unconditional: this removal runs whether or not the wrapper
       // acknowledged, and whether or not any event (real or forged) arrived
       // under `sessionDir`. `stop()` runs during run teardown and must stay
@@ -2362,6 +2496,90 @@ const terminateGraceMs = (() => {
   const raw = Number.parseInt(process.env.PAPERCLIP_PROCESS_SESSION_TERMINATE_GRACE_MS || "", 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 3000;
 })();
+
+// Host lease that bounds this wrapper's own lifetime when a host crash
+// leaves sessionDir intact. The host writes and refreshes
+// ".paperclip-session-lease" under sessionDir; this wrapper never creates,
+// opens, writes, or removes that file. It reads only the file's OS-level
+// metadata (device, inode, and modification time), never its content: a
+// content timestamp would compare the host clock against the sandbox
+// clock, and a clock step would then cause a false expiry or a false
+// extension. The deadline runs on a MONOTONIC clock
+// (process.hrtime.bigint()), so it is immune to both a wall-clock step and
+// an NTP adjustment.
+//
+// Accepted residuals (PAP-5354): a sandbox peer with access to
+// sessionDir can touch the lease path and defer this wrapper's expiry, or
+// remove the lease path and force an earlier expiry. Neither grants a
+// capability the peer lacks: it can already spawn its own long-lived work,
+// and it can already force a faster kill by deleting sessionDir outright
+// (the session-identity latch elsewhere in this wrapper already covers that
+// path). A peer that replaces sessionDir with a symbolic link still makes
+// the host's exclusive create land an empty, unpredictably named file in
+// the link target; the create truncates nothing and writes no content, and
+// the session-identity latch terminates this wrapper on that same event. A
+// peer that puts a directory at the lease path makes the host's \`mv\` move
+// its temporary file into that directory instead of replacing the lease
+// path, so this wrapper's own \`lstat\` sees a directory, never resets the
+// deadline, and this wrapper still expires -- an availability loss, not an
+// escape.
+const leaseFileName = ".paperclip-session-lease";
+const leasePath = path.posix.join(sessionDir, leaseFileName);
+const defaultLeaseRefreshMs = 60_000;
+const defaultLeaseTtlMs = 900_000;
+
+// Validated the same way as the host resolver: accept the override pair
+// only when both values are positive finite integers AND the duration
+// exceeds the refresh period. Reject the pair to both defaults together, so
+// one accepted override never combines with one rejected override into an
+// unvalidated pair.
+function resolveLeaseTiming() {
+  function parsePositiveInt(raw) {
+    if (!raw) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
+  }
+  const refreshOverride = parsePositiveInt(process.env.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS);
+  const ttlOverride = parsePositiveInt(process.env.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS);
+  if (refreshOverride !== null && ttlOverride !== null && ttlOverride > refreshOverride) {
+    return { refreshMs: refreshOverride, ttlMs: ttlOverride };
+  }
+  return { refreshMs: defaultLeaseRefreshMs, ttlMs: defaultLeaseTtlMs };
+}
+const leaseTiming = resolveLeaseTiming();
+
+// The deadline starts at "now plus the lease duration", before the first
+// poll cycle, so a lease that never appears (a slow or crashed host) still
+// bounds this wrapper. \`leaseStamp\` holds the last observed identity of the
+// lease file; only a changed stamp resets the deadline.
+let leaseDeadline = process.hrtime.bigint() + BigInt(leaseTiming.ttlMs) * 1000000n;
+let leaseStamp = null;
+
+// Runs at the top of every poll cycle, before this wrapper reads stdinDir.
+// This wrapper never creates, opens, writes, or removes the lease file --
+// it only lstats it. Any lstat error (a missing file, a permission error, or
+// any other failure) and any non-regular-file object (a symbolic link, a
+// directory, a socket) leave the deadline untouched: neither resets it nor
+// expires it early. Only a changed identity on a regular file resets it.
+async function checkProcessSessionLease() {
+  let stats;
+  try {
+    stats = await fs.lstat(leasePath);
+  } catch {
+    return;
+  }
+  if (!stats.isFile()) return;
+  const stamp = { dev: stats.dev, ino: stats.ino, mtimeMs: stats.mtimeMs };
+  if (
+    !leaseStamp ||
+    stamp.dev !== leaseStamp.dev ||
+    stamp.ino !== leaseStamp.ino ||
+    stamp.mtimeMs !== leaseStamp.mtimeMs
+  ) {
+    leaseStamp = stamp;
+    leaseDeadline = process.hrtime.bigint() + BigInt(leaseTiming.ttlMs) * 1000000n;
+  }
+}
 
 // I2: terminate() is the only function in this wrapper that calls
 // child.kill(). No child event handler and no sibling callback calls it.
@@ -2695,6 +2913,15 @@ async function readStdinDirNames() {
 
 async function pollStdin() {
   while (!shuttingDown) {
+    // Check the lease before this cycle reads stdinDir. This reuses
+    // latchAndTerminate() -- the same one-shot gate the session-identity
+    // check above uses -- so this wrapper still has exactly one termination
+    // path and no new child.kill() caller.
+    await checkProcessSessionLease();
+    if (process.hrtime.bigint() >= leaseDeadline) {
+      process.stderr.write("Process session lease expired; terminating.\\n");
+      await latchAndTerminate();
+    }
     const entries = (await readStdinDirNames()).filter((name) => name.endsWith(".json")).sort();
     for (const name of entries) {
       if (shuttingDown) break;
@@ -2836,12 +3063,15 @@ if ((await isSymbolicLink(sessionDir)) || (await isSymbolicLink(stdinDir))) {
   process.exit(1);
 }
 
-// Hardening (I3, not containment): the wrapper's own launch env carries the
-// session dir and the command payload. Scrub both keys before they reach the
-// spawned child, so the child never inherits a path to its own control files.
+// Hardening (I3, not containment): the wrapper's own launch env carries its
+// own session control state. Remove every one of the wrapper's own session
+// variables before they reach the spawned child, so the child never inherits
+// the wrapper's own control state.
 const childEnv = { ...process.env, ...(config.env || {}) };
 delete childEnv.PAPERCLIP_PROCESS_SESSION_DIR;
 delete childEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+delete childEnv.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS;
+delete childEnv.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS;
 
 // I1: exactly one child process per emitted wrapper. Do not add a second
 // tracked child handle.
@@ -2927,12 +3157,15 @@ if ((await isSymbolicLink(sessionDir)) || (await isSymbolicLink(stdinDir))) {
   process.exit(1);
 }
 
-// Hardening (I3, not containment): the wrapper's own launch env carries the
-// session dir and the command payload. Scrub both keys before they reach the
-// spawned child, so the child never inherits a path to its own control files.
+// Hardening (I3, not containment): the wrapper's own launch env carries its
+// own session control state. Remove every one of the wrapper's own session
+// variables before they reach the spawned child, so the child never inherits
+// the wrapper's own control state.
 const childEnv = { ...process.env, ...(config.env || {}) };
 delete childEnv.PAPERCLIP_PROCESS_SESSION_DIR;
 delete childEnv.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
+delete childEnv.PAPERCLIP_PROCESS_SESSION_LEASE_REFRESH_MS;
+delete childEnv.PAPERCLIP_PROCESS_SESSION_LEASE_TTL_MS;
 
 // I1: exactly one child process per emitted wrapper. Do not add a second
 // tracked child handle.

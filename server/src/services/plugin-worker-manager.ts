@@ -1804,6 +1804,9 @@ export function createPluginWorkerHandle(
   interface HeldDuplexExitEvent {
     workerSessionId: string;
     exitCode: number | null;
+    // A reason-less transport close carries this discriminator. The hold must
+    // keep it, or a replay reports a real exit for what was a transport close.
+    transportClosed: boolean;
     token: ReservationToken | null;
   }
 
@@ -2334,6 +2337,7 @@ export function createPluginWorkerHandle(
       route.preBindExit = {
         workerSessionId,
         exitCode,
+        transportClosed: params.transportClosed === true,
         token: reserved === "no-ledger" ? null : reserved,
       };
       return;
@@ -2414,6 +2418,7 @@ export function createPluginWorkerHandle(
             hostRouteId: route.hostRouteId,
             workerSessionId: heldExit.workerSessionId,
             exitCode: heldExit.exitCode,
+            ...(heldExit.transportClosed ? { transportClosed: true } : {}),
           },
         });
       }
