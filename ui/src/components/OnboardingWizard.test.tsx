@@ -756,6 +756,140 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       await act(async () => root.unmount());
     });
+
+    it("sends the fixed binding in the environment test request when the status route returns 200", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
+      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toEqual({
+        type: "user_secret_ref",
+        key: CLAUDE_OAUTH_TOKEN_ENV_KEY,
+        version: "latest",
+        required: true,
+      });
+
+      await act(async () => root.unmount());
+    });
+
+    it("sends no binding in the environment test request when the status route returns 404", async () => {
+      // The default `beforeEach` mock already rejects with a 404 `ApiError`.
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
+      const testBody = testArgs[2] as { adapterConfig: { env?: Record<string, unknown> } };
+      expect(testBody.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]).toBeUndefined();
+
+      await act(async () => root.unmount());
+    });
+
+    it("hires when a stored login exists, even though a probe without the binding would warn adapter_auth_missing", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      // Answers like the real sandbox probe: `warn` with `adapter_auth_missing`
+      // for a configuration with no binding, `pass` once the binding is
+      // present. This proves the wizard sends the probe the SAME configuration
+      // it hires with — a probe still sent without the binding would warn and
+      // block the hire below.
+      mockAgentsApi.testEnvironment.mockImplementation(
+        (async (...args: unknown[]) => {
+          const request = args[2] as {
+            adapterConfig: { env?: Record<string, unknown> };
+          };
+          const hasBinding = Boolean(
+            request.adapterConfig.env?.[CLAUDE_OAUTH_TOKEN_ENV_KEY],
+          );
+          return hasBinding
+            ? {
+                adapterType: "claude_local" as const,
+                status: "pass" as const,
+                checks: [],
+                testedAt: new Date().toISOString(),
+              }
+            : {
+                adapterType: "claude_local" as const,
+                status: "warn" as const,
+                checks: [
+                  {
+                    code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+                    level: "warn" as const,
+                    message: "No stored Claude login was found for this agent.",
+                  },
+                ],
+                testedAt: new Date().toISOString(),
+              };
+        }) as unknown as () => Promise<
+          import("@paperclipai/shared").AdapterEnvironmentTestResult
+        >,
+      );
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("blocks the hire when the probe reports warn with adapter_auth_missing and no stored login exists", async () => {
+      // The default `beforeEach` mock already rejects with a 404 `ApiError`.
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "warn" as const,
+        checks: [
+          {
+            code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+            level: "warn" as const,
+            message: "No stored Claude login was found for this agent.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "No working authentication was found",
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("reads the stored-login status once for each create attempt", async () => {
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        latestVersion: 1,
+      });
+      // Fails after the gate opens, so the button stays clickable for a
+      // second attempt instead of advancing past step 4.
+      mockAgentsApi.hire.mockRejectedValue(new Error("hire failed"));
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(1);
+
+      await clickByText((t) => t.startsWith("Connect"));
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(2);
+
+      await act(async () => root.unmount());
+    });
   });
 
   it("re-syncs a restored draft once companies resolve asynchronously (companies start empty/loading)", async () => {

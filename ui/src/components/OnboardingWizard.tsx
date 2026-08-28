@@ -529,6 +529,12 @@ function OnboardingWizardInner({
   // submissions could then both pass the fresh probe and both hire. `loading`
   // cannot stop the second caller for the same reason as above.
   const hiringAgentRef = useRef(false);
+  // True when the last `adapterEnvResult` came from a config that carried
+  // the fixed Claude login binding (see `hireAdapterConfig` in
+  // `handleGiveHeartbeat`). A cached result from a config that did not carry
+  // the binding cannot answer for a config that now does — see the reuse
+  // check in `handleGiveHeartbeat`.
+  const adapterEnvResultAppliedStoredLoginRef = useRef(false);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -832,6 +838,7 @@ function OnboardingWizardInner({
   useEffect(() => {
     if (step !== 4) return;
     setAdapterEnvResult(null);
+    adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url]);
 
@@ -910,6 +917,7 @@ function OnboardingWizardInner({
     setArgs("");
     setUrl("");
     setAdapterEnvResult(null);
+    adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
@@ -1068,7 +1076,8 @@ function OnboardingWizardInner({
   }
 
   async function runAdapterEnvironmentTest(
-    adapterConfigOverride?: Record<string, unknown>
+    adapterConfigOverride?: Record<string, unknown>,
+    appliedStoredClaudeLoginBinding = false
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
@@ -1137,6 +1146,7 @@ function OnboardingWizardInner({
         }
       );
       setAdapterEnvResult(result);
+      adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
       return result;
     } catch (err) {
       setAdapterEnvError(
@@ -1362,33 +1372,6 @@ function OnboardingWizardInner({
         }
       }
 
-      if (isLocalAdapter) {
-        // A cached result is reusable only when it does not block the hire —
-        // see blocksAgentCreate. With the "Test now" card gone, this button
-        // is the only way to re-probe. Reusing a stale blocking result would
-        // lock out a customer who has since fixed the problem.
-        const cachedUsable =
-          adapterEnvResult && !blocksAgentCreate(adapterEnvResult) ? adapterEnvResult : null;
-        const result = cachedUsable ?? (await runAdapterEnvironmentTest());
-        if (!result) return;
-        // Block the hire on a failed environment test. Also block it on a
-        // pass or a warn result that reports missing authentication — the
-        // agent cannot run without one of those.
-        if (blocksAgentCreate(result)) {
-          setError(
-            result.status === "fail"
-              ? "The environment test failed. Fix the reported checks before you hire this agent."
-              : "No working authentication was found. Fix the reported checks before you hire this agent.",
-          );
-          return;
-        }
-      }
-
-      // `agentRole` always holds a value now (see its default), so this is a
-      // type narrowing rather than a gate — but it stays, because a future
-      // path that clears the role must not reach a hire that silently no-ops.
-      if (!agentRole) return;
-
       // Onboarding applies a stored Claude subscription login automatically,
       // with no extra control. A new user who signs in, leaves, and returns
       // should not sign in a second time — that is the board's direction.
@@ -1397,6 +1380,12 @@ function OnboardingWizardInner({
       // that binding together with a configured ANTHROPIC_API_KEY, so this
       // checks the built configuration first and asks the status route only
       // when there is no such conflict.
+      //
+      // Read the stored-login status before the environment test below, and
+      // fold it into one adapter configuration. The test must probe the same
+      // configuration the hire sends — a config without the binding can
+      // report missing authentication for a user the binding would have
+      // covered.
       const baseAdapterConfig = buildAdapterConfig();
       let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
       if (
@@ -1423,6 +1412,42 @@ function OnboardingWizardInner({
             },
           }
         : baseAdapterConfig;
+
+      if (isLocalAdapter) {
+        // A cached result is reusable only when it tested the same
+        // configuration the hire below sends, and only when it does not
+        // block the hire — see blocksAgentCreate. With the "Test now" card
+        // gone, this button is the only way to re-probe. Reusing a stale
+        // blocking result, or a result from a config that did not carry the
+        // stored login, would lock out a customer who has since fixed the
+        // problem or signed in.
+        const cachedUsable =
+          adapterEnvResult &&
+          adapterEnvResultAppliedStoredLoginRef.current === shouldApplyStoredClaudeLogin &&
+          !blocksAgentCreate(adapterEnvResult)
+            ? adapterEnvResult
+            : null;
+        const result =
+          cachedUsable ??
+          (await runAdapterEnvironmentTest(hireAdapterConfig, shouldApplyStoredClaudeLogin));
+        if (!result) return;
+        // Block the hire on a failed environment test. Also block it on a
+        // pass or a warn result that reports missing authentication — the
+        // agent cannot run without one of those.
+        if (blocksAgentCreate(result)) {
+          setError(
+            result.status === "fail"
+              ? "The environment test failed. Fix the reported checks before you hire this agent."
+              : "No working authentication was found. Fix the reported checks before you hire this agent.",
+          );
+          return;
+        }
+      }
+
+      // `agentRole` always holds a value now (see its default), so this is a
+      // type narrowing rather than a gate — but it stays, because a future
+      // path that clears the role must not reach a hire that silently no-ops.
+      if (!agentRole) return;
 
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
