@@ -102,7 +102,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
             name={appName}
             brandKey={brandKey}
             logoUrl={appDefinitionLogoUrl(logoEntry)}
-            allowRemoteFallback={applicationsQuery.isSuccess}
+            allowRemoteFallback={!applicationsQuery.isPending}
             size={28}
           />
           <span className="flex-1 truncate text-sm font-bold text-foreground">{appName}</span>

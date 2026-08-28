@@ -591,7 +591,7 @@ export function AppDetail() {
         connection={connection}
         logoEntry={logoEntry}
         brandKey={brandKey}
-        allowRemoteLogo={applicationsQuery.isSuccess}
+        allowRemoteLogo={!applicationsQuery.isPending}
         status={status}
         actionCount={actionCount}
         owner={owner}

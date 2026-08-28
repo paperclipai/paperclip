@@ -238,6 +238,14 @@ describe("AppConnectionSidebar", () => {
     expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("true");
   });
 
+  it("allows remote fallback after application identity lookup fails", async () => {
+    mockToolsApi.listApplications.mockRejectedValueOnce(new Error("Application lookup unavailable"));
+
+    await renderSidebar();
+
+    expect(container.querySelector("[data-app-logo]")?.getAttribute("data-allow-remote-fallback")).toBe("true");
+  });
+
   it("renders application-mode tabs under the not-connected app route", async () => {
     currentPath.value = "/apps/app/app-1/review";
 
