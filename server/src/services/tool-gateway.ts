@@ -3267,6 +3267,15 @@ export function createToolGatewayService(
     return projectedConnectionToolArguments(connection, parameters);
   }
 
+  async function approvedManagedArgumentsRemainCurrent(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    reviewedParameters: unknown,
+  ): Promise<boolean> {
+    const currentParameters = await governedToolArguments(session, tool, reviewedParameters);
+    return stableSerialize(currentParameters) === stableSerialize(reviewedParameters);
+  }
+
   async function resolveConnectedLocalStdioTool(session: ToolGatewaySession, tool: ToolGatewayDescriptor) {
     if (tool.providerType !== "mcp_local_stdio" || !tool.connectionId || !tool.catalogEntryId) {
       throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
@@ -4978,6 +4987,49 @@ export function createToolGatewayService(
     return { reasonCode, message };
   }
 
+  async function expireApprovedActionForManagedArgumentDrift(input: {
+    actionRequestId: string;
+    invocationId: string;
+    toolName: string;
+  }) {
+    const error = new ToolGatewayHttpError(
+      409,
+      "Approved tool action managed arguments changed after review; request a new approval",
+      "approved_tool_managed_arguments_changed",
+      { actionRequestId: input.actionRequestId, invocationId: input.invocationId, tool: input.toolName },
+    );
+    const now = new Date();
+    const [expired] = await db
+      .update(toolActionRequests)
+      .set({ status: "expired", resolvedAt: now, updatedAt: now })
+      .where(and(
+        eq(toolActionRequests.id, input.actionRequestId),
+        inArray(toolActionRequests.status, ["approved", "executing"]),
+      ))
+      .returning({ id: toolActionRequests.id });
+    await db
+      .update(toolInvocations)
+      .set({
+        status: "failed",
+        approvalState: "expired",
+        idempotencyKey: null,
+        errorCode: error.reasonCode,
+        errorMessage: error.message,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(toolInvocations.id, input.invocationId));
+    if (expired) {
+      await reflectToolActionInteractionLifecycle({
+        actionRequestId: expired.id,
+        status: "expired",
+        errorCode: error.reasonCode,
+        errorMessage: error.message,
+      });
+    }
+    return error;
+  }
+
   // Guard for approved-action execution: the issue must still be open. Expires
   // the claimed request and reflects the interaction lifecycle when it is not.
   // Called twice — after winning the executing claim, and again immediately
@@ -5118,6 +5170,20 @@ export function createToolGatewayService(
       const error = new ToolGatewayHttpError(409, "Approved tool action arguments do not match reviewed hash", "signed_arguments_mismatch");
       await markApprovedActionFailed({ actionRequestId: claimed.id, invocationId: invocation.id, error });
       throw error;
+    }
+    let managedArgumentsRemainCurrent: boolean;
+    try {
+      managedArgumentsRemainCurrent = await approvedManagedArgumentsRemainCurrent(session, tool, parameters);
+    } catch (error) {
+      await markApprovedActionFailed({ actionRequestId: claimed.id, invocationId: invocation.id, error });
+      throw error;
+    }
+    if (!managedArgumentsRemainCurrent) {
+      throw await expireApprovedActionForManagedArgumentDrift({
+        actionRequestId: claimed.id,
+        invocationId: invocation.id,
+        toolName: invocation.toolName,
+      });
     }
 
     const argumentsSummary = validateToolContent({
@@ -6372,8 +6438,9 @@ export function createToolGatewayService(
 
       // Managed provider arguments are part of the governed call, not a
       // transport decoration. Project them before hashing, policy evaluation,
-      // approval signing, previews, and audit summaries. Approved retries use
-      // the already-projected signed payload below and never re-project it.
+      // approval signing, previews, and audit summaries. Approved retries
+      // re-project only for a compatibility comparison and dispatch the
+      // already-reviewed signed payload unchanged.
       if (!input.approvedActionRequestId) {
         requestedParameters = await governedToolArguments(session, tool, requestedParameters);
       }
@@ -6582,6 +6649,13 @@ export function createToolGatewayService(
           })
         ) {
           throw new ToolGatewayHttpError(409, "Approved tool action arguments do not match reviewed hash", "signed_arguments_mismatch");
+        }
+        if (!await approvedManagedArgumentsRemainCurrent(session, tool, storedParameters)) {
+          throw await expireApprovedActionForManagedArgumentDrift({
+            actionRequestId: actionRequest.id,
+            invocationId: storedInvocation.id,
+            toolName: storedInvocation.toolName,
+          });
         }
         const [consumed] = await db
           .update(toolActionRequests)

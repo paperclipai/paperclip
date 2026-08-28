@@ -46,6 +46,12 @@ import {
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
+import {
+  canonicalToolArguments,
+  readSignedToolArgumentsPayload,
+  signToolArguments,
+  summarizeToolValue,
+} from "../services/tool-content-guards.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
@@ -2654,6 +2660,119 @@ rl.on("line", (line) => {
       ]);
     } finally {
       await kvDemo.close();
+    }
+  });
+
+  it("expires legacy managed-connector approvals before provider dispatch", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "should not run" }] },
+      },
+    }));
+
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "shopify",
+        toolName: "kv_set",
+        url: fake.url,
+        connectionConfig: {
+          sourceTemplateKey: "shopify",
+          connectionMethodKey: "ucp-commerce",
+          methodConfig: { storeDomain: "paperclip-demo.myshopify.com" },
+        },
+      });
+      const toolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review managed Shopify writes",
+        policyType: "require_approval",
+        selectors: { connectionId: remoteTool.connection.id },
+        priority: 10,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { key: "legacy", value: "reviewed" },
+      }).then(
+        () => {
+          throw new Error("Expected managed Shopify call to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      const signedPayload = readSignedToolArgumentsPayload({
+        signedArguments: actionRequest.signedArguments,
+        invocationId: actionRequest.invocationId,
+        toolName,
+        signingSecret: testToolActionSigningSecret,
+      });
+      expect(signedPayload?.executionOnApprove).toBe(true);
+
+      // Model an approval signed before Shopify's UCP agent profile became a
+      // required managed argument. Its signature and hash are valid for that
+      // historical payload, but it is no longer compatible with dispatch.
+      const legacyParameters = { key: "legacy", value: "reviewed" };
+      const legacyCanonical = canonicalToolArguments(legacyParameters);
+      const legacySummary = summarizeToolValue(legacyParameters);
+      await db
+        .update(toolActionRequests)
+        .set({
+          signedArguments: signToolArguments({
+            invocationId: actionRequest.invocationId,
+            toolName,
+            canonicalArguments: legacyCanonical,
+            approvalSnapshot: signedPayload?.approvalSnapshot,
+            executionOnApprove: true,
+            signingSecret: testToolActionSigningSecret,
+          }),
+          canonicalArgumentsHash: legacySummary.sha256,
+          canonicalArgumentsSummary: legacySummary,
+          updatedAt: new Date(),
+        })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+
+      await expect(gateway.approveActionRequest({
+        companyId: company.id,
+        issueId: issue.id,
+        interactionId: actionRequest.interactionId!,
+        actionRequestId: actionRequest.id,
+        actor: { agentId: agent.id },
+      })).resolves.toMatchObject({ status: "expired" });
+
+      expect(fake.requests).toHaveLength(0);
+      const [expiredRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      expect(expiredRequest.status).toBe("expired");
+      const [failedInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      expect(failedInvocation).toMatchObject({
+        status: "failed",
+        approvalState: "expired",
+        errorCode: "approved_tool_managed_arguments_changed",
+      });
+    } finally {
+      await fake.close();
     }
   });
 
