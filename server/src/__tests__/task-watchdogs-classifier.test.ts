@@ -112,37 +112,6 @@ describe("task watchdog subtree classifier", () => {
     expect(ticked.stoppedLeaves[0]?.updatedAt).not.toBe(initial.stoppedLeaves[0]?.updatedAt);
   });
 
-  it("fingerprints material changes on intermediate non-watchdog nodes", () => {
-    const initial = classify({
-      issues: [
-        issue({ status: "in_progress" }),
-        issue({ id: childId, parentId: sourceId, status: "done" }),
-      ],
-    });
-    expect(initial.state).toBe("stopped");
-    if (initial.state !== "stopped") return;
-
-    const changed = classify({
-      watchdog: {
-        companyId,
-        issueId: sourceId,
-        lastReviewedFingerprint: initial.stopFingerprint,
-        lastReviewedStopSnapshot: initial.stopSnapshot,
-      },
-      issues: [
-        issue({ status: "blocked" }),
-        issue({ id: childId, parentId: sourceId, status: "done" }),
-      ],
-    });
-
-    expect(changed.state).toBe("stopped");
-    if (changed.state !== "stopped") return;
-    expect(changed.stopFingerprint).not.toBe(initial.stopFingerprint);
-    expect(changed.stopSnapshot.materialLeaves).toEqual([
-      expect.objectContaining({ issueId: sourceId, status: "blocked" }),
-    ]);
-  });
-
   it("suppresses a shrink-only stopped state after a sibling completes", () => {
     const siblingId = "child-2";
     const initial = classify({

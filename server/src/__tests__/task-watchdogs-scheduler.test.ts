@@ -461,6 +461,17 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const stoppedFingerprint = initialWatchdog!.lastObservedFingerprint;
 
     await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    // Simulate a stale/incomplete watchdog row. The reusable issue is the
+    // durable reviewed disposition and must be rediscovered instead of
+    // reopened for the same fingerprint.
+    await db
+      .update(issueWatchdogs)
+      .set({
+        watchdogIssueId: null,
+        lastObservedFingerprint: null,
+        lastObservedStopSnapshot: null,
+      })
+      .where(eq(issueWatchdogs.issueId, sourceId));
     expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({
       checked: 1,
       triggered: 0,
