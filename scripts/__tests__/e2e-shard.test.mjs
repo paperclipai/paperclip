@@ -184,7 +184,21 @@ test("the trusted PR workflow passes the shard's spec filter to Playwright witho
 });
 
 test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
+  // Implementation PRs validate the workflow under development here. The
+  // caller remains pinned to the last merged trusted SHA until a separate
+  // activation PR advances it, so unmerged PR code never runs on trusted
+  // infrastructure.
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  assert.match(
+    workflow,
+    /policy:\n    needs: \[gate\][\s\S]{0,160}timeout-minutes: 10/,
+    "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
+  );
+  assert.match(
+    workflow,
+    /- name: Setup Node\.js\n        uses: actions\/setup-node@[0-9a-f]+[^\n]*\n        with:\n          node-version: 24\n          cache: pnpm/,
+    "the policy job must restore the pnpm cache before dependency resolution",
+  );
   assert.match(
     workflow,
     /pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile/,

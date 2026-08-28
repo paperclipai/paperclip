@@ -220,7 +220,7 @@ jobs:
   policy:
     needs: [gate]
     runs-on: ${{ needs.gate.outputs.runner }}
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
 
@@ -254,6 +254,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+          cache: pnpm
 
       - name: Validate migration ordering against target branch
         run: >-
