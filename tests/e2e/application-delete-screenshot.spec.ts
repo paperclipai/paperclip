@@ -33,7 +33,7 @@ test("captures the current app removal confirmations", async ({ page }) => {
       applicationName: "Guarded MCP",
       name: "Primary connection",
       transport: "mcp_remote",
-      config: { url: "https://fixture.example/mcp" },
+      config: { url: "http://127.0.0.1:65535/mcp" },
     },
   });
   expect(conn.ok(), `connection create failed ${conn.status()}: ${await conn.text()}`).toBe(true);

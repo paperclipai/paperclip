@@ -7929,6 +7929,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? {});
+      // Validate company-scoped references before touching a caller-supplied
+      // network endpoint. Besides failing fast, this keeps cross-company
+      // authorization errors from being masked by DNS or SSRF validation.
+      await assertSecretRefs(companyId, [...(input.credentialRefs ?? []), ...(input.credentialSecretRefs ?? [])]);
       if (transport === "mcp_remote") await assertRemoteConnectionEndpointsAllowed(config);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
@@ -7950,7 +7954,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }).returning();
         applicationId = app.id;
       }
-      await assertSecretRefs(companyId, [...(input.credentialRefs ?? []), ...(input.credentialSecretRefs ?? [])]);
       const connectionId = randomUUID();
       const binding = actorBinding(actor);
       const [row] = await db.insert(toolConnections).values({

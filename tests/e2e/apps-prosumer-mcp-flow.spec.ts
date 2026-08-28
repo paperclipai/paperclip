@@ -151,7 +151,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await gotoConnect(page, seed.prefix);
 
     // Browse launches the BYO link-mode connect wizard.
-    await expect(page.getByRole("heading", { name: "Connect an app" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Connect your own MCP server", { exact: true })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-01-gallery.png`, fullPage: true });
 
     // Use the "Connect with a link" path against the mock MCP server.
@@ -226,7 +226,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
       await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByText(/app needs attention/i).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(/connection needs attention/i).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
       // App detail should expose the reconnect call-to-action.

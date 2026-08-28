@@ -91,7 +91,9 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
     status: "active",
     enabled: true,
     healthStatus: "ok",
-    config: { url: "https://example.invalid/mcp" },
+    // Use a public IP literal so protocol tests remain independent of DNS while
+    // still exercising the production egress guard and their global fetch stub.
+    config: { url: "https://8.8.8.8/mcp" },
   }).returning().then((rows) => rows[0]!);
   const catalogEntry = await db.insert(toolCatalogEntries).values({
     companyId,
