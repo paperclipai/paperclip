@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
+pub mod acpx_sidecar_transport;
 pub mod codex_provider;
 pub mod durable;
 pub mod fake_harness;
+pub mod generated_acpx_sidecar_contract;
 pub mod local_runner;
 pub mod process_supervisor;
 pub mod provider_backend;

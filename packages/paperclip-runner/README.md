@@ -55,6 +55,11 @@ the exact model, session identity, tool catalog, structured input, and terminal
 settlement at the process boundary. Runnerd and the server do not select this
 sidecar in this slice. Other ACPX agents remain unavailable.
 
+The Rust core includes a bounded client for this sidecar protocol. It enforces
+request identity, event order, frame and queue limits, timeouts, redacted
+diagnostics, and process-group cleanup. This transport remains package-local.
+It does not change runnerd provider selection in this slice.
+
 Run the complete contract gate with:
 
 ```sh

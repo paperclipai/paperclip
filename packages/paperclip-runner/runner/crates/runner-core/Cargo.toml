@@ -30,3 +30,7 @@ path = "src/bin/fake-harness.rs"
 [[bin]]
 name = "fake-codex-app-server"
 path = "src/bin/fake-codex-app-server.rs"
+
+[[bin]]
+name = "fake-acpx-sidecar"
+path = "src/bin/fake-acpx-sidecar.rs"
