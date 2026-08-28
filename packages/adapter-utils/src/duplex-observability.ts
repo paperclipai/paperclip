@@ -36,40 +36,6 @@ export const DUPLEX_COUNTER_LOSS_TOTAL = "sandbox_duplex_loss_total";
 export const DUPLEX_COUNTER_SESSION_LEAK_TOTAL = "sandbox_duplex_session_leak_total";
 
 /**
- * The process-scoped gauge for the aggregate retained bytes across every live
- * duplex route. The host aggregate byte ledger sets it on each reserve and each
- * release. The record carries no dynamic dimension.
- */
-export const DUPLEX_GAUGE_AGGREGATE_BYTES_IN_USE = "sandbox_duplex_aggregate_bytes_in_use";
-/**
- * The counter for one rejected aggregate byte reservation. The host ledger
- * increments it when a reservation would pass the aggregate ceiling. The record
- * carries no dynamic dimension.
- */
-export const DUPLEX_COUNTER_AGGREGATE_BYTE_RESERVATION_REJECTIONS_TOTAL =
-  "sandbox_duplex_aggregate_byte_reservation_rejections_total";
-/**
- * The counter for one aggregate byte accounting defect. The host ledger
- * increments it on a double release or a transfer of a token it does not hold.
- * The record carries no dynamic dimension.
- */
-export const DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL =
-  "sandbox_duplex_aggregate_byte_accounting_underflow_total";
-
-/**
- * The closed set of aggregate byte ledger metric names. A test pins this exact
- * set, so a new ledger metric name needs an explicit review. Each record uses
- * only closed constant dimensions and no dynamic label. The Observability
- * contract documents these metrics under "Aggregate byte ledger metrics" in
- * `doc/observability.md`.
- */
-export const DUPLEX_AGGREGATE_BYTE_LEDGER_METRIC_NAMES = [
-  DUPLEX_GAUGE_AGGREGATE_BYTES_IN_USE,
-  DUPLEX_COUNTER_AGGREGATE_BYTE_RESERVATION_REJECTIONS_TOTAL,
-  DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL,
-] as const;
-
-/**
  * The closed dimension-key set. Every span attribute, counter label, and event
  * field uses only these keys. A test asserts the exact set, so a new key never
  * reaches a sink by accident.
