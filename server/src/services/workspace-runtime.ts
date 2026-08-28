@@ -5214,6 +5214,44 @@ function managedRuntimeOriginError(serviceName: string, reason: string) {
   );
 }
 
+type TrustedRuntimeHostnameBoundary =
+  | { exactHostname: string; hostnameSuffix?: never }
+  | { exactHostname?: never; hostnameSuffix: string };
+
+function trustedRuntimeHostnameBoundary(
+  urlTemplate: string | null | undefined,
+): TrustedRuntimeHostnameBoundary | null {
+  if (!urlTemplate?.trim()) return null;
+  let markerIndex = 0;
+  const markerPrefix = "paperclip-runtime-template-";
+  const safeTemplate = urlTemplate.replace(
+    /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g,
+    (_match, path: string) => path === "port" ? "443" : `${markerPrefix}${markerIndex++}`,
+  );
+  let parsed: URL;
+  try {
+    parsed = new URL(safeTemplate);
+  } catch {
+    return null;
+  }
+  if (parsed.username || parsed.password) return null;
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+
+  const hostname = parsed.hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const markers = [...hostname.matchAll(/paperclip-runtime-template-\d+/g)];
+  const lastMarker = markers.at(-1);
+  if (!lastMarker || lastMarker.index === undefined) {
+    return hostname ? { exactHostname: hostname } : null;
+  }
+
+  const hostnameSuffix = hostname.slice(lastMarker.index + lastMarker[0].length);
+  // A dynamic non-loopback hostname needs at least a stable two-label domain
+  // after the final interpolation. This binds rendered branch/workspace values
+  // to the operator-configured domain instead of trusting URL parsing alone.
+  if (!hostnameSuffix.startsWith(".") || !hostnameSuffix.slice(1).includes(".")) return null;
+  return { hostnameSuffix };
+}
+
 /**
  * Resolve the low-priority public URL hint injected into a managed Paperclip dev
  * service. Explicit operator origin settings are deliberately left untouched.
@@ -5223,6 +5261,7 @@ export function resolveManagedPaperclipRuntimePublicOrigin(input: {
   command: string;
   environment: Record<string, string>;
   exposedUrl: string | null;
+  exposedUrlTemplate?: string | null;
 }) {
   if (!isPaperclipDevRuntimeService(input)) return null;
   if (EXPLICIT_RUNTIME_ORIGIN_ENV_KEYS.some((key) => input.environment[key]?.trim())) return null;
@@ -5272,6 +5311,24 @@ export function resolveManagedPaperclipRuntimePublicOrigin(input: {
   }
   if (!loopback && parsed.protocol !== "https:") {
     throw managedRuntimeOriginError(input.serviceName, "non-loopback OAuth callbacks require HTTPS");
+  }
+  if (!loopback) {
+    const boundary = trustedRuntimeHostnameBoundary(input.exposedUrlTemplate);
+    if (!boundary) {
+      throw managedRuntimeOriginError(
+        input.serviceName,
+        "the exposed URL template does not define a stable hostname boundary",
+      );
+    }
+    const withinBoundary = "exactHostname" in boundary
+      ? hostname === boundary.exactHostname
+      : hostname.length > boundary.hostnameSuffix.length && hostname.endsWith(boundary.hostnameSuffix);
+    if (!withinBoundary) {
+      throw managedRuntimeOriginError(
+        input.serviceName,
+        `the exposed hostname "${hostname}" is outside the hostname boundary configured by expose.urlTemplate`,
+      );
+    }
   }
 
   return parsed.origin;
@@ -6112,6 +6169,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     command,
     environment: runtimeEnvOverrides,
     exposedUrl: url,
+    exposedUrlTemplate: urlTemplate,
   });
   if (managedRuntimePublicOrigin) {
     env[MANAGED_RUNTIME_PUBLIC_URL_ENV] = managedRuntimePublicOrigin;

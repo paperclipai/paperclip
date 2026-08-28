@@ -501,6 +501,7 @@ describe("resolveManagedPaperclipRuntimePublicOrigin", () => {
       ...baseInput,
       environment: {},
       exposedUrl: "https://paperclip-dev.tail29c1aa.ts.net/path?ignored=true",
+      exposedUrlTemplate: "https://{{workspace.branchName}}.tail29c1aa.ts.net",
     })).toBe("https://paperclip-dev.tail29c1aa.ts.net");
     expect(resolveManagedPaperclipRuntimePublicOrigin({
       ...baseInput,
@@ -520,6 +521,22 @@ describe("resolveManagedPaperclipRuntimePublicOrigin", () => {
       environment: {},
       exposedUrl: "http://10.0.0.8:45439",
     })).toThrow(/non-loopback OAuth callbacks require HTTPS/);
+  });
+
+  it("keeps interpolated hostnames inside the operator-configured domain", () => {
+    expect(() => resolveManagedPaperclipRuntimePublicOrigin({
+      ...baseInput,
+      environment: {},
+      exposedUrl: "https://evil.com/workaround.tail29c1aa.ts.net",
+      exposedUrlTemplate: "https://{{workspace.branchName}}.tail29c1aa.ts.net",
+    })).toThrow(/outside the hostname boundary configured by expose\.urlTemplate/);
+
+    expect(() => resolveManagedPaperclipRuntimePublicOrigin({
+      ...baseInput,
+      environment: {},
+      exposedUrl: "https://managed-worktree.paperclip.dev",
+      exposedUrlTemplate: "https://{{workspace.branchName}}.com",
+    })).toThrow(/does not define a stable hostname boundary/);
   });
 });
 
