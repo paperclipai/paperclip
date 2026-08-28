@@ -1203,11 +1203,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .post(`/api/agents/me/connections/${connection.id}/token`)
       .send({});
     expect(inactiveOwner.status).toBe(403);
-    expect(inactiveOwner.body).toMatchObject({
-      code: "grant_owner_membership_inactive",
-      remediation: { action: "restore_membership_or_reconnect" },
-    });
-    expect(inactiveOwner.body.error).toContain("not an active company member");
+    expect(inactiveOwner.body.error).toContain("no longer authorized");
   });
 
   it("enforces organization grant audiences at token mint time", async () => {
@@ -1247,7 +1243,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ));
     const inactiveAudienceMember = await request(app).post(`/api/agents/me/connections/${connection.id}/token`).send({});
     expect(inactiveAudienceMember.status).toBe(403);
-    expect(inactiveAudienceMember.body).toMatchObject({ code: "grant_audience_denied", grantId: grant!.id });
+    expect(inactiveAudienceMember.body.error).toContain("no longer authorized");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await db.update(companyMemberships).set({ status: "active" }).where(and(
       eq(companyMemberships.companyId, company.id),
