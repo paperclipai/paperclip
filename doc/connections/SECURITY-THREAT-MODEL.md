@@ -48,7 +48,13 @@ context and server-side ownership checks.
 8. **External content is untrusted.** Provider responses, chat messages,
    documents, webhook payloads, and remote MCP outputs may contain prompt
    injection and must not widen grants or bypass approvals.
-
+9. **Link-local egress is always denied.** Operator-configured remote MCP and
+   OAuth URLs may reach intentional loopback, RFC 1918, or IPv6 ULA services in
+   local/private deployments, but never IPv4 `169.254.0.0/16` or IPv6
+   `fe80::/10`. Every hostname is resolved once and pinned; DNS answers, the
+   connected socket peer, and every redirect are mediated before request bytes
+   are written. Public deployments continue to deny the broader private and
+   reserved address set.
 ## Protected Assets
 
 - OAuth tokens, refresh tokens, app-installation tokens, API keys, webhook
