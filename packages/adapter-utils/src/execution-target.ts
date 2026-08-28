@@ -2461,10 +2461,6 @@ async function latchAndTerminate() {
   await terminate();
 }
 
-function isUsableBirthtimeMs(value) {
-  return typeof value === "number" && Number.isFinite(value) && value !== 0;
-}
-
 let probeSeq = 0;
 
 // A probe file name that pollStdin() can never read as a stdin message: it
@@ -2593,14 +2589,10 @@ async function refuseUnusableCreationTime(label, dirPath, reason) {
 // it terminates now instead of polling a control path it never verified.
 //
 // This wrapper cannot assume stats.birthtimeMs is a real creation time. Node
-// reports it in one of two unusable shapes on a filesystem or kernel that
-// cannot supply one: 0 (the Linux statx() path when the filesystem reports
-// no STATX_BTIME), or a copy of the change time (the generic POSIX stat()
-// path on a platform with no birthtime field). A 0 value fails open, so this
-// wrapper rejects it outright. A change-time copy fails closed but far too
-// aggressively (it would move on every stdin file this wrapper deletes), so
-// this wrapper proves the value is not a copy with a probe before it trusts
-// it, run once here, before either directory's identity is captured.
+// can report a change-time copy as a creation time. That value fails closed
+// far too aggressively (it would move on every stdin file this wrapper
+// deletes), so this wrapper proves the value is not a copy with a probe before
+// it trusts it, run once here, before either directory's identity is captured.
 async function captureSessionIdentity() {
   try {
     const sessionProbeFailure = await birthtimeSurvivesProbe(sessionDir);
@@ -2615,14 +2607,6 @@ async function captureSessionIdentity() {
     }
     const session = await statPathIdentity(sessionDir);
     const stdin = await statPathIdentity(stdinDir);
-    if (!isUsableBirthtimeMs(session.birthtimeMs)) {
-      await refuseUnusableCreationTime("sessionDir", sessionDir, "its reported creation time (" + session.birthtimeMs + ") is not usable");
-      return;
-    }
-    if (!isUsableBirthtimeMs(stdin.birthtimeMs)) {
-      await refuseUnusableCreationTime("stdinDir", stdinDir, "its reported creation time (" + stdin.birthtimeMs + ") is not usable");
-      return;
-    }
     sessionDirIdentity = session;
     stdinDirIdentity = stdin;
   } catch (error) {
