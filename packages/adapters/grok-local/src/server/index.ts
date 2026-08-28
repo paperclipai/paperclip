@@ -71,3 +71,12 @@ export {
   parseGrokDeviceLoginPrompt,
   type DeviceLoginPrompt as GrokDeviceLoginPrompt,
 } from "./device-login-parse.js";
+export { resolveManagedGrokHomeDir, grokHomeHasUsableAuth } from "./grok-home.js";
+export {
+  promoteGrokDeviceLoginCredential,
+  checkStagedGrokCredentialReadiness,
+  DeviceLoginReadinessError as GrokDeviceLoginReadinessError,
+  type CredentialReadinessResult as GrokCredentialReadinessResult,
+  type PromoteGrokDeviceLoginCredentialInput,
+  type PromoteGrokDeviceLoginCredentialOutcome,
+} from "./adapter-auth-promotion.js";
