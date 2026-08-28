@@ -59,8 +59,14 @@ describe("account issuer schema", () => {
 });
 
 describeEmbeddedPostgres("account issuer migration", () => {
+  // Reverse registration order, one at a time. The raw `postgres` client is not
+  // registered with the module's client registry, so the cluster teardown does
+  // not close it. Stopping the cluster while that client is still draining kills
+  // the backend socket under a queued write and can crash the runner.
   afterEach(async () => {
-    await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      await cleanup();
+    }
   });
 
   it("backfills every pre-upgrade row before the column goes NOT NULL", async () => {
