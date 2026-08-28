@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
+  isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
   readConnectionIntentOAuthOutcome,
   retainedReconnectMatches,
@@ -125,6 +126,21 @@ describe("retained reconnect definition lookup", () => {
       credentialSource: "vercel_connect",
       available: false,
       retainedReconnectMatches: false,
+    })).toBe(true);
+    expect(isConnectionDefinitionUnavailable({
+      available: false,
+      reconnectConnectionId: "connection-1",
+      reconnectSourceMatches: true,
+    })).toBe(false);
+    expect(isConnectionDefinitionUnavailable({
+      available: false,
+      reconnectConnectionId: "connection-1",
+      reconnectSourceMatches: false,
+    })).toBe(true);
+    expect(isConnectionDefinitionUnavailable({
+      available: false,
+      reconnectConnectionId: undefined,
+      reconnectSourceMatches: true,
     })).toBe(true);
   });
 });

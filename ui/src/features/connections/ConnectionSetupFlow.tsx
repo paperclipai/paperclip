@@ -150,6 +150,15 @@ export function isVercelConnectUnavailable(input: {
     && !input.retainedReconnectMatches;
 }
 
+export function isConnectionDefinitionUnavailable(input: {
+  available: boolean | undefined;
+  reconnectConnectionId: string | null | undefined;
+  reconnectSourceMatches: boolean;
+}): boolean {
+  return input.available === false
+    && !(input.reconnectConnectionId && input.reconnectSourceMatches);
+}
+
 function appConnectHref(
   appKey: string,
   step: Step,
@@ -973,7 +982,12 @@ export function ConnectionSetupFlow({
       && method?.auth === "oauth"
       && !connectionMethodSupportsAutomaticOAuth(method)
       && !connectionMethodAcceptsCustomerOAuthClient(method);
-    if (!requestedEntry || methods.length === 0 || unsupportedOAuth || vercelUnavailable || requestedEntry.availability?.available === false) {
+    const definitionUnavailable = isConnectionDefinitionUnavailable({
+      available: requestedEntry?.availability?.available,
+      reconnectConnectionId,
+      reconnectSourceMatches,
+    });
+    if (!requestedEntry || methods.length === 0 || unsupportedOAuth || vercelUnavailable || definitionUnavailable) {
       setEntry(null);
       setStep("gallery");
       if (reconnectConnectionId) return;
