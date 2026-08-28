@@ -78,6 +78,12 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Test stale-workspace reaper (disk retention)
+        run: node --test ./scripts/__tests__/reap-stale-workspaces.test.mjs
+
+      - name: Test disk-retention LaunchAgent installer
+        run: node --test ./scripts/__tests__/install-paperclip-retention-agent.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
