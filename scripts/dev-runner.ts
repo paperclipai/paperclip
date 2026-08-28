@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { resolveUiDevMiddlewareEnv } from "./dev-runner-env.ts";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
@@ -156,7 +157,7 @@ if (bindMode === "custom" && !bindHost) {
 
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  PAPERCLIP_UI_DEV_MIDDLEWARE: resolveUiDevMiddlewareEnv(process.env),
 };
 
 if (mode === "dev") {

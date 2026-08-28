@@ -6,6 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
+import { resolveUiDevMiddlewareEnv } from "./dev-runner-env.mjs";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 
@@ -80,7 +81,7 @@ if (process.env.npm_config_authenticated_private === "true") {
 
 const env = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  PAPERCLIP_UI_DEV_MIDDLEWARE: resolveUiDevMiddlewareEnv(process.env),
 };
 
 if (mode === "dev") {
