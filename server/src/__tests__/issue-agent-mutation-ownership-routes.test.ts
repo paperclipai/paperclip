@@ -1787,6 +1787,21 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("rejects entering blocked with an explicit null unblockDescriptor even when one is stored", async () => {
+    const storedDescriptor = { owner: "board", action: "Rebaseline date arrives" };
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", unblockDescriptor: storedDescriptor }),
+    );
+
+    const res = await request(await createApp(boardActor(), createGuardStrictDb()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", unblockDescriptor: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe("Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("still rejects entering blocked with no blockers, pending review path, or stored owner", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 

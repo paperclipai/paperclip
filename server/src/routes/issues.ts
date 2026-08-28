@@ -9701,8 +9701,12 @@ export function issueRoutes(
     // A descriptor persisted by an earlier blocked transition still names the
     // unblock owner, so re-entering blocked (e.g. repairing an issue whose
     // status enum drifted from its stored descriptor) must not be rejected
-    // just because this request omits the descriptor payload.
-    const storedDescriptorNamesOwner = isValidIssueUnblockDescriptor(existing.unblockDescriptor);
+    // just because this request omits the descriptor payload. An explicit
+    // null payload clears the descriptor, so it must NOT borrow the stored
+    // one here or the update would persist blocked with no unblock path.
+    const storedDescriptorNamesOwner =
+      updateFields.unblockDescriptor === undefined &&
+      isValidIssueUnblockDescriptor(existing.unblockDescriptor);
     if (descriptor && typeof descriptor === "object") {
       const owner = descriptor.owner;
       if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
