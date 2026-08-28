@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "slug": "speko",
+  "name": "Speko",
+  "description": "Answer and place phone calls, then read transcripts and recordings.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "https://www.google.com/s2/favicons?domain=speko.ai&sz=128"
+  },
+  "urlPatterns": [
+    "https://mcp.speko.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "defaults": {
+        "serverUrl": "https://mcp.speko.ai/mcp"
+      },
+      "guidanceMd": "Create a Speko API key at https://platform.speko.ai/api-keys, then paste it here. A Speko key belongs to one Speko organization, so the key is the boundary: use a key from an organization that holds only the agents and phone numbers these agents may reach. Keep approvals on, because calls cost money and reach real people.",
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Speko API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Speko API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "requiredResourceFilters": [
+        "organization",
+        "agent",
+        "phone_number"
+      ]
+    }
+  ]
+}

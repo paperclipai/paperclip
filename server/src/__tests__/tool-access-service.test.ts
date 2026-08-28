@@ -2543,6 +2543,7 @@ describeEmbeddedPostgres("tool access service", () => {
       "linear",
       "google-sheets",
       "context7",
+      "speko",
     ]);
     expect(res.body.apps.map((app: { slug: string }) => app.slug)).not.toContain("google-drive");
     expect(res.body.apps).toEqual(
