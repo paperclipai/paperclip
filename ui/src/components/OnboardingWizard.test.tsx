@@ -62,6 +62,11 @@ const mockAgentsApi = vi.hoisted(() => ({
   // stored value" 404 rejection, using the real `ApiError` class the code
   // under test checks with `instanceof`.
   getClaudeOAuthTokenStatus: vi.fn(),
+  getAdapterAuthSignal: vi.fn(
+    async (): Promise<import("@paperclipai/shared").AdapterAuthSignalResponse> => ({
+      status: "present",
+    }),
+  ),
 }));
 // The adapter registry mock below always returns this function, so a test
 // can shape the built adapter config (e.g. a configured ANTHROPIC_API_KEY)
@@ -73,10 +78,14 @@ const mockAdapterBuild = vi.hoisted(() => ({
 // the probe dies on "Could not load environment settings" and the hire never
 // runs — which reads as a mysterious 0-call assertion, not an error.
 const mockEnvironmentsApi = vi.hoisted(() => ({
-  list: vi.fn(async () => []),
+  list: vi.fn(async () => [] as Array<Record<string, unknown>>),
+  capabilities: vi.fn(
+    async (): Promise<import("@paperclipai/shared").EnvironmentCapabilities> =>
+      (await import("@paperclipai/shared")).getEnvironmentCapabilities([]),
+  ),
 }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({
-  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
+  get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
   getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
 const mockApprovalsApi = vi.hoisted(() => ({
@@ -130,6 +139,9 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     description: "",
     icon: () => null,
   }),
+  getAdapterLabel: (type: string) => type,
+  getAdapterLabels: () => ({}) as Record<string, string>,
+  isKnownAdapterType: () => true,
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
@@ -138,13 +150,21 @@ vi.mock("../adapters/use-disabled-adapters", () => ({
   // makes it undefined and the call throws.
   useAdapterRegistryLoaded: () => true,
 }));
+// Adapters with a declared login capability, mirroring the real registry
+// closely enough for the login-panel gate: `claude_local` and `codex_local`
+// both support a sandbox login. Every other type has none, matching the
+// real `useAdapterCapabilities` fallback for an unlisted type.
+const ADAPTERS_WITH_LOGIN = new Set(["claude_local", "codex_local"]);
 vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => () => ({
+  useAdapterCapabilities: () => (type: string) => ({
     supportsInstructionsBundle: false,
     supportsSkills: false,
     supportsLocalAgentJwt: false,
     requiresMaterializedRuntimeSkills: false,
     supportsModelProfiles: false,
+    login: ADAPTERS_WITH_LOGIN.has(type)
+      ? { panelMode: "displayed_code" as const, timeoutPolicy: "fixed" as const }
+      : undefined,
   }),
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
@@ -154,7 +174,7 @@ vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 
@@ -1456,6 +1476,153 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  describe("the adapter step login panel (cheap auth signal, no adapter test)", () => {
+    const SANDBOX_ENVIRONMENT = {
+      id: "env-sandbox-1",
+      driver: "sandbox" as const,
+      status: "active" as const,
+      config: { provider: "daytona" },
+      metadata: {},
+    };
+    const LOCAL_ENVIRONMENT = {
+      id: "env-local-1",
+      driver: "local" as const,
+      status: "active" as const,
+      config: {},
+      metadata: { defaultForInstance: true },
+    };
+
+    beforeEach(() => {
+      mockEnvironmentsApi.list.mockReset();
+      mockEnvironmentsApi.list.mockResolvedValue([SANDBOX_ENVIRONMENT]);
+      mockEnvironmentsApi.capabilities.mockReset();
+      mockEnvironmentsApi.capabilities.mockResolvedValue(
+        getEnvironmentCapabilities([], {
+          sandboxProviders: { daytona: { supportsLoginPty: true } },
+        }),
+      );
+      mockInstanceSettingsApi.get.mockReset();
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "env-sandbox-1" });
+      mockInstanceSettingsApi.getExperimental.mockReset();
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
+      mockAgentsApi.getAdapterAuthSignal.mockReset();
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+    });
+
+    /** Drives the wizard to the Connect step with a company already created. */
+    async function openStep4(overrides: Record<string, unknown> = {}) {
+      mockCompany.companies = [{ id: "company-new", name: "Initech", issuePrefix: "INI" }];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue(mockCompany.companies);
+      window.localStorage.setItem(
+        ONBOARDING_STORAGE_KEY,
+        JSON.stringify({
+          step: 4,
+          onboardingPath: "create",
+          companyName: "Initech",
+          agentName: "Ada",
+          createdCompanyId: "company-new",
+          adapterType: "claude_local",
+          ...overrides,
+        }),
+      );
+      mockDialog.onboardingOptions = {};
+
+      const { root, queryClient } = render();
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+      // The login-panel gate chains several dependent queries (environments,
+      // instance settings, environment capabilities, then the auth signal
+      // itself), each settling on its own render. One flush is not always
+      // enough to reach the end of that chain.
+      for (let i = 0; i < 5; i++) await flushReact();
+      expect(document.body.textContent).toContain("Connect a model");
+      return { root, queryClient };
+    }
+
+    it("starts no call to the test-environment route on adapter selection", async () => {
+      const { root } = await openStep4();
+      expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
+    it("shows the login panel for claude_local when the signal reports no ready credential", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).toContain("Sign in to the environment");
+      await act(async () => root.unmount());
+    });
+
+    it("shows the login panel for codex_local when the signal cannot decide", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      const { root } = await openStep4({ adapterType: "codex_local" });
+      expect(document.body.textContent).toContain("Sign in to the environment");
+      await act(async () => root.unmount());
+    });
+
+    it("hides the login panel when the signal reports a ready credential", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).not.toContain("Sign in to the environment");
+      await act(async () => root.unmount());
+    });
+
+    it("renders no 'Use saved login' control", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).not.toContain("Use saved login");
+      await act(async () => root.unmount());
+    });
+
+    it("reads the signal again after an adapter change", async () => {
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith(
+        "company-new",
+        "claude_local",
+        "env-sandbox-1",
+      );
+
+      const clickByText = async (match: (text: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      await clickByText((t) => t.startsWith("Advanced settings"));
+      await clickByText((t) => t === "codex_local");
+
+      expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith(
+        "company-new",
+        "codex_local",
+        "env-sandbox-1",
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("hides the panel when the resolved login environment driver is not sandbox", async () => {
+      mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      expect(document.body.textContent).not.toContain("Sign in to the environment");
+      expect(mockAgentsApi.getAdapterAuthSignal).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
     });
   });
 });

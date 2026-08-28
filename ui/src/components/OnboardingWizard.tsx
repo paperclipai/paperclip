@@ -10,6 +10,7 @@ import type {
   InstanceSettings,
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AdapterLoginPanel } from "./AgentConfigForm";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -757,6 +758,108 @@ function OnboardingWizardInner({
   });
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
+
+  // Resolve the login environment at render time, so the wizard can decide
+  // whether to show the login panel before any adapter test runs. This
+  // mirrors the agent configuration form's own resolution, including the
+  // managed-sandbox-only redirect (see AgentConfigForm.tsx:618-640). A render
+  // must not throw, so a resolver error yields no login environment rather
+  // than an error boundary.
+  const { data: loginEnvironmentList = [] } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.environments.list(createdCompanyId)
+      : ["environments", "none"],
+    queryFn: () => environmentsApi.list(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4,
+  });
+  const { data: instanceSettingsForLogin } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    enabled: effectiveOnboardingOpen && step === 4,
+  });
+  const { data: experimentalSettingsForLogin } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: effectiveOnboardingOpen && step === 4,
+  });
+  const resolvedLoginEnvironmentId = useMemo(() => {
+    try {
+      return resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: instanceSettingsForLogin?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(loginEnvironmentList),
+        managedSandboxOnly: experimentalSettingsForLogin?.enableManagedSandboxOnly === true,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(loginEnvironmentList),
+        visibleEnvironmentIds: loginEnvironmentList.map((environment) => environment.id),
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    instanceSettingsForLogin?.defaultEnvironmentId,
+    loginEnvironmentList,
+    experimentalSettingsForLogin?.enableManagedSandboxOnly,
+  ]);
+  const resolvedLoginEnvironment = useMemo(
+    () =>
+      loginEnvironmentList.find((environment) => environment.id === resolvedLoginEnvironmentId) ??
+      null,
+    [loginEnvironmentList, resolvedLoginEnvironmentId],
+  );
+  // Sandbox provider capabilities for the login pseudo-terminal gate, loaded
+  // only when the adapter declares a login capability — the same query the
+  // agent configuration form runs (AgentConfigForm.tsx:652-658).
+  const { data: loginEnvironmentCapabilities } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.environments.capabilities(createdCompanyId)
+      : ["environment-capabilities", "none"],
+    queryFn: () => environmentsApi.capabilities(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && adapterCaps.login != null,
+  });
+  const loginEnvironmentProvider =
+    typeof resolvedLoginEnvironment?.config?.provider === "string"
+      ? resolvedLoginEnvironment.config.provider
+      : null;
+  const loginProviderSupportsPty =
+    loginEnvironmentProvider != null &&
+    loginEnvironmentCapabilities?.sandboxProviders?.[loginEnvironmentProvider]?.supportsLoginPty ===
+      true;
+  // The same capability gate the agent configuration form uses to show its
+  // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a
+  // full adapter test result. The cheap auth signal below stands in for that
+  // input here, so this gate alone only decides whether the login mechanism
+  // could ever apply to the current adapter and environment.
+  const canShowAdapterLogin = Boolean(
+    adapterCaps.login != null &&
+      resolvedLoginEnvironment?.driver === "sandbox" &&
+      resolvedLoginEnvironmentId &&
+      createdCompanyId &&
+      loginProviderSupportsPty,
+  );
+  // The cheap signal, re-read whenever the adapter type or the resolved login
+  // environment changes (both are part of the query key). It reports whether
+  // the host already holds a usable credential, with no adapter environment
+  // test. The route reads only host-local state, so a login baked into a
+  // sandbox image rather than held on the host reads as `absent` even though
+  // the owner could already sign in — the panel then shows for one extra step
+  // it did not strictly need, never the reverse.
+  const authSignalQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.authSignal(createdCompanyId, adapterType, resolvedLoginEnvironmentId)
+      : ["agents", "none", "auth-signal", adapterType, resolvedLoginEnvironmentId],
+    queryFn: () =>
+      agentsApi.getAdapterAuthSignal(
+        createdCompanyId!,
+        adapterType,
+        resolvedLoginEnvironmentId ?? undefined,
+      ),
+    enabled:
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+  });
+  const authSignalStatus = authSignalQuery.data?.status ?? null;
+  const showAdapterLoginPanel =
+    canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+
   const isLocalAdapterCaps =
     adapterCaps.supportsInstructionsBundle ||
     adapterCaps.supportsSkills ||
@@ -2233,6 +2336,30 @@ function OnboardingWizardInner({
                       </div>
                     )}
                   </div>
+
+                  {/* Shows as soon as the cheap auth signal reports no ready
+                      credential, well before any adapter environment test
+                      runs. Reuses the same panel the agent configuration form
+                      shows after a test — see AdapterLoginPanel in
+                      AgentConfigForm.tsx. No "Use saved login" control: the
+                      hire step already applies a stored login on its own. */}
+                  {showAdapterLoginPanel && createdCompanyId && resolvedLoginEnvironmentId && (
+                    <AdapterLoginPanel
+                      key={`${adapterType}:${resolvedLoginEnvironmentId}`}
+                      companyId={createdCompanyId}
+                      adapterType={adapterType}
+                      environmentId={resolvedLoginEnvironmentId}
+                      onStored={() => {
+                        queryClient.invalidateQueries({
+                          queryKey: queryKeys.agents.authSignal(
+                            createdCompanyId,
+                            adapterType,
+                            resolvedLoginEnvironmentId,
+                          ),
+                        });
+                      }}
+                    />
+                  )}
 
                   {/* Conditional adapter fields */}
                   {/* No model picker. Every adapter this step offers resolves
