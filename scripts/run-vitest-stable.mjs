@@ -14,6 +14,8 @@ const generalServerShardDurations = loadShardDurations(
 const serializedShardDurations = loadShardDurations(
   path.join(scriptsDir, "serialized-shard-durations.json"),
 );
+const binDir = path.join(repoRoot, "node_modules", ".bin");
+const vitestEntry = path.join(repoRoot, "node_modules", "vitest", "vitest.mjs");
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
@@ -284,11 +286,21 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
-    cwd: repoRoot,
-    env,
-    stdio: "inherit",
-  });
+  // `pnpm exec` puts node_modules/.bin on PATH; keep that for tests that shell out to workspace
+  // binaries. Windows env keys are case-insensitive, so reuse whichever casing is already there.
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  // Run Vitest's entry directly instead of `pnpm exec vitest`: on Windows pnpm is a .cmd shim
+  // Node will not spawn without a shell, and cmd.exe's 8191-char limit cannot hold the
+  // serialized-suite exclude list.
+  const result = spawnSync(
+    process.execPath,
+    [vitestEntry, "run", ...sourceOnlyVitestArgs, ...args],
+    {
+      cwd: repoRoot,
+      env: { ...env, [pathKey]: `${binDir}${path.delimiter}${env[pathKey] ?? ""}` },
+      stdio: "inherit",
+    },
+  );
   if (result.error) {
     console.error(`[test:run] Failed to start Vitest: ${result.error.message}`);
     process.exit(1);
