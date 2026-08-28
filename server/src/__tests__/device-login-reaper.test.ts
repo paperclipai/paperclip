@@ -2,17 +2,17 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { AgentAdapterType } from "@paperclipai/shared";
 import {
-  createCodexDeviceLoginReaper,
+  createDeviceLoginReaper,
   type LoginLeaseRef,
   type LoginSessionCleanupRuntime,
   type TaggedLease,
-} from "../services/codex-device-login-reaper.ts";
+} from "../services/device-login-reaper.ts";
 import {
   ADAPTER_AUTH_ACTIVE_STATUSES,
   type AdapterAuthReaperStore,
   type AdapterAuthSessionRow,
   type SandboxDeleteResult,
-} from "../services/codex-device-login-service.ts";
+} from "../services/device-login-service.ts";
 
 const ADAPTER_TYPE: AgentAdapterType = "codex_local";
 const NOW = new Date("2026-02-01T00:05:00.000Z");
@@ -114,7 +114,7 @@ function createFakeRuntime(opts: FakeRuntimeOptions = {}) {
   return { runtime, deleteCalls };
 }
 
-describe("codex device login reaper", () => {
+describe("device login reaper", () => {
   it("deletes the sandbox and marks a persisted expired non-terminal session timed_out", async () => {
     const store = createMemoryReaperStore();
     const environmentId = randomUUID();
@@ -126,7 +126,7 @@ describe("codex device login reaper", () => {
       expiresAt: PAST,
     });
     const { runtime, deleteCalls } = createFakeRuntime();
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     const result = await reaper.sweep();
 
@@ -146,7 +146,7 @@ describe("codex device login reaper", () => {
       expiresAt: FUTURE,
     });
     const { runtime, deleteCalls } = createFakeRuntime();
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     const result = await reaper.sweep();
 
@@ -166,7 +166,7 @@ describe("codex device login reaper", () => {
       promotionExpiresAt: FUTURE,
     });
     const { runtime, deleteCalls } = createFakeRuntime();
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     const result = await reaper.sweep();
 
@@ -189,7 +189,7 @@ describe("codex device login reaper", () => {
       promotionExpiresAt: PAST,
     });
     const { runtime, deleteCalls } = createFakeRuntime();
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     const result = await reaper.sweep();
 
@@ -208,7 +208,7 @@ describe("codex device login reaper", () => {
       expiresAt: PAST,
     });
     const { runtime, deleteCalls } = createFakeRuntime();
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     const result = await reaper.sweep();
 
@@ -235,7 +235,7 @@ describe("codex device login reaper", () => {
         return { outcome: "not_found" };
       },
     });
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     // First sweep: the delete rejects, so the row stays cleanup_pending.
     const first = await reaper.sweep();
@@ -273,7 +273,7 @@ describe("codex device login reaper", () => {
         { environmentId, providerLeaseId: "orphan-1", sessionId: "orphan-session" },
       ],
     });
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     const result = await reaper.sweep();
 
@@ -294,7 +294,7 @@ describe("codex device login reaper", () => {
         return { outcome: "deleted" };
       },
     });
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     const first = await reaper.sweep();
     expect(first.orphanLeasesDeleted).toBe(0);
@@ -319,7 +319,7 @@ describe("codex device login reaper", () => {
       tagged: [{ environmentId, providerLeaseId: "orphan-1", sessionId: "orphan-session" }],
       deleteImpl: async () => ({ outcome: "not_found" }),
     });
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => NOW });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => NOW });
 
     await expect(reaper.sweep()).resolves.toBeDefined();
     // The second sweep runs over the now-terminal session and the same orphan

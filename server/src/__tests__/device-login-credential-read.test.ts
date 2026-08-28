@@ -10,7 +10,7 @@ import {
   MAX_AUTH_JSON_BYTES,
   decodeAuthReadOutput,
   runDescriptorBoundAuthRead,
-} from "../services/codex-device-login-credential-read.ts";
+} from "../services/device-login-credential-read.ts";
 
 // The helper runs on node and walks the path with `/proc/self/fd`, which is
 // Linux only. A non-Linux host skips the script tests and keeps the pure-decode
@@ -60,7 +60,7 @@ describeLinux("the descriptor-bound read helper script", () => {
   let root: string;
 
   beforeAll(() => {
-    root = mkdtempSync(path.join(tmpdir(), "codex-auth-read-"));
+    root = mkdtempSync(path.join(tmpdir(), "adapter-auth-read-"));
   });
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });

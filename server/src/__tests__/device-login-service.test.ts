@@ -11,10 +11,10 @@ import {
 import {
   AdapterAuthSessionConflictError,
   buildSandboxLoginDriver,
-  CODEX_DEVICE_LOGIN_TIMEOUT_MS,
-  createCodexDeviceLoginService,
+  DEVICE_LOGIN_TIMEOUT_MS,
+  createDeviceLoginService,
   createDbAdapterAuthSessionStore,
-  sessionCodexHomePath,
+  sessionLoginHomePath,
   sessionCredentialPath,
   type AcquireLoginLeaseInput,
   type AdapterAuthSessionRow,
@@ -24,11 +24,11 @@ import {
   type LoginSessionLease,
   type LoginSessionRuntime,
   type SandboxDeleteResult,
-} from "../services/codex-device-login-service.ts";
+} from "../services/device-login-service.ts";
 import {
-  createCodexDeviceLoginReaper,
+  createDeviceLoginReaper,
   type LoginSessionCleanupRuntime,
-} from "../services/codex-device-login-reaper.ts";
+} from "../services/device-login-reaper.ts";
 
 // A cleanup runtime for the reaper. It confirms every delete and reports no
 // tagged lease, so the reaper only reclaims the seeded session rows.
@@ -53,9 +53,9 @@ const passingPromotion: CredentialPromotion = { promote: () => {} };
 
 // Build the service with the passing promotion by default. A test that checks
 // the promotion path passes its own `promotion` to override the default.
-type ServiceDeps = Parameters<typeof createCodexDeviceLoginService>[0];
+type ServiceDeps = Parameters<typeof createDeviceLoginService>[0];
 function makeService(deps: Omit<ServiceDeps, "promotion"> & { promotion?: CredentialPromotion }) {
-  return createCodexDeviceLoginService({ promotion: passingPromotion, ...deps });
+  return createDeviceLoginService({ promotion: passingPromotion, ...deps });
 }
 
 const ADAPTER_TYPE: AgentAdapterType = "codex_local";
@@ -235,7 +235,7 @@ function createMemoryStore(): AdapterAuthSessionStore & {
   };
 }
 
-describe("codex device login service", () => {
+describe("device login service", () => {
   it("inserts the session row before it acquires the lease", async () => {
     const store = createMemoryStore();
     let rowPresentAtAcquire = false;
@@ -811,7 +811,7 @@ describe("codex device login service", () => {
 
         // One millisecond before five minutes: the run still holds the active
         // claim.
-        await vi.advanceTimersByTimeAsync(CODEX_DEVICE_LOGIN_TIMEOUT_MS - 1);
+        await vi.advanceTimersByTimeAsync(DEVICE_LOGIN_TIMEOUT_MS - 1);
         expect(settled).toBe(false);
         const midRow = await store.getByPublicId(session.sessionId, companyId);
         expect(["starting", "waiting_for_user"]).toContain(midRow?.status);
@@ -847,7 +847,7 @@ describe("codex device login service", () => {
           adapterType: ADAPTER_TYPE,
           startedByUserId: OWNER_A,
         });
-        await vi.advanceTimersByTimeAsync(CODEX_DEVICE_LOGIN_TIMEOUT_MS);
+        await vi.advanceTimersByTimeAsync(DEVICE_LOGIN_TIMEOUT_MS);
         const outcome = await completed;
         expect(outcome.status).toBe("timed_out");
         expect(outcome.cleanupPending).toBe(true);
@@ -863,7 +863,7 @@ describe("codex device login service", () => {
 
   it("runs the login over the shared pseudo-terminal and reads the credential with the descriptor-bound read", async () => {
     const sessionId = randomUUID();
-    const sessionHome = sessionCodexHomePath(sessionId);
+    const sessionHome = sessionLoginHomePath(sessionId);
     const authPath = sessionCredentialPath(sessionId);
 
     // The fake pseudo-terminal session streams the prompt and exits with code
@@ -912,7 +912,7 @@ describe("codex device login service", () => {
       environment: { id: "env", driver: "sandbox" } as never,
       lease: { id: "lease" } as never,
       sessionHome,
-      timeoutMs: CODEX_DEVICE_LOGIN_TIMEOUT_MS,
+      timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
     });
 
     const chunks: string[] = [];
@@ -950,12 +950,12 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-describeEmbeddedPostgres("codex device login service concurrency (embedded postgres)", () => {
+describeEmbeddedPostgres("device login service concurrency (embedded postgres)", () => {
   let stopDb: (() => Promise<void>) | undefined;
   let db!: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("codex-device-login");
+    const started = await startEmbeddedPostgresTestDatabase("device-login");
     stopDb = started.stop;
     db = createDb(started.connectionString);
   });
@@ -1178,7 +1178,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     const sessionId = await seedStalePromotingRow(companyId, environmentId);
 
     const { runtime } = createReaperRuntime();
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => new Date() });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => new Date() });
 
     // Run the ownership check and the credential write inside the promotion lock.
     // The write flag stands in for the filesystem credential write. A gate holds
@@ -1227,7 +1227,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
     const sessionId = await seedStalePromotingRow(companyId, environmentId);
 
     const { runtime } = createReaperRuntime();
-    const reaper = createCodexDeviceLoginReaper({ store, runtime, now: () => new Date() });
+    const reaper = createDeviceLoginReaper({ store, runtime, now: () => new Date() });
 
     // The reaper reclaims the stale row first and times it out.
     const sweep = await reaper.sweep();
@@ -1286,10 +1286,10 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
 
     // The reaper reclaims the expired row and times it out.
     const { runtime: reaperRuntime } = createReaperRuntime();
-    const reaper = createCodexDeviceLoginReaper({
+    const reaper = createDeviceLoginReaper({
       store,
       runtime: reaperRuntime,
-      now: () => new Date(Date.now() + CODEX_DEVICE_LOGIN_TIMEOUT_MS + 60_000),
+      now: () => new Date(Date.now() + DEVICE_LOGIN_TIMEOUT_MS + 60_000),
     });
     const sweep = await reaper.sweep();
     expect(sweep.expiredTimedOut).toBe(1);

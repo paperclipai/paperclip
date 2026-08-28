@@ -147,13 +147,13 @@ import {
 } from "@paperclipai/adapter-codex-local/server";
 import {
   AdapterAuthSessionConflictError,
-  createCodexDeviceLoginService,
-  createCodexWorkerBoundLoginPtyOpener,
+  createDeviceLoginService,
+  createWorkerBoundLoginPtyOpener,
   createDbAdapterAuthSessionStore,
   createProductionLoginSessionRuntime,
-  CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
-  CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
-} from "../services/codex-device-login-service.js";
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+} from "../services/device-login-service.js";
 import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -496,7 +496,7 @@ export function agentRoutes(
   // process owns one instance, so the in-memory prompt and the cancellation
   // controllers persist across requests.
   const adapterLoginStore = createDbAdapterAuthSessionStore(db);
-  const adapterLoginService = createCodexDeviceLoginService({
+  const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
     runtime: createProductionLoginSessionRuntime({
       db,
@@ -514,7 +514,7 @@ export function agentRoutes(
       // opens. When no worker manager is bound, the runtime keeps its fail-closed
       // opener and the login fails closed.
       openLivePtySession: options.pluginWorkerManager
-        ? createCodexWorkerBoundLoginPtyOpener({
+        ? createWorkerBoundLoginPtyOpener({
             workerManager: options.pluginWorkerManager,
             log: (line) => logger.info(line),
           })
@@ -1357,8 +1357,8 @@ export function agentRoutes(
    */
   async function assertCodexLoginProviderCapability(environmentId: string): Promise<void> {
     if (!(await resolveProviderSupportsLoginPty(environmentId))) {
-      throw unprocessable(CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
-        code: CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+      throw unprocessable(DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
+        code: DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
       });
     }
   }

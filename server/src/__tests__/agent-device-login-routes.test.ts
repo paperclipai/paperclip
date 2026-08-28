@@ -1,14 +1,14 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AdapterAuthSessionConflictError } from "../services/codex-device-login-service.js";
+import { AdapterAuthSessionConflictError } from "../services/device-login-service.js";
 import type {
   AdapterAuthSessionRow,
   AdapterAuthSessionStore,
   AcquireLoginLeaseInput,
   LoginSessionLease,
   LoginSessionRuntime,
-} from "../services/codex-device-login-service.js";
+} from "../services/device-login-service.js";
 
 // The company-scoped adapter device-login routes. These tests drive the real
 // login-session service through the route layer. A fake in-memory store models
@@ -176,8 +176,8 @@ vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
 
 // Keep the real login-session service and the real conflict error. Replace only
 // the store factory and the production runtime factory with the harness fakes.
-vi.mock("../services/codex-device-login-service.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/codex-device-login-service.js")>();
+vi.mock("../services/device-login-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/device-login-service.js")>();
   return {
     ...actual,
     createDbAdapterAuthSessionStore: () => harness.store,

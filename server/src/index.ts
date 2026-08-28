@@ -72,11 +72,11 @@ import { questionResponseDeliveryService } from "./services/question-response-de
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
-import { createDbAdapterAuthSessionStore } from "./services/codex-device-login-service.js";
+import { createDbAdapterAuthSessionStore } from "./services/device-login-service.js";
 import {
-  createCodexDeviceLoginReaper,
+  createDeviceLoginReaper,
   createProductionLoginSessionReaperRuntime,
-} from "./services/codex-device-login-reaper.js";
+} from "./services/device-login-reaper.js";
 import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
@@ -1231,7 +1231,7 @@ export async function startServer(): Promise<StartedServer> {
     // any expired non-terminal session, retries the delete for any terminal
     // session left in `cleanup_pending`, and deletes a tagged lease that no live
     // session references.
-    const adapterLoginReaper = createCodexDeviceLoginReaper({
+    const adapterLoginReaper = createDeviceLoginReaper({
       store: createDbAdapterAuthSessionStore(db as any),
       runtime: createProductionLoginSessionReaperRuntime({
         db: db as any,

@@ -10,7 +10,7 @@ import {
   terminalCleanupWrite,
   type AdapterAuthReaperStore,
   type SandboxDeleteResult,
-} from "./codex-device-login-service.js";
+} from "./device-login-service.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { environmentService } from "./environments.js";
 
@@ -77,13 +77,13 @@ export interface ReaperSweepResult {
   cleanupPendingRemaining: number;
 }
 
-export interface CodexDeviceLoginReaperDeps {
+export interface DeviceLoginReaperDeps {
   store: AdapterAuthReaperStore;
   runtime: LoginSessionCleanupRuntime;
   now?: () => Date;
 }
 
-export function createCodexDeviceLoginReaper(deps: CodexDeviceLoginReaperDeps) {
+export function createDeviceLoginReaper(deps: DeviceLoginReaperDeps) {
   const { store, runtime } = deps;
   const now = deps.now ?? (() => new Date());
 
@@ -254,7 +254,7 @@ export function createCodexDeviceLoginReaper(deps: CodexDeviceLoginReaperDeps) {
   return { sweep };
 }
 
-export type CodexDeviceLoginReaper = ReturnType<typeof createCodexDeviceLoginReaper>;
+export type DeviceLoginReaper = ReturnType<typeof createDeviceLoginReaper>;
 
 // ---------------------------------------------------------------------------
 // The production runtime binding.

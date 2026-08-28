@@ -15,12 +15,12 @@ vi.mock("../services/environments.js", () => ({
 }));
 
 import {
-  createCodexWorkerBoundLoginPtyOpener,
+  createWorkerBoundLoginPtyOpener,
   createProductionLoginSessionRuntime,
-  sessionCodexHomePath,
-  CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
+  sessionLoginHomePath,
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
   type LoginPtySessionBinding,
-} from "../services/codex-device-login-service.js";
+} from "../services/device-login-service.js";
 
 // A fake worker pseudo-terminal session. It satisfies the shared transport
 // contract, so the opener can return it.
@@ -44,7 +44,7 @@ function makeBinding(overrides: Partial<LoginPtySessionBinding> = {}): LoginPtyS
     environmentId: "env-1",
     adapterType: "codex_local" as AgentAdapterType,
     providerLeaseId: "provider-lease-9",
-    sessionHome: sessionCodexHomePath(randomUUID()),
+    sessionHome: sessionLoginHomePath(randomUUID()),
     environment: { id: "env-1", driver: "sandbox" } as never,
     lease: {
       id: "lease-1",
@@ -54,14 +54,14 @@ function makeBinding(overrides: Partial<LoginPtySessionBinding> = {}): LoginPtyS
   };
 }
 
-describe("createCodexWorkerBoundLoginPtyOpener", () => {
+describe("createWorkerBoundLoginPtyOpener", () => {
   it("passes the binding's server-controlled session home to the worker route", async () => {
-    const sessionHome = sessionCodexHomePath(randomUUID());
+    const sessionHome = sessionLoginHomePath(randomUUID());
     const session = fakeWorkerSession();
     const openLoginPtySession = vi.fn(
       async (_pluginId: string, _input: Record<string, unknown>) => session,
     );
-    const openLivePtySession = createCodexWorkerBoundLoginPtyOpener({
+    const openLivePtySession = createWorkerBoundLoginPtyOpener({
       workerManager: { openLoginPtySession },
     });
 
@@ -90,7 +90,7 @@ describe("createCodexWorkerBoundLoginPtyOpener", () => {
 
   it("fails closed when the lease carries no sandbox worker binding", async () => {
     const openLoginPtySession = vi.fn();
-    const openLivePtySession = createCodexWorkerBoundLoginPtyOpener({
+    const openLivePtySession = createWorkerBoundLoginPtyOpener({
       workerManager: { openLoginPtySession },
     });
 
@@ -102,7 +102,7 @@ describe("createCodexWorkerBoundLoginPtyOpener", () => {
 
   it("fails closed when the adapter type has no login command key", async () => {
     const openLoginPtySession = vi.fn();
-    const openLivePtySession = createCodexWorkerBoundLoginPtyOpener({
+    const openLivePtySession = createWorkerBoundLoginPtyOpener({
       workerManager: { openLoginPtySession },
     });
 
@@ -131,7 +131,7 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
     // The capability flipped to unsupported after the route gate. The lease gate
     // reads the current capability and fails closed.
     const assertProviderSupportsLoginPty = vi.fn(async () => {
-      throw new Error(CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED);
+      throw new Error(DEVICE_LOGIN_PROVIDER_UNSUPPORTED);
     });
     const runtime = createProductionLoginSessionRuntime({
       db: {} as never,
@@ -141,7 +141,7 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
 
     await expect(
       runtime.acquireLoginLease({ ...acquireInput, sessionId: randomUUID() }),
-    ).rejects.toThrow(CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED);
+    ).rejects.toThrow(DEVICE_LOGIN_PROVIDER_UNSUPPORTED);
     // The runtime re-checked the current capability from the environment id.
     expect(assertProviderSupportsLoginPty).toHaveBeenCalledWith("env-1");
     // The gate failed before the provider lease, so no lease was acquired.

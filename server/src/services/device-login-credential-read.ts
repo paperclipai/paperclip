@@ -58,7 +58,7 @@ export const DEVICE_LOGIN_AUTH_READ_ERROR =
  * and runs it in the sandbox as `node -e <script> <sessionHome> <maxBytes>
  * [<expectedUid>]`. The sandbox already runs node for the Paperclip bridge, so the
  * helper needs no extra runtime. The helper source lives in
- * `scripts/codex-auth-read.cjs`, so no large script stays as a string literal in
+ * `scripts/adapter-auth-read.cjs`, so no large script stays as a string literal in
  * this module.
  *
  * The helper opens the filesystem root, then opens each session-home path
@@ -71,7 +71,7 @@ export const DEVICE_LOGIN_AUTH_READ_ERROR =
  * it, so the helper uses the login user's own id.
  */
 export const DEVICE_LOGIN_AUTH_READ_SCRIPT = readFileSync(
-  fileURLToPath(new URL("./scripts/codex-auth-read.cjs", import.meta.url)),
+  fileURLToPath(new URL("./scripts/adapter-auth-read.cjs", import.meta.url)),
   "utf8",
 );
 

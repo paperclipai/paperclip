@@ -14,9 +14,9 @@ import type {
 } from "@paperclipai/shared";
 import { toPublicAdapterAuthSessionStatus } from "@paperclipai/shared";
 import {
-  CODEX_DEVICE_LOGIN_COMMAND,
+  CODEX_DEVICE_LOGIN_COMMAND as DEFAULT_CODEX_LOGIN_COMMAND,
   runDeviceLogin,
-  type DeviceLoginOutcome,
+  type DeviceLoginOutcome as RunnerDeviceLoginOutcome,
   type DeviceLoginPrompt,
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
@@ -27,7 +27,7 @@ import {
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
-import { runDescriptorBoundAuthRead } from "./codex-device-login-credential-read.js";
+import { runDescriptorBoundAuthRead } from "./device-login-credential-read.js";
 import {
   resolveLoginCommandKey,
   validateLoginSessionHome,
@@ -47,7 +47,7 @@ import type { LoginPtyWorkerManagerLike } from "./setup-token-transport-binding.
 // through the owner read path.
 
 /** The host timeout for the sandbox login command. It is exactly five minutes. */
-export const CODEX_DEVICE_LOGIN_TIMEOUT_MS = 300_000;
+export const DEVICE_LOGIN_TIMEOUT_MS = 300_000;
 
 // The fixed error for a sandbox provider that does not advertise the login
 // pseudo-terminal capability. The Codex device login runs the login command on a
@@ -55,9 +55,9 @@ export const CODEX_DEVICE_LOGIN_TIMEOUT_MS = 300_000;
 // host the login. The route returns this specific, typed error and starts no
 // session, so an unsupported provider never reaches a session row, a lease, or a
 // pseudo-terminal.
-export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED =
+export const DEVICE_LOGIN_PROVIDER_UNSUPPORTED =
   "The sandbox provider does not support the Codex device login.";
-export const CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE =
+export const DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE =
   "codex_device_login_provider_unsupported";
 
 /**
@@ -178,7 +178,7 @@ export interface LoginSessionActivityEvent {
 
 export type LoginSessionActivityRecorder = (event: LoginSessionActivityEvent) => void;
 
-export interface StartCodexDeviceLoginInput {
+export interface StartDeviceLoginInput {
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -193,7 +193,7 @@ export interface StartCodexDeviceLoginInput {
   signal?: AbortSignal;
 }
 
-export interface CodexDeviceLoginOutcome {
+export interface DeviceLoginOutcome {
   sessionId: string;
   /** The resolved public terminal status. */
   status: AdapterAuthSessionStatus;
@@ -206,7 +206,7 @@ export interface CodexDeviceLoginOutcome {
   sandboxDeleteObserved: boolean;
 }
 
-export interface StartCodexDeviceLoginResult {
+export interface StartDeviceLoginResult {
   /** The initial public response after the insert and the acquisition. */
   session: AdapterAuthSessionResponse;
   /**
@@ -214,7 +214,7 @@ export interface StartCodexDeviceLoginResult {
    * readiness check, the promotion write, and the cleanup-state handoff, and
    * then it records the terminal status.
    */
-  completed: Promise<CodexDeviceLoginOutcome>;
+  completed: Promise<DeviceLoginOutcome>;
 }
 
 /** The service throws this when the active company credential slot is taken. */
@@ -706,7 +706,7 @@ export function terminalCleanupWrite(
 // The service.
 // ---------------------------------------------------------------------------
 
-export interface CodexDeviceLoginServiceDeps {
+export interface DeviceLoginServiceDeps {
   store: AdapterAuthSessionStore;
   runtime: LoginSessionRuntime;
   /** The mandatory credential promotion. A successful login authenticates only
@@ -716,7 +716,7 @@ export interface CodexDeviceLoginServiceDeps {
   now?: () => Date;
 }
 
-export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps) {
+export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
   const { store, runtime, promotion } = deps;
   const now = deps.now ?? (() => new Date());
   const recordActivity = deps.recordActivity ?? (() => {});
@@ -727,15 +727,15 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   const promptsBySession = new Map<string, DeviceLoginPrompt>();
 
   async function start(
-    input: StartCodexDeviceLoginInput,
-  ): Promise<StartCodexDeviceLoginResult> {
+    input: StartDeviceLoginInput,
+  ): Promise<StartDeviceLoginResult> {
     const sessionId = randomUUID();
     // The public session identifier the API returns and looks up. It is an
     // independent CSPRNG value, so it never equals the internal `sessionId` and a
     // caller cannot address the row by the internal id.
     const publicSessionId = randomUUID();
     const startedAt = now();
-    const ttlSeconds = input.ttlSeconds ?? CODEX_DEVICE_LOGIN_TIMEOUT_MS / 1000;
+    const ttlSeconds = input.ttlSeconds ?? DEVICE_LOGIN_TIMEOUT_MS / 1000;
     const expiresAt = new Date(startedAt.getTime() + ttlSeconds * 1000);
     const base = {
       sessionId,
@@ -830,12 +830,12 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   }
 
   async function runLogin(ctx: {
-    input: StartCodexDeviceLoginInput;
+    input: StartDeviceLoginInput;
     sessionId: string;
     lease: LoginSessionLease;
     base: Omit<LoginSessionActivityEvent, "phase">;
     activity: (phase: LoginSessionActivityPhase) => void;
-  }): Promise<CodexDeviceLoginOutcome> {
+  }): Promise<DeviceLoginOutcome> {
     const { input, sessionId, lease, activity } = ctx;
 
     // Serialize every status write for this session, so a late write from a
@@ -870,11 +870,11 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     }
 
     let authBytes: Buffer | null = null;
-    let outcome: DeviceLoginOutcome;
+    let outcome: RunnerDeviceLoginOutcome;
     try {
       const result = await runDeviceLogin(lease.driver, {
-        command: CODEX_DEVICE_LOGIN_COMMAND,
-        timeoutMs: CODEX_DEVICE_LOGIN_TIMEOUT_MS,
+        command: DEFAULT_CODEX_LOGIN_COMMAND,
+        timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
         signal: input.signal,
         authPath: lease.authPath,
         onPrompt: (prompt) => {
@@ -988,7 +988,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     sessionId: string;
     lease: LoginSessionLease;
     activity: (phase: LoginSessionActivityPhase) => void;
-  }): Promise<CodexDeviceLoginOutcome> {
+  }): Promise<DeviceLoginOutcome> {
     const { sessionId, lease, activity } = ctx;
     const observation = await observeSandboxDelete(() => lease.deleteSandbox());
     if (observation.confirmed) {
@@ -1020,7 +1020,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
       },
     ) => Promise<boolean>;
     activity: (phase: LoginSessionActivityPhase) => void;
-  }): Promise<CodexDeviceLoginOutcome> {
+  }): Promise<DeviceLoginOutcome> {
     const { sessionId, lease, terminal, reason, expectedStatuses, conditionalTransition, activity } =
       ctx;
 
@@ -1133,7 +1133,7 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
   return { start, readOwnerSession, cancelOwnerSession };
 }
 
-export type CodexDeviceLoginService = ReturnType<typeof createCodexDeviceLoginService>;
+export type DeviceLoginService = ReturnType<typeof createDeviceLoginService>;
 
 /** Resolve the public status of a row. A `cleanup_pending` row resolves the
  *  retained terminal status; every other status maps through the shared helper. */
@@ -1162,13 +1162,13 @@ function buildFailure(
 
 /** The fixed, session-specific Codex home template. The session identifier is
  *  server-generated, so no caller controls this path. */
-export function sessionCodexHomePath(sessionId: string): string {
+export function sessionLoginHomePath(sessionId: string): string {
   return `/tmp/paperclip-adapter-login/${sessionId}`;
 }
 
 /** The fixed, session-specific credential path. No caller controls it. */
 export function sessionCredentialPath(sessionId: string): string {
-  return `${sessionCodexHomePath(sessionId)}/auth.json`;
+  return `${sessionLoginHomePath(sessionId)}/auth.json`;
 }
 
 /**
@@ -1266,7 +1266,7 @@ const CODEX_LOGIN_PTY_BIND_FAILED =
   "device login failed: the sandbox pseudo-terminal transport is not bound.";
 
 /** The dependencies the worker-bound Codex live pseudo-terminal opener needs. */
-export interface CodexWorkerBoundLoginPtyOpenerDeps {
+export interface WorkerBoundLoginPtyOpenerDeps {
   /** The plugin worker manager that owns the host route gate. */
   workerManager: LoginPtyWorkerManagerLike;
   /** A non-leaking status sink. It receives only fixed status lines. */
@@ -1292,8 +1292,8 @@ function readLeaseMetaString(value: unknown): string | null {
  * never from the caller. It validates the session home shape before the worker
  * RPC. It fails closed when the lease carries no sandbox worker binding.
  */
-export function createCodexWorkerBoundLoginPtyOpener(
-  deps: CodexWorkerBoundLoginPtyOpenerDeps,
+export function createWorkerBoundLoginPtyOpener(
+  deps: WorkerBoundLoginPtyOpenerDeps,
 ): OpenLoginPtySession {
   const log = deps.log ?? (() => {});
   return async (binding) => {
@@ -1398,7 +1398,7 @@ export function createProductionLoginSessionRuntime(
         ...(record.lease.metadata ?? {}),
         [LOGIN_LEASE_SESSION_TAG_KEY]: input.sessionId,
       });
-      const sessionHome = sessionCodexHomePath(input.sessionId);
+      const sessionHome = sessionLoginHomePath(input.sessionId);
       const authPath = sessionCredentialPath(input.sessionId);
       const providerLeaseId = record.lease.providerLeaseId ?? record.lease.id;
       // Resolve the live pseudo-terminal opener for this lease. When no live
@@ -1422,7 +1422,7 @@ export function createProductionLoginSessionRuntime(
         environment: record.environment,
         lease: record.lease,
         sessionHome,
-        timeoutMs: CODEX_DEVICE_LOGIN_TIMEOUT_MS,
+        timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
       });
       const driverKey = record.environment.driver;
       return {
