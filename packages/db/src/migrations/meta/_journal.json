@@ -1597,6 +1597,13 @@
       "when": 1787854369379,
       "tag": "0229_drop_company_brand_color_and_attachment_max_bytes",
       "breakpoints": true
+    },
+    {
+      "idx": 230,
+      "version": "7",
+      "when": 1787880484952,
+      "tag": "0230_better_auth_account_issuer",
+      "breakpoints": true
     }
   ]
 }
