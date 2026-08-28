@@ -6964,6 +6964,11 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
+  beforeResolvedInteractionContinuationDispatchCheck?: (input: {
+    runId: string;
+    issueId: string;
+  }) => Promise<void>;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -16474,6 +16479,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTarget,
       });
       const adapter = getServerAdapter(agent.adapterType);
+      const cancelStaleResolvedInteractionContinuationBeforeDispatch = async () => {
+        if (!issueId || !isResolvedInteractionContinuationWakeContext(context)) return false;
+        await options.beforeResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
+        const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+        if (!staleness.stale) return false;
+        await cancelRunForStaleIssue(run, issueId, staleness);
+        return true;
+      };
       const localAgentJwtScope =
         issueRef?.workMode === "skill_test"
           ? { kind: "skill_test" as const, issueId: issueRef.id }
@@ -16716,6 +16729,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             promptMetrics: { promptChars: prompt.length },
             context: { provider: "codex", protocolVersion: 1 },
           });
+          if (await cancelStaleResolvedInteractionContinuationBeforeDispatch()) return;
           adapterResult = await executeNativeCodexRunner({
             db,
             companyId: agent.companyId,
@@ -16784,6 +16798,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (managedMcpConfig) {
             adapterContext.paperclipManagedMcp = managedMcpConfig;
           }
+          if (await cancelStaleResolvedInteractionContinuationBeforeDispatch()) return;
           adapterResult = await adapter.execute({
             runId: run.id,
             agent,
