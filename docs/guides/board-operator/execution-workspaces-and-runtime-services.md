@@ -73,7 +73,7 @@ A managed service that runs Paperclip itself needs one canonical origin for Bett
 2. An explicit instance auth public base URL.
 3. The managed service's rendered `expose.urlTemplate`, injected as a low-priority runtime fallback.
 
-The exposed URL must describe the route the operator's browser actually uses. Non-loopback callbacks require HTTPS. Loopback HTTP such as `http://127.0.0.1:45439` is supported for local browser QA. Bind addresses, internal-only single-label names such as `paperclip-dev`, reserved/non-resolving names, and non-loopback HTTP origins fail service startup with configuration guidance instead of silently producing an unusable redirect URI.
+The exposed URL must describe the route the operator's browser actually uses. Non-loopback callbacks require HTTPS. Loopback HTTP such as `http://127.0.0.1:45439` is supported for local browser QA. A non-loopback hostname rendered from workspace data must remain inside the stable domain suffix configured by `expose.urlTemplate`; branch names cannot replace that domain. Bind addresses, internal-only single-label names such as `paperclip-dev`, reserved/non-resolving names, and non-loopback HTTP origins fail service startup with configuration guidance instead of silently producing an unusable redirect URI.
 
 Keep readiness and browser exposure separate when a proxy or tailnet route fronts the process:
 
