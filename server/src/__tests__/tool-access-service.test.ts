@@ -695,6 +695,18 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body.ttlSeconds).toBeLessThanOrEqual(900);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
+    const revoked = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+    expect(revoked.status).toBe(403);
+    expect(revoked.body.error).toContain("no longer authorized");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
     const issuances = await db.select().from(connectionTokenIssuances);
     expect(issuances).toHaveLength(1);
     expect(issuances[0]).toMatchObject({
@@ -4398,6 +4410,23 @@ describeEmbeddedPostgres("tool access service", () => {
     const versionCountBeforeSuspension = (await db.select().from(companySecretVersions).where(
       inArray(companySecretVersions.secretId, grant.credentialSecretRefs.map((ref) => ref.secretId)),
     )).length;
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
+    await expect(service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["channels:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    })).rejects.toMatchObject({ status: 403 });
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
     const retry = await service.startAuthorizationForAgent({
       companyId: company.id,
       connectionId: connected.connectionId,

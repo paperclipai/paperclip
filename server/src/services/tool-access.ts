@@ -2308,14 +2308,38 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
     const snapshot = asRecord(run.contextSnapshot);
     const paperclipIssue = asRecord(snapshot.paperclipIssue);
+    const responsibleUserId = runSnapshotString(snapshot, "responsibleUserId", "responsible_user_id")
+      ?? runSnapshotString(paperclipIssue, "responsibleUserId", "responsible_user_id")
+      ?? run.responsibleUserId;
+    if (!responsibleUserId) {
+      throw forbidden("Agent run has no responsible user for delegated connection access");
+    }
+    const responsibleMembership = await db
+      .select({
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+      })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, run.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, responsibleUserId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !responsibleMembership
+      || responsibleMembership.status !== "active"
+      || !responsibleMembership.membershipRole
+      || responsibleMembership.membershipRole === "viewer"
+    ) {
+      throw forbidden("Responsible user is no longer authorized for company write access");
+    }
     return {
       run,
       issueId: runSnapshotString(snapshot, "issueId") ?? runSnapshotString(paperclipIssue, "id"),
       projectId: runSnapshotString(snapshot, "projectId") ?? runSnapshotString(paperclipIssue, "projectId"),
       routineId: runSnapshotString(snapshot, "routineId"),
-      responsibleUserId: runSnapshotString(snapshot, "responsibleUserId", "responsible_user_id")
-        ?? runSnapshotString(paperclipIssue, "responsibleUserId", "responsible_user_id")
-        ?? run.responsibleUserId,
+      responsibleUserId,
     };
   }
 
