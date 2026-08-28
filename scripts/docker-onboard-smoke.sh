@@ -135,11 +135,19 @@ generate_bootstrap_invite_url() {
   printf '%s\n' "$invite_url"
 }
 
+# Seconds any single bootstrap request may take. Without this a connection that
+# is accepted and then stalls hangs curl forever: the retry loop below only
+# checks its deadline between attempts, so an unbounded call never returns to be
+# checked and the job runs to its own timeout printing nothing.
+SMOKE_REQUEST_TIMEOUT_SECONDS="${SMOKE_REQUEST_TIMEOUT_SECONDS:-20}"
+
 post_json_with_cookies() {
   local url="$1"
   local body="$2"
   local output_file="$3"
   curl -sS \
+    --connect-timeout 5 \
+    --max-time "$SMOKE_REQUEST_TIMEOUT_SECONDS" \
     -o "$output_file" \
     -w "%{http_code}" \
     -c "$COOKIE_JAR" \
@@ -160,9 +168,24 @@ get_with_cookies() {
     "$url"
 }
 
-sign_up_or_sign_in() {
-  local signup_response="$TMP_DIR/signup.json"
-  local signup_status
+# Seconds to keep retrying the admin bootstrap after /api/health first answers.
+# `/api/health` returning 200 is not a promise that auth can serve a write: the
+# container cold-installs paperclipai and brings up embedded postgres, and there
+# is a window where health answers while a sign-up still fails. One un-retried
+# attempt in that window is what made the nightly smoke flake — it failed on
+# 2026-08-21, -23, -24, -26 and -27 while passing on the days in between, with
+# identical inputs.
+SMOKE_BOOTSTRAP_RETRY_SECONDS="${SMOKE_BOOTSTRAP_RETRY_SECONDS:-90}"
+
+# One sign-up, then one sign-in, reporting the status of each. Sign-in is the
+# path for a container whose data dir already holds the admin — including one
+# created by an earlier pass of the retry loop below, which is what makes the
+# pair safe to repeat.
+try_sign_up_or_sign_in() {
+  local signup_response="$1"
+  local signin_response="$2"
+  local signup_status signin_status
+
   signup_status="$(post_json_with_cookies \
     "$PAPERCLIP_PUBLIC_URL/api/auth/sign-up/email" \
     "{\"name\":\"$SMOKE_ADMIN_NAME\",\"email\":\"$SMOKE_ADMIN_EMAIL\",\"password\":\"$SMOKE_ADMIN_PASSWORD\"}" \
@@ -172,8 +195,6 @@ sign_up_or_sign_in() {
     return 0
   fi
 
-  local signin_response="$TMP_DIR/signin.json"
-  local signin_status
   signin_status="$(post_json_with_cookies \
     "$PAPERCLIP_PUBLIC_URL/api/auth/sign-in/email" \
     "{\"email\":\"$SMOKE_ADMIN_EMAIL\",\"password\":\"$SMOKE_ADMIN_PASSWORD\"}" \
@@ -183,11 +204,38 @@ sign_up_or_sign_in() {
     return 0
   fi
 
+  LAST_SIGNUP_STATUS="$signup_status"
+  LAST_SIGNIN_STATUS="$signin_status"
+  return 1
+}
+
+sign_up_or_sign_in() {
+  local signup_response="$TMP_DIR/signup.json"
+  local signin_response="$TMP_DIR/signin.json"
+  local deadline=$((SECONDS + SMOKE_BOOTSTRAP_RETRY_SECONDS))
+  local attempts=0
+
+  while :; do
+    attempts=$((attempts + 1))
+    if try_sign_up_or_sign_in "$signup_response" "$signin_response"; then
+      return 0
+    fi
+    if ((SECONDS >= deadline)); then
+      break
+    fi
+    sleep 2
+  done
+
+  # The statuses, not just the bodies. A failing sign-up here has historically
+  # returned an empty body — 000 when curl could not connect at all — so
+  # printing the body alone said nothing about what went wrong, which is why
+  # this flake went a week without a diagnosis.
   echo "Smoke bootstrap failed: could not sign up or sign in admin user" >&2
-  echo "Sign-up response:" >&2
+  echo "Gave up after $attempts attempts over ${SMOKE_BOOTSTRAP_RETRY_SECONDS}s." >&2
+  echo "Sign-up HTTP ${LAST_SIGNUP_STATUS:-<none>}, body:" >&2
   cat "$signup_response" >&2 || true
   echo >&2
-  echo "Sign-in response:" >&2
+  echo "Sign-in HTTP ${LAST_SIGNIN_STATUS:-<none>}, body:" >&2
   cat "$signin_response" >&2 || true
   echo >&2
   return 1
