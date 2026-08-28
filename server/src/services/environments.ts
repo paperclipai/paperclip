@@ -1335,17 +1335,6 @@ export function environmentService(db: Db) {
       providerLeaseId?: string | null;
       expiresAt?: Date | null;
       metadata?: Record<string, unknown> | null;
-      /**
-       * Re-check the environment company binding inside the lease insert
-       * transaction. The login routes set this to close the check-to-lease
-       * race: managed reconciliation can bind a sandbox to another company
-       * between the route guard and this acquire. When the environment is
-       * bound to a company other than `companyId`, the insert throws the 403
-       * `environment_company_mismatch` and no lease row is created (fail
-       * closed). An unbound (instance-global) environment stays open to every
-       * member. All other callers keep the plain, non-transactional insert.
-       */
-      assertCompanyBinding?: boolean;
     }): Promise<EnvironmentLease> => {
       const now = new Date();
       const values = {
@@ -1368,47 +1357,49 @@ export function environmentService(db: Db) {
         createdAt: now,
         updatedAt: now,
       };
-      const row = input.assertCompanyBinding
-        ? await db.transaction(async (tx) => {
-            // Lock the environment row first. Managed reconciliation locks the
-            // same sandbox environment rows with `for update` before it writes a
-            // company binding, so this lock serializes the two transactions on
-            // this row and closes the time-of-check to time-of-use window.
-            await tx
-              .select({ id: environments.id })
-              .from(environments)
-              .where(eq(environments.id, input.environmentId))
-              .for("update");
-            // Re-read the company binding inside the locked transaction. A
-            // binding a reconciliation committed after the route guard now
-            // appears here. Reject a foreign-company environment before the
-            // insert, so the login holds no lease.
-            const boundRows = await tx
-              .select({ companyId: builtInManagedResources.companyId })
-              .from(builtInManagedResources)
-              .where(
-                and(
-                  eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
-                  eq(builtInManagedResources.resourceId, input.environmentId),
-                ),
-              );
-            const boundCompanyIds = Array.from(new Set(boundRows.map((boundRow) => boundRow.companyId)));
-            if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(input.companyId)) {
-              throw forbidden("The selected environment belongs to another company.", {
-                code: "environment_company_mismatch",
-              });
-            }
-            return tx
-              .insert(environmentLeases)
-              .values(values)
-              .returning()
-              .then((rows) => rows[0] ?? null);
-          })
-        : await db
-            .insert(environmentLeases)
-            .values(values)
-            .returning()
-            .then((rows) => rows[0] ?? null);
+      // Re-check the environment company binding inside the lease insert
+      // transaction, for every caller. Managed reconciliation can bind a
+      // sandbox to another company between an earlier route guard and this
+      // acquire, so this check closes that check-to-lease race. When the
+      // environment is bound to a company other than `companyId`, the insert
+      // throws the 403 `environment_company_mismatch` and no lease row is
+      // created (fail closed). An unbound (instance-global) environment stays
+      // open to every company.
+      const row = await db.transaction(async (tx) => {
+        // Lock the environment row first. Managed reconciliation locks the
+        // same sandbox environment rows with `for update` before it writes a
+        // company binding, so this lock serializes the two transactions on
+        // this row and closes the time-of-check to time-of-use window.
+        await tx
+          .select({ id: environments.id })
+          .from(environments)
+          .where(eq(environments.id, input.environmentId))
+          .for("update");
+        // Re-read the company binding inside the locked transaction. A
+        // binding a reconciliation committed after an earlier route guard now
+        // appears here. Reject a foreign-company environment before the
+        // insert, so the caller holds no lease.
+        const boundRows = await tx
+          .select({ companyId: builtInManagedResources.companyId })
+          .from(builtInManagedResources)
+          .where(
+            and(
+              eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
+              eq(builtInManagedResources.resourceId, input.environmentId),
+            ),
+          );
+        const boundCompanyIds = Array.from(new Set(boundRows.map((boundRow) => boundRow.companyId)));
+        if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(input.companyId)) {
+          throw forbidden("The selected environment belongs to another company.", {
+            code: "environment_company_mismatch",
+          });
+        }
+        return tx
+          .insert(environmentLeases)
+          .values(values)
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
       if (!row) {
         throw new Error("Failed to acquire environment lease");
       }

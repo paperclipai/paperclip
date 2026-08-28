@@ -409,6 +409,34 @@ describe("production sandbox provider", () => {
     });
   });
 
+  it("propagates a foreign-company binding rejection and opens no pseudo-terminal", async () => {
+    const mismatchError = Object.assign(new Error("The selected environment belongs to another company."), {
+      status: 403,
+      details: { code: "environment_company_mismatch" },
+    });
+    const acquireRunLease = vi.fn().mockRejectedValue(mismatchError);
+    const openLivePtySession = vi.fn();
+    const provider = createProductionSetupTokenSandboxProvider({
+      environments: {
+        getById: async () => ({ id: "env-1", name: "Sandbox", driver: "sandbox", status: "active" }) as never,
+        getLeaseById: async () => null,
+        releaseLease: async () => ({}) as never,
+      },
+      environmentRuntime: {
+        acquireRunLease,
+        getDriver: () => null,
+      },
+      openLivePtySession,
+    });
+
+    await expect(
+      provider.acquire({ scope: SCOPE, deadline: Date.now() + 1000 }),
+    ).rejects.toBe(mismatchError);
+    // The rejected acquire holds no lease, so the login never opens a
+    // pseudo-terminal for the foreign-company sandbox.
+    expect(openLivePtySession).not.toHaveBeenCalled();
+  });
+
   it("acquires a lease and binds the live opener when it is present", async () => {
     const openPtySession: LoginPtySessionOpener = async () => ({
       onData(): void {},

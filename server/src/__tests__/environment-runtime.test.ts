@@ -23,6 +23,7 @@ import {
   heartbeatRuns,
   plugins,
   projects,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -37,6 +38,7 @@ import {
 } from "../services/environment-runtime.ts";
 import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import * as environmentsModule from "../services/environments.ts";
+import * as environmentConfigModule from "../services/environment-config.ts";
 import { logger } from "../middleware/logger.ts";
 import { environmentService } from "../services/environments.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -189,6 +191,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.delete(environments);
     await db.delete(executionWorkspaces);
     await db.delete(plugins);
+    await db.delete(secretAccessEvents);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(projects);
@@ -312,6 +315,32 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       } as const,
       runId,
     };
+  }
+
+  /**
+   * Simulate the check-to-lease race the locked insert closes: the early
+   * company-binding check reads an empty company list once, as if a managed
+   * reconciliation had not yet written the binding row when the check ran.
+   * The binding row already sits in the database by the time this runs, so
+   * the later, locked check inside `acquireLease` still finds it and
+   * rejects. Every other environment-service method keeps its real
+   * behavior. A test that installs this spy must build its runtime instance
+   * AFTER installing it, and must restore the spy when it finishes.
+   */
+  function mockEarlyBindingCheckAsUnbound() {
+    const realEnvironmentService = environmentsModule.environmentService;
+    return vi
+      .spyOn(environmentsModule, "environmentService")
+      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
+        const real = realEnvironmentService(database);
+        return {
+          ...real,
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
+        };
+      });
   }
 
   async function seedReusablePluginSandboxLease() {
@@ -639,7 +668,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
 
     const destroySpy = vi.spyOn(sandboxProviderRuntime, "destroySandboxProviderLease");
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     try {
+      const runtime = environmentRuntimeService(db);
       await expect(
         runtime.acquireRunLease({
           companyId,
@@ -647,7 +683,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         }),
       ).rejects.toMatchObject({
         status: 403,
@@ -676,6 +711,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       );
     } finally {
       destroySpy.mockRestore();
+      environmentServiceSpy.mockRestore();
     }
   });
 
@@ -766,44 +802,498 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
     } as unknown as PluginWorkerManager;
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    await expect(
-      runtimeWithPlugin.acquireRunLease({
+    try {
+      await expect(
+        runtimeWithPlugin.acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+        }),
+      ).rejects.toMatchObject({
+        status: 403,
+        details: { code: "environment_company_mismatch" },
+      });
+
+      // The acquire records the durable pending-cleanup row before the teardown,
+      // so the row lands while the database is proven reachable. The successful
+      // teardown then releases the row to the terminal `expired` state, so no
+      // active or pending_cleanup row remains for the orphan.
+      const leaseRows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(leaseRows).toHaveLength(1);
+      expect(leaseRows[0]?.status).toBe("expired");
+      expect(leaseRows[0]?.cleanupStatus).toBe("success");
+
+      // The acquire provisioned the remote plugin sandbox, so it destroys the
+      // sandbox on the rejection. Without this teardown the rejected insert leaks a
+      // live sandbox that no lease row tracks.
+      const destroyCalls = (workerManager.call as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (callArgs) => callArgs[1] === "environmentDestroyLease",
+      );
+      expect(destroyCalls).toHaveLength(1);
+      expect(destroyCalls[0]?.[2]).toMatchObject({ providerLeaseId: "plugin-lease-1" });
+    } finally {
+      environmentServiceSpy.mockRestore();
+    }
+
+    await environmentService(db).update(environment.id, { driver: "local", config: {} });
+  });
+
+  it("rejects a foreign-company bound environment before it resolves the provider config or calls the provider", async () => {
+    // Once the provider config resolves a secret-ref with its owning company,
+    // a rejection that arrives only at the lease insert would let a foreign
+    // company reach the provider call first, using the owning company's
+    // credential to create a real sandbox. The runtime must reject before it
+    // resolves the config, so neither the config resolver nor the provider
+    // mock below may ever run.
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const ownerSecret = await secretService(db).create(companyId, {
+      name: `early-check-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "owner-provider-key",
+    });
+    const providerConfig = {
+      provider: "early-check-plugin",
+      apiKey: ownerSecret.id,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Early Check Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: ownerSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.early-check-sandbox-provider",
+      packageName: "@acme/early-check-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.early-check-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Early Check Sandbox",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "early-check-plugin",
+            kind: "sandbox_provider",
+            displayName: "Early Check Sandbox",
+            configSchema: {
+              type: "object",
+              properties: {
+                apiKey: { type: "string", format: "secret-ref" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // Bind the environment to the owning company, then lease it as a second,
+    // foreign company.
+    await db.insert(builtInManagedResources).values({
+      companyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Early Check",
+      issuePrefix: "OTE",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async () => {
+        throw new Error("The provider must never be called for a rejected foreign-company lease.");
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: [] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const configSpy = vi.spyOn(environmentConfigModule, "resolveEnvironmentDriverConfigForRuntime");
+
+    try {
+      await expect(
+        runtimeWithPlugin.acquireRunLease({
+          companyId: otherCompanyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+        }),
+      ).rejects.toMatchObject({
+        status: 403,
+        details: { code: "environment_company_mismatch" },
+      });
+
+      expect(configSpy).not.toHaveBeenCalled();
+      expect(workerManager.call).not.toHaveBeenCalled();
+
+      const leaseRows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(leaseRows).toHaveLength(0);
+    } finally {
+      configSpy.mockRestore();
+    }
+  });
+
+  it("returns a scrubbed 422 for an environment provider config secret-ref with no binding row, and never calls the provider", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const ownerSecret = await secretService(db).create(companyId, {
+      name: `unbound-config-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "unbound-provider-key",
+    });
+    const providerConfig = {
+      provider: "unbound-config-plugin",
+      apiKey: ownerSecret.id,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Missing Binding Secret Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    // No `createBinding` call: the config names a real secret, but no binding
+    // row records who owns it for this environment and config path.
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.unbound-config-sandbox-provider",
+      packageName: "@acme/unbound-config-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.unbound-config-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Unbound Config Sandbox",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "unbound-config-plugin",
+            kind: "sandbox_provider",
+            displayName: "Unbound Config Sandbox",
+            configSchema: {
+              type: "object",
+              properties: {
+                apiKey: { type: "string", format: "secret-ref" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async () => {
+        throw new Error("The provider must never be called when the credential cannot resolve.");
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: [] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    let caught: any;
+    try {
+      await runtimeWithPlugin.acquireRunLease({
         companyId,
         environment,
         issueId: null,
         heartbeatRunId: runId,
         persistedExecutionWorkspace: null,
-        assertCompanyBinding: true,
-      }),
-    ).rejects.toMatchObject({
-      status: 403,
-      details: { code: "environment_company_mismatch" },
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.status).toBe(422);
+    expect(caught.details).toMatchObject({ code: "environment_provider_credential_unavailable" });
+    expect(caught.message).toContain(environment.name);
+    // The message names the environment and a short reason; it never carries
+    // the secret id, the owning company id, the config path, or a stack trace.
+    const serializedDetails = JSON.stringify(caught.details ?? {});
+    expect(caught.message).not.toContain(ownerSecret.id);
+    expect(caught.message).not.toContain(companyId);
+    expect(caught.message).not.toContain("apiKey");
+    expect(serializedDetails).not.toContain(ownerSecret.id);
+    expect(serializedDetails).not.toContain(companyId);
+    expect(serializedDetails).not.toContain("apiKey");
+    expect(serializedDetails).not.toContain("stack");
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("resolves a shared unbound environment's provider credential with its owning company for a second company, and records the cross-company access event", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment } = await seedEnvironment();
+    const ownerSecret = await secretService(db).create(companyId, {
+      name: `shared-env-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "owner-provider-key-shared",
+    });
+    const providerConfig = {
+      provider: "shared-secret-plugin",
+      apiKey: ownerSecret.id,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Shared Unbound Secret Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: ownerSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.shared-secret-sandbox-provider",
+      packageName: "@acme/shared-secret-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.shared-secret-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Shared Secret Sandbox",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "shared-secret-plugin",
+            kind: "sandbox_provider",
+            displayName: "Shared Secret Sandbox",
+            configSchema: {
+              type: "object",
+              properties: {
+                apiKey: { type: "string", format: "secret-ref" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // No `built_in_managed_resources` row: the environment is instance-global,
+    // and a second company (distinct from the credential owner) leases it.
+    const secondCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: secondCompanyId,
+      name: "Second Co Shared Secret",
+      issuePrefix: "SCS",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const secondAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: secondAgentId,
+      companyId: secondCompanyId,
+      name: "SecondCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const secondRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId: secondCompanyId,
+      agentId: secondAgentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
 
-    // The acquire records the durable pending-cleanup row before the teardown,
-    // so the row lands while the database is proven reachable. The successful
-    // teardown then releases the row to the terminal `expired` state, so no
-    // active or pending_cleanup row remains for the orphan.
-    const leaseRows = await db
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentAcquireLease") {
+          expect(params.config.apiKey).toBe("owner-provider-key-shared");
+          return {
+            providerLeaseId: "shared-secret-lease-1",
+            metadata: {
+              provider: "shared-secret-plugin",
+              apiKey: "owner-provider-key-shared",
+              reuseLease: false,
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: [] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId: secondCompanyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: secondRunId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.status).toBe("active");
+    expect(acquired.lease.companyId).toBe(secondCompanyId);
+    // The lease metadata carries the secret id back, not the resolved value.
+    expect(acquired.lease.metadata).toMatchObject({ apiKey: ownerSecret.id });
+
+    const accessEvents = await db
       .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.environmentId, environment.id));
-    expect(leaseRows).toHaveLength(1);
-    expect(leaseRows[0]?.status).toBe("expired");
-    expect(leaseRows[0]?.cleanupStatus).toBe("success");
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.secretId, ownerSecret.id));
+    expect(accessEvents).toHaveLength(1);
+    expect(accessEvents[0]).toMatchObject({
+      companyId,
+      consumerType: "environment",
+      consumerId: environment.id,
+      configPath: "apiKey",
+      credentialSubjectType: "company",
+      credentialSubjectId: secondCompanyId,
+      outcome: "success",
+    });
+  });
 
-    // The acquire provisioned the remote plugin sandbox, so it destroys the
-    // sandbox on the rejection. Without this teardown the rejected insert leaks a
-    // live sandbox that no lease row tracks.
-    const destroyCalls = (workerManager.call as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (callArgs) => callArgs[1] === "environmentDestroyLease",
-    );
-    expect(destroyCalls).toHaveLength(1);
-    expect(destroyCalls[0]?.[2]).toMatchObject({ providerLeaseId: "plugin-lease-1" });
+  it("leases a shared unbound environment as a second company", async () => {
+    const { environment } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Shared Unbound Fake Sandbox",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    // The environment carries no `built_in_managed_resources` row, so it is
+    // instance-global: every company may lease it.
+    const secondCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: secondCompanyId,
+      name: "Second Co Unbound Fake",
+      issuePrefix: "SCU",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const secondAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: secondAgentId,
+      companyId: secondCompanyId,
+      name: "SecondCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const secondRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId: secondCompanyId,
+      agentId: secondAgentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
 
-    await environmentService(db).update(environment.id, { driver: "local", config: {} });
+    const acquired = await runtime.acquireRunLease({
+      companyId: secondCompanyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: secondRunId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.status).toBe("active");
+    expect(acquired.lease.companyId).toBe(secondCompanyId);
+
+    const released = await runtime.releaseRunLeases(secondRunId);
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease.status).toBe("released");
   });
 
   it("records a durable pending-cleanup lease when the built-in teardown fails after a foreign-company rejection", async () => {
@@ -836,7 +1326,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const destroySpy = vi
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockRejectedValue(new Error("teardown failed"));
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     try {
+      const runtime = environmentRuntimeService(db);
       await expect(
         runtime.acquireRunLease({
           companyId,
@@ -844,7 +1341,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         }),
       ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
 
@@ -861,6 +1357,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(rows[0]?.providerLeaseId).toMatch(new RegExp(`^sandbox://fake/${runId}/[0-9a-f-]{36}$`));
     } finally {
       destroySpy.mockRestore();
+      environmentServiceSpy.mockRestore();
     }
   });
 
@@ -904,7 +1401,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           .where(eq(environmentLeases.environmentId, environment.id));
         pendingCleanupRowsAtTeardown = rows.filter((row) => row.status === "pending_cleanup").length;
       });
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     try {
+      const runtime = environmentRuntimeService(db);
       await expect(
         runtime.acquireRunLease({
           companyId,
@@ -912,7 +1416,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         }),
       ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
 
@@ -931,6 +1434,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(rows[0]?.cleanupStatus).toBe("success");
     } finally {
       destroySpy.mockRestore();
+      environmentServiceSpy.mockRestore();
     }
   });
 
@@ -972,6 +1476,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           ...real,
           insertPendingCleanupLease: () =>
             Promise.reject(new Error("pending-cleanup write failed; database down")),
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     const destroySpy = vi
@@ -988,7 +1501,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1100,29 +1612,38 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
     } as unknown as PluginWorkerManager;
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    await expect(
-      runtimeWithPlugin.acquireRunLease({
-        companyId,
-        environment,
-        issueId: null,
-        heartbeatRunId: runId,
-        persistedExecutionWorkspace: null,
-        assertCompanyBinding: true,
-      }),
-    ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+    try {
+      await expect(
+        runtimeWithPlugin.acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+        }),
+      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
 
-    // The failed plugin teardown left a durable pending-cleanup row that carries
-    // the provider lease id for a later sweep.
-    const rows = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.environmentId, environment.id));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.status).toBe("pending_cleanup");
-    expect(rows[0]?.cleanupStatus).toBe("failed");
-    expect(rows[0]?.providerLeaseId).toBe("plugin-lease-2");
+      // The failed plugin teardown left a durable pending-cleanup row that carries
+      // the provider lease id for a later sweep.
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("pending_cleanup");
+      expect(rows[0]?.cleanupStatus).toBe("failed");
+      expect(rows[0]?.providerLeaseId).toBe("plugin-lease-2");
+    } finally {
+      environmentServiceSpy.mockRestore();
+    }
 
     await environmentService(db).update(environment.id, { driver: "local", config: {} });
   });
@@ -1171,6 +1692,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         return {
           ...real,
           insertPendingCleanupLease: failingInsert,
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     // The durable database write fails, so the only durable handle left is the
@@ -1188,7 +1718,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1289,6 +1818,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             }
             return real.insertPendingCleanupLease(input);
           },
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     try {
@@ -1303,7 +1841,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1387,6 +1924,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             }
             return real.insertPendingCleanupLease(input);
           },
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
@@ -1400,7 +1946,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1507,6 +2052,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             }
             return real.insertPendingCleanupLease(input);
           },
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
@@ -1523,7 +2077,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1631,6 +2184,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             }
             return real.insertPendingCleanupLease(input);
           },
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
@@ -1654,7 +2216,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1733,6 +2294,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             }
             return real.insertPendingCleanupLease(input);
           },
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     const errorLogSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
@@ -1746,7 +2316,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1887,6 +2456,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           ...real,
           insertPendingCleanupLease: () =>
             Promise.reject(new Error("pending-cleanup write failed")),
+          // The binding row above already sits in the database before the acquire
+          // runs, so the new early company-binding check would reject before the
+          // provider call this test exercises. Simulate the real race the locked
+          // insert closes: the early check reads an empty list once, and the
+          // locked insert still finds the row and rejects.
+          listBoundCompanyIds: vi
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockImplementation((environmentId: string) => real.listBoundCompanyIds(environmentId)),
         };
       });
     try {
@@ -1901,7 +2479,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         })
         .then(
           () => {
@@ -1998,7 +2575,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockRejectedValueOnce(new Error("teardown failed"))
       .mockResolvedValue(undefined);
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     try {
+      const runtime = environmentRuntimeService(db);
       await expect(
         runtime.acquireRunLease({
           companyId,
@@ -2006,7 +2590,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         }),
       ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
 
@@ -2028,6 +2611,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(destroySpy).toHaveBeenLastCalledWith(expect.objectContaining({ providerLeaseId }));
     } finally {
       destroySpy.mockRestore();
+      environmentServiceSpy.mockRestore();
     }
   });
 
@@ -2059,7 +2643,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const destroySpy = vi
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockRejectedValue(new Error("teardown failed"));
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     try {
+      const runtime = environmentRuntimeService(db);
       await expect(
         runtime.acquireRunLease({
           companyId,
@@ -2067,7 +2658,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         }),
       ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
 
@@ -2094,6 +2684,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(still.cleanupStatus).toBe("failed");
     } finally {
       destroySpy.mockRestore();
+      environmentServiceSpy.mockRestore();
     }
   });
 
@@ -2132,7 +2723,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockRejectedValueOnce(new Error("teardown failed"))
       .mockResolvedValue(undefined);
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     try {
+      const runtime = environmentRuntimeService(db);
       await expect(
         runtime.acquireRunLease({
           companyId,
@@ -2140,7 +2738,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           issueId: null,
           heartbeatRunId: runId,
           persistedExecutionWorkspace: null,
-          assertCompanyBinding: true,
         }),
       ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
 
@@ -2164,6 +2761,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(destroySpy).toHaveBeenLastCalledWith(expect.objectContaining({ providerLeaseId }));
     } finally {
       destroySpy.mockRestore();
+      environmentServiceSpy.mockRestore();
     }
   });
 
@@ -2853,34 +3451,43 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
     } as unknown as PluginWorkerManager;
+    // The binding row above already sits in the database before the acquire
+    // runs, so the new early company-binding check would reject before the
+    // provider call this test exercises. Simulate the real race the locked
+    // insert closes: the early check reads an empty list once, and the
+    // locked insert still finds the row and rejects.
+    const environmentServiceSpy = mockEarlyBindingCheckAsUnbound();
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    await expect(
-      runtimeWithPlugin.acquireRunLease({
-        companyId,
-        environment,
-        issueId: null,
-        heartbeatRunId: runId,
-        persistedExecutionWorkspace: null,
-        assertCompanyBinding: true,
-      }),
-    ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+    try {
+      await expect(
+        runtimeWithPlugin.acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+        }),
+      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
 
-    const orphan = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.environmentId, environment.id))
-      .then((r) => r[0]!);
-    expect(orphan.status).toBe("pending_cleanup");
-    expect(orphan.providerLeaseId).toBe("plugin-lease-3");
+      const orphan = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id))
+        .then((r) => r[0]!);
+      expect(orphan.status).toBe("pending_cleanup");
+      expect(orphan.providerLeaseId).toBe("plugin-lease-3");
 
-    const lease = await environmentService(db).getLeaseById(orphan.id);
-    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
-    expect(destroyAttempts).toBe(2);
-    const destroyCall = (workerManager.call as unknown as ReturnType<typeof vi.fn>).mock.calls
-      .filter((callArgs) => callArgs[1] === "environmentDestroyLease")
-      .at(-1);
-    expect(destroyCall?.[2]).toMatchObject({ providerLeaseId: "plugin-lease-3" });
+      const lease = await environmentService(db).getLeaseById(orphan.id);
+      await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
+      expect(destroyAttempts).toBe(2);
+      const destroyCall = (workerManager.call as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .filter((callArgs) => callArgs[1] === "environmentDestroyLease")
+        .at(-1);
+      expect(destroyCall?.[2]).toMatchObject({ providerLeaseId: "plugin-lease-3" });
+    } finally {
+      environmentServiceSpy.mockRestore();
+    }
 
     await environmentService(db).update(environment.id, { driver: "local", config: {} });
   });

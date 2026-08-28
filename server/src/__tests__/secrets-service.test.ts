@@ -286,6 +286,163 @@ describeEmbeddedPostgres("secretService", () => {
     expect(rows[0]?.companyId).toBe(companyA);
   });
 
+  it("replaceSecretRefsForInstanceTarget serializes two concurrent calls for the same target instead of leaving rows from both companies", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `concurrent-key-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `concurrent-key-b-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const environmentId = randomUUID();
+
+    // Race two calls for the same target and config path, one per company.
+    // Without the transaction-scoped advisory lock, both calls' delete
+    // steps can run before either call's insert commits, so both inserts
+    // survive and leave one row per company behind.
+    await Promise.all([
+      svc.replaceSecretRefsForInstanceTarget(
+        { targetType: "environment", targetId: environmentId },
+        [{ secretId: secretA.id, configPath: "apiKey" }],
+      ),
+      svc.replaceSecretRefsForInstanceTarget(
+        { targetType: "environment", targetId: environmentId },
+        [{ secretId: secretB.id, configPath: "apiKey" }],
+      ),
+    ]);
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+          eq(companySecretBindings.configPath, "apiKey"),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect([companyA, companyB]).toContain(rows[0]?.companyId);
+
+    const binding = await svc.getBindingForTarget({
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+      secretId: rows[0]!.secretId,
+    });
+    expect(binding).not.toBeNull();
+    expect(binding?.companyId).toBe(rows[0]?.companyId);
+  });
+
+  it("getBindingForTarget resolves a duplicate binding row by matching the exact secret id", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `race-key-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `race-key-b-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const environmentId = randomUUID();
+    // Two concurrent replaceSecretRefsForInstanceTarget calls can each
+    // commit an insert for the same target and config path under a
+    // different company, because the unique index is scoped per company.
+    // Seed that left-behind state directly instead of racing real calls.
+    await db.insert(companySecretBindings).values([
+      {
+        companyId: companyA,
+        secretId: secretA.id,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "apiKey",
+        versionSelector: "latest",
+        required: true,
+        projectionClass: "unclassified",
+      },
+      {
+        companyId: companyB,
+        secretId: secretB.id,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "apiKey",
+        versionSelector: "latest",
+        required: true,
+        projectionClass: "unclassified",
+      },
+    ]);
+
+    // The stored config value picks which of the two leftover rows is the
+    // real owner. Filtering by that exact secret id resolves the row
+    // instead of failing closed on the duplicate.
+    const bindingA = await svc.getBindingForTarget({
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+      secretId: secretA.id,
+    });
+    expect(bindingA).toEqual({ companyId: companyA, secretId: secretA.id });
+
+    const bindingB = await svc.getBindingForTarget({
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+      secretId: secretB.id,
+    });
+    expect(bindingB).toEqual({ companyId: companyB, secretId: secretB.id });
+
+    // A secret id that matches neither leftover row still fails closed.
+    const secretC = await svc.create(companyA, {
+      name: `race-key-c-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "c",
+    });
+    const bindingC = await svc.getBindingForTarget({
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+      secretId: secretC.id,
+    });
+    expect(bindingC).toBeNull();
+  });
+
+  it("getBindingForTarget returns the single row for a target, config path, and secret id", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `single-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "one",
+    });
+    const environmentId = randomUUID();
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+    });
+
+    const binding = await svc.getBindingForTarget({
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+      secretId: secret.id,
+    });
+
+    expect(binding).toEqual({ companyId, secretId: secret.id });
+  });
+
   it("describeSecretRefs names secrets across companies and omits unknown ids", async () => {
     const companyA = await seedCompany("Alpha");
     const companyB = await seedCompany("Beta");

@@ -1860,7 +1860,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       await bindEnvironmentToCompany(environmentId, otherCompanyId);
 
       await expect(
-        svc.acquireLease({ companyId, environmentId, assertCompanyBinding: true }),
+        svc.acquireLease({ companyId, environmentId }),
       ).rejects.toMatchObject({
         status: 403,
         details: { code: "environment_company_mismatch" },
@@ -1876,7 +1876,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     it("acquires when the environment is unbound (instance-global)", async () => {
       const { companyId, environmentId } = await seedSandboxEnvironment("Unbound Sandbox");
 
-      const lease = await svc.acquireLease({ companyId, environmentId, assertCompanyBinding: true });
+      const lease = await svc.acquireLease({ companyId, environmentId });
       expect(lease.status).toBe("active");
       expect(lease.companyId).toBe(companyId);
     });
@@ -1885,12 +1885,12 @@ describeEmbeddedPostgres("environmentService leases", () => {
       const { companyId, environmentId } = await seedSandboxEnvironment("Own Sandbox");
       await bindEnvironmentToCompany(environmentId, companyId);
 
-      const lease = await svc.acquireLease({ companyId, environmentId, assertCompanyBinding: true });
+      const lease = await svc.acquireLease({ companyId, environmentId });
       expect(lease.status).toBe("active");
     });
 
-    it("does not check the binding for callers that omit the flag", async () => {
-      const { companyId, environmentId } = await seedSandboxEnvironment("Legacy Path Sandbox");
+    it("rejects a foreign-company bind even when the caller passes no other lease options", async () => {
+      const { companyId, environmentId } = await seedSandboxEnvironment("No-Flag Sandbox");
       const otherCompanyId = randomUUID();
       await db.insert(companies).values({
         id: otherCompanyId,
@@ -1902,10 +1902,14 @@ describeEmbeddedPostgres("environmentService leases", () => {
       });
       await bindEnvironmentToCompany(environmentId, otherCompanyId);
 
-      // The heartbeat run path does not set the flag, so the binding check does
-      // not run and the lease acquires as before.
-      const lease = await svc.acquireLease({ companyId, environmentId });
-      expect(lease.status).toBe("active");
+      // Every caller now reaches the locked binding check, so no caller can
+      // opt out of it and acquire a lease in a foreign-company environment.
+      await expect(
+        svc.acquireLease({ companyId, environmentId }),
+      ).rejects.toMatchObject({
+        status: 403,
+        details: { code: "environment_company_mismatch" },
+      });
     });
   });
 });

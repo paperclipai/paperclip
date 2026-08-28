@@ -52,19 +52,6 @@ describe("buildLoginLeaseAcquireArgs", () => {
     expect(withoutAgent.agentId).toBeNull();
   });
 
-  it("passes the company-binding assertion through and leaves it unset by default", () => {
-    const asserted = buildLoginLeaseAcquireArgs({
-      metadata: { companyId: "co-1", environment: ENVIRONMENT },
-      assertCompanyBinding: true,
-    });
-    expect(asserted.assertCompanyBinding).toBe(true);
-
-    const unset = buildLoginLeaseAcquireArgs({
-      metadata: { companyId: "co-1", environment: ENVIRONMENT },
-    });
-    expect(unset.assertCompanyBinding).toBeUndefined();
-  });
-
   it("passes the requested expiry through and defaults to null", () => {
     const deadline = new Date("2026-01-01T00:00:00.000Z");
     const bounded = buildLoginLeaseAcquireArgs({

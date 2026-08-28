@@ -811,11 +811,6 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
-        // Re-check the company binding atomically at lease time. The route
-        // guard already rejected a foreign environment, but the binding could
-        // change between the guard check and the lease acquire. This closes
-        // that check-to-lease race so a foreign sandbox never gets a lease.
-        assertCompanyBinding: true,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would

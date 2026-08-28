@@ -729,3 +729,74 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
   });
 });
+
+describe("environmentRunOrchestrator — acquireLease", () => {
+  const mockDb = {} as any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("propagates a foreign-company binding rejection as lease_acquire_failed and holds no lease", async () => {
+    const mismatchError = Object.assign(new Error("The selected environment belongs to another company."), {
+      status: 403,
+      details: { code: "environment_company_mismatch" },
+    });
+    const runtime = makeMockRuntime({
+      acquireRunLease: vi.fn().mockRejectedValue(mismatchError),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const environment = makeEnvironment("sandbox");
+
+    await expect(
+      orchestrator.acquireLease({
+        companyId: "company-1",
+        environment,
+        issueId: null,
+        agentId: "agent-1",
+        heartbeatRunId: "run-1",
+        persistedExecutionWorkspace: null,
+        executionWorkspaceSettings: null,
+        adapterType: null,
+      }),
+    ).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof EnvironmentRunError &&
+        err.code === "lease_acquire_failed" &&
+        err.cause === mismatchError,
+    );
+
+    // The agent run path calls straight through to the runtime's mandatory
+    // company-binding check; it never bypasses or retries around it.
+    expect(runtime.acquireRunLease).toHaveBeenCalledOnce();
+  });
+
+  it("acquires a lease for a second company on a shared unbound environment", async () => {
+    // The environment carries no `built_in_managed_resources` row, so every
+    // company may lease it. The orchestrator adds no company-specific gating
+    // of its own: it forwards `companyId` straight to the runtime and trusts
+    // whatever the runtime's own mandatory binding check decides.
+    const lease = makeLease({ companyId: "company-2" });
+    const runtime = makeMockRuntime({
+      acquireRunLease: vi.fn().mockResolvedValue(lease),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const environment = makeEnvironment("sandbox");
+
+    const result = await orchestrator.acquireLease({
+      companyId: "company-2",
+      environment,
+      issueId: null,
+      agentId: "agent-1",
+      heartbeatRunId: "run-1",
+      persistedExecutionWorkspace: null,
+      executionWorkspaceSettings: null,
+      adapterType: null,
+    });
+
+    expect(result).toBe(lease);
+    expect(runtime.acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: "company-2" }),
+    );
+  });
+});

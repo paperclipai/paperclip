@@ -174,4 +174,35 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
     expect(acquireRunLease).toHaveBeenCalledTimes(1);
     expect(acquired.providerLeaseId).toBe("provider-lease-1");
   });
+
+  it("propagates a foreign-company binding rejection from the runtime acquire and tags no lease", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: "env-1",
+      driver: "sandbox",
+      config: { provider: "daytona" },
+    });
+    mockEnvironmentService.updateLeaseMetadata.mockClear();
+    const mismatchError = Object.assign(new Error("The selected environment belongs to another company."), {
+      status: 403,
+      details: { code: "environment_company_mismatch" },
+    });
+    const acquireRunLease = vi.fn().mockRejectedValue(mismatchError);
+    const assertProviderSupportsLoginPty = vi.fn(async () => {});
+    const runtime = createProductionLoginSessionRuntime({
+      db: {} as never,
+      environmentRuntime: { acquireRunLease, getDriver: vi.fn() } as never,
+      assertProviderSupportsLoginPty,
+    });
+
+    // The Codex sign-in reaches the same mandatory company-binding check the
+    // runtime's acquireRunLease now always runs, and does not swallow or
+    // retry around a rejection.
+    await expect(
+      runtime.acquireLoginLease({ ...acquireInput, sessionId: randomUUID() }),
+    ).rejects.toBe(mismatchError);
+    expect(acquireRunLease).toHaveBeenCalledTimes(1);
+    // The rejected acquire holds no lease, so the runtime tags no lease
+    // metadata with the session identifier.
+    expect(mockEnvironmentService.updateLeaseMetadata).not.toHaveBeenCalled();
+  });
 });

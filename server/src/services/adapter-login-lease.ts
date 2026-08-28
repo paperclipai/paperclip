@@ -32,11 +32,6 @@ export interface BuildLoginLeaseAcquireArgsOptions {
    */
   targetAgentId?: string | null;
   /**
-   * Re-check the environment company binding inside the lease insert
-   * transaction. The setup-token flow sets this to true.
-   */
-  assertCompanyBinding?: boolean;
-  /**
    * The latest time the acquired lease may stay active. The setup-token flow
    * passes the session deadline. The codex flow passes nothing.
    */
@@ -66,7 +61,6 @@ export function buildLoginLeaseAcquireArgs(
     // Apply the active custom-image template, so the sandbox binds to the
     // trusted image and runtime identity.
     applyCustomImageTemplate: true,
-    assertCompanyBinding: options.assertCompanyBinding,
     requestedExpiresAt: options.requestedExpiresAt ?? null,
   };
 }

@@ -81,6 +81,7 @@ import {
   type SandboxOrphanCleanupSpool,
 } from "./sandbox-orphan-cleanup-spool.js";
 import { logger } from "../middleware/logger.js";
+import { forbidden } from "../errors.js";
 
 // The constant error kind for the durable orphan-cleanup-write-failed log. The
 // log never reads the caught exception, because the exception can carry a
@@ -456,17 +457,6 @@ export interface EnvironmentDriverAcquireInput {
    * behavior.
    */
   requestedExpiresAt?: Date | null;
-  /**
-   * Re-check the environment company binding inside the lease insert
-   * transaction. The login acquire paths set this so a managed reconciliation
-   * that binds the sandbox to another company between the route guard and this
-   * acquire cannot let the login run in a foreign-company sandbox. The lease
-   * insert then rejects a foreign-company environment with the 403
-   * `environment_company_mismatch` and holds no lease. An unbound
-   * (instance-global) environment stays open. Other callers keep the current
-   * behavior.
-   */
-  assertCompanyBinding?: boolean;
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -1657,6 +1647,22 @@ function createSandboxEnvironmentDriver(
     driver: "sandbox",
 
     async acquireRunLease(input) {
+      // Reject a foreign-company bound environment before the driver resolves
+      // the provider config or calls the provider. Once the provider config
+      // resolves a secret-ref with its owning company, a late rejection would
+      // let a foreign company use the owning company's provider credential to
+      // create a real sandbox before the lease insert catches the mismatch.
+      // This early read is not itself race-free: the locked check inside
+      // `environmentsSvc.acquireLease` still runs on every call below and
+      // closes the window between this read and the lease insert. The two
+      // checks stay independent; this one narrows the credential-exposure
+      // window, the other one closes the check-to-lease race.
+      const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(input.environment.id);
+      if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(input.companyId)) {
+        throw forbidden("The selected environment belongs to another company.", {
+          code: "environment_company_mismatch",
+        });
+      }
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
       const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
         issueId: input.issueId,
@@ -1915,7 +1921,6 @@ function createSandboxEnvironmentDriver(
             executionWorkspaceId: input.executionWorkspaceId,
             issueId: input.issueId,
             heartbeatRunId: input.heartbeatRunId,
-            assertCompanyBinding: input.assertCompanyBinding,
             leasePolicy: resolvedLeasePolicy,
             provider: parsed.config.provider,
             providerLeaseId: acquiredLease.providerLeaseId,
@@ -2121,7 +2126,6 @@ function createSandboxEnvironmentDriver(
           executionWorkspaceId: input.executionWorkspaceId,
           issueId: input.issueId,
           heartbeatRunId: input.heartbeatRunId,
-          assertCompanyBinding: input.assertCompanyBinding,
           leasePolicy: resolvedLeasePolicy,
           provider: parsed.config.provider,
           providerLeaseId: providerLease.providerLeaseId,
@@ -3345,12 +3349,6 @@ export function environmentRuntimeService(
        * provider expiry only.
        */
       requestedExpiresAt?: Date | null;
-      /**
-       * Re-check the environment company binding inside the lease insert
-       * transaction. The login acquire paths set this to reject a foreign-company
-       * environment with the 403 `environment_company_mismatch`.
-       */
-      assertCompanyBinding?: boolean;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
@@ -3372,7 +3370,6 @@ export function environmentRuntimeService(
         adapterType: input.adapterType ?? null,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
         requestedExpiresAt: input.requestedExpiresAt ?? null,
-        assertCompanyBinding: input.assertCompanyBinding,
       });
 
       return {

@@ -426,13 +426,6 @@ export function createProductionSetupTokenSandboxProvider(
           // The setup-token login is company-and-environment scoped. It carries
           // no target agent, so the lease binds no agent.
           targetAgentId: null,
-          // Re-check the environment company binding inside the lease insert
-          // transaction. The route guard ran earlier, so a managed
-          // reconciliation can bind this sandbox to another company between the
-          // guard and this acquire. The lease insert then rejects a
-          // foreign-company environment with the 403
-          // `environment_company_mismatch` and holds no lease.
-          assertCompanyBinding: true,
           // Bound the lease expiry to the session deadline. The runtime records
           // the earlier of this deadline and the provider expiry on the lease
           // row.

@@ -590,6 +590,14 @@ type SecretConsumerContext = {
   heartbeatRunId?: string | null;
   pluginId?: string | null;
   allowedBindingIds?: string[] | null;
+  /**
+   * The company that made this resolution request, when it can differ from
+   * the resolution `companyId` (the secret's owner). A shared, instance-scoped
+   * environment can resolve a provider credential another company owns; the
+   * access-event record then tags the requester as the credential subject, so
+   * the row shows which company used another company's credential.
+   */
+  requestingCompanyId?: string | null;
 };
 
 type SecretBindingContext = Omit<SecretConsumerContext, "consumerType"> & {
@@ -1309,6 +1317,13 @@ export function secretService(db: Db) {
   ): Promise<RuntimeSecretResolution> {
     const bindingContext = options?.bindingContext;
     const accessContext = options?.accessContext ?? bindingContext;
+    // A requester that differs from the resolution company used another
+    // company's credential. Record that requester as the credential subject,
+    // so the access event shows the cross-company use.
+    const crossCompanyRequesterId =
+      accessContext?.requestingCompanyId && accessContext.requestingCompanyId !== companyId
+        ? accessContext.requestingCompanyId
+        : null;
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
@@ -1366,8 +1381,8 @@ export function secretService(db: Db) {
           provider: providerId,
           context: accessContext,
           credentialOwnerUserId: secret.ownerUserId ?? null,
-          credentialSubjectType: secret.scope === "user" ? "user" : null,
-          credentialSubjectId: secret.ownerUserId ?? null,
+          credentialSubjectType: crossCompanyRequesterId ? "company" : secret.scope === "user" ? "user" : null,
+          credentialSubjectId: crossCompanyRequesterId ?? secret.ownerUserId ?? null,
           outcome: "success",
         }).catch(() => undefined),
       ]);
@@ -1396,8 +1411,8 @@ export function secretService(db: Db) {
         provider: providerId,
         context: accessContext,
         credentialOwnerUserId: secret.ownerUserId ?? null,
-        credentialSubjectType: secret.scope === "user" ? "user" : null,
-        credentialSubjectId: secret.ownerUserId ?? null,
+        credentialSubjectType: crossCompanyRequesterId ? "company" : secret.scope === "user" ? "user" : null,
+        credentialSubjectId: crossCompanyRequesterId ?? secret.ownerUserId ?? null,
         outcome: "failure",
         errorCode,
       }).catch(() => undefined);
@@ -4564,6 +4579,16 @@ export function secretService(db: Db) {
      * written, and the delete + insert run on one executor, so an invalid
      * ref (deleted or unknown secret) fails the whole call without leaving
      * the target half-bound.
+     *
+     * The delete step removes every row for the target across every
+     * company, then the insert step writes fresh rows under each ref's
+     * owning company. Two concurrent calls for the same target could
+     * otherwise interleave their delete and insert steps and leave one row
+     * per company behind. `getBindingForTarget` resolves that leftover
+     * state by matching on the exact secret id, but this lock still stops
+     * new leftover rows: it serializes concurrent calls for the same
+     * target, so the state cannot occur going forward. Calls for different
+     * targets still run concurrently.
      */
     replaceSecretRefsForInstanceTarget: async (
       target: { targetType: SecretBindingTargetType; targetId: string },
@@ -4576,7 +4601,10 @@ export function secretService(db: Db) {
         projectionClass?: SecretProjectionClass;
         projectionAllowlistKey?: string | null;
       }>,
-      options?: { db?: SecretBindingDb },
+      // The lock this function takes to serialize the delete + insert below
+      // (see the docstring) is transaction-scoped, so a caller-supplied
+      // executor must be a transaction, not a plain `Db`.
+      options?: { db?: DbTransaction },
     ) => {
       const normalizedRefs: Array<{
         companyId: string;
@@ -4618,7 +4646,13 @@ export function secretService(db: Db) {
         });
       }
 
-      const writeBindings = async (executor: SecretBindingDb) => {
+      const writeBindings = async (executor: DbTransaction) => {
+        // Hold this lock for the rest of the transaction so a concurrent
+        // call for the same target waits instead of interleaving its
+        // delete + insert with this one (see the docstring above).
+        await executor.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`secret-binding-target:${target.targetType}:${target.targetId}`}, 0))`,
+        );
         await executor
           .delete(companySecretBindings)
           .where(
@@ -4713,6 +4747,60 @@ export function secretService(db: Db) {
           ),
         )
         .then((rows) => [...new Set(rows.map((row) => row.companyId))]),
+
+    /**
+     * Read the binding row for one target, one config path, and the secret
+     * the caller's stored config currently references. The caller does not
+     * know the owning company in advance.
+     *
+     * `replaceSecretRefsForInstanceTarget` deletes every existing row for a
+     * target before it writes fresh rows, so exactly one row should exist
+     * for a given target and config path. A race between two concurrent
+     * replace calls (or an old row left over from before that function's
+     * advisory lock started serializing those calls) can still leave more
+     * than one row behind. Each surviving row belongs to a different
+     * secret, because the two calls' inserts each ran with a different ref.
+     * A secret belongs to exactly one company, so filtering by the exact
+     * secret id resolves that ambiguity: at most one row can match the
+     * target, the config path, and the secret id together.
+     *
+     * This function returns null when no row matches. It also returns null,
+     * and logs a warning, in the case the schema does not allow: two rows
+     * for the same secret id under different companies.
+     */
+    getBindingForTarget: async (input: {
+      targetType: SecretBindingTargetType;
+      targetId: string;
+      configPath: string;
+      secretId: string;
+    }): Promise<{ companyId: string; secretId: string } | null> => {
+      const rows = await db
+        .select({ companyId: companySecretBindings.companyId, secretId: companySecretBindings.secretId })
+        .from(companySecretBindings)
+        .where(
+          and(
+            eq(companySecretBindings.targetType, input.targetType),
+            eq(companySecretBindings.targetId, input.targetId),
+            eq(companySecretBindings.configPath, input.configPath),
+            eq(companySecretBindings.secretId, input.secretId),
+          ),
+        );
+      if (rows.length === 0) return null;
+      if (rows.length > 1) {
+        logger.warn(
+          {
+            targetType: input.targetType,
+            targetId: input.targetId,
+            configPath: input.configPath,
+            secretId: input.secretId,
+            rowCount: rows.length,
+          },
+          "multiple owner rows found for one environment binding target, config path, and secret; failing closed",
+        );
+        return null;
+      }
+      return rows[0];
+    },
 
     syncEnvBindingsForTarget: async (
       companyId: string,
