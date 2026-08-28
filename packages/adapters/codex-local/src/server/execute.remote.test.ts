@@ -214,6 +214,96 @@ describe("codex remote execution", () => {
     }));
   });
 
+  it("keeps staged managed MCP gateway URLs on the advertised Paperclip origin for remote runs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-mcp-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    let stagedConfigToml = "";
+    (syncDirectoryToSsh as unknown as {
+      mockImplementationOnce: (fn: (args: { localDir: string }) => Promise<void>) => void;
+    }).mockImplementationOnce(async (args: { localDir: string }) => {
+      stagedConfigToml = await readFile(path.join(args.localDir, "config.toml"), "utf8");
+    });
+
+    const originalApiUrl = process.env.PAPERCLIP_API_URL;
+    const originalRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://10.42.0.42:8000";
+
+    try {
+      await execute({
+        runId: "run-remote-mcp",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "CodexCoder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "codex",
+          env: {
+            CODEX_HOME: codexHomeDir,
+          },
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+          paperclipManagedMcp: {
+            managedMcpOnly: true,
+            gateways: [{
+              name: "managed-only",
+              endpointPath: "/api/tool-gateway/gateways/manual/mcp",
+              bearerToken: "managed-token",
+            }],
+          },
+        },
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+        onLog: async () => {},
+      });
+    } finally {
+      if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = originalApiUrl;
+      if (originalRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = originalRuntimeApiUrl;
+    }
+
+    expect(stagedConfigToml).toContain(
+      'url = "https://paperclip.example.test/api/tool-gateway/gateways/manual/mcp"',
+    );
+    expect(stagedConfigToml).not.toContain("http://10.42.0.42:8000");
+    expect(stagedConfigToml).not.toContain("http://127.0.0.1:4310");
+
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
+  });
+
   it("stages only the allowlist into the home asset: keeps config.toml/skills/auth, drops session+sqlite state, no exclude", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-allowlist-"));
     cleanupDirs.push(rootDir);

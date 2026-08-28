@@ -4168,15 +4168,16 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
   // The bridge worker runs inside the same process that serves the Paperclip
   // API, so forwarded sandbox calls must target the LOCAL listen origin. The
-  // PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL exports now prefer a
-  // configured public base URL, which is the origin browsers and external
-  // agents use; routing this in-process loopback hop through the network edge
-  // breaks deployments whose public origin sits behind a session-gated proxy
-  // (every forwarded agent API call is rejected at the edge). Server boot
-  // exports PAPERCLIP_LISTEN_HOST / PAPERCLIP_LISTEN_PORT before any run
-  // executes, and resolveDefaultPaperclipApiUrl() maps wildcard listen hosts
-  // to the loopback address of the same family (0.0.0.0 -> 127.0.0.1,
-  // :: -> [::1]), so the fallback is always loopback-reachable.
+  // runtime exports are now split: PAPERCLIP_API_URL may advertise a public
+  // browser-facing origin, while PAPERCLIP_RUNTIME_API_URL prefers the
+  // internal control-plane path local child processes use. This in-process
+  // bridge must still target the LOCAL listen origin directly; routing the hop
+  // through the network edge breaks deployments whose public origin sits
+  // behind a session-gated proxy. Server boot exports PAPERCLIP_LISTEN_HOST /
+  // PAPERCLIP_LISTEN_PORT before any run executes, and
+  // resolveDefaultPaperclipApiUrl() maps wildcard listen hosts to the loopback
+  // address of the same family (0.0.0.0 -> 127.0.0.1, :: -> [::1]), so the
+  // fallback is always loopback-reachable.
   // input.hostApiUrl stays available as an explicit override seam.
   const hostApiUrl = input.hostApiUrl?.trim() || resolveDefaultPaperclipApiUrl();
   const shellCommand = adapterExecutionTargetShellCommand(target);

@@ -92,6 +92,8 @@ Key responsibilities:
 | `asString(v)` | `@paperclipai/adapter-utils` | Safe config value extraction |
 | `asNumber(v)` | `@paperclipai/adapter-utils` | Safe number extraction |
 
+For local child-process adapters, `buildPaperclipEnv(agent)` prefers the runtime control-plane origin over the advertised public hostname when the server exports `PAPERCLIP_RUNTIME_API_URL`. Use the injected `PAPERCLIP_API_URL` directly from the child process instead of reconstructing hosts or ports yourself.
+
 ### AdapterExecutionContext
 
 ```ts

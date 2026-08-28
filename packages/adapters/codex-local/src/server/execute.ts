@@ -736,6 +736,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
     const paperclipBaseEnv = buildPaperclipEnv(agent);
+    // The managed MCP block is written into CODEX_HOME/config.toml and may be
+    // staged to a remote target. Keep those persisted gateway URLs anchored to
+    // the advertised control-plane origin, not the runtime-only child-process
+    // URL that can be host-internal or bridge-local for this one run.
+    const managedMcpApiBaseUrl =
+      process.env.PAPERCLIP_API_URL?.trim() || paperclipBaseEnv.PAPERCLIP_API_URL;
     const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
       name: server.name,
       endpointPath: server.url,
@@ -747,7 +753,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const managedMcp = await writeManagedCodexMcpConfig({
       codexHome: effectiveCodexHome,
-      apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
+      apiBaseUrl: managedMcpApiBaseUrl,
       gateways: managedMcpGateways,
     });
     if (managedMcpGateways.length > 0) {
