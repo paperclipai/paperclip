@@ -9,7 +9,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0231_fixed_hannibal_king.sql";
+const MIGRATION_FILE = "0232_fixed_hannibal_king.sql";
 const migrationSql = fs.readFileSync(
   path.join(import.meta.dirname, "migrations", MIGRATION_FILE),
   "utf8",
