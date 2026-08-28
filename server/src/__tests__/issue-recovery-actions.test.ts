@@ -663,6 +663,46 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("restores a checkout-reopened done issue instead of blocking it as stranded", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const completedAt = new Date("2026-08-22T21:41:43.290Z");
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        completedAt,
+        updatedAt: new Date("2026-08-22T21:42:39.165Z"),
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Process lost",
+      errorCode: "process_lost",
+      startedAt: new Date("2026-08-22T21:42:01.058Z"),
+      finishedAt: new Date("2026-08-22T21:44:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId, wakeReason: "process_lost_retry" },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.terminalStatusRestored).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "done",
+      assigneeAgentId: coderId,
+    });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("still recovers system-cancelled runs with no operator attribution", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({

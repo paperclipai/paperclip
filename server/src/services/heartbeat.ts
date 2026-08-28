@@ -10298,6 +10298,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (issueId) {
+      const issueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0]?.status ?? null);
+      if (issueStatus === "done" || issueStatus === "cancelled") {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Process-loss retry suppressed because the issue already reached a terminal status",
+          payload: { issueId, currentStatus: issueStatus },
+        });
+        await releaseIssueExecutionAndPromote(run);
+        return null;
+      }
+    }
     const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
       ? "issue_continuation_needed"
       : "process_lost";
@@ -10369,7 +10387,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionLockedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          .where(and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, run.companyId),
+            eq(issues.executionRunId, run.id),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ));
       }
 
       return retryRun;
@@ -12795,6 +12818,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
     }
@@ -12904,7 +12928,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
@@ -12984,14 +13007,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
-        return {
-          stale: true,
-          errorCode: "issue_terminal_status",
-          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
-        };
-      }
+      return {
+        stale: true,
+        errorCode: "issue_terminal_status",
+        reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+        details: { issueId, currentStatus: issue.status },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
@@ -14180,6 +14201,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    if (issueContext && (issueContext.status === "done" || issueContext.status === "cancelled")) {
+      const now = new Date();
+      const reason = `Cancelled because issue reached terminal status (${issueContext.status}) before adapter execution`;
+      await setRunStatus(runId, "cancelled", {
+        error: reason,
+        errorCode: "issue_terminal_status",
+        finishedAt: now,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: "issue_terminal_status",
+        },
+      });
+      await setWakeupStatus(run.wakeupRequestId, "skipped", {
+        finishedAt: now,
+        error: reason,
+      });
+      const cancelledRun = await getRun(runId);
+      if (cancelledRun) await releaseIssueExecutionAndPromote(cancelledRun);
+      return;
+    }
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
@@ -17425,6 +17466,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        if (issue.status === "done" || issue.status === "cancelled") {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "skipped",
+              finishedAt: new Date(),
+              error: `Deferred wake suppressed because issue reached terminal status (${issue.status})`,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
@@ -18217,6 +18271,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             reason: "issue_execution_issue_not_found",
             payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (issue.status === "done" || issue.status === "cancelled") {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_terminal_status",
+            payload: {
+              ...(payload ?? {}),
+              issueId: issue.id,
+              heartbeatSkip: {
+                reason: "issue_terminal_status",
+                currentStatus: issue.status,
+              },
+            },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
