@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueThreadInteractions } from "@paperclipai/db";
@@ -28,6 +28,7 @@ const QUESTION_KEY_PREFIX = "paperclip-runner-question:";
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const TEXT_ANSWER_OPTION_ID = "paperclip_text_answer";
 const CUSTOM_ANSWER_OPTION_ID = "paperclip_custom_answer";
+export const NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY = "nativeQuestionCancellation";
 
 type QueueCommand = (
   type: string,
@@ -374,6 +375,46 @@ export async function nativeQuestionRunToCancel(
 ): Promise<string | null> {
   const run = await authorizedNativeRun(db, interaction);
   return run && ["queued", "running"].includes(run.status) ? run.id : null;
+}
+
+/**
+ * Persist cancellation intent in the same transaction that closes the issue.
+ * The post-commit fast path and the heartbeat recovery sweep both consume this
+ * marker, so process exit or a transient process-termination failure cannot
+ * strand a native run after its question has expired.
+ */
+export async function requestNativeQuestionRunCancellation(
+  db: Db,
+  interaction: NativeQuestionAuthorizationIdentity,
+  issueStatus: string,
+): Promise<string | null> {
+  const run = await authorizedNativeRun(db, interaction);
+  if (!run || !["queued", "running"].includes(run.status)) return null;
+  const marker = JSON.stringify({
+    version: 1,
+    issueId: interaction.issueId,
+    issueStatus,
+    requestedAt: new Date().toISOString(),
+  });
+  return db.update(heartbeatRuns).set({
+    contextSnapshot: sql`jsonb_set(
+      case
+        when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+          then ${heartbeatRuns.contextSnapshot}
+        else '{}'::jsonb
+      end,
+      array[${NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY}],
+      ${marker}::jsonb,
+      true
+    )`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(heartbeatRuns.id, run.id),
+    eq(heartbeatRuns.companyId, interaction.companyId),
+    eq(heartbeatRuns.nativeIssueId, interaction.issueId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+    inArray(heartbeatRuns.status, ["queued", "running"]),
+  )).returning({ id: heartbeatRuns.id }).then((rows) => rows[0]?.id ?? null);
 }
 
 /** Capture the minimum bound identity needed to cancel after the issue transaction commits. */

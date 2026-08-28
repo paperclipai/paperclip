@@ -33,6 +33,7 @@ import {
   issueService,
   type IssuePostCommitAction,
 } from "../issues.js";
+import { heartbeatService } from "../heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -336,6 +337,55 @@ describeEmbeddedPostgres("native question bridge", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId));
     expect(persistedRun?.status).toBe("cancelled");
+  });
+
+  it("recovers a durable native cancellation when the post-commit process exits", async () => {
+    await seed();
+    await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event: runtimeRequestEvent(),
+    });
+    const postCommitActions: IssuePostCommitAction[] = [];
+    await db.transaction(async (tx) => {
+      await issueService(db).update(
+        issueId,
+        { status: "done" },
+        tx,
+        undefined,
+        postCommitActions,
+      );
+    });
+
+    const [markedRun] = await db.select({
+      status: heartbeatRuns.status,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(markedRun).toMatchObject({
+      status: "running",
+      contextSnapshot: {
+        nativeQuestionCancellation: {
+          version: 1,
+          issueId,
+          issueStatus: "done",
+        },
+      },
+    });
+
+    // Simulate process exit before executeIssuePostCommitActions can run.
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const [persistedRun] = await db.select({
+      status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(persistedRun).toMatchObject({
+      status: "cancelled",
+      resultJson: {
+        cancelledByIssueStatus: "done",
+        cancelledIssueId: issueId,
+      },
+    });
   });
 
   it("removes the UI-only marker from a canonical custom response", async () => {

@@ -131,7 +131,6 @@ import {
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
-import type { NativeQuestionAuthorizationIdentity } from "./native-runtime/native-question-bridge.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -167,7 +166,8 @@ const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferre
 
 export type IssuePostCommitAction = {
   type: "cancel_native_question_run";
-  interaction: NativeQuestionAuthorizationIdentity;
+  runId: string;
+  issueId: string;
   issueStatus: string;
 };
 
@@ -177,22 +177,28 @@ export async function executeIssuePostCommitActions(
   actions: readonly IssuePostCommitAction[],
 ): Promise<void> {
   if (actions.length === 0) return;
-  const [{ heartbeatService }, { nativeQuestionRunToCancel }] = await Promise.all([
-    import("./heartbeat.js"),
-    import("./native-runtime/native-question-bridge.js"),
-  ]);
+  const { heartbeatService } = await import("./heartbeat.js");
   const heartbeat = heartbeatService(db);
   const cancelledRunIds = new Set<string>();
   for (const action of actions) {
-    const runId = await nativeQuestionRunToCancel(db, action.interaction);
-    if (!runId || cancelledRunIds.has(runId)) continue;
-    cancelledRunIds.add(runId);
-    await heartbeat.cancelRun(runId, "Task closed while waiting for operator input", {
-      resultJson: {
-        cancelledByIssueStatus: action.issueStatus,
-        cancelledIssueId: action.interaction.issueId,
-      },
-    });
+    if (cancelledRunIds.has(action.runId)) continue;
+    cancelledRunIds.add(action.runId);
+    try {
+      await heartbeat.cancelRun(action.runId, "Task closed while waiting for operator input", {
+        resultJson: {
+          cancelledByIssueStatus: action.issueStatus,
+          cancelledIssueId: action.issueId,
+        },
+      });
+    } catch (err) {
+      // The durable marker written by the issue transaction remains available
+      // to startup and periodic recovery. Do not report a post-commit failure
+      // as though the already-committed issue transition had rolled back.
+      logger.warn(
+        { err, runId: action.runId, issueId: action.issueId },
+        "native question cancellation deferred to recovery sweep",
+      );
+    }
   }
 }
 
@@ -7945,7 +7951,10 @@ export function issueService(db: Db) {
               updated,
               { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
             );
-            const { nativeQuestionCancellationIdentity } = await import(
+            const {
+              nativeQuestionCancellationIdentity,
+              requestNativeQuestionRunCancellation,
+            } = await import(
               "./native-runtime/native-question-bridge.js"
             );
             for (const interaction of expiredInteractions) {
@@ -7957,11 +7966,19 @@ export function issueService(db: Db) {
                       "Terminal native question updates in an external transaction require a post-commit action queue",
                     );
                   }
-                  queuedPostCommitActions.push({
-                    type: "cancel_native_question_run",
-                    interaction: nativeQuestion,
-                    issueStatus: updated.status,
-                  });
+                  const runId = await requestNativeQuestionRunCancellation(
+                    tx,
+                    nativeQuestion,
+                    updated.status,
+                  );
+                  if (runId) {
+                    queuedPostCommitActions.push({
+                      type: "cancel_native_question_run",
+                      runId,
+                      issueId: updated.id,
+                      issueStatus: updated.status,
+                    });
+                  }
                 }
               }
               await logActivity(tx as unknown as Db, {
