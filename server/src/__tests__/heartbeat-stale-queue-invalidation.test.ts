@@ -12,6 +12,8 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -211,6 +213,27 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       permissions: {},
     });
     return { companyId, agentId };
+  }
+
+  async function seedAgent(companyId: string, name: string) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    return agentId;
   }
 
   async function seedQueuedRun(input: {
@@ -1117,6 +1140,224 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_assignee_changed" });
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("assignee changed");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("runs a pending interaction wake when its named addressee is neither assignee nor review participant", async () => {
+    const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent({ agentName: "Assignee" });
+    const addresseeAgentId = await seedAgent(companyId, "Addressee");
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs another agent's confirmation",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: assigneeAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: assigneeAgentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      addresseeAgentId,
+      payload: {},
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: addresseeAgentId,
+      issueId,
+      wakeReason: "interaction_pending",
+      invocationSource: "automation",
+      contextExtras: { interactionId },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  it("queues and runs a verified addressed interaction wake while issue dependencies are blocked", async () => {
+    const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent({ agentName: "Assignee" });
+    const addresseeAgentId = await seedAgent(companyId, "Addressee");
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Unresolved blocker",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue needs confirmation",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: blockedIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      addresseeAgentId,
+      payload: {},
+    });
+
+    const run = await heartbeat.wakeup(addresseeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "interaction_pending",
+      payload: { issueId: blockedIssueId, interactionId, mutation: "interaction" },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        interactionId,
+        wakeReason: "interaction_pending",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => {
+      const status = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0]?.status ?? null);
+      return status === "succeeded";
+    });
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it.each([
+    "missing interaction",
+    "resolved interaction",
+    "wrong addressee",
+    "wrong issue",
+    "wrong company",
+  ])("rejects a non-assignee interaction wake with %s", async (invalidCase) => {
+    const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent({ agentName: "Assignee" });
+    const addresseeAgentId = await seedAgent(companyId, "Addressee");
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Interaction authorization boundary",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const interactionId = randomUUID();
+    if (invalidCase !== "missing interaction") {
+      let interactionCompanyId = companyId;
+      let interactionIssueId = issueId;
+      let interactionAddresseeAgentId = addresseeAgentId;
+      if (invalidCase === "wrong issue") {
+        interactionIssueId = randomUUID();
+        await db.insert(issues).values({
+          id: interactionIssueId,
+          companyId,
+          title: "Different issue",
+          status: "in_progress",
+          priority: "medium",
+          assigneeAgentId,
+        });
+      } else if (invalidCase === "wrong company") {
+        const foreign = await seedCompanyAndAgent({ agentName: "Foreign addressee" });
+        interactionCompanyId = foreign.companyId;
+        interactionAddresseeAgentId = foreign.agentId;
+        interactionIssueId = randomUUID();
+        await db.insert(issues).values({
+          id: interactionIssueId,
+          companyId: foreign.companyId,
+          title: "Foreign issue",
+          status: "in_progress",
+          priority: "medium",
+          assigneeAgentId: foreign.agentId,
+        });
+      } else if (invalidCase === "wrong addressee") {
+        interactionAddresseeAgentId = assigneeAgentId;
+      }
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId: interactionCompanyId,
+        issueId: interactionIssueId,
+        kind: "request_confirmation",
+        status: invalidCase === "resolved interaction" ? "accepted" : "pending",
+        addresseeAgentId: interactionAddresseeAgentId,
+        payload: {},
+      });
+    }
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId: addresseeAgentId,
+      issueId,
+      wakeReason: "interaction_pending",
+      invocationSource: "automation",
+      contextExtras: { interactionId },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_assignee_changed");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 

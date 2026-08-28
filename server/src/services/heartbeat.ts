@@ -4246,6 +4246,33 @@ function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
+async function isVerifiedAddressedInteractionWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    contextSnapshot: Record<string, unknown> | null | undefined;
+  },
+) {
+  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  const interactionId = readNonEmptyString(input.contextSnapshot?.interactionId);
+  if (wakeReason !== "interaction_pending" || !interactionId) return false;
+
+  return dbOrTx
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.id, interactionId),
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+      eq(issueThreadInteractions.status, "pending"),
+      eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+    ))
+    .limit(1)
+    .then((rows) => Boolean(rows[0]));
+}
+
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -12681,6 +12708,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
+      const addressedInteractionWake = await isVerifiedAddressedInteractionWake(db, {
+        companyId: run.companyId,
+        issueId,
+        agentId: run.agentId,
+        contextSnapshot: context,
+      });
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
         companyId: run.companyId,
@@ -12716,13 +12749,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      if (
+        unresolvedBlockerCount > 0 &&
+        !allowsIssueInteractionWake(context) &&
+        !addressedInteractionWake
+      ) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+      const staleness = await evaluateQueuedRunStaleness(run, issueId, context, addressedInteractionWake);
       if (staleness.stale) {
         await cancelQueuedRunForStaleIssue(run, issueId, staleness);
         logger.info(
@@ -12880,6 +12917,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     context: Record<string, unknown>,
+    addressedInteractionWake = false,
   ): Promise<QueuedRunStaleness> {
     const issue = await db
       .select({
@@ -12966,6 +13004,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (
       issue.assigneeAgentId !== run.agentId &&
       !isInteractionWake &&
+      !addressedInteractionWake &&
       !isCurrentReviewParticipant &&
       !authorizedSourceScopedRecovery &&
       !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
@@ -13022,7 +13061,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (currentParticipant) {
         const participantMatches =
           currentParticipant.type === "agent" && currentParticipant.agentId === run.agentId;
-        if (!participantMatches && !wakeCommentId) {
+        if (!participantMatches && !wakeCommentId && !addressedInteractionWake) {
           return {
             stale: true,
             errorCode: "issue_review_participant_changed",
@@ -18471,7 +18510,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (
+            allowsIssueInteractionWake(enrichedContextSnapshot) ||
+            await isVerifiedAddressedInteractionWake(tx, {
+              companyId: issue.companyId,
+              issueId: issue.id,
+              agentId,
+              contextSnapshot: enrichedContextSnapshot,
+            })
+          );
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
