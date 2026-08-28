@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
-import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,14 +77,6 @@ vi.mock("@/context/ToastContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
 
 async function flushReact() {
   await act(async () => {
@@ -186,6 +177,7 @@ async function gotoLinkFrame(container: HTMLDivElement, url: string) {
 
 describe("AppsConnect — Connect with a link (M4 frame)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: Root | null;
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -193,6 +185,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockParams.appKey = undefined;
     container = document.createElement("div");
     document.body.appendChild(container);
+    mountedRoot = null;
     listGalleryMock.mockResolvedValue({
       apps: [
         ZAPIER,
@@ -226,7 +219,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ]);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (mountedRoot) {
+      await act(async () => mountedRoot?.unmount());
+    }
     document.body.removeChild(container);
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -234,6 +230,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   async function render(queryClient?: QueryClient, byoOnly = false, content?: ReactNode) {
     const root = createRoot(container);
+    mountedRoot = root;
     const client = queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
@@ -792,7 +789,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         requestedAgentId="agent-1"
       />
     ));
-    expect(container.textContent).toContain("This task grants access only to the requesting agent");
+    expect(container.textContent).toContain("This task grants access only to Ada");
     const continueButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Save and continue",
     );
@@ -2067,12 +2064,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
  */
 describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: Root | null;
 
   beforeEach(() => {
     mockSearch.value = "";
     mockParams.appKey = undefined;
     container = document.createElement("div");
     document.body.appendChild(container);
+    mountedRoot = null;
     listGalleryMock.mockResolvedValue({ apps: [ZAPIER] });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
@@ -2094,7 +2093,10 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (mountedRoot) {
+      await act(async () => mountedRoot?.unmount());
+    }
     document.body.removeChild(container);
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -2102,6 +2104,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
 
   async function render() {
     const root = createRoot(container);
+    mountedRoot = root;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
