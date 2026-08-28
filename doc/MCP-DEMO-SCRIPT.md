@@ -18,7 +18,7 @@ Before you start the recording:
 - The Tools & Access UI open at `/<prefix>/companies/<companyId>/tools`.
 - A browser tab open on the **Values UI** at `http://127.0.0.1:8848/` (you will open this in Step 1).
 
-All API requests use `Authorization: Bearer $BOARD_API_KEY` for board calls. Gateway calls use a dedicated session token via the `X-Paperclip-Tool-Gateway-Token` header — they do not use `Authorization`. See Step 5 for how the token is minted.
+All API requests use `Authorization: Bearer $BOARD_API_KEY` for board calls. Gateway calls use a dedicated session token, sent via the `X-Paperclip-Tool-Gateway-Token` header — never the board key. (A client that can only carry one credential may send the same session token as `Authorization: Bearer`; the demo uses the header so the two credentials stay visibly distinct.) See Step 5 for how the token is minted.
 
 ## Step 0 — Frame the demo
 
