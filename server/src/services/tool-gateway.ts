@@ -17,6 +17,7 @@ import {
   toolApplications,
   toolCallEvents,
   toolCatalogEntries,
+  toolConnectionInstalls,
   toolConnections,
   toolGatewayRateLimitCounters,
   toolGatewaySessions,
@@ -172,6 +173,7 @@ export interface ToolGatewaySession {
   gatewayName?: string | null;
   gatewayTokenId?: string | null;
   gatewayTokenAllowedActions?: ToolMcpGatewayTokenAction[];
+  enforceConnectionInstalls?: boolean;
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
   createdAt: Date;
@@ -1893,7 +1895,10 @@ export function createToolGatewayService(
   }
 
   async function searchableOnDemandTools(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
-    const tools = (await connectedMcpToolsForCompany(session.companyId)).filter(isOnDemandRemoteTool);
+    const tools = (await installedToolsForSession(
+      session,
+      await connectedMcpToolsForCompany(session.companyId),
+    )).filter(isOnDemandRemoteTool);
     const decisions = await Promise.all(tools.map(async (tool) => ({
       tool,
       decision: await policyService.decide(policyInputForTool({ session, tool })),
@@ -1942,7 +1947,10 @@ export function createToolGatewayService(
     if (session.agentId) {
       await assertAgentInCompany(session.companyId, session.agentId);
     }
-    const allConnectedTools = await connectedMcpToolsForCompany(session.companyId);
+    const allConnectedTools = await installedToolsForSession(
+      session,
+      await connectedMcpToolsForCompany(session.companyId),
+    );
     const onDemandTargets = allConnectedTools.filter(isOnDemandRemoteTool);
     const tools = [...allTools(), ...allConnectedTools.filter((tool) => !isOnDemandRemoteTool(tool))].filter(
       (tool) => session.agentId || (tool.providerType !== "paperclip_self" && tool.providerType !== "paperclip_plugin"),
@@ -1969,6 +1977,39 @@ export function createToolGatewayService(
       }
     }
     return visibleTools;
+  }
+
+  async function installedConnectionIdsForSession(session: ToolGatewaySession): Promise<Set<string> | null> {
+    if (!session.enforceConnectionInstalls || !session.agentId) return null;
+    const installs = await db
+      .select({ connectionId: toolConnectionInstalls.connectionId })
+      .from(toolConnectionInstalls)
+      .where(and(
+        eq(toolConnectionInstalls.companyId, session.companyId),
+        sql`((${toolConnectionInstalls.targetType} = 'company' and ${toolConnectionInstalls.targetId} = ${session.companyId}) or (${toolConnectionInstalls.targetType} = 'agent' and ${toolConnectionInstalls.targetId} = ${session.agentId}))`,
+      ));
+    return new Set(installs.map((install) => install.connectionId));
+  }
+
+  async function installedToolsForSession(
+    session: ToolGatewaySession,
+    tools: ToolGatewayDescriptor[],
+  ): Promise<ToolGatewayDescriptor[]> {
+    const installedConnectionIds = await installedConnectionIdsForSession(session);
+    if (!installedConnectionIds) return tools;
+    return tools.filter((tool) => !tool.connectionId || installedConnectionIds.has(tool.connectionId));
+  }
+
+  async function assertToolInstalledForSession(session: ToolGatewaySession, tool: ToolGatewayDescriptor) {
+    if (!tool.connectionId) return;
+    const installedConnectionIds = await installedConnectionIdsForSession(session);
+    if (!installedConnectionIds || installedConnectionIds.has(tool.connectionId)) return;
+    throw new ToolGatewayHttpError(
+      403,
+      "This connection is not installed for the current agent",
+      "installation_required",
+      { connectionId: tool.connectionId },
+    );
   }
 
   async function executeBuiltinTool(session: ToolGatewaySession, tool: ToolGatewayDescriptor, parameters: unknown) {
@@ -3723,6 +3764,7 @@ export function createToolGatewayService(
       gatewayName: row.gateway.name,
       gatewayTokenId: row.token.id || tokenId,
       gatewayTokenAllowedActions: normalizeGatewayTokenActions(row.token.allowedActions),
+      enforceConnectionInstalls: row.token.subjectType === "heartbeat_run",
       actorType: runId ? "agent" : "system",
       actorId: runId ? agentId : row.token.id,
       createdAt: row.token.createdAt,
@@ -4844,6 +4886,41 @@ export function createToolGatewayService(
       return tools;
     },
 
+    async listAccessibleConnectionIdsForGatewayContext(input: {
+      companyId: string;
+      gatewayId: string;
+      agentId: string;
+      runId: string;
+      issueId?: string | null;
+      projectId?: string | null;
+    }): Promise<string[]> {
+      await assertAgentInCompany(input.companyId, input.agentId);
+      const now = new Date();
+      const session: ToolGatewaySession = {
+        id: `gateway:${input.gatewayId}`,
+        token: "",
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: input.runId,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        gatewayId: input.gatewayId,
+        actorType: "agent",
+        actorId: input.agentId,
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + DEFAULT_SESSION_TTL_MS),
+      };
+      const connectedTools = await connectedMcpToolsForCompany(input.companyId);
+      const decisions = await Promise.all(connectedTools.map(async (tool) => ({
+        tool,
+        decision: await policyService.decide(policyInputForTool({ session, tool })),
+      })));
+      return [...new Set(decisions
+        .filter(({ decision }) => decision.allowed || decision.decision === "require_approval")
+        .map(({ tool }) => tool.connectionId)
+        .filter((connectionId): connectionId is string => Boolean(connectionId)))];
+    },
+
     async createSession(input: {
       companyId: string;
       agentId: string;
@@ -5499,6 +5576,8 @@ export function createToolGatewayService(
         tool = targetTool;
         requestedParameters = targetParameters;
       }
+
+      await assertToolInstalledForSession(session, tool);
 
       const argumentValidation = validateToolContent({
         value: requestedParameters,

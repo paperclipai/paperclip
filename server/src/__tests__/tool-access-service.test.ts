@@ -212,6 +212,12 @@ async function allowConnectionForAgent(
   connectionId: string,
   input: { brokerMint?: boolean } = {},
 ) {
+  await db.insert(toolConnectionInstalls).values({
+    companyId,
+    connectionId,
+    targetType: "agent",
+    targetId: agentId,
+  });
   const [profile] = await db.insert(toolProfiles).values({
     companyId,
     profileKey: `broker-${randomUUID()}`,
@@ -540,6 +546,56 @@ describeEmbeddedPostgres("tool access service", () => {
         outcome: "success",
       }),
     ]));
+  });
+
+  it("denies token minting with an actionable error when the requesting agent has no install", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "installation_required",
+      connection: { id: connection.id, name: connection.name },
+      remediation: { action: "install_connection", targetType: "agent", targetId: agent.id },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const [audit] = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.reasonCode, "installation_required"));
+    expect(audit).toMatchObject({ actorType: "agent", actorId: agent.id, outcome: "failure" });
+  });
+
+  it("accepts a company-wide install when minting a token", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, { path: "static" });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    await db
+      .update(toolConnectionInstalls)
+      .set({ targetType: "company", targetId: company.id })
+      .where(eq(toolConnectionInstalls.connectionId, connection.id));
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${encodeURIComponent(connection.uid)}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ status: "use_env_lease", connectionId: connection.id });
   });
 
   it("selects scoped credentials for array scopes and fails closed for unknown selectors", async () => {
@@ -3182,7 +3238,11 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     const service = toolAccessService(db);
-    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack reauth" });
+    const connect = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "slack", name: "Slack reauth" },
+      { actorType: "user", actorId: "operator-user" },
+    );
     await db
       .update(toolConnections)
       .set({ status: "active", updatedAt: new Date() })
@@ -3258,7 +3318,13 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     const service = toolAccessService(db);
-    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack bound" });
+    // The initiating operator owns the connection: reconnecting is limited to the
+    // creator or a connection manager, and this case asserts session binding.
+    const connect = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "slack", name: "Slack bound" },
+      { actorType: "user", actorId: "oauth-operator" },
+    );
     const initiatingActor = boardSessionActor(company.id, "operator", "oauth-operator");
     const initiatingApp = createRouteApp(db, initiatingActor);
     const startRes = await request(initiatingApp)
@@ -7006,6 +7072,92 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(get.body.installs).toEqual(expect.arrayContaining([
       expect.objectContaining({ targetType: "agent", targetId: agent.id }),
     ]));
+  });
+
+  it("limits connection configuration to the creator or a manager with role defaults", async () => {
+    const company = await createCompany(db);
+    const creator = boardSessionActor(company.id, "member", `creator-${randomUUID()}`);
+    const otherMember = boardSessionActor(company.id, "member", `member-${randomUUID()}`);
+    const admin = boardSessionActor(company.id, "admin", `admin-${randomUUID()}`);
+    await grantBoardUser(db, company.id, creator.userId!, [], "member");
+    await grantBoardUser(db, company.id, otherMember.userId!, [], "member");
+    await grantBoardUser(db, company.id, admin.userId!, [], "admin");
+    const connection = await toolAccessService(db).createConnection(company.id, {
+      name: "Creator-owned connection",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+    }, { actorType: "user", actorId: creator.userId! });
+
+    const denied = await request(createRouteApp(db, otherMember))
+      .patch(`/api/tool-connections/${connection.id}`)
+      .send({ name: "Member edit" });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toContain("connection creator or a connection manager");
+
+    await request(createRouteApp(db, creator))
+      .patch(`/api/tool-connections/${connection.id}`)
+      .send({ name: "Creator edit" })
+      .expect(200);
+    await request(createRouteApp(db, admin))
+      .patch(`/api/tool-connections/${connection.id}`)
+      .send({ name: "Admin edit" })
+      .expect(200);
+
+    const adminGrants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, admin.userId!));
+    expect(adminGrants).toEqual([]);
+  });
+
+  it("keeps agent installs self-serve for members with connection access and audits changes", async () => {
+    const company = await createCompany(db);
+    const creator = boardSessionActor(company.id, "member", `creator-${randomUUID()}`);
+    const member = boardSessionActor(company.id, "member", `member-${randomUUID()}`);
+    await grantBoardUser(db, company.id, creator.userId!, [], "member");
+    await grantBoardUser(db, company.id, member.userId!, ["agents:configure"], "member");
+    const agent = await createAgent(db, company.id);
+    const connection = await toolAccessService(db).createConnection(company.id, {
+      name: "Shared organization connection",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp" },
+    }, { actorType: "user", actorId: creator.userId! });
+    const app = createRouteApp(db, member);
+
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [{ targetType: "agent", targetId: agent.id }] })
+      .expect(200);
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [] })
+      .expect(200);
+
+    const audits = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.action, "connection_installs.changed"));
+    expect(audits).toHaveLength(2);
+    expect(audits.every((audit) => audit.actorType === "user" && audit.actorId === member.userId)).toBe(true);
+  });
+
+  it("removes orphaned agent installs during replacement", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const service = toolAccessService(db);
+    await service.putConnectionInstalls(connection.id, {
+      installs: [{ targetType: "agent", targetId: agent.id }],
+    });
+    await db.delete(agents).where(eq(agents.id, agent.id));
+
+    const response = await request(createRouteApp(db))
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [] });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ connectionId: connection.id, installs: [] });
+    await expect(db.select().from(toolConnectionInstalls)).resolves.toEqual([]);
   });
 });
 
