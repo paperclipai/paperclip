@@ -1229,6 +1229,25 @@ export function ConnectionSetupFlow({
     );
   }
 
+  if ((resumeConnectionId || reconnectConnectionId) && galleryQuery.isError) {
+    return (
+      <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+        <h2 className="text-lg font-semibold text-foreground">Couldn’t load connection setup</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Paperclip couldn’t load the provider details needed to restore this connection. The retained connection was not changed.
+        </p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <Button type="button" onClick={() => void galleryQuery.refetch()}>
+            Try again
+          </Button>
+          <Button type="button" variant="outline" onClick={() => navigate("/apps")}>
+            Back to apps
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (resumeConnectionId && (
     !connectionsQuery.isFetchedAfterMount
     || galleryQuery.isLoading

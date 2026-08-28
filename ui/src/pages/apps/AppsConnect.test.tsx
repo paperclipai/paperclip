@@ -1196,6 +1196,43 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
   });
 
+  it("offers recovery when provider details fail during an exact retained reconnect", async () => {
+    mockSearch.value = "source=notion&applicationId=app-notion&new=1&reconnect=conn-archived&identity=organization";
+    listGalleryMock.mockRejectedValueOnce(new Error("Gallery unavailable"));
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-notion",
+        status: "archived",
+        metadata: { sourceTemplateKey: "notion" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: "conn-archived",
+        applicationId: "app-notion",
+        authKind: "oauth",
+        credentialPolicy: "shared",
+        status: "archived",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }],
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Couldn’t load connection setup");
+    expect(container.textContent).toContain("The retained connection was not changed");
+    expect(container.querySelector('[aria-label="Loading retained connection setup"]')).toBeNull();
+
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(listGalleryMock).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("Couldn’t load connection setup");
+  });
+
   it("creates a fresh Notion OAuth connection when the provider landing requests another", async () => {
     mockSearch.value = "source=notion&applicationId=app-notion&new=1";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
