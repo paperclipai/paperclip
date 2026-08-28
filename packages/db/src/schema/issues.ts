@@ -19,7 +19,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
-import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
+import { OPEN_ISSUE_STATUSES, type IssueReviewPolicy, type IssueUnblockDescriptor, type SourceTrustMetadata } from "@paperclipai/shared";
 
 export const issues = pgTable(
   "issues",
@@ -123,7 +123,7 @@ export const issues = pgTable(
           and ${table.originId} is not null
           and ${table.hiddenAt} is null
           and ${table.executionRunId} is not null
-          and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
+          and ${table.status} in (${sql.join(OPEN_ISSUE_STATUSES.map((status) => sql.raw(`'${status}'`)), sql`, `)})`,
       ),
     activeLivenessRecoveryIncidentIdx: uniqueIndex("issues_active_liveness_recovery_incident_uq")
       .on(table.companyId, table.originKind, table.originId)

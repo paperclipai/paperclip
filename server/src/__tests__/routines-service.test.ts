@@ -1328,7 +1328,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeupResolved).toBe(true);
   });
 
-  it("coalesces only when the existing routine issue has a live execution run", async () => {
+  it("coalesces when a blocked routine issue has a live execution run", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const liveHeartbeatRunId = randomUUID();
@@ -1336,7 +1336,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       projectId: routine.projectId,
       title: routine.title,
       description: routine.description,
-      status: "in_progress",
+      status: "blocked",
       priority: routine.priority,
       assigneeAgentId: routine.assigneeAgentId,
       originKind: "routine_execution",

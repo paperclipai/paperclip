@@ -199,6 +199,8 @@ export const ISSUE_STATUSES = [
   "cancelled",
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
+export const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+export type OpenIssueStatus = (typeof OPEN_ISSUE_STATUSES)[number];
 
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
