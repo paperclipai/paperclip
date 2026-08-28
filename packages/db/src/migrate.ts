@@ -2,7 +2,9 @@ import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { resolveMigrationConnection } from "./migration-runtime.js";
 
 async function main(): Promise<void> {
-  const resolved = await resolveMigrationConnection();
+  const resolved = await resolveMigrationConnection({
+    onProgress: (message) => console.error(`[db:migrate] ${message}`),
+  });
 
   console.log(`Migrating database via ${resolved.source}`);
 

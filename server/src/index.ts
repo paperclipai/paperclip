@@ -28,6 +28,9 @@ import {
   inspectPostmasterLock,
   waitForPostgresReady,
   prepareEmbeddedPostgresNativeRuntime,
+  startEmbeddedPostgresWithin,
+  stopEmbeddedPostgresWithin,
+  type EmbeddedPostgresLifecycle,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
@@ -129,6 +132,12 @@ type EmbeddedPostgresInstance = SupervisedEmbeddedPostgres & {
   initialise(): Promise<void>;
 };
 
+/**
+ * What `new EmbeddedPostgres()` really hands back: the supervised shape plus
+ * the child-process fields the bounded lifecycle helpers read.
+ */
+type RawEmbeddedPostgresInstance = EmbeddedPostgresInstance & EmbeddedPostgresLifecycle;
+
 type EmbeddedPostgresCtor = new (opts: {
   databaseDir: string;
   user: string;
@@ -138,7 +147,7 @@ type EmbeddedPostgresCtor = new (opts: {
   initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
+}) => RawEmbeddedPostgresInstance;
 
 
 export interface StartedServer {
@@ -541,7 +550,35 @@ export async function startServer(): Promise<StartedServer> {
 
       if (!adoptedExistingServer) {
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
-        const createEmbeddedPostgres = () => new EmbeddedPostgres({
+        const describeEmbeddedPostgres = `on port ${port} (dataDir=${dataDir})`;
+        // embedded-postgres's start() settles only when the postmaster prints
+        // its readiness line, and its stop() only when the child emits exit.
+        // A postmaster that comes up without ever saying the line, or one that
+        // died before we stop it, would otherwise park startup, supervisor
+        // recovery, or shutdown forever with nothing logged. Every instance
+        // handed to the supervisor gets the bounded versions.
+        const boundEmbeddedPostgres = (raw: RawEmbeddedPostgresInstance): EmbeddedPostgresInstance => ({
+          initialise: () => raw.initialise(),
+          start: () =>
+            startEmbeddedPostgresWithin(raw, {
+              describe: describeEmbeddedPostgres,
+              onWaiting: ({ elapsedMs, pid }) =>
+                logger.info(
+                  { elapsedMs, pid, port },
+                  "Waiting for embedded PostgreSQL to report readiness",
+                ),
+            }),
+          stop: async () => {
+            const outcome = await stopEmbeddedPostgresWithin(raw, { describe: describeEmbeddedPostgres });
+            if (outcome === "already-exited") {
+              logger.warn({ port }, "Embedded PostgreSQL had already exited before it was stopped");
+            }
+          },
+          get process() {
+            return raw.process;
+          },
+        });
+        const createEmbeddedPostgres = () => boundEmbeddedPostgres(new EmbeddedPostgres({
           databaseDir: dataDir,
           user: "paperclip",
           password: "paperclip",
@@ -550,7 +587,7 @@ export async function startServer(): Promise<StartedServer> {
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
-        });
+        }));
         embeddedPostgres = createEmbeddedPostgres();
 
         if (!clusterAlreadyInitialized) {

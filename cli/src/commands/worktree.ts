@@ -67,6 +67,9 @@ import {
   prepareEmbeddedPostgresNativeRuntime,
   inspectPostmasterLock,
   probeProcessLiveness,
+  startEmbeddedPostgresWithin,
+  stopEmbeddedPostgresWithin,
+  type EmbeddedPostgresLifecycle,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { decideEmbeddedCluster } from "../embedded-postgres-ownership.js";
@@ -184,10 +187,8 @@ type WorktreeEnsureSeededOptions = {
   expectedCompanyId?: string;
 };
 
-type EmbeddedPostgresInstance = {
+type EmbeddedPostgresInstance = EmbeddedPostgresLifecycle & {
   initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
 };
 
 type EmbeddedPostgresCtor = new (opts: {
@@ -1243,8 +1244,19 @@ export async function ensureEmbeddedPostgres(
   // The lock file is deliberately left in place. PostgreSQL clears a stale
   // postmaster.pid itself, atomically, as it takes ownership; deleting it here
   // races a cluster that starts in between and destroys its live lock.
+  const describe = `on port ${port} (dataDir=${dataDir})`;
   try {
-    await instance.start();
+    // Bounded: embedded-postgres's start() settles only on the postmaster's
+    // readiness line, so a cluster that comes up without printing it would
+    // otherwise leave this command waiting forever with nothing on screen.
+    await startEmbeddedPostgresWithin(instance, {
+      describe,
+      onWaiting: ({ elapsedMs, pid }) =>
+        console.error(
+          `Still waiting for embedded PostgreSQL ${describe} to report readiness ` +
+            `(${Math.round(elapsedMs / 1000)}s elapsed${pid === null ? "" : `, postmaster pid=${pid}`})`,
+        ),
+    });
   } catch (error) {
     throw formatEmbeddedPostgresError(error, {
       fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
@@ -1256,7 +1268,9 @@ export async function ensureEmbeddedPostgres(
     port,
     startedByThisProcess: true,
     stop: async () => {
-      await instance.stop();
+      // Also bounded: a postmaster that already died would leave stop()
+      // waiting for an exit event that has already fired.
+      await stopEmbeddedPostgresWithin(instance, { describe });
     },
   };
 }

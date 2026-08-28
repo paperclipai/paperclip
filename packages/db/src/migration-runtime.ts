@@ -8,6 +8,12 @@ import {
 } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import {
+  EmbeddedPostgresStopTimeoutError,
+  startEmbeddedPostgresWithin,
+  stopEmbeddedPostgresWithin,
+  type EmbeddedPostgresLifecycle,
+} from "./embedded-postgres-lifecycle.js";
+import {
   POSTMASTER_LOCK_FILE_NAME,
   canonicalizeDataDirectory,
   inspectPostmasterLock,
@@ -15,10 +21,8 @@ import {
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
-type EmbeddedPostgresInstance = {
+type EmbeddedPostgresInstance = EmbeddedPostgresLifecycle & {
   initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
 };
 
 type EmbeddedPostgresCtor = new (opts: {
@@ -37,6 +41,34 @@ export type MigrationConnection = {
   source: string;
   stop: () => Promise<void>;
 };
+
+/**
+ * Receives one line per slow step: which postmaster is being started, adopted,
+ * or waited on, and how long that has taken so far. Callers that run as a
+ * captured child (the pre-boot migration status check) forward these to stderr
+ * so a stall is attributable instead of silent.
+ */
+export type MigrationProgressListener = (message: string) => void;
+
+export type ResolveMigrationConnectionOptions = {
+  onProgress?: MigrationProgressListener;
+};
+
+const noProgress: MigrationProgressListener = () => {};
+
+/**
+ * Log the first readiness retry and then every tenth one, enough to show that
+ * a wait is alive and what it is waiting on without drowning the output.
+ */
+function readinessProgress(onProgress: MigrationProgressListener, what: string) {
+  return ({ attempt, elapsedMs, err }: { attempt: number; elapsedMs: number; err: unknown }) => {
+    if (attempt !== 1 && attempt % 10 !== 0) return;
+    onProgress(
+      `waiting for ${what} to accept connections (attempt ${attempt}, ${elapsedMs}ms elapsed): ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  };
+}
 
 function adminConnectionString(port: number): string {
   return `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
@@ -110,7 +142,10 @@ async function isServingDataDirectory(port: number, dataDir: string): Promise<bo
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   try {
     const mod = await import("embedded-postgres");
-    return mod.default as EmbeddedPostgresCtor;
+    // The module declares the postmaster child as a private field; the
+    // lifecycle helpers read it to tell a live postmaster from one that has
+    // already exited, so widen past the declared type.
+    return mod.default as unknown as EmbeddedPostgresCtor;
   } catch {
     throw new Error(
       "Embedded PostgreSQL support requires dependency `embedded-postgres`. Reinstall dependencies and try again.",
@@ -123,8 +158,15 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
  * recovery first, and hand back a connection whose `stop` is a no-op — we did
  * not start this postmaster, so we must not stop it.
  */
-async function adoptCluster(port: number, expectedDataDir: string): Promise<MigrationConnection> {
-  await waitForPostgresReady(adminConnectionString(port));
+async function adoptCluster(
+  port: number,
+  expectedDataDir: string,
+  onProgress: MigrationProgressListener = noProgress,
+): Promise<MigrationConnection> {
+  onProgress(`adopting the PostgreSQL server on port ${port} for ${expectedDataDir}`);
+  await waitForPostgresReady(adminConnectionString(port), {
+    onRetry: readinessProgress(onProgress, `the PostgreSQL server on port ${port}`),
+  });
 
   // A recorded port is not proof of identity. If an unrelated PostgreSQL now
   // occupies it, adopting blindly would create our database and run migrations
@@ -160,6 +202,7 @@ async function adoptCluster(port: number, expectedDataDir: string): Promise<Migr
 async function resolveRunningCluster(
   dataDir: string,
   preferredPort: number,
+  onProgress: MigrationProgressListener = noProgress,
 ): Promise<MigrationConnection | null> {
   const inspected = inspectPostmasterLock(dataDir);
 
@@ -168,13 +211,13 @@ async function resolveRunningCluster(
     process.emitWarning(
       `Embedded PostgreSQL is already running for ${dataDir} (pid=${inspected.lock.pid}, port=${port}); reusing it.`,
     );
-    return await adoptCluster(port, dataDir);
+    return await adoptCluster(port, dataDir, onProgress);
   }
 
   if (inspected.status === "indeterminate") {
     const port = inspected.lock?.port ?? preferredPort;
     try {
-      const connection = await adoptCluster(port, dataDir);
+      const connection = await adoptCluster(port, dataDir, onProgress);
       process.emitWarning(
         `Adopted the PostgreSQL server on port ${port} for ${dataDir} after an inconclusive lock-file check.`,
       );
@@ -211,6 +254,7 @@ async function resolveRunningCluster(
   // started outside Paperclip, or one whose lock file was deleted.
   if (existsSync(path.resolve(dataDir, "PG_VERSION")) && (await isPortInUse(preferredPort))) {
     let servesThisDirectory: boolean;
+    onProgress(`port ${preferredPort} is in use; asking the server there whether it serves ${dataDir}`);
     try {
       servesThisDirectory = await isServingDataDirectory(preferredPort, dataDir);
     } catch (error) {
@@ -230,7 +274,7 @@ async function resolveRunningCluster(
     if (servesThisDirectory) {
       // Ownership is proven, so a failure to adopt is fatal rather than a reason
       // to start a rival postmaster over the same directory.
-      const connection = await adoptCluster(preferredPort, dataDir);
+      const connection = await adoptCluster(preferredPort, dataDir, onProgress);
       process.emitWarning(
         `Adopting the existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} ` +
           `because ${POSTMASTER_LOCK_FILE_NAME} is missing.`,
@@ -247,11 +291,12 @@ async function resolveRunningCluster(
 async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
+  onProgress: MigrationProgressListener = noProgress,
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
   await prepareEmbeddedPostgresNativeRuntime();
 
-  const running = await resolveRunningCluster(dataDir, preferredPort);
+  const running = await resolveRunningCluster(dataDir, preferredPort, onProgress);
   if (running) return running;
 
   // The data directory is unowned, so a different port can only collide with an
@@ -281,8 +326,21 @@ async function ensureEmbeddedPostgresConnection(
     }
   }
 
+  const describe = `on port ${selectedPort} (dataDir=${dataDir})`;
+  onProgress(`starting embedded PostgreSQL ${describe}`);
   try {
-    await instance.start();
+    // embedded-postgres's start() resolves only when the postmaster prints its
+    // readiness line and never on its own; bound it so a cluster that comes up
+    // but never announces itself is reported, with its logs, instead of waited
+    // on indefinitely.
+    await startEmbeddedPostgresWithin(instance, {
+      describe,
+      onWaiting: ({ elapsedMs, pid }) =>
+        onProgress(
+          `still waiting for embedded PostgreSQL ${describe} to report readiness ` +
+            `(${Math.round(elapsedMs / 1000)}s elapsed${pid === null ? "" : `, postmaster pid=${pid}`})`,
+        ),
+    });
   } catch (error) {
     throw formatEmbeddedPostgresError(error, {
       fallbackMessage: `Failed to start embedded PostgreSQL on port ${selectedPort}`,
@@ -290,19 +348,40 @@ async function ensureEmbeddedPostgresConnection(
     });
   }
 
-  await waitForPostgresReady(adminConnectionString(selectedPort));
+  await waitForPostgresReady(adminConnectionString(selectedPort), {
+    onRetry: readinessProgress(onProgress, `embedded PostgreSQL ${describe}`),
+  });
   await ensurePostgresDatabase(adminConnectionString(selectedPort), "paperclip");
 
   return {
     connectionString: databaseConnectionString(selectedPort),
     source: `embedded-postgres@${selectedPort}`,
     stop: async () => {
-      await instance.stop();
+      // A postmaster that already died (force-killed, or shut down by
+      // PostgreSQL itself after its lock file was removed) would otherwise
+      // leave embedded-postgres's stop() waiting forever for an exit event
+      // that has already fired.
+      try {
+        const outcome = await stopEmbeddedPostgresWithin(instance, { describe });
+        if (outcome === "already-exited") {
+          process.emitWarning(
+            `Embedded PostgreSQL ${describe} had already exited before it was stopped.`,
+          );
+        }
+      } catch (error) {
+        if (!(error instanceof EmbeddedPostgresStopTimeoutError)) throw error;
+        // Leaving the cluster running is recoverable -- the next owner adopts
+        // it through postmaster.pid -- so report it rather than fail a check
+        // whose result is already known.
+        process.emitWarning(error.message);
+      }
     },
   };
 }
 
-export async function resolveMigrationConnection(): Promise<MigrationConnection> {
+export async function resolveMigrationConnection(
+  options: ResolveMigrationConnectionOptions = {},
+): Promise<MigrationConnection> {
   const target = resolveDatabaseTarget();
   if (target.mode === "postgres") {
     return {
@@ -312,5 +391,5 @@ export async function resolveMigrationConnection(): Promise<MigrationConnection>
     };
   }
 
-  return ensureEmbeddedPostgresConnection(target.dataDir, target.port);
+  return ensureEmbeddedPostgresConnection(target.dataDir, target.port, options.onProgress ?? noProgress);
 }
