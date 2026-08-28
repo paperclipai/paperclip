@@ -7162,10 +7162,17 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          // Workspaces belong to a project, so they can only be inherited when the
+          // new issue lands in the source issue's project. A child that names a
+          // different project (suggested tasks routinely do) would otherwise
+          // inherit a workspace from the parent's project and fail validation.
+          const inheritsSourceProject =
+            (issueData.projectId ?? null) === (workspaceSource.projectId ?? null);
+          if (inheritsSourceProject && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
+            inheritsSourceProject &&
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId
@@ -7730,14 +7737,32 @@ export function issueService(db: Db) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
       let nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
-      const nextProjectWorkspaceId =
+      let nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
-      const nextExecutionWorkspaceId =
+      let nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
-      const nextExecutionWorkspacePreference =
+      let nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
           : existing.executionWorkspacePreference;
+      // Moving an issue to another project leaves any carried-over workspace
+      // link pointing at the old project's workspaces. Drop the links the caller
+      // did not ask for instead of rejecting the move on a link it never chose;
+      // an explicitly supplied workspace id is still validated below.
+      if (issueData.projectId !== undefined && issueData.projectId !== existing.projectId) {
+        if (issueData.projectWorkspaceId === undefined && nextProjectWorkspaceId) {
+          nextProjectWorkspaceId = null;
+          patch.projectWorkspaceId = null;
+        }
+        if (issueData.executionWorkspaceId === undefined && nextExecutionWorkspaceId) {
+          nextExecutionWorkspaceId = null;
+          patch.executionWorkspaceId = null;
+          if (issueData.executionWorkspacePreference === undefined && nextExecutionWorkspacePreference) {
+            nextExecutionWorkspacePreference = null;
+            patch.executionWorkspacePreference = null;
+          }
+        }
+      }
       const nextExecutionWorkspaceSettings =
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)

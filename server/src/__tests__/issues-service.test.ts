@@ -4800,6 +4800,133 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
   });
 
+  it("skips parent workspace inheritance when the child names a different project", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const parentIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Workspace project", status: "in_progress" },
+      { id: otherProjectId, companyId, name: "Other project", status: "in_progress" },
+    ]);
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId: otherProjectId,
+      title: "Child issue in another project",
+    });
+
+    expect(child.parentId).toBe(parentIssueId);
+    expect(child.projectId).toBe(otherProjectId);
+    expect(child.projectWorkspaceId).toBeNull();
+    expect(child.executionWorkspaceId).toBeNull();
+  });
+
+  it("clears a carried-over execution workspace when an issue is moved to another project", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const issueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Workspace project", status: "in_progress" },
+      { id: otherProjectId, companyId, name: "Other project", status: "in_progress" },
+    ]);
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Issue worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Pinned issue",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+
+    const moved = await svc.update(issueId, { status: "todo", projectId: otherProjectId });
+
+    expect(moved?.projectId).toBe(otherProjectId);
+    expect(moved?.executionWorkspaceId).toBeNull();
+    expect(moved?.projectWorkspaceId).toBeNull();
+    expect(moved?.executionWorkspacePreference).toBeNull();
+  });
+
   it("rejects explicitly pinned isolated git worktrees without a project or reusable workspace", async () => {
     const companyId = randomUUID();
 
