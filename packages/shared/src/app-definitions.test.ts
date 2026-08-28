@@ -176,6 +176,15 @@ describe("AppDefinition catalog",()=>{
    }
   }
  });
+ it("does not advertise a managed Gmail read-only method before profile-scoped connector support",()=>{
+  const gmail=APP_DEFINITIONS.find((app)=>app.slug==="gmail");
+  const managedMethods=gmail?.methods.filter((method)=>method.oauthStrategy==="paperclip_id_connector")??[];
+  expect(managedMethods.map((method)=>method.key)).toEqual(["paperclip-draft"]);
+  expect(managedMethods[0]?.defaults?.scopesHint).toEqual([
+   "https://www.googleapis.com/auth/gmail.readonly",
+   "https://www.googleapis.com/auth/gmail.compose",
+  ]);
+ });
  it("configures Shopify's official tenant-scoped Storefront MCP without OAuth",()=>{const method=APP_DEFINITIONS.find((app)=>app.slug==="shopify")?.methods[0];expect(method).toMatchObject({key:"storefront-mcp",auth:"none",defaults:{serverUrlTemplate:"https://{storeDomain}/api/mcp"},tenantFields:[expect.objectContaining({key:"storeDomain",required:true})]});expect(resolveConnectionMethodServerUrl(method!,{storeDomain:"paperclip-demo.myshopify.com"})).toBe("https://paperclip-demo.myshopify.com/api/mcp");expect(resolveConnectionMethodServerUrl(method!,{})).toBeNull()});
  it("offers PostHog OAuth and API-key methods with zero-config defaults and advanced narrowing",()=>{const posthog=APP_DEFINITIONS.find((app)=>app.slug==="posthog");expect(posthog?.methods.map((method)=>method.key)).toEqual(["mcp-oauth","mcp-api-key"]);for(const method of posthog?.methods??[]){const projectField=method.tenantFields?.find((field)=>field.key==="projectId");expect(method.riskTier).toBe("S3");expect(method.tenantFields?.find((field)=>field.key==="readOnly")).toMatchObject({defaultValue:false,advanced:true});expect(projectField).toMatchObject({advanced:true,transport:{location:"header",name:"x-posthog-project-id"}});expect(projectField?.required).not.toBe(true);expect(method.tenantFields?.filter((field)=>field.advanced).map((field)=>field.key)).toEqual(["projectId","readOnly","features","tools"]);expect(method.tenantFields?.find((field)=>field.key==="mode")).toMatchObject({hidden:true,defaultValue:"tools",transport:{location:"query",name:"mode"}});expect(method.configRequirements).toBeUndefined();expect(method.requiredResourceFilters).toBeUndefined();expect(method.guidanceMd).toContain("optional advanced controls")}});
  it("requires only reviewed provider or safety-boundary configuration on the default path",()=>{const required=APP_DEFINITIONS.flatMap((app)=>app.methods.flatMap((method)=>[...(method.tenantFields??[]),...(method.extensionFields??[])].filter((field)=>field.required&&field.advanced!==true&&!field.hidden).map((field)=>`${app.slug}:${method.key}:${field.key}`))).sort();expect(required).toEqual(["clickhouse:mcp-oauth:serviceId","shopify:storefront-mcp:storeDomain","supabase:mcp-api-key:projectRef","supabase:mcp-oauth:projectRef"])});
