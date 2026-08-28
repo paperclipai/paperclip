@@ -76,8 +76,7 @@ export type DuplexProtocolErrorCode =
   | "unknown_type"
   | "version_mismatch"
   | "frame_too_large"
-  | "id_too_large"
-  | "aggregate_bytes_exceeded";
+  | "id_too_large";
 
 /** A decode-time protocol error. The read path returns it; it never throws. */
 export interface DuplexProtocolError {
