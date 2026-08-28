@@ -8,6 +8,7 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterAuthSignalResponse,
   AdapterAuthSessionResponse,
   AdapterAuthSessionOwnerResponse,
   ClaudeSetupTokenSessionResponse,
@@ -237,6 +238,12 @@ export const agentsApi = {
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
+  getAdapterAuthSignal: (companyId: string, type: string, environmentId?: string | null) => {
+    const query = environmentId ? `?environmentId=${encodeURIComponent(environmentId)}` : "";
+    return api.get<AdapterAuthSignalResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/auth-signal${query}`,
+    );
+  },
   invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
     api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
   wakeup: (

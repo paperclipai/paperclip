@@ -287,6 +287,8 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterAuthSignal,
+  AdapterAuthSignalResponse,
   AdapterAuthSessionStatus,
   AdapterAuthSessionInternalStatus,
   AdapterAuthSessionFailure,
