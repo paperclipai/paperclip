@@ -913,6 +913,15 @@ describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "unresolved failing check from the previous heartbeat on this issue",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "A still-failing check is not a valid basis for declaring `done`",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "requesting confirmation unless human input is genuinely required",
+    );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("clear final disposition");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
@@ -1000,7 +1009,40 @@ describe("renderPaperclipWakePrompt", () => {
       expect(prompt).toContain("evidence, not valid liveness paths by themselves");
       expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
       expect(prompt).toContain("named unblock owner/action");
+      expect(prompt).toContain("Failure-continuation rule:");
+      expect(prompt).toContain("resume from its context, inspect/edit/rerun the smallest relevant check");
+      expect(prompt).toContain("A still-failing check is not a valid basis for declaring `done`");
     }
+  });
+
+  it("keeps explicit failing-test feedback ahead of done-declaration pressure on resumed heartbeats", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-15463",
+        title: "Iterate on explicit failing-test feedback",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        {
+          id: "comment-1",
+          issueId: "issue-1",
+          body: "Continue; the task is not complete: FAILED tests/test_main.py::test_no_overfull_hbox - AssertionError",
+          author: { type: "system", id: "scripted-responder" },
+        },
+      ],
+      fallbackFetchNeeded: false,
+    }, { resumedSession: true });
+
+    expect(prompt).toContain("Failure-continuation rule:");
+    expect(prompt).toContain("treat that exact failure as the primary next action");
+    expect(prompt).toContain("continue until it passes or a real blocker is recorded");
+    expect(prompt).toContain("A still-failing check is not a valid basis for declaring `done`");
+    expect(prompt).toContain(
+      "Continue; the task is not complete: FAILED tests/test_main.py::test_no_overfull_hbox - AssertionError",
+    );
   });
 
   it.each([
@@ -1054,6 +1096,8 @@ describe("renderPaperclipWakePrompt", () => {
       "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
     );
     expect(prompt).toContain(instruction);
+    expect(prompt).toContain("Failure-continuation rule for the deliverable owner after recovery:");
+    expect(prompt).toContain("A still-failing check is not a valid basis for declaring `done`");
     expect(prompt).toContain("Fallback preference order: (1) send back to Coder");
     expect(prompt).toContain(`- recovery cause: ${cause}`);
     expect(prompt).toContain("- failure summary: adapter stopped");

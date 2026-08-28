@@ -142,6 +142,8 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
+export const UNRESOLVED_FAILING_CHECK_RULE =
+  "If the wake payload reports an unresolved failing check from the previous heartbeat on this issue, treat that exact failure as the primary next action: resume from its context, inspect/edit/rerun the smallest relevant check, and continue until it passes or a real blocker is recorded. A still-failing check is not a valid basis for declaring `done`; do not spend the heartbeat only acknowledging the failure or requesting confirmation unless human input is genuinely required to proceed.";
 
 function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
@@ -167,6 +169,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "",
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
+  `- ${UNRESOLVED_FAILING_CHECK_RULE}`,
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
   "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
@@ -1550,6 +1553,7 @@ export function renderPaperclipWakePrompt(
     ? [
         "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
         `Cause-specific instruction: ${recoveryInstruction}`,
+        `Failure-continuation rule for the deliverable owner after recovery: ${UNRESOLVED_FAILING_CHECK_RULE}`,
         ...(recovery?.cause === "successful_run_missing_state" ||
             recovery?.cause === "successful_run_missing_issue_disposition"
           ? []
@@ -1560,6 +1564,7 @@ export function renderPaperclipWakePrompt(
     : includeExecutionContract
       ? [
         "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Immediately before returning, verify that Paperclip records one of those dispositions; a successful process exit or final response is not sufficient. If no valid disposition is recorded, record it now and do not end the run. After 2 consecutive failures of the same control-plane write, stop retrying it for the rest of the heartbeat, continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        `Failure-continuation rule: ${UNRESOLVED_FAILING_CHECK_RULE}`,
         "",
       ]
       : [];
