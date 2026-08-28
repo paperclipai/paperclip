@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ServicesList } from "./ServicesPanel";
 import type { ComposioServiceRow } from "../composio-services";
@@ -22,10 +22,15 @@ function act(callback: () => void) {
 }
 
 let container: HTMLDivElement | null = null;
+let root: Root | null = null;
 
 afterEach(() => {
+  if (root) {
+    act(() => root?.unmount());
+  }
   container?.remove();
   container = null;
+  root = null;
 });
 
 function row(over: Partial<ComposioServiceRow> & { toolkitSlug: string }): ComposioServiceRow {
@@ -49,8 +54,9 @@ function renderList(rows: ComposioServiceRow[], handlers: {
 } = {}) {
   container = document.createElement("div");
   document.body.appendChild(container);
-  const root = createRoot(container);
-  act(() => root.render(
+  const renderRoot = createRoot(container);
+  root = renderRoot;
+  act(() => renderRoot.render(
     <ServicesList
       rows={rows}
       busySlug={null}
@@ -194,8 +200,9 @@ describe("ServicesList actions", () => {
   it("disables the row's actions while it is busy", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    const root = createRoot(container);
-    act(() => root.render(
+    const renderRoot = createRoot(container);
+    root = renderRoot;
+    act(() => renderRoot.render(
       <ServicesList
         rows={[row({ toolkitSlug: "gmail", name: "Gmail" })]}
         busySlug="gmail"
