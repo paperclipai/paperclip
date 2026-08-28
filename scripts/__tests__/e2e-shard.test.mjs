@@ -13,7 +13,7 @@ const script = path.join(repoRoot, "scripts", "e2e-shard.mjs");
 const durationsManifest = path.join(repoRoot, "scripts", "e2e-shard-durations.json");
 const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.ts");
 const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
-const trustedPrWorkflow = path.join(repoRoot, ".github", "workflows", "pr-trusted.yml");
+const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
 
 const SHARD_COUNT = 3;
 
@@ -21,6 +21,21 @@ function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(result.status, 0, `expected success for ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim().split(/\s+/).filter(Boolean);
+}
+
+function readPinnedTrustedPrWorkflow() {
+  const caller = readFileSync(prCallerWorkflow, "utf8");
+  const pin = caller.match(
+    /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@([0-9a-f]{40})/,
+  );
+  assert.ok(pin, "pr.yml must call the trusted workflow at a full commit SHA");
+
+  const result = spawnSync("git", ["show", `${pin[1]}:${trustedPrWorkflowPath}`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, `cannot read the pinned trusted workflow: ${result.stderr}`);
+  return result.stdout;
 }
 
 test("the e2e shards form a complete, non-overlapping partition", () => {
@@ -91,19 +106,14 @@ test("shard arguments are validated", () => {
 });
 
 test("pr.yml calls the trusted PR workflow at an immutable SHA", () => {
-  const caller = readFileSync(prCallerWorkflow, "utf8");
-  assert.match(
-    caller,
-    /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@[0-9a-f]{40}/,
-    "pr.yml must call the trusted workflow at a full commit SHA",
-  );
+  assert.ok(readPinnedTrustedPrWorkflow().length > 0);
 });
 
 test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
-  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const workflow = readPinnedTrustedPrWorkflow();
   const jobs = new Map();
   let current = null;
   for (const line of workflow.split("\n")) {
@@ -160,7 +170,7 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
 test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
-  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const workflow = readPinnedTrustedPrWorkflow();
   assert.ok(
     !/pnpm run test:e2e --\s/.test(workflow),
     "pr-trusted.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
