@@ -1,5 +1,8 @@
 name: Trusted PR CI
 
+# Rollout is intentionally two-step: merge this reusable workflow first, then
+# replace pr.yml with an immutable-SHA caller so the active CI definition cannot
+# drift from this file.
 on:
   workflow_call:
 
@@ -63,6 +66,8 @@ jobs:
           }
 
           [[ "$AWS_CI_ENABLED" == 'true' ]] || fail_closed 'AWS_CI_ENABLED is not true'
+          # Reusable workflows retain the caller's github context and event
+          # payload, so a pull_request caller must still report pull_request.
           [[ "$EVENT_NAME" == 'pull_request' ]] || fail_closed 'event is not pull_request'
           [[ "$EVENT_REPOSITORY" == 'paperclipai/paperclip' ]] || fail_closed 'unexpected repository'
           [[ "$EVENT_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected repository ID'
