@@ -42,7 +42,7 @@ jobs:
           EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          EVENT_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          EVENT_MERGE_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -u
