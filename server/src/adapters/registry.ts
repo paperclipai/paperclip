@@ -364,6 +364,7 @@ const codexLocalAdapter: ServerAdapterModule = {
 
 const paperclipRunnerAdapter: ServerAdapterModule = {
   type: "paperclip_runner",
+  runtimeToolDelivery: "environment",
   async execute(ctx) {
     const message = "paperclip_runner requires the native runner coordinator";
     await ctx.onLog("stderr", `${message}\n`);
