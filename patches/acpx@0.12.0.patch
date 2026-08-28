@@ -55,6 +55,19 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..336a1699b80b9e99416f9da4346ca73e
  		};
  	}
  	logAgentLaunch(plan) {
+diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
+--- a/dist/live-checkpoint-ClPCSdrW.js
++++ b/dist/live-checkpoint-ClPCSdrW.js
+@@ -2926,0 +2927,9 @@ function buildAgentEnvironment(authCredentials, sessionEnv) {
++	for (const key of [
++		"PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_WORKSPACE_HANDOFF_SECRET",
++		"PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
++		"PAPERCLIP_DECISION_SIGNING_SECRET", "PAPERCLIP_SECRETS_MASTER_KEY",
++		"PAPERCLIP_SECRETS_MASTER_KEY_FILE", "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN",
++		"PAPERCLIP_DEV_SERVER_STATUS_TOKEN", "PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN",
++		"PAPERCLIP_TELEMETRY_BACKEND_TOKEN", "PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET",
++		"BETTER_AUTH_SECRET", "DATABASE_URL", "DATABASE_MIGRATION_URL"
++	]) delete env[key];
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
 index ccdbe5b032521518022223733049b8b38793473b..3d4e04231e78efeecd8540735b08e1e43547ff2d 100644
 --- a/dist/runtime.d.ts

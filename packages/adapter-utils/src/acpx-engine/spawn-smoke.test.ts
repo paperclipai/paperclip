@@ -46,6 +46,68 @@ it("spawns a real Node ACP agent with per-session env on this platform", async (
   expect(stderr).toContain("paperclip-acp-echo-agent started");
 });
 
+it("does not export server-only secrets to the spawned agent", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-spawn-env-"));
+  tempRoots.push(root);
+  const secretKeys = [
+    "PAPERCLIP_AGENT_JWT_SECRET",
+    "PAPERCLIP_WORKSPACE_HANDOFF_SECRET",
+    "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+    "PAPERCLIP_DECISION_SIGNING_SECRET",
+    "PAPERCLIP_SECRETS_MASTER_KEY",
+    "BETTER_AUTH_SECRET",
+    "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
+    "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN",
+    "PAPERCLIP_DEV_SERVER_STATUS_TOKEN",
+    "PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN",
+    "PAPERCLIP_TELEMETRY_BACKEND_TOKEN",
+    "PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET",
+    "DATABASE_URL",
+    "DATABASE_MIGRATION_URL",
+  ];
+  const inspectedKeys = [...secretKeys, "PAPERCLIP_API_KEY"];
+  const previousValues = Object.fromEntries(secretKeys.map((key) => [key, process.env[key]]));
+  const marker = "must-not-reach-agent";
+  for (const key of secretKeys) process.env[key] = marker;
+
+  try {
+    const logs: string[] = [];
+    const execute = createAcpxEngineExecutor();
+    const result = await execute({
+      runId: "spawn-env-smoke",
+      agent: { id: "spawn-agent", companyId: "spawn-company" },
+      authToken: "run-scoped-value",
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`,
+        mode: "oneshot",
+        stateDir: path.join(root, "state"),
+        cwd: repoRoot,
+        env: {
+          PAPERCLIP_ACPX_INSPECT_ENV_KEYS: inspectedKeys.join(","),
+          DATABASE_URL: marker,
+        },
+      },
+      context: {},
+      onLog: async (_stream: string, text: string) => logs.push(text),
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode, JSON.stringify({ result, logs }, null, 2)).toBe(0);
+    const output = logs.join("");
+    for (const key of secretKeys) expect(output).toContain(`\\"${key}\\":false`);
+    expect(output).toContain(`\\"PAPERCLIP_API_KEY\\":true`);
+    expect(output).not.toContain(marker);
+  } finally {
+    for (const key of secretKeys) {
+      const previous = previousValues[key];
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  }
+});
+
 it("captures the Node error shape for a host-invalid spawn cwd", async () => {
   // Regression anchor for the primitive behind the remote-lane bug: a host
   // `spawn()` whose `cwd` does not exist fails BEFORE `exec`, when libuv
