@@ -6167,7 +6167,11 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const managedRuntimePublicOrigin = resolveManagedPaperclipRuntimePublicOrigin({
     serviceName,
     command,
-    environment: runtimeEnvOverrides,
+    // Includes the trusted public origin injected above for managed HTTPS
+    // exposure. The inherited parent environment was already sanitized, so
+    // any remaining explicit origin is either service-configured or broker-
+    // derived for this exact runtime.
+    environment: env,
     exposedUrl: url,
     exposedUrlTemplate: urlTemplate,
   });
