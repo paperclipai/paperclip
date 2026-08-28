@@ -1000,7 +1000,7 @@ export interface PluginRenderCloseEvent {
  * key to a compile-time command. The open request carries no command string, so a
  * caller cannot select or override the command.
  */
-export type PluginLoginCommandKey = "claude" | "codex";
+export type PluginLoginCommandKey = "claude" | "codex" | "grok";
 
 /** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
 export interface PluginLoginPtyOpenParams {
