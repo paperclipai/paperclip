@@ -53,6 +53,12 @@ import {
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
+const connectionIntentsApiMocks = vi.hoisted(() => ({
+  setupOptions: vi.fn(),
+  complete: vi.fn(),
+  decline: vi.fn(),
+}));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function act(callback: () => void | Promise<void>) {
@@ -74,6 +80,8 @@ vi.mock("@/lib/router", () => ({
     <a href={to} className={className}>{children}</a>
   ),
 }));
+
+vi.mock("@/api/connection-intents", () => ({ connectionIntentsApi: connectionIntentsApiMocks }));
 
 function renderCard(
   props: Partial<ComponentProps<typeof IssueThreadInteractionCard>> = {},
@@ -108,7 +116,8 @@ afterEach(() => {
 });
 
 describe("IssueThreadInteractionCard", () => {
-  it("offers connection resolution actions to the addressed user", () => {
+  it("offers connection resolution actions to the addressed user", async () => {
+    connectionIntentsApiMocks.setupOptions.mockResolvedValue({ existingConnections: [] });
     const host = renderCard({
       interaction: pendingConnectionIntentInteraction,
       currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
@@ -117,6 +126,19 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeTruthy();
     expect(host.textContent).toContain("Connect / Use existing");
     expect(host.textContent).toContain("Not now");
+    const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Connect / Use existing"),
+    );
+    await act(async () => {
+      loadButton?.click();
+      await Promise.resolve();
+    });
+    const connectLink = Array.from(host.querySelectorAll("a")).find((link) =>
+      link.textContent === "Connect a new Notion identity",
+    );
+    expect(connectLink?.getAttribute("href")).toBe(
+      "/apps/connect?byo=1&source=notion&intent=interaction-connection-intent-default",
+    );
   });
 
   it("keeps connection resolution controls exclusive to the addressed user", () => {

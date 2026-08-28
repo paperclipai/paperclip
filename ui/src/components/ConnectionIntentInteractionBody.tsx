@@ -30,6 +30,7 @@ export function ConnectionIntentInteractionBody({
 
   const isAddressee = Boolean(currentUserId && current.addresseeUserId === currentUserId);
   const connectHref = `/apps/connect?${new URLSearchParams({
+    byo: "1",
     source: current.payload.serviceSlug,
     intent: current.id,
   }).toString()}`;
