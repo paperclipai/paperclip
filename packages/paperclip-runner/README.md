@@ -60,6 +60,11 @@ request identity, event order, frame and queue limits, timeouts, redacted
 diagnostics, and process-group cleanup. This transport remains package-local.
 It does not change runnerd provider selection in this slice.
 
+Before a later provider adapter consumes a valid sidecar event, the Rust core
+also requires its optional or mandatory run and turn scope to match the active
+execution. Process and diagnostic events can remain global. All operational,
+tool, input, permission, and terminal events require the exact active binding.
+
 Run the complete contract gate with:
 
 ```sh
