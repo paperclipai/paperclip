@@ -89,6 +89,11 @@ correlations. Terminal events flush the final assistant message first and clear
 unresolved turn-scoped requests. This reducer still does not select ACPX in
 runnerd.
 
+The package-local session bootstrap starts the bounded sidecar transport,
+verifies the Codex-only capability handshake and effective model, opens one
+identity-bound session, and confirms its run attachment. Any failed bootstrap
+terminates the process; session shutdown preserves persistent provider state.
+
 Run the complete contract gate with:
 
 ```sh

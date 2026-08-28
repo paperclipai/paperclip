@@ -79,6 +79,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("amber-signal-7305");
                 std::process::exit(9);
             }
+            "bootstrap" | "bootstrap-wrong-model" | "bootstrap-wrong-run" => {
+                write_json(&mut stdout, &bootstrap_success(id, command, &request, mode))?;
+            }
             "happy" => {
                 write_event(&mut stdout, next_sequence)?;
                 next_sequence += 1;
@@ -88,6 +91,58 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Value {
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let result = match command {
+        "initialize" => json!({
+            "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "sidecarPid": std::process::id(),
+            "profile": {"agent":"codex"},
+            "capabilities": {
+                "persistentSessions": true,
+                "exactModelVerification": true,
+                "permissions": "runner_policy",
+                "semanticTools": "runner_bridge",
+                "structuredInput": "paperclip.question_set.v1",
+            },
+        }),
+        "session.open" => {
+            let model = params
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("missing");
+            json!({
+                "sidecarPid": std::process::id(),
+                "identity": {
+                    "kind": "acpx",
+                    "normalizedSessionId": params.get("normalizedSessionId"),
+                    "acpxRecordId": "record-1",
+                    "backendSessionId": "backend-1",
+                    "agentSessionId": "agent-1",
+                    "profileDigest": format!("sha256:{}", "1".repeat(64)),
+                    "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
+                    "requestedModel": model,
+                    "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
+                    "permissionMode": params.get("permissionMode"),
+                },
+                "status": {},
+            })
+        }
+        "run.attach" => json!({
+            "runId": if mode == "bootstrap-wrong-run" { "wrong-run" } else { params.get("runId").and_then(Value::as_str).unwrap_or("missing") },
+            "catalogRevision": params.get("catalogRevision"),
+        }),
+        "session.close" => json!({"closed":true}),
+        _ => json!({"command":command,"params":params}),
+    };
+    json!({
+        "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+        "id": id,
+        "ok": true,
+        "result": result,
+    })
 }
 
 fn success(id: u64, command: &str, request: &Value) -> Value {
