@@ -130,7 +130,9 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
-export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
+// Keep a recurring invariant on one receipt long enough for its ownership and
+// history to be actionable, rather than minting a fresh Unblock card each tick.
+export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -7438,7 +7440,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function findRecentCompletedLivenessRecoveryIssue(
+  async function findRecentLivenessRecoveryIssue(
     finding: IssueLivenessFinding,
     now: Date,
     cooldownMs: number,
@@ -7446,22 +7448,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (cooldownMs <= 0) return null;
     const cutoff = new Date(now.getTime() - cooldownMs);
     return db
-      .select({ id: issues.id })
+      .select()
       .from(issues)
       .where(
         and(
           eq(issues.companyId, finding.companyId),
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
-          or(
-            eq(issues.originId, finding.incidentKey),
-            eq(issues.originFingerprint, livenessRecoveryLeafFingerprint(finding)),
-          ),
+          // Exact incident keys are intentionally stricter than the leaf
+          // fingerprint used for concurrent-open dedupe: only the same
+          // invariant gets reopened during the cooldown.
+          eq(issues.originId, finding.incidentKey),
           visibleIssueCondition(),
-          eq(issues.status, "done"),
+          // Still-open matches for this incident key are already caught by
+          // findOpenLivenessRecoveryIssueForLeaf before this runs, so this
+          // only needs to find a TERMINAL issue closed within the cooldown —
+          // matching on createdAt instead would reopen ancient closed cards
+          // forever just because they happened to be minted recently.
+          inArray(issues.status, ["done", "cancelled"]),
           gte(issues.updatedAt, cutoff),
         ),
       )
-      .orderBy(desc(issues.updatedAt), desc(issues.id))
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt), desc(issues.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
   }
@@ -8042,12 +8049,48 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
     }
-    if (await findRecentCompletedLivenessRecoveryIssue(
+    const recentEscalation = await findRecentLivenessRecoveryIssue(
       input.finding,
       input.now,
       input.reescalationCooldownMs,
-    )) {
-      return { kind: "cooldown" as const };
+    );
+    if (recentEscalation) {
+      if (!["done", "cancelled"].includes(recentEscalation.status)) {
+        return { kind: "existing" as const, escalationIssueId: recentEscalation.id };
+      }
+      // Re-point the reopened receipt at the CURRENT blocker, not whatever it
+      // was parented to when it was first minted — the blocking issue can
+      // change between recurrences of the same incident key.
+      const reopened = await issuesSvc.update(recentEscalation.id, {
+        status: "todo",
+        parentId: recoveryIssue.id,
+      });
+      if (!reopened) return { kind: "skipped" as const };
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: reopened.assigneeAgentId ?? null,
+        runId: input.runId ?? null,
+        action: "issue.harness_liveness_incident_reopened",
+        entityType: "issue",
+        entityId: reopened.id,
+        details: {
+          source: "recovery.reconcile_issue_graph_liveness",
+          incidentKey: input.finding.incidentKey,
+          findingState: input.finding.state,
+          previousStatus: recentEscalation.status,
+          cooldownMs: input.reescalationCooldownMs,
+          recurrenceCount: 2,
+        },
+      });
+      await ensureIssueBlockedByEscalation({
+        issue,
+        escalationIssueId: reopened.id,
+        finding: input.finding,
+        runId: input.runId ?? null,
+      });
+      return { kind: "reopened" as const, escalationIssueId: reopened.id };
     }
 
     if (latestRecoveryAction) {
@@ -8580,6 +8623,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       cutoff: cutoff.toISOString(),
       escalationsCreated: 0,
       existingEscalations: 0,
+      reopenedEscalations: 0,
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
@@ -8652,13 +8696,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
         result.escalationIssueIds.push(escalation.escalationIssueId);
+      } else if (escalation.kind === "reopened") {
+        result.reopenedEscalations += 1;
+        result.issueIds.push(finding.issueId);
+        result.escalationIssueIds.push(escalation.escalationIssueId);
       } else if (escalation.kind === "rate_limited" || escalation.kind === "capped") {
         result.skippedRateLimited += 1;
         result.skipped += 1;
         result.rateLimited = true;
-      } else if (escalation.kind === "cooldown") {
-        result.skippedReescalationCooldown += 1;
-        result.skipped += 1;
       } else {
         result.skipped += 1;
       }

@@ -72,7 +72,6 @@ import { attentionService } from "../services/attention.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
-import { DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS } from "../services/recovery/service.ts";
 import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1454,7 +1453,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
-  it("holds a recently closed matching escalation, then re-escalates after the cooldown", async () => {
+  it("reopens a recently closed matching escalation instead of minting a sibling", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
@@ -1484,17 +1483,10 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       updatedAt: now,
     });
 
-    const held = await heartbeat.reconcileIssueGraphLiveness({ now });
+    const result = await heartbeat.reconcileIssueGraphLiveness({ now });
 
-    expect(held.escalationsCreated).toBe(0);
-    expect(held.skippedReescalationCooldown).toBe(1);
-
-    const result = await heartbeat.reconcileIssueGraphLiveness({
-      now: new Date(now.getTime() + DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS + 1),
-    });
-
-    expect(result.escalationsCreated).toBe(1);
-    expect(result.existingEscalations).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.reopenedEscalations).toBe(1);
 
     const openEscalations = await db
       .select()
@@ -1506,20 +1498,26 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
           eq(issues.originId, incidentKey),
         ),
       );
-    expect(openEscalations).toHaveLength(2);
-    const freshEscalation = openEscalations.find((issue) => issue.status !== "done");
-    expect(freshEscalation).toMatchObject({
+    expect(openEscalations).toHaveLength(1);
+    expect(openEscalations[0]).toMatchObject({
+      id: closedEscalationId,
       parentId: blockerIssueId,
       assigneeAgentId: managerId,
-      status: expect.stringMatching(/^(todo|in_progress|done)$/),
+      status: "todo",
     });
 
     const blockers = await db
       .select({ blockerIssueId: issueRelations.issueId })
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
-    expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
-    expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+    expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(true);
+
+    const recurrenceEvents = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.harness_liveness_incident_reopened"));
+    expect(recurrenceEvents).toHaveLength(1);
+    expect(recurrenceEvents[0]?.details).toMatchObject({ incidentKey, recurrenceCount: 2 });
   });
 
   it("rate-limits repeated liveness re-escalation and converges to one needs-human recovery action", async () => {
@@ -1543,10 +1541,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const immediateRetry = await heartbeat.reconcileIssueGraphLiveness();
     expect(immediateRetry.escalationsCreated).toBe(0);
-    // Fork behavior: a just-completed escalation is caught by the
-    // re-escalation COOLDOWN check, which runs before attempt rate limiting,
-    // so the skip is counted there rather than in skippedRateLimited.
-    expect(immediateRetry.skippedReescalationCooldown).toBe(1);
+    expect(immediateRetry.reopenedEscalations).toBe(1);
 
     const [activeAction] = await db
       .select()
@@ -1569,7 +1564,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     // attempt-cap path (the subject of this test) is actually reachable.
     await db
       .update(issues)
-      .set({ updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .set({ status: "done", updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) })
       .where(eq(issues.id, firstEscalation!.id));
 
     const cappedRetry = await heartbeat.reconcileIssueGraphLiveness();
@@ -1644,7 +1639,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(commentsAfterSecondCap.filter((comment) => comment.body.includes("stopped automatic liveness retry creation"))).toHaveLength(1);
   });
 
-  it("re-escalates immediately after a matching escalation is cancelled", async () => {
+  it("reopens a recently cancelled matching escalation", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
@@ -1675,8 +1670,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const result = await heartbeat.reconcileIssueGraphLiveness({ now });
 
-    expect(result.escalationsCreated).toBe(1);
-    expect(result.skippedReescalationCooldown).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.reopenedEscalations).toBe(1);
   });
 
   it("removes closed liveness escalations from blocker relations during reconciliation", async () => {
