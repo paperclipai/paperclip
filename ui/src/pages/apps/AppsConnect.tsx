@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowUpRight,
@@ -362,10 +362,8 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
   };
 
   const oauthStartMutation = useMutation({
-    mutationFn: (connectionId: string) => toolsApi.startOAuth(
-      connectionId,
-      connectionIntentId ?? undefined,
-    ),
+    mutationFn: ({ connectionId, interactionId }: { connectionId: string; interactionId?: string }) =>
+      toolsApi.startOAuth(connectionId, interactionId),
     onSuccess: ({ authorizationUrl }) => {
       // The endpoint chose this address, so it is checked here too — this is the
       // line where an unsafe scheme would actually run (PAP-17099).
@@ -393,7 +391,10 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
       );
     },
   });
-  const startOAuth = oauthStartMutation.mutate;
+  const startOAuthMutation = oauthStartMutation.mutate;
+  const startOAuth = useCallback((connectionId: string, interactionId = connectionIntentId ?? undefined) => {
+    startOAuthMutation({ connectionId, interactionId });
+  }, [connectionIntentId, startOAuthMutation]);
 
   /**
    * Commit the Access step's agent reach for a connection. Shared by the
@@ -579,7 +580,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
       setOAuthError(null);
       setOAuthPhase("starting");
       if (existingOAuthConnection) {
-        startOAuth(existingOAuthConnection.id);
+        startOAuth(existingOAuthConnection.id, connectionIntentId ?? undefined);
       } else {
         connectApp(requestedEntry);
       }
@@ -590,6 +591,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     connectApp,
     connectionsQuery.isError,
     connectionsQuery.isFetchedAfterMount,
+    connectionIntentId,
     entry?.slug,
     existingOAuthConnection,
     galleryQuery.data,

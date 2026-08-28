@@ -401,7 +401,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         interactionId: randomUUID(),
         interactionKind: "connection_intent",
         interactionStatus: "accepted",
+        interactionResolvedAt: "2026-08-28T13:30:00.000Z",
         mutation: "interaction",
+        source: "connection_intent.resolved",
       },
     });
 

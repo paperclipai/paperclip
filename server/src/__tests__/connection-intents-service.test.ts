@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -17,6 +17,7 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
+import { wakeConnectionIntentAfterResolution } from "../routes/connection-intents.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -25,6 +26,37 @@ import {
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describe("wakeConnectionIntentAfterResolution", () => {
+  it("preserves resolved interaction evidence in the queued run snapshot", async () => {
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await wakeConnectionIntentAfterResolution(
+      { wakeup } as Parameters<typeof wakeConnectionIntentAfterResolution>[0],
+      {
+        loaded: {
+          issue: { id: "issue-1", assigneeAgentId: "agent-1", status: "in_progress" },
+          interaction: {
+            id: "interaction-1",
+            resolvedAt: "2026-08-28T13:30:00.000Z",
+          },
+        },
+        status: "accepted",
+        actorId: "user-1",
+      },
+    );
+
+    expect(wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
+      contextSnapshot: expect.objectContaining({
+        interactionId: "interaction-1",
+        interactionKind: "connection_intent",
+        interactionStatus: "accepted",
+        interactionResolvedAt: "2026-08-28T13:30:00.000Z",
+        mutation: "interaction",
+        wakeReason: "issue_commented",
+      }),
+    }));
+  });
+});
 
 describeEmbeddedPostgres("connectionIntentService", () => {
   let db!: ReturnType<typeof createDb>;

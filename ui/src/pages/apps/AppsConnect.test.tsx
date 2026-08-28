@@ -631,7 +631,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("resumes an existing Notion OAuth connection instead of creating another draft", async () => {
-    mockSearch.value = "source=notion";
+    const interactionId = "11111111-1111-4111-8111-111111111111";
+    mockSearch.value = `source=notion&intent=${interactionId}`;
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
       applications: [{
@@ -660,7 +661,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     expect(connectAppMock).not.toHaveBeenCalled();
-    expect(startOAuthMock).toHaveBeenCalledWith("conn-existing");
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-existing", interactionId);
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=existing",
     );

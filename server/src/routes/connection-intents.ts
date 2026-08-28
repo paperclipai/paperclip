@@ -149,7 +149,7 @@ export async function wakeConnectionIntentAfterResolution(
   input: {
     loaded: {
       issue: { id: string; assigneeAgentId: string | null; status: string };
-      interaction: { id: string };
+      interaction: { id: string; resolvedAt?: string | Date | null };
     };
     status: string;
     actorId: string;
@@ -157,6 +157,8 @@ export async function wakeConnectionIntentAfterResolution(
 ) {
   const agentId = input.loaded.issue.assigneeAgentId;
   if (!agentId || input.loaded.issue.status !== "in_progress") return;
+  const resolvedAt = input.loaded.interaction.resolvedAt;
+  const interactionResolvedAt = resolvedAt instanceof Date ? resolvedAt.toISOString() : resolvedAt;
   await heartbeat.wakeup(agentId, {
     source: "automation",
     triggerDetail: "system",
@@ -177,8 +179,12 @@ export async function wakeConnectionIntentAfterResolution(
       interactionId: input.loaded.interaction.id,
       interactionKind: "connection_intent",
       interactionStatus: input.status,
+      mutation: "interaction",
       wakeReason: "issue_commented",
       source: "connection_intent.resolved",
+      ...(interactionResolvedAt
+        ? { interactionResolvedAt }
+        : {}),
       forceFreshSession: true,
     },
     issueStateGuard: {
