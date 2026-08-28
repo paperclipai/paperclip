@@ -2776,7 +2776,7 @@ rl.on("line", (line) => {
     }
   });
 
-  it("preserves a concurrent managed-connector execution that wins the drift expiry race", async () => {
+  it("does not expire a managed-connector provider execution already in flight", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
@@ -2869,14 +2869,68 @@ rl.on("line", (line) => {
         })
         .where(eq(toolActionRequests.id, actionRequest.id));
 
-      const approving = gateway.approveActionRequest({
-        companyId: company.id,
-        issueId: issue.id,
-        interactionId: actionRequest.interactionId!,
-        actionRequestId: actionRequest.id,
-        actor: { agentId: agent.id },
+      const approvedAt = new Date();
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "accepted", resolvedByAgentId: agent.id, resolvedAt: approvedAt, updatedAt: approvedAt })
+        .where(eq(issueThreadInteractions.id, actionRequest.interactionId!));
+      await db
+        .update(toolActionRequests)
+        .set({ status: "approved", resolvedByAgentId: agent.id, resolvedAt: approvedAt, updatedAt: approvedAt })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      await db
+        .update(toolInvocations)
+        .set({ approvalState: "approved", updatedAt: approvedAt })
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+
+      const retrying = gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: legacyParameters,
+        approvedActionRequestId: actionRequest.id,
       });
       await driftExpiryStarted;
+
+      const executingAt = new Date();
+      await db
+        .update(toolActionRequests)
+        .set({ status: "executing", updatedAt: executingAt })
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      await db
+        .update(toolInvocations)
+        .set({
+          status: "executing",
+          approvalState: "approved",
+          errorCode: null,
+          errorMessage: null,
+          startedAt: executingAt,
+          completedAt: null,
+          updatedAt: executingAt,
+        })
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      resumeDriftExpiry();
+
+      await retrying.then(
+        () => {
+          throw new Error("Expected the stale approved retry to request a new approval");
+        },
+        (error) => expectGatewayError(error, 409, "approved_tool_managed_arguments_changed"),
+      );
+      const [inFlightRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      const [inFlightInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId));
+      expect(inFlightRequest.status).toBe("executing");
+      expect(inFlightInvocation).toMatchObject({
+        status: "executing",
+        approvalState: "approved",
+        errorCode: null,
+        errorMessage: null,
+      });
 
       const completedAt = new Date();
       const winnerSummary = summarizeToolValue({ winner: "concurrent execution" });
@@ -2888,21 +2942,11 @@ rl.on("line", (line) => {
         .update(toolInvocations)
         .set({
           status: "completed",
-          approvalState: "approved",
           resultSummary: winnerSummary,
-          errorCode: null,
-          errorMessage: null,
           completedAt,
           updatedAt: completedAt,
         })
         .where(eq(toolInvocations.id, actionRequest.invocationId));
-      resumeDriftExpiry();
-
-      await expect(approving).resolves.toMatchObject({
-        status: "executed",
-        resultSummary: winnerSummary.summary,
-        error: null,
-      });
       const [winnerInvocation] = await db
         .select()
         .from(toolInvocations)

@@ -4993,6 +4993,7 @@ export function createToolGatewayService(
     actionRequestId: string;
     invocationId: string;
     toolName: string;
+    ownsExecutingClaim?: boolean;
   }) {
     const error = new ToolGatewayHttpError(
       409,
@@ -5007,7 +5008,9 @@ export function createToolGatewayService(
       .set({ status: "expired", resolvedAt: now, updatedAt: now })
       .where(and(
         eq(toolActionRequests.id, input.actionRequestId),
-        inArray(toolActionRequests.status, ["approved", "executing"]),
+        input.ownsExecutingClaim
+          ? inArray(toolActionRequests.status, ["approved", "executing"])
+          : eq(toolActionRequests.status, "approved"),
       ))
       .returning({ id: toolActionRequests.id });
     if (!expired) return error;
@@ -5185,6 +5188,7 @@ export function createToolGatewayService(
         actionRequestId: claimed.id,
         invocationId: invocation.id,
         toolName: invocation.toolName,
+        ownsExecutingClaim: true,
       });
     }
 
