@@ -26,6 +26,7 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  sweepOrphanedBackupIntermediates,
   authUsers,
   companies,
   companyMemberships,
@@ -1657,6 +1658,24 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
+
+    // Startup orphan sweep: reclaim any plaintext .sql intermediate left by a
+    // prior crash immediately, rather than waiting up to backupIntervalMs for
+    // the next scheduled run to reach the sweep step inside runDatabaseBackup.
+    try {
+      const { reclaimedFiles, reclaimedBytes } = sweepOrphanedBackupIntermediates(
+        config.databaseBackupDir,
+        "paperclip",
+      );
+      if (reclaimedFiles.length > 0) {
+        logger.warn(
+          { reclaimedFiles, reclaimedBytes, backupDir: config.databaseBackupDir },
+          "Startup sweep reclaimed orphaned uncompressed database backup intermediate(s)",
+        );
+      }
+    } catch (err) {
+      logger.error({ err, backupDir: config.databaseBackupDir }, "Startup orphaned-backup sweep failed");
+    }
 
     logger.info(
       {
