@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { eq } from "drizzle-orm";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   agents,
   authAccounts,
@@ -64,6 +64,7 @@ import {
 } from "../commands/worktree-lib.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
@@ -71,7 +72,16 @@ import {
 const ORIGINAL_CWD = process.cwd();
 const ORIGINAL_ENV = { ...process.env };
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const itEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
+// Every test in the embedded-Postgres cost class shares one time budget
+// (see EMBEDDED_POSTGRES_TEST_TIMEOUT_MS) instead of a hand-written number
+// per call site.
+function itEmbeddedPostgres(name: string, fn: () => Promise<void>): void {
+  if (!embeddedPostgresSupport.supported) {
+    it.skip(name, fn);
+    return;
+  }
+  it(name, fn, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+}
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 function mockVerifiedSeedResult() {
@@ -593,6 +603,7 @@ describe("worktree helpers", () => {
 
   itEmbeddedPostgres("recognizes positive legacy database schema evidence", async () => {
     const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-legacy-evidence-");
+    onTestFinished(() => tempDb.cleanup());
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-legacy-config-"));
     try {
       const configPath = path.join(tempRoot, "config.json");
@@ -623,9 +634,8 @@ describe("worktree helpers", () => {
       });
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
-      await tempDb.cleanup();
     }
-  }, 30000);
+  });
 
   it("ensure-seeded seeds once and fast-exits on the verified manifest", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-"));
@@ -1160,6 +1170,7 @@ describe("worktree helpers", () => {
 
   itEmbeddedPostgres("quarantines copied live execution state in seeded worktree databases", async () => {
     const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-quarantine-");
+    onTestFinished(() => tempDb.cleanup());
     const db = createDb(tempDb.connectionString);
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1392,9 +1403,8 @@ describe("worktree helpers", () => {
       expect(runtimeService?.stoppedAt).toBeInstanceOf(Date);
     } finally {
       await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
-      await tempDb.cleanup();
     }
-  }, 20_000);
+  });
 
   it("copies the source local_encrypted secrets key into the seeded worktree instance", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
@@ -1539,6 +1549,7 @@ describe("worktree helpers", () => {
       const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
       const originalCwd = process.cwd();
       const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-local-board-source-");
+      onTestFinished(() => sourceDb.cleanup());
 
       try {
         await seedValidWorktreeSource(sourceDb.connectionString, {
@@ -1591,34 +1602,23 @@ describe("worktree helpers", () => {
         });
 
         await targetPg.start();
-        try {
-          const targetDb = createDb(
-            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
-          );
-          const [seededLocalBoard] = await targetDb
-            .select({ id: authUsers.id })
-            .from(authUsers)
-            .where(eq(authUsers.id, "local-board"));
-          const seededAccounts = await targetDb.select().from(authAccounts);
-          expect(seededLocalBoard?.id).toBe("local-board");
-          expect(seededAccounts).toHaveLength(0);
-          await targetDb.$client.end({ timeout: 5 });
-        } finally {
-          await targetPg.stop();
-        }
+        onTestFinished(() => targetPg.stop());
+        const targetDb = createDb(
+          `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+        );
+        const [seededLocalBoard] = await targetDb
+          .select({ id: authUsers.id })
+          .from(authUsers)
+          .where(eq(authUsers.id, "local-board"));
+        const seededAccounts = await targetDb.select().from(authAccounts);
+        expect(seededLocalBoard?.id).toBe("local-board");
+        expect(seededAccounts).toHaveLength(0);
+        await targetDb.$client.end({ timeout: 5 });
       } finally {
         process.chdir(originalCwd);
-        await sourceDb.cleanup();
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },
-    // This test starts three separate embedded Postgres lifecycles (the
-    // source database, the worktree init's internal target database, and a
-    // third instance opened here to verify the seeded rows), so it needs
-    // more headroom than the other embedded-Postgres tests in this file.
-    // It normally finishes in well under 10s; the 60s budget absorbs CI
-    // runner contention without masking a real hang.
-    60_000,
   );
 
   itEmbeddedPostgres(
@@ -1634,6 +1634,7 @@ describe("worktree helpers", () => {
       const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
       const originalCwd = process.cwd();
       const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-source-");
+      onTestFinished(() => sourceDb.cleanup());
 
       try {
         await seedValidWorktreeSource(sourceDb.connectionString);
@@ -1749,22 +1750,17 @@ describe("worktree helpers", () => {
         });
 
         await targetPg.start();
-        try {
-          const targetDb = createDb(
-            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
-          );
-          const seededUsers = await targetDb.select().from(authUsers);
-          expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
-        } finally {
-          await targetPg.stop();
-        }
+        onTestFinished(() => targetPg.stop());
+        const targetDb = createDb(
+          `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+        );
+        const seededUsers = await targetDb.select().from(authUsers);
+        expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
       } finally {
         process.chdir(originalCwd);
-        await sourceDb.cleanup();
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
     },
-    30000,
   );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
@@ -2049,6 +2045,7 @@ describe("worktree helpers", () => {
     const currentDatabaseReservation = await reserveTestPort();
     const currentDatabasePort = currentDatabaseReservation.port;
     const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-reseed-source-");
+    onTestFinished(() => sourceDb.cleanup());
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -2122,7 +2119,6 @@ describe("worktree helpers", () => {
       ).toBe(true);
     } finally {
       await currentDatabaseReservation.release();
-      await sourceDb.cleanup();
       process.chdir(originalCwd);
       if (originalPaperclipConfig === undefined) {
         delete process.env.PAPERCLIP_CONFIG;
@@ -2131,7 +2127,7 @@ describe("worktree helpers", () => {
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
