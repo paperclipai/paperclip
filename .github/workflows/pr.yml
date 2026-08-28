@@ -12,4 +12,4 @@ permissions:
 
 jobs:
   ci:
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@5ac66b3fdd5dc22c0c4e5fdb234ac063cf1d9ff8
+    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@c119c4bee6ebb9c81791d7a6994f1be06d7cc22b
