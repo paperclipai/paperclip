@@ -48,6 +48,101 @@ async function isPortInUse(port: number): Promise<boolean> {
 }
 
 /**
+ * How far above the preferred port to look for a cluster that already serves a
+ * data directory.
+ *
+ * Callers allocate with a first-free-port walk that starts at the preferred
+ * port, so a cluster this repo started for a directory sits a small number of
+ * ports above it. Sixteen covers that spread without turning an ownership
+ * question into a port sweep. It is a bound, not a proof: a cluster pushed far
+ * from its preferred port by an unusually crowded range stays invisible here,
+ * and only its lock file can place it.
+ */
+export const EMBEDDED_POSTGRES_PORT_SCAN_WINDOW = 16;
+
+/**
+ * Hard ceiling on identifying one scanned port.
+ *
+ * `waitForPostgresReady` checks its own budget only between attempts, so a
+ * single attempt that never settles is never cut off: a service that accepts
+ * the socket and then says nothing leaves the handshake pending, and
+ * `connect_timeout` does not cover that -- it bounds the TCP connect, which
+ * already succeeded. On the preferred port the caller has to pay that cost,
+ * because it is about to start there. A scanned neighbour does not deserve it.
+ */
+const SCAN_PORT_TIMEOUT_MS = 3_000;
+
+/**
+ * Hard ceiling on the whole scan, so a crowded port range cannot turn an
+ * ownership question into a minute of probing. Exhausting it is reported as "no
+ * adjacent owner found": the residual risk is a live cluster that the budget ran
+ * out before reaching, which is the same answer this code gave for every cluster
+ * before the scan existed.
+ */
+const SCAN_TOTAL_TIMEOUT_MS = 12_000;
+
+/**
+ * Resolve `work`, or `null` if it has not settled within `ms`.
+ *
+ * The abandoned promise is left to finish on its own. Both probes close their
+ * client in a `finally`, so nothing stays open beyond that.
+ */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const guarded = work.catch(() => null);
+  try {
+    return await Promise.race([
+      guarded,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Whether the server on `port` reports `dataDir` as its data directory. */
+async function servesDataDirectory(port: number, dataDir: string): Promise<boolean> {
+  await waitForPostgresReady(adminConnectionString(port), {
+    timeoutMs: IDENTIFY_TIMEOUT_MS,
+    connectTimeoutSeconds: IDENTIFY_CONNECT_TIMEOUT_SECONDS,
+  });
+  const actualDataDir = await getPostgresDataDirectory(adminConnectionString(port));
+  return (
+    typeof actualDataDir === "string" &&
+    canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir)
+  );
+}
+
+/**
+ * Find a live cluster serving `dataDir` on one of the ports just above
+ * `preferredPort`, or `null` when none answers for it.
+ *
+ * A port that will not identify itself is skipped rather than refused. On the
+ * preferred port a silent holder is a genuine ambiguity, because the caller was
+ * about to start there. Here it is evidence about a neighbour, and refusing on
+ * it would block every seed that runs near an unrelated service.
+ */
+async function findAdjacentClusterServing(
+  dataDir: string,
+  preferredPort: number,
+  window: number,
+  now: () => number = () => Date.now(),
+): Promise<number | null> {
+  const deadline = now() + SCAN_TOTAL_TIMEOUT_MS;
+  for (let port = preferredPort + 1; port <= preferredPort + window; port += 1) {
+    if (now() >= deadline) return null;
+    if (!(await isPortInUse(port))) continue;
+    const serves = await withDeadline(servesDataDirectory(port, dataDir), SCAN_PORT_TIMEOUT_MS);
+    if (serves === true) return port;
+  }
+  return null;
+}
+
+
+/**
  * Decide whether to adopt an existing cluster for `dataDir` or start a new one.
  *
  * The CLI previously made this decision with its own copy of the pid check, and
@@ -103,36 +198,51 @@ export async function decideEmbeddedCluster(
   // same as the directory being free -- a cluster started outside Paperclip, or
   // one whose lock file was deleted, can still be serving it. This is the exact
   // shape of the bug this change set exists to fix, so probe before starting.
-  if (!(await isPortInUse(preferredPort))) {
-    return { action: "start" };
+  if (await isPortInUse(preferredPort)) {
+    let servesThisDirectory: boolean;
+    try {
+      await waitForPostgresReady(adminConnectionString(preferredPort), {
+        timeoutMs: IDENTIFY_TIMEOUT_MS,
+        connectTimeoutSeconds: IDENTIFY_CONNECT_TIMEOUT_SECONDS,
+      });
+      const actualDataDir = await getPostgresDataDirectory(adminConnectionString(preferredPort));
+      servesThisDirectory =
+        typeof actualDataDir === "string" &&
+        canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir);
+    } catch (error) {
+      // Something holds the port and will not identify itself. It may be our own
+      // postmaster replaying WAL, so refusing is the only safe answer.
+      throw new Error(
+        `Port ${preferredPort} is in use, but the server there did not identify itself, so ownership of `
+        + `${dataDir} cannot be established. Refusing to start a second postmaster over possibly-live data. `
+        + `Stop whatever is using port ${preferredPort}, then retry.`,
+        { cause: error },
+      );
+    }
+
+    if (servesThisDirectory) {
+      return { action: "adopt", port: preferredPort };
+    }
   }
 
-  let servesThisDirectory: boolean;
-  try {
-    await waitForPostgresReady(adminConnectionString(preferredPort), {
-      timeoutMs: IDENTIFY_TIMEOUT_MS,
-      connectTimeoutSeconds: IDENTIFY_CONNECT_TIMEOUT_SECONDS,
-    });
-    const actualDataDir = await getPostgresDataDirectory(adminConnectionString(preferredPort));
-    servesThisDirectory =
-      typeof actualDataDir === "string" &&
-      canonicalizeDataDirectory(actualDataDir) === canonicalizeDataDirectory(dataDir);
-  } catch (error) {
-    // Something holds the port and will not identify itself. It may be our own
-    // postmaster replaying WAL, so refusing is the only safe answer.
-    throw new Error(
-      `Port ${preferredPort} is in use, but the server there did not identify itself, so ownership of `
-      + `${dataDir} cannot be established. Refusing to start a second postmaster over possibly-live data. `
-      + `Stop whatever is using port ${preferredPort}, then retry.`,
-      { cause: error },
-    );
+  // The preferred port is idle, or an unrelated cluster holds it. Neither
+  // settles ownership of this directory. Callers allocate with a first-free-port
+  // walk, so a cluster started here earlier can be listening a few ports above
+  // -- and with the lock file absent or stale, nothing else records where it
+  // went. Answering "start" on the preferred port alone is what let the worktree
+  // seed path run resetPostgresDatabase against a live database.
+  const adjacentPort = await findAdjacentClusterServing(
+    dataDir,
+    preferredPort,
+    EMBEDDED_POSTGRES_PORT_SCAN_WINDOW,
+  );
+  if (adjacentPort !== null) {
+    // The server named this directory itself, which outranks the pid file that
+    // failed to record it. Callers that must not share a live cluster refuse on
+    // "adopt"; callers that may share one get a working port instead of a second
+    // postmaster over the same data.
+    return { action: "adopt", port: adjacentPort };
   }
 
-  if (servesThisDirectory) {
-    return { action: "adopt", port: preferredPort };
-  }
-
-  // Identified as a different cluster: our directory is unowned, so the caller
-  // may start on another port.
   return { action: "start" };
 }
