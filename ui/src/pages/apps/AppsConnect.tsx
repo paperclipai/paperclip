@@ -1,4 +1,5 @@
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
+import { useSearchParams } from "@/lib/router";
 import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
 
 export {
@@ -15,5 +16,14 @@ export function AppsConnect({
   byoOnly?: boolean;
   credentialSource?: ToolConnectionCredentialSource;
 } = {}) {
-  return <ConnectionSetupFlow byoOnly={byoOnly} credentialSource={credentialSource} host="page" />;
+  const [searchParams] = useSearchParams();
+  const interactionId = searchParams.get("intent")?.trim() || undefined;
+  return (
+    <ConnectionSetupFlow
+      byoOnly={byoOnly}
+      credentialSource={credentialSource}
+      host="page"
+      interactionId={interactionId}
+    />
+  );
 }
