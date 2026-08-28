@@ -647,6 +647,16 @@ function resolveManagedCodexHomeDir(companyId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
 }
 
+// Mirrors `resolveManagedGrokHomeDir` in
+// `packages/adapters/grok-local/src/server/grok-home.ts` — this package
+// cannot import that adapter package (it would invert the dependency
+// direction), so the path scheme is duplicated here, the same way
+// `resolveManagedCodexHomeDir` above duplicates the Codex adapter's own
+// helper.
+function resolveManagedGrokHomeDir(companyId: string): string {
+  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "grok-home");
+}
+
 // Walk up from startDir looking for `node_modules/.bin/<binName>`. This matches
 // npm/pnpm binary hoisting in packaged installs while preserving monorepo dev.
 export async function findAncestorBin(startDir: string, binName: string): Promise<string | null> {
@@ -1854,6 +1864,14 @@ async function buildRuntime(input: {
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else {
+    // A minimal, separate Grok seam: only the company-scoped `GROK_HOME`
+    // binding, so a Grok run authenticates from the credential a completed
+    // device login wrote. This never touches `prepareCodexSkillRuntime` above
+    // — that function stays Codex-only — and every other custom ACPX agent
+    // (for example `kimi`) falls through this branch unaffected.
+    if (acpxAgent === "grok") {
+      env.GROK_HOME = resolveManagedGrokHomeDir(agent.companyId);
+    }
     const desired = resolveLegacyPaperclipDesiredSkillNames(
       config,
       await readPaperclipRuntimeSkillEntries(config, input.engine.moduleDir),

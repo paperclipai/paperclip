@@ -1285,6 +1285,53 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
   });
 
+  it("sets GROK_HOME for a Grok run from the company Grok home, and leaves CODEX_HOME unchanged for a Codex run", async () => {
+    const root = await makeTempRoot();
+    const paperclipHome = path.join(root, "paperclip-home");
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    try {
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = "default";
+
+      const grokRun = await runExecutor({
+        agent: "grok",
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state-grok"),
+      });
+      expect(grokRun.sessionInputs[0]?.sessionOptions).toMatchObject({
+        env: expect.objectContaining({
+          GROK_HOME: path.join(
+            paperclipHome,
+            "instances",
+            "default",
+            "companies",
+            "company-1",
+            "grok-home",
+          ),
+        }),
+      });
+
+      const codexHome = path.join(root, "codex-home");
+      const codexRun = await runExecutor({
+        agent: "codex",
+        stateDir: path.join(root, "state-codex"),
+        env: { CODEX_HOME: codexHome },
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      });
+      const codexEnv = (codexRun.sessionInputs[0]?.sessionOptions as { env: Record<string, string> })
+        .env;
+      expect(codexEnv.CODEX_HOME).toBe(codexHome);
+      expect(codexEnv.GROK_HOME).toBeUndefined();
+    } finally {
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+    }
+  });
+
   it("uses direct registry commands and per-session env across ACPX agent changes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
