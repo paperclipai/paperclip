@@ -6,15 +6,16 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const ensureRuntimeInstalledMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensureCommandMock = vi.hoisted(() => vi.fn(async () => {}));
-const prepareRuntimeMock = vi.hoisted(() => vi.fn(async () => ({
-  workspaceRemoteDir: null,
+const prepareRuntimeMock = vi.hoisted(() => vi.fn(async (_input: unknown) => ({
+  workspaceRemoteDir: null as string | null,
+  assetDirs: {} as Record<string, string>,
   restoreWorkspace: async () => {},
 })));
 const resolveCommandForLogsMock = vi.hoisted(() => vi.fn(async () => "aider"));
 const runProcessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
-  adapterExecutionTargetIsRemote: () => false,
+  adapterExecutionTargetIsRemote: (target: unknown) => (target as { kind?: string } | null)?.kind === "remote",
   adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) => cwd,
   overrideAdapterExecutionTargetRemoteCwd: (target: unknown, _cwd: string) => target,
   adapterExecutionTargetSessionIdentity: () => ({ kind: "local" }),
@@ -27,6 +28,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   resolveAdapterExecutionTargetCommandForLogs: resolveCommandForLogsMock,
   resolveAdapterExecutionTargetTimeoutSec: (_target: unknown, timeoutSec: number) => timeoutSec,
   runAdapterExecutionTargetProcess: runProcessMock,
+  runtimeAssetDir: (
+    prepared: { assetDirs?: Record<string, string> },
+    key: string,
+    fallbackRemoteCwd: string,
+  ) => prepared.assetDirs?.[key] ?? `${fallbackRemoteCwd}/.paperclip-runtime/${key}`,
 }));
 
 import { execute } from "./execute.js";
@@ -43,9 +49,11 @@ function makeCtx(overrides: {
   runId?: string;
   config: Record<string, unknown>;
   runtime?: AdapterExecutionContext["runtime"];
+  executionTarget?: AdapterExecutionContext["executionTarget"];
 }): AdapterExecutionContext {
   return {
     runId: overrides.runId ?? "run-1",
+    executionTarget: overrides.executionTarget,
     agent: {
       id: "agent-1",
       companyId: "company-1",
@@ -181,6 +189,90 @@ describe("aider_local execute", () => {
     await fs.writeFile(historyPath, "# aider chat started\n", "utf8");
     await execute(makeCtx({ runId: "run-existing-history", config: { cwd: root }, runtime }));
     expect(runProcessMock.mock.calls[1]?.[3]).toContain("--restore-chat-history");
+  });
+
+  it("does not restore a transcript different from the persisted session's file", async () => {
+    const root = await makeTempRoot();
+    const savedHistoryPath = path.join(root, "previous-history.md");
+    const configuredHistoryPath = path.join(root, ".aider.chat.history.md");
+    await fs.writeFile(savedHistoryPath, "# aider chat started\n", "utf8");
+    await fs.writeFile(configuredHistoryPath, "# aider chat started\n", "utf8");
+    runProcessMock.mockImplementation(okRun("done\n"));
+
+    const runtime = {
+      sessionId: null,
+      sessionParams: { chatHistoryFile: savedHistoryPath, cwd: root },
+      sessionDisplayId: savedHistoryPath,
+      taskKey: null,
+    } as AdapterExecutionContext["runtime"];
+
+    await execute(makeCtx({ config: { cwd: root }, runtime }));
+    expect(runProcessMock.mock.calls[0]?.[3]).not.toContain("--restore-chat-history");
+  });
+
+  it("stages instructions and skills as runtime assets for remote targets", async () => {
+    const root = await makeTempRoot();
+    const instructionsPath = path.join(root, "managed", "AGENTS.md");
+    const skillSource = path.join(root, "runtime-skills", "paperclip");
+    await fs.mkdir(path.dirname(instructionsPath), { recursive: true });
+    await fs.writeFile(instructionsPath, "You are an Aider agent.\n", "utf8");
+    await fs.mkdir(skillSource, { recursive: true });
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "---\nname: paperclip\n---\n", "utf8");
+
+    let seenAssets: Array<{ key: string; localDir: string }> = [];
+    let stagedInstructionsContent = "";
+    prepareRuntimeMock.mockImplementationOnce(async (input) => {
+      seenAssets = (input as { assets?: Array<{ key: string; localDir: string }> }).assets ?? [];
+      const instructionsAsset = seenAssets.find((asset) => asset.key === "instructions");
+      if (instructionsAsset) {
+        stagedInstructionsContent = await fs.readFile(
+          path.join(instructionsAsset.localDir, "AGENTS.md"),
+          "utf8",
+        );
+      }
+      return {
+        workspaceRemoteDir: "/remote/ws",
+        assetDirs: { "skill-0": "/remote/runtime/skill-0", instructions: "/remote/runtime/instructions" },
+        restoreWorkspace: async () => {},
+      };
+    });
+    let seenArgs: string[] = [];
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      seenArgs = args;
+      return { exitCode: 0, signal: null, timedOut: false, stdout: "done\n", stderr: "" };
+    });
+
+    await execute(makeCtx({
+      executionTarget: { kind: "remote" } as AdapterExecutionContext["executionTarget"],
+      config: {
+        cwd: root,
+        instructionsFilePath: instructionsPath,
+        paperclipRuntimeSkills: [{
+          key: "paperclip",
+          runtimeName: "paperclip",
+          source: skillSource,
+          required: false,
+        }],
+        paperclipSkillSync: { desiredSkills: ["paperclip"] },
+      },
+    }));
+
+    expect(seenAssets.map((asset) => asset.key)).toEqual(["skill-0", "instructions"]);
+    expect(seenAssets[0]?.localDir).toBe(skillSource);
+    // Instructions stage from a scratch copy, never the operator's directory.
+    expect(seenAssets[1]?.localDir).not.toBe(path.dirname(instructionsPath));
+    expect(stagedInstructionsContent).toBe("You are an Aider agent.\n");
+    // The staging copy is removed once the run finishes.
+    await expect(fs.access(seenAssets[1]!.localDir)).rejects.toThrow();
+
+    const readValues = seenArgs.reduce<string[]>((acc, value, index) => {
+      if (value === "--read" && seenArgs[index + 1]) acc.push(seenArgs[index + 1]!);
+      return acc;
+    }, []);
+    expect(readValues).toEqual([
+      "/remote/runtime/instructions/AGENTS.md",
+      "/remote/runtime/skill-0/SKILL.md",
+    ]);
   });
 
   it("maps the tokens/cost footer onto usage and flags a quota failure", async () => {

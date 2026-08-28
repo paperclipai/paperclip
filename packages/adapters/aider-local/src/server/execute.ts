@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -16,6 +17,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
+  runtimeAssetDir,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asBoolean,
@@ -152,6 +154,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  let instructionsStagingDir: string | null = null;
 
   try {
     const envConfig = parseObject(config.env);
@@ -210,17 +213,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
     });
 
+    // Local runs read instructions and skills in place. A remote target only
+    // receives the synced workspace, so those host-local files ride along as
+    // managed runtime assets and the --read args switch to the staged paths.
+    let effectiveInstructionsReadPath = instructionsFilePath;
+    let effectiveSkillReadPaths = skillReadPaths;
     if (executionTargetIsRemote) {
       await onLog(
         "stdout",
         `[paperclip] Syncing Aider workspace to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
+      const readAssets = skillReadPaths.map((skillPath, index) => ({
+        key: `skill-${index}`,
+        localDir: path.dirname(skillPath),
+      }));
+      if (instructionsFilePath) {
+        instructionsStagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-aider-read-"));
+        await fs.copyFile(
+          instructionsFilePath,
+          path.join(instructionsStagingDir, path.basename(instructionsFilePath)),
+        );
+        readAssets.push({ key: "instructions", localDir: instructionsStagingDir });
+      }
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
         runId,
         target: executionTarget,
         adapterKey: "aider",
         workspaceLocalDir: cwd,
         timeoutSec,
+        assets: readAssets,
         installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
         detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
         onProgress: (line) => onLog("stdout", line),
@@ -229,6 +250,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
+      effectiveSkillReadPaths = skillReadPaths.map((skillPath, index) =>
+        path.posix.join(
+          runtimeAssetDir(preparedExecutionTargetRuntime, `skill-${index}`, effectiveExecutionCwd),
+          path.basename(skillPath),
+        ),
+      );
+      if (instructionsFilePath) {
+        effectiveInstructionsReadPath = path.posix.join(
+          runtimeAssetDir(preparedExecutionTargetRuntime, "instructions", effectiveExecutionCwd),
+          path.basename(instructionsFilePath),
+        );
+      }
       refreshPaperclipWorkspaceEnvForExecution({
         env,
         envConfig,
@@ -277,9 +310,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
     const cwdMatches =
       runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd);
+    // The transcript inside the workspace rides the workspace sync, so remote
+    // existence mirrors the last run; only local runs can cheaply stat it.
     const historyOnDisk = executionTargetIsRemote ? true : await pathExists(chatHistoryPath);
+    const historyMatches =
+      savedHistoryFile.length > 0 && path.resolve(savedHistoryFile) === path.resolve(chatHistoryPath);
     const canResumeSession =
-      savedHistoryFile.length > 0 &&
+      historyMatches &&
       cwdMatches &&
       historyOnDisk &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
@@ -287,7 +324,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (savedHistoryFile.length > 0 && !canResumeSession) {
       await onLog(
         "stdout",
-        `[paperclip] Aider chat history "${savedHistoryFile}" is not resumable in "${effectiveExecutionCwd}". Starting a fresh chat.\n`,
+        `[paperclip] Aider chat history "${savedHistoryFile}" is not resumable at "${chatHistoryPath}". Starting a fresh chat.\n`,
       );
     }
 
@@ -328,7 +365,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (alwaysApprove) notes.push("Added --yes-always for unattended execution.");
       if (!autoCommits) notes.push("Added --no-auto-commits so Paperclip's workspace sync owns commits.");
       if (canResumeSession) notes.push(`Resuming chat history from ${chatHistoryPath}.`);
-      if (instructionsFilePath) notes.push(`Attached instructions via --read ${instructionsFilePath}.`);
+      if (effectiveInstructionsReadPath) notes.push(`Attached instructions via --read ${effectiveInstructionsReadPath}.`);
       if (skillReadPaths.length > 0) {
         notes.push(`Attached ${skillReadPaths.length} Paperclip skill file(s) via --read.`);
       }
@@ -345,8 +382,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       list.push("--chat-history-file", chatHistoryPath);
       if (canResumeSession) list.push("--restore-chat-history");
       if (mapTokens > 0) list.push("--map-tokens", String(mapTokens));
-      if (instructionsFilePath) list.push("--read", instructionsFilePath);
-      for (const skillPath of skillReadPaths) list.push("--read", skillPath);
+      if (effectiveInstructionsReadPath) list.push("--read", effectiveInstructionsReadPath);
+      for (const skillPath of effectiveSkillReadPaths) list.push("--read", skillPath);
       for (const file of editFiles) list.push("--file", file);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
@@ -442,5 +479,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   } finally {
     await restoreRemoteWorkspace?.();
+    if (instructionsStagingDir) {
+      await fs.rm(instructionsStagingDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
