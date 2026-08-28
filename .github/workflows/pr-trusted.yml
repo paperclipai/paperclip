@@ -49,9 +49,9 @@ jobs:
 
           github_runner='ubuntu-latest'
           aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
-          echo "runner=$github_runner" >> "$GITHUB_OUTPUT"
 
           fail_closed() {
+            echo "runner=$github_runner" >> "$GITHUB_OUTPUT"
             echo "::notice title=AWS CI routing::Using GitHub-hosted runner: $1"
             exit 0
           }
