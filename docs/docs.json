@@ -118,6 +118,7 @@
             "pages": [
               "api/overview",
               "api/authentication",
+              "api/remote-mcp",
               "api/companies",
               "api/agents",
               "api/issues",

@@ -23,6 +23,7 @@ export interface ToolDefinition {
   execute: (input: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
+  write: boolean;
 }
 
 function makeTool<TSchema extends z.ZodRawShape>(
@@ -30,11 +31,14 @@ function makeTool<TSchema extends z.ZodRawShape>(
   description: string,
   schema: z.ZodObject<TSchema>,
   execute: (input: z.infer<typeof schema>) => Promise<unknown>,
+  options: { write?: boolean } = {},
 ): ToolDefinition {
+  const write = options.write ?? false;
   return {
     name,
-    description,
+    description: write ? `[WRITE ACTION: requires paperclip:write scope and sends audit/run headers when available] ${description}` : description,
     schema,
+    write,
     execute: async (input) => {
       try {
         const parsed = schema.parse(input);
@@ -235,7 +239,7 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
 }
 
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
-  return [
+  const tools = [
     makeTool(
       "paperclipMe",
       "Get the current authenticated Paperclip actor details",
@@ -385,6 +389,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
           { body: target },
         );
       },
+      { write: true }
     ),
     makeTool(
       "paperclipWaitForIssueWorkspaceService",
@@ -441,6 +446,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
           body,
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipGetApproval",
@@ -466,6 +472,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       createIssueToolSchema,
       async ({ companyId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      { write: true }
     ),
     makeTool(
       "paperclipUpdateIssue",
@@ -473,6 +480,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       updateIssueToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body }),
+      { write: true }
     ),
     makeTool(
       "paperclipCheckoutIssue",
@@ -485,12 +493,14 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             expectedStatuses: expectedStatuses ?? ["todo", "backlog", "blocked"],
           },
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipReleaseIssue",
       "Release an issue checkout",
       z.object({ issueId: issueIdSchema }),
       async ({ issueId }) => client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/release`, { body: {} }),
+      { write: true }
     ),
     makeTool(
       "paperclipAddComment",
@@ -498,6 +508,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       addCommentToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, { body }),
+      { write: true }
     ),
     makeTool(
       "paperclipSuggestTasks",
@@ -510,6 +521,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             ...body,
           },
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipAskUserQuestions",
@@ -522,6 +534,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             ...body,
           },
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipRequestConfirmation",
@@ -534,6 +547,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             ...body,
           },
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipRequestCheckboxConfirmation",
@@ -546,6 +560,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             ...body,
           },
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipUpsertIssueDocument",
@@ -557,6 +572,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
           `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}`,
           { body },
         ),
+      { write: true }
     ),
     makeTool(
       "paperclipRestoreIssueDocumentRevision",
@@ -572,6 +588,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
           `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}/restore`,
           { body: {} },
         ),
+      { write: true }
     ),
     makeTool(
       "paperclipLinkIssueApproval",
@@ -581,6 +598,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/approvals`, {
           body: { approvalId },
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipUnlinkIssueApproval",
@@ -591,6 +609,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
           "DELETE",
           `/issues/${encodeURIComponent(issueId)}/approvals/${encodeURIComponent(approvalId)}`,
         ),
+      { write: true }
     ),
     makeTool(
       "paperclipApprovalDecision",
@@ -613,6 +632,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
 
         return client.requestJson("POST", path, { body });
       },
+      { write: true }
     ),
     makeTool(
       "paperclipAddApprovalComment",
@@ -622,6 +642,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/approvals/${encodeURIComponent(approvalId)}/comments`, {
           body: { body },
         }),
+      { write: true }
     ),
     makeTool(
       "paperclipApiRequest",
@@ -635,6 +656,9 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
           body: parseOptionalJson(jsonBody),
         });
       },
+      { write: true },
     ),
   ];
+
+  return tools.filter((tool) => !tool.write || client.hasWriteScope());
 }

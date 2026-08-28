@@ -72,6 +72,8 @@ const explicitOpenApiCoverageExclusions = new Set([
   "cases.ts",
   // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
   "smoke-lab.ts",
+  // Remote MCP routes use the Streamable HTTP protocol and are documented outside the REST OpenAPI surface.
+  "mcp.ts",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
