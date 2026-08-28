@@ -1226,6 +1226,25 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=zapier&stage=setup");
   });
 
+  it("keeps the originating connection intent in wizard URLs", async () => {
+    const interactionId = "11111111-1111-4111-8111-111111111111";
+    mockSearch.value = `byo=1&intent=${interactionId}`;
+    await render();
+
+    await act(async () => {
+      buttonContaining("Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/apps/connect?byo=1&appKey=zapier&stage=access&intent=${interactionId}`,
+    );
+
+    await passAccessStep();
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/apps/connect?byo=1&appKey=zapier&stage=setup&intent=${interactionId}`,
+    );
+  });
+
   it("steps back from the key step to Access, and from Access to the BYO gallery", async () => {
     mockSearch.value = "byo=1";
     mockParams.appKey = "zapier";

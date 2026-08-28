@@ -80,11 +80,22 @@ const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   success: "complete",
 };
 
-function appConnectHref(appKey: string, step: Step): string {
+function appConnectHref(appKey: string, step: Step, interactionId?: string | null): string {
   const stage = ROUTE_STAGE_BY_STEP[step] ?? "setup";
   const params = new URLSearchParams({ byo: "1", appKey, stage });
+  if (interactionId) params.set("intent", interactionId);
   return `/apps/connect?${params.toString()}`;
 }
+
+function appsConnectGalleryHref(byoOnly: boolean, interactionId?: string | null): string {
+  const path = byoOnly ? "/apps/byo" : "/apps/connect";
+  const params = new URLSearchParams();
+  if (!byoOnly) params.set("byo", "1");
+  if (interactionId) params.set("intent", interactionId);
+  const query = params.toString();
+  return query ? `${path}?${query}` : path;
+}
+
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
 
 // Access comes before credentials so the reader knows what identity and reach
@@ -259,7 +270,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
       getAvailableConnectionMethod(picked)?.auth === "oauth" &&
       isMcpDirectOAuthConnectSlug(picked.slug)
     ) {
-      navigate(appSourceConnectHref(picked.slug));
+      navigate(appSourceConnectHref(picked.slug, connectionIntentId));
       return;
     }
     setEntry(picked);
@@ -281,7 +292,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     setInstallChoice("specific");
     setGrantKind(defaultGrantKindFor(picked, initialMethod));
     setStep("access");
-    navigate(appConnectHref(picked.slug, "access"));
+    navigate(appConnectHref(picked.slug, "access", connectionIntentId));
   };
 
   const openGallery = () => {
@@ -302,7 +313,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     setInstallChoice("all");
     setGrantKind("organization");
     setStep("gallery");
-    navigate(byoOnly ? "/apps/byo" : "/apps/connect?byo=1");
+    navigate(appsConnectGalleryHref(byoOnly, connectionIntentId));
   };
 
   useEffect(() => {
@@ -358,7 +369,7 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
 
   const setAppStep = (nextStep: Step) => {
     setStep(nextStep);
-    if (entry) navigate(appConnectHref(entry.slug, nextStep));
+    if (entry) navigate(appConnectHref(entry.slug, nextStep, connectionIntentId));
   };
 
   const oauthStartMutation = useMutation({
@@ -538,7 +549,10 @@ export function AppsConnect({ byoOnly = false }: { byoOnly?: boolean } = {}) {
     if (!requestedEntry || unsupportedOAuth || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");
-      navigate("/apps/connect", { replace: true });
+      navigate(
+        connectionIntentId ? appsConnectGalleryHref(false, connectionIntentId) : "/apps/connect",
+        { replace: true },
+      );
       return;
     }
 

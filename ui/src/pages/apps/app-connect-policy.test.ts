@@ -24,5 +24,7 @@ describe("app connect policy", () => {
 
   it("builds a generic source deep link", () => {
     expect(appSourceConnectHref("notion")).toBe("/apps/connect?source=notion");
+    expect(appSourceConnectHref("notion", "intent-1"))
+      .toBe("/apps/connect?source=notion&intent=intent-1");
   });
 });
