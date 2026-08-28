@@ -1491,7 +1491,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       id: "env-local-1",
       driver: "local" as const,
       status: "active" as const,
-      config: {},
+      config: { provider: "daytona" },
       metadata: { defaultForInstance: true },
     };
 

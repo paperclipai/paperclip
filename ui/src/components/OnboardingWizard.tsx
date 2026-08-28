@@ -814,7 +814,11 @@ function OnboardingWizardInner({
       ? queryKeys.environments.capabilities(createdCompanyId)
       : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(createdCompanyId!),
-    enabled: Boolean(createdCompanyId) && adapterCaps.login != null,
+    enabled:
+      Boolean(createdCompanyId) &&
+      adapterCaps.login != null &&
+      effectiveOnboardingOpen &&
+      step === 4,
   });
   const loginEnvironmentProvider =
     typeof resolvedLoginEnvironment?.config?.provider === "string"
