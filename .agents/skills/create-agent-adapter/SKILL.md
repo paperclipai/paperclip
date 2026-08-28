@@ -1,11 +1,9 @@
 ---
 name: create-agent-adapter
 description: >
-  Technical guide for creating a new Paperclip agent adapter. Use when building
-  a new adapter package, adding support for a new AI coding tool (e.g. a new
-  CLI agent, API-based agent, or custom process), or when modifying the adapter
-  system. Covers the required interfaces, module structure, registration points,
-  and conventions derived from the existing claude-local and codex-local adapters.
+  Create or modify Paperclip agent adapters across server, UI, and CLI surfaces.
+  Use when adding support for a new CLI agent, API agent, custom process, or
+  adapter package.
 ---
 
 # Creating a Paperclip Agent Adapter
@@ -548,7 +546,7 @@ Import from `@paperclipai/adapter-utils/server-utils`:
 ### Prompt Templates
 - Support `promptTemplate` for every run
 - Use `renderTemplate()` with the standard variable set
-- Default prompt: `"You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work."`
+- Default prompt should use `DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE` from `@paperclipai/adapter-utils/server-utils` so local adapters share Paperclip's execution contract: act in the same heartbeat, avoid planning-only exits unless requested, leave durable progress and a next action, use child issues instead of polling, mark blockers with owner/action, and respect governance boundaries.
 
 ### Error Handling
 - Differentiate timeout vs process error vs parse failure

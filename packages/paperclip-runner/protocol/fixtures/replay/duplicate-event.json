@@ -1,0 +1,30 @@
+{
+  "schema": "paperclip.prp.fixture.v1", "fixtureVersion": 1, "protocolVersion": 1,
+  "name": "Duplicate event", "description": "At-least-once delivery repeats one source event without repeating its effect.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1", "companyId": "company_replay", "issueId": "issue_replay_duplicate",
+    "runId": "run_replay_duplicate", "environmentLeaseId": "lease_replay_duplicate", "runnerInstanceId": "runner_replay",
+    "normalizedSessionId": "session_replay_duplicate", "driverSessionId": "driver_replay_duplicate"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "new_per_run", "driver": { "kind": "fake", "version": "1.0.0" },
+    "steer": false, "interrupt": true, "resume": true, "runtimeRequests": false, "structuredResult": true, "typedEvents": true
+  },
+  "commands": [
+    { "schema": "paperclip.prp.command.v1", "commandId": "command_duplicate_prepare", "controllerSeq": 1, "type": "run.prepare", "issuedAt": "2026-08-07T12:30:00.000Z", "payload": {} }
+  ],
+  "events": [
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_duplicate_01", "sourceSeq": 1, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_duplicate", "normalizedSessionId": "session_replay_duplicate", "eventType": "session.started", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:30:00.010Z", "payload": {} },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_duplicate_02", "sourceSeq": 2, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_duplicate", "normalizedSessionId": "session_replay_duplicate", "turnId": "turn_replay_duplicate", "eventType": "turn.started", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-07T12:30:00.020Z", "payload": {} },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_duplicate_03", "sourceSeq": 3, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_duplicate", "normalizedSessionId": "session_replay_duplicate", "turnId": "turn_replay_duplicate", "itemId": "item_replay_duplicate", "eventType": "item.completed", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-07T12:30:00.030Z", "payload": { "kind": "assistant_message", "text": "Exactly one projection." } },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_duplicate_03", "sourceSeq": 3, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_duplicate", "normalizedSessionId": "session_replay_duplicate", "turnId": "turn_replay_duplicate", "itemId": "item_replay_duplicate", "eventType": "item.completed", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-07T12:30:00.030Z", "payload": { "kind": "assistant_message", "text": "Exactly one projection." } },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_duplicate_04", "sourceSeq": 4, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_duplicate", "normalizedSessionId": "session_replay_duplicate", "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:30:00.040Z",
+      "payload": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "Duplicate delivery was idempotent.", "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] }
+    },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_duplicate_05", "sourceSeq": 5, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_duplicate", "normalizedSessionId": "session_replay_duplicate", "turnId": "turn_replay_duplicate", "eventType": "turn.completed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:30:00.050Z", "payload": {} },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_duplicate_06", "sourceSeq": 6, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_duplicate", "normalizedSessionId": "session_replay_duplicate", "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:30:00.060Z", "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done" } }
+  ],
+  "requests": [],
+  "result": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "Duplicate delivery was idempotent.", "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] }
+}

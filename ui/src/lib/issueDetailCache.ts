@@ -1,10 +1,18 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
 const ISSUE_DETAIL_QUERY_PREFIX = ["issues", "detail"] as const;
 export const ISSUE_DETAIL_STALE_TIME_MS = 60_000;
+/**
+ * Freshness window for a prefetched first comments page. Matches the global
+ * query staleTime so a warm navigation that arrives within the window renders
+ * the seeded comments without an immediate refetch (no loading state), while a
+ * later revisit still revalidates in the background.
+ */
+export const ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS = 30_000;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -24,6 +32,30 @@ function collectIssueRefs(
 function matchesIssueRef(issue: Pick<Issue, "id" | "identifier">, refs: Iterable<string>) {
   const refSet = refs instanceof Set ? refs : new Set(refs);
   return refSet.has(issue.id) || (!!issue.identifier && refSet.has(issue.identifier));
+}
+
+function isCompleteIssueSnapshot(value: unknown): value is Issue {
+  if (typeof value !== "object" || value === null) return false;
+  const issue = value as Partial<Issue>;
+  return (
+    isNonEmptyString(issue.id)
+    && isNonEmptyString(issue.companyId)
+    && typeof issue.title === "string"
+    && typeof issue.status === "string"
+    && typeof issue.workMode === "string"
+    && typeof issue.priority === "string"
+    && (issue.projectId === null || typeof issue.projectId === "string")
+    && (issue.parentId === null || typeof issue.parentId === "string")
+    && (issue.identifier === null || typeof issue.identifier === "string")
+    && (issue.description === null || typeof issue.description === "string")
+    && (issue.assigneeAgentId === null || typeof issue.assigneeAgentId === "string")
+    && (issue.assigneeUserId === null || typeof issue.assigneeUserId === "string")
+    && (issue.executionRunId === null || typeof issue.executionRunId === "string")
+    && (issue.issueNumber === null || typeof issue.issueNumber === "number")
+    && typeof issue.requestDepth === "number"
+    && issue.createdAt != null
+    && issue.updatedAt != null
+  );
 }
 
 function mergeIssueSnapshots(existing: Issue | undefined, incoming: Issue): Issue {
@@ -47,13 +79,15 @@ export function getCachedIssueDetail(
 
   for (const ref of refs) {
     const cached = queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref));
-    if (cached) return cached;
+    if (isCompleteIssueSnapshot(cached)) return cached;
   }
 
   const cachedEntries = queryClient.getQueriesData<Issue>({ queryKey: ISSUE_DETAIL_QUERY_PREFIX });
   return cachedEntries
     .map(([, cachedIssue]) => cachedIssue)
-    .find((cachedIssue): cachedIssue is Issue => !!cachedIssue && matchesIssueRef(cachedIssue, refs));
+    .find((cachedIssue): cachedIssue is Issue =>
+      isCompleteIssueSnapshot(cachedIssue) && matchesIssueRef(cachedIssue, refs)
+    );
 }
 
 export function seedIssueDetailCache(
@@ -63,6 +97,8 @@ export function seedIssueDetailCache(
     issueRef?: string | null;
   },
 ): Issue {
+  if (!isCompleteIssueSnapshot(issue)) return issue;
+
   const refs = collectIssueRefs(options?.issueRef, issue);
   const merged = mergeIssueSnapshots(getCachedIssueDetail(queryClient, options?.issueRef, issue), issue);
 
@@ -79,8 +115,9 @@ export function seedIssueDetailCache(
 export async function fetchIssueDetail(
   queryClient: QueryClient,
   issueRef: string,
+  options?: { signal?: AbortSignal },
 ): Promise<Issue> {
-  const issue = await issuesApi.get(issueRef);
+  const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 
@@ -93,7 +130,7 @@ export function getIssueDetailQueryOptions(
 ) {
   return {
     queryKey: queryKeys.issues.detail(issueRef),
-    queryFn: () => fetchIssueDetail(queryClient, issueRef),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchIssueDetail(queryClient, issueRef, { signal }),
     placeholderData: getCachedIssueDetail(queryClient, issueRef, options?.placeholderIssue ?? undefined),
   };
 }
@@ -105,7 +142,7 @@ export function prefetchIssueDetail(
     issue?: Issue | null;
   },
 ) {
-  if (options?.issue) {
+  if (isCompleteIssueSnapshot(options?.issue)) {
     seedIssueDetailCache(queryClient, options.issue, { issueRef });
   }
 
@@ -114,4 +151,46 @@ export function prefetchIssueDetail(
     queryFn: () => fetchIssueDetail(queryClient, issueRef),
     staleTime: ISSUE_DETAIL_STALE_TIME_MS,
   });
+}
+
+/**
+ * Warm the first page of the issue-detail comment feed under the exact infinite
+ * query key IssueDetail mounts, so a subsequent navigation paints comments from
+ * cache instead of waiting on a fetch. Keyed by issue ref and always background
+ * revalidated by the mounted query, so it never surfaces stale cross-issue data.
+ */
+export function prefetchIssueComments(queryClient: QueryClient, issueRef: string) {
+  return queryClient.prefetchInfiniteQuery({
+    queryKey: queryKeys.issues.comments(issueRef),
+    queryFn: ({ pageParam }: { pageParam: string | null }) =>
+      issuesApi.listComments(issueRef, {
+        order: "desc",
+        limit: ISSUE_COMMENT_PAGE_SIZE,
+        ...(pageParam ? { after: pageParam } : {}),
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage: IssueComment[]) =>
+      getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
+    staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+    pages: 1,
+  });
+}
+
+/**
+ * Prefetch everything the issue-detail first paint needs — the detail snapshot
+ * and the first comments page — for instant warm navigation from a list row.
+ * Seeds the full list-row snapshot when provided so the header + description
+ * paint immediately with no loading state.
+ */
+export function prefetchIssueDetailForNavigation(
+  queryClient: QueryClient,
+  issueRef: string,
+  options?: {
+    issue?: Issue | null;
+  },
+) {
+  return Promise.all([
+    prefetchIssueDetail(queryClient, issueRef, options),
+    prefetchIssueComments(queryClient, issueRef),
+  ]);
 }

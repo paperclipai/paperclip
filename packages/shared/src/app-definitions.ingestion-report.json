@@ -1,0 +1,2525 @@
+{
+  "schemaVersion": 1,
+  "corpusSize": 99,
+  "providers": [
+    {
+      "slug": "airtable",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, Advanced expanded)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, Advanced expanded)"
+      ]
+    },
+    {
+      "slug": "anthropic",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "api-key-generic",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (single state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "asana",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (manual/BYO only — no managed setup offered)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "platform_shared",
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "bamboohr",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure — Select Connection Type (OAuth 2.0 card open with Company Domain; API Key card collapsed)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 1,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 2 Configure — after clicking \"API Key\" connection-type card",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 3
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "beehiiv",
+      "stateCount": 5,
+      "states": [
+        {
+          "label": "initial — Step 2 Details (radio MCP | API, MCP default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 7,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 9,
+          "linkCount": 4
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: OAuth 2.0 (default; captured in a fresh dialog, name orange-chair)",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 7,
+          "linkCount": 5
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: API Key",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 10,
+          "linkCount": 3
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Details (radio MCP | API, MCP default)",
+        "Auth is not explicit in capture state: Step 3 Configure — path: MCP — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "bitly",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "box",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (manual/BYO only — no managed setup offered)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "platform_shared",
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "brex",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "calendly",
+      "stateCount": 3,
+      "states": [
+        {
+          "label": "initial — Select Connection Type",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 0,
+          "linkCount": 0
+        },
+        {
+          "label": "OAuth 2.0 selected",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "API Key selected",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Select Connection Type"
+      ]
+    },
+    {
+      "slug": "candid",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "canva",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth form, only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "circleci",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "clerk",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "clickhouse",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "clickup",
+      "stateCount": 3,
+      "states": [
+        {
+          "label": "initial — Select Connection Type",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 0,
+          "linkCount": 0
+        },
+        {
+          "label": "OAuth 2.0 selected",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "API Key selected",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Select Connection Type"
+      ]
+    },
+    {
+      "slug": "cloudflare",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "cloudinary",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "coda",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "cohere",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "contentful",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "convex",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth form, only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "crowdin",
+      "stateCount": 3,
+      "states": [
+        {
+          "label": "initial — Select Connection Type",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 0,
+          "linkCount": 0
+        },
+        {
+          "label": "OAuth 2.0 selected",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "API Key selected",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Select Connection Type"
+      ]
+    },
+    {
+      "slug": "deepgram",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "deepseek",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "discord",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (single state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "dovetail",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (API Key; only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "dropbox",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth form, only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "egnyte",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "elevenlabs",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "embat",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "figma",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (OAuth, customer-owned credentials; only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 7,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "firecrawl",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "g2",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (manual/BYO only — no managed setup offered)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "platform_shared",
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "github",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "Step 2 Configure — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 3,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 10,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: Step 2 Configure — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "gitlab",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "google-gemini",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key form, only state)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "google",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth form, only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "hubspot",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth form, only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "hugging-face",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "intercom",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth form, only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "jira",
+      "stateCount": 4,
+      "states": [
+        {
+          "label": "initial — Step 2 Details (radio MCP | API, MCP default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: OAuth 2.0 (only auth option)",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 6
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Details (radio MCP | API, MCP default)",
+        "Auth is not explicit in capture state: Step 3 Configure — path: MCP — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "kernel",
+      "stateCount": 4,
+      "states": [
+        {
+          "label": "initial — Step 2 Details (radio MCP | API, MCP default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: API Key (only auth option; captured in a fresh dialog, name fuchsia-ribbon)",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 9,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Details (radio MCP | API, MCP default)",
+        "Auth is not explicit in capture state: Step 3 Configure — path: MCP — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "linear",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "Step 2 Configure — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 2,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 7,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: Step 2 Configure — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "linkedin",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth configure — only state; no connection-type chooser)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "local-falcon",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 5,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 7,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "mailgun",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "make",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 5,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 7,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "manufact",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "mem0",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "miro",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 5,
+          "linkCount": 2
+        },
+        {
+          "label": "manual (after \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 7,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup)"
+      ]
+    },
+    {
+      "slug": "mixpanel",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 5,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 7,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "monday",
+      "stateCount": 3,
+      "states": [
+        {
+          "label": "initial (Select Connection Type)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 0,
+          "linkCount": 0
+        },
+        {
+          "label": "OAuth 2.0 selected",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 4
+        },
+        {
+          "label": "API Key selected",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (Select Connection Type)"
+      ]
+    },
+    {
+      "slug": "neon",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "netlify",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "ngrok",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "notion",
+      "stateCount": 5,
+      "states": [
+        {
+          "label": "initial — Step 2 Details (radio MCP | API, MCP default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: OAuth 2.0 (default)",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 7,
+          "linkCount": 5
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: API Key",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 10,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Details (radio MCP | API, MCP default)",
+        "Auth is not explicit in capture state: Step 3 Configure — path: MCP — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "oauth-generic",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (managed/auto-discover view)",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [
+            "platform_shared",
+            "dcr"
+          ],
+          "fieldCount": 1,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — \"enter details manually\" view, Advanced expanded",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 10,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "okta",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (single state, both connection-type cards inline)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Configure (single state, both connection-type cards inline)"
+      ]
+    },
+    {
+      "slug": "openai",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "openrouter",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "oreilly",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "pagerduty",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (opens directly in manual OAuth-app mode; no managed option)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "platform_shared",
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "perplexity",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "pinecone",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "planetscale",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 5,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 7,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "posthog",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "postman",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "railway",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "razorpay",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "render",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "replicate",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "resend",
+      "stateCount": 6,
+      "states": [
+        {
+          "label": "initial — Step 2 Details (radio MCP | API, MCP default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 7,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 9,
+          "linkCount": 4
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: OAuth 2.0 (default, auto-registered client)",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: OAuth 2.0 — after \"enter details manually\"",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 4
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: API Key",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 10,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Details (radio MCP | API, MCP default)",
+        "Auth is not explicit in capture state: Step 3 Configure — path: MCP — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "salesforce",
+      "stateCount": 3,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (managed package install view)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 0,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — managed view after clicking \"change\" (domain editor)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 1,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — \"enter details manually\" view",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 1,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Configure (managed package install view)",
+        "Auth is not explicit in capture state: Step 2 Configure — managed view after clicking \"change\" (domain editor)",
+        "Auth is not explicit in capture state: Step 2 Configure — \"enter details manually\" view"
+      ]
+    },
+    {
+      "slug": "sanity",
+      "stateCount": 5,
+      "states": [
+        {
+          "label": "initial — Step 2 Details (radio MCP | API, MCP default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: OAuth 2.0 (default)",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 7,
+          "linkCount": 5
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: API Key",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 10,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Details (radio MCP | API, MCP default)",
+        "Auth is not explicit in capture state: Step 3 Configure — path: MCP — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "segment",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "sendgrid",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "sentry",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "shopify",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure — Select Connection Type (OAuth 2.0 only; only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 1,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "similarweb",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "slack",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "Step 2 Configure — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 2,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 9,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: Step 2 Configure — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "snowflake",
+      "stateCount": 3,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure — strategy selection",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 0,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 2 Configure — strategy: OAuth (Using Snowflake Partner Connect)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 4,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — strategy: Workload Identity Federation",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 1,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Configure — strategy selection",
+        "Auth is not explicit in capture state: Step 2 Configure — strategy: Workload Identity Federation"
+      ]
+    },
+    {
+      "slug": "spotify",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "stripe",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "supabase",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "telegram-bot",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (API Key configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "ticket-tailor",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "ticktick",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 5,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 7,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "todoist",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "typeform",
+      "stateCount": 3,
+      "states": [
+        {
+          "label": "initial (Select Connection Type)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 0,
+          "linkCount": 0
+        },
+        {
+          "label": "OAuth 2.0 selected",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 4
+        },
+        {
+          "label": "API Key selected",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 6,
+          "linkCount": 4
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (Select Connection Type)"
+      ]
+    },
+    {
+      "slug": "vercel",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (MCP, auto-discovered details)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 2 Configure — after clicking \"enter details manually\"",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 2
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Configure (MCP, auto-discovered details)"
+      ]
+    },
+    {
+      "slug": "webflow",
+      "stateCount": 5,
+      "states": [
+        {
+          "label": "initial — Step 2 Details (radio MCP | API, MCP default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 3,
+          "linkCount": 0
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Managed (default)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 7,
+          "linkCount": 2
+        },
+        {
+          "label": "Step 3 Configure — path: MCP — tab: Your own credentials",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 9,
+          "linkCount": 4
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: OAuth 2.0 (default; captured in a fresh dialog, name red-anchor)",
+          "transport": "rest_api",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 7,
+          "linkCount": 5
+        },
+        {
+          "label": "Step 3 Configure — path: API — auth: API Key",
+          "transport": "rest_api",
+          "auth": "api_key",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 10,
+          "linkCount": 3
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Details (radio MCP | API, MCP default)",
+        "Auth is not explicit in capture state: Step 3 Configure — path: MCP — tab: Managed (default)"
+      ]
+    },
+    {
+      "slug": "wix",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "workos",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial — Step 2 Configure (single state)",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [],
+          "fieldCount": 1,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial — Step 2 Configure (single state)"
+      ]
+    },
+    {
+      "slug": "xero",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (opens directly in manual OAuth-app mode; no managed option)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "platform_shared",
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "zapier",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "zeplin",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    },
+    {
+      "slug": "zomato",
+      "stateCount": 2,
+      "states": [
+        {
+          "label": "initial (managed setup, step 2 \"Configure\")",
+          "transport": "mcp_remote",
+          "auth": null,
+          "ownershipModes": [
+            "platform_shared"
+          ],
+          "fieldCount": 6,
+          "linkCount": 0
+        },
+        {
+          "label": "manual (after clicking \"enter details manually\")",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [
+            "customer"
+          ],
+          "fieldCount": 8,
+          "linkCount": 0
+        }
+      ],
+      "ambiguities": [
+        "Auth is not explicit in capture state: initial (managed setup, step 2 \"Configure\")"
+      ]
+    },
+    {
+      "slug": "zoom",
+      "stateCount": 1,
+      "states": [
+        {
+          "label": "initial (OAuth configure — only state)",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "ownershipModes": [],
+          "fieldCount": 6,
+          "linkCount": 5
+        }
+      ],
+      "ambiguities": []
+    }
+  ]
+}

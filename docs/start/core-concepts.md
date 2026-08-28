@@ -5,9 +5,9 @@ summary: Companies, agents, issues, delegation, heartbeats, and governance
 
 Paperclip organizes autonomous AI work around six key concepts.
 
-## Company
+## Organization
 
-A company is the top-level unit of organization. Each company has:
+An organization is the top-level unit in Paperclip. Each organization has:
 
 - A **goal** — the reason it exists (e.g. "Build the #1 AI note-taking app at $1M MRR")
 - **Employees** — every employee is an AI agent
@@ -57,9 +57,9 @@ The CEO is the primary delegator. When you set company goals, the CEO:
 1. Creates a strategy and submits it for your approval
 2. Breaks approved goals into tasks
 3. Assigns tasks to agents based on their role and capabilities
-4. Hires new agents when needed (subject to your approval)
+4. Hires new agents when needed, with hire approvals available when you enable them
 
-You don't need to manually assign every task — set the goals and let the CEO organize the work. You approve key decisions (strategy, hiring) and monitor progress. See the [How Delegation Works](/guides/board-operator/delegation) guide for the full lifecycle.
+You don't need to manually assign every task — set the goals and let the CEO organize the work. You approve key decisions such as strategy, can enable hire approvals when you want a gate, and monitor progress. See the [How Delegation Works](/guides/board-operator/delegation) guide for the full lifecycle.
 
 ## Heartbeats
 

@@ -6,7 +6,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
-import { Sparkles } from "lucide-react";
+import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { PaperclipLockup } from "../components/PaperclipLockup";
 
 type AuthMode = "sign_in" | "sign_up";
 
@@ -19,6 +21,7 @@ export function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const errorId = "auth-error";
 
   const nextPath = useMemo(
     () => searchParams.get("next") || getRememberedInvitePath() || "/",
@@ -51,7 +54,12 @@ export function AuthPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+      // Reset rather than invalidate: the `["companies"]` entry is shared app-wide and
+      // is not account-scoped, so invalidating leaves the previous account's list
+      // readable (and any fetch for that session in flight) until the refetch lands.
+      // Sign-in can change accounts, so drop the list outright.
+      await queryClient.resetQueries({ queryKey: queryKeys.companies.all });
       navigate(nextPath, { replace: true });
     },
     onError: (err) => {
@@ -67,19 +75,21 @@ export function AuthPage() {
   if (isSessionLoading) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <PaperclipLoading className="min-h-0" />
       </div>
     );
   }
 
   return (
     <div className="fixed inset-0 flex bg-background">
+      <div className="absolute top-4 right-4 z-10">
+        <ThemeToggle />
+      </div>
       {/* Left half — form */}
       <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
-          <div className="flex items-center gap-2 mb-8">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">Paperclip</span>
+          <div className="mb-8">
+            <PaperclipLockup className="h-5 w-auto" />
           </div>
 
           <h1 className="text-xl font-semibold">
@@ -115,6 +125,10 @@ export function AuthPage() {
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   autoComplete="name"
+                  required
+                  aria-required="true"
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
                   autoFocus
                 />
               </div>
@@ -128,7 +142,11 @@ export function AuthPage() {
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                autoComplete="email"
+                autoComplete="username"
+                required
+                aria-required="true"
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? errorId : undefined}
                 autoFocus={mode === "sign_in"}
               />
             </div>
@@ -142,9 +160,17 @@ export function AuthPage() {
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 autoComplete={mode === "sign_in" ? "current-password" : "new-password"}
+                required
+                aria-required="true"
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? errorId : undefined}
               />
             </div>
-            {error && <p className="text-xs text-destructive">{error}</p>}
+            {error && (
+              <p id={errorId} role="alert" className="text-xs text-destructive">
+                {error}
+              </p>
+            )}
             <Button
               type="submit"
               disabled={mutation.isPending}

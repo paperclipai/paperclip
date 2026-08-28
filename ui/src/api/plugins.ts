@@ -14,6 +14,7 @@ import type {
   PluginLauncherDeclaration,
   PluginLauncherRenderContextSnapshot,
   PluginUiSlotDeclaration,
+  PluginLocalFolderDeclaration,
   PluginRecord,
   PluginConfig,
   PluginStatus,
@@ -131,13 +132,63 @@ export interface PluginDashboardData {
   checkedAt: string;
 }
 
-export interface AvailablePluginExample {
+export interface AvailableBundledPlugin {
   packageName: string;
   pluginKey: string;
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  tag: "example" | "first-party";
+  experimental: boolean;
+  hasBuiltEntrypoints: boolean;
+}
+
+export interface PluginLocalFolderProblem {
+  code:
+    | "not_configured"
+    | "not_absolute"
+    | "missing"
+    | "not_directory"
+    | "not_readable"
+    | "not_writable"
+    | "missing_directory"
+    | "missing_file"
+    | "path_traversal"
+    | "symlink_escape"
+    | "atomic_write_failed";
+  message: string;
+  path?: string;
+}
+
+export interface PluginLocalFolderStatus {
+  folderKey: string;
+  configured: boolean;
+  path: string | null;
+  realPath: string | null;
+  access: "read" | "readWrite";
+  readable: boolean;
+  writable: boolean;
+  requiredDirectories: string[];
+  requiredFiles: string[];
+  missingDirectories: string[];
+  missingFiles: string[];
+  healthy: boolean;
+  problems: PluginLocalFolderProblem[];
+  checkedAt: string;
+}
+
+export interface PluginLocalFoldersResponse {
+  pluginId: string;
+  companyId: string;
+  declarations: PluginLocalFolderDeclaration[];
+  folders: PluginLocalFolderStatus[];
+}
+
+export interface PluginLocalFolderSaveInput {
+  path: string;
+  access?: "read" | "readWrite";
+  requiredDirectories?: string[];
+  requiredFiles?: string[];
 }
 
 /**
@@ -166,10 +217,10 @@ export const pluginsApi = {
     api.get<PluginRecord[]>(`/plugins${status ? `?status=${status}` : ""}`),
 
   /**
-   * List bundled example plugins available from the current repo checkout.
+   * List bundled plugin packages available from the current repo checkout.
    */
-  listExamples: () =>
-    api.get<AvailablePluginExample[]>("/plugins/examples"),
+  listBundled: () =>
+    api.get<AvailableBundledPlugin[]>("/plugins/examples"),
 
   /**
    * Fetch a single plugin record by its UUID or plugin key.
@@ -307,8 +358,8 @@ export const pluginsApi = {
    *
    * @param pluginId - UUID of the plugin.
    */
-  getConfig: (pluginId: string) =>
-    api.get<PluginConfig | null>(`/plugins/${pluginId}/config`),
+  getConfig: (pluginId: string, companyId: string) =>
+    api.get<PluginConfig | null>(`/plugins/${pluginId}/config?companyId=${encodeURIComponent(companyId)}`),
 
   /**
    * Save (create or update) the configuration for a plugin.
@@ -319,8 +370,8 @@ export const pluginsApi = {
    * @param pluginId - UUID of the plugin.
    * @param configJson - Configuration values matching the plugin's `instanceConfigSchema`.
    */
-  saveConfig: (pluginId: string, configJson: Record<string, unknown>) =>
-    api.post<PluginConfig>(`/plugins/${pluginId}/config`, { configJson }),
+  saveConfig: (pluginId: string, companyId: string, configJson: Record<string, unknown>) =>
+    api.post<PluginConfig>(`/plugins/${pluginId}/config`, { companyId, configJson }),
 
   /**
    * Call the plugin's `validateConfig` RPC method to test the configuration
@@ -334,8 +385,50 @@ export const pluginsApi = {
    * @param pluginId - UUID of the plugin.
    * @param configJson - Configuration values to validate.
    */
-  testConfig: (pluginId: string, configJson: Record<string, unknown>) =>
-    api.post<{ valid: boolean; message?: string }>(`/plugins/${pluginId}/config/test`, { configJson }),
+  testConfig: (pluginId: string, companyId: string, configJson: Record<string, unknown>) =>
+    api.post<{ valid: boolean; message?: string }>(`/plugins/${pluginId}/config/test`, { companyId, configJson }),
+
+  /**
+   * List manifest-declared and stored company-scoped local folders for a plugin.
+   */
+  listLocalFolders: (pluginId: string, companyId: string) =>
+    api.get<PluginLocalFoldersResponse>(`/plugins/${pluginId}/companies/${companyId}/local-folders`),
+
+  /**
+   * Inspect a configured local folder without changing persisted settings.
+   */
+  localFolderStatus: (pluginId: string, companyId: string, folderKey: string) =>
+    api.get<PluginLocalFolderStatus>(
+      `/plugins/${pluginId}/companies/${companyId}/local-folders/${encodeURIComponent(folderKey)}/status`,
+    ),
+
+  /**
+   * Validate a candidate local folder path without saving it.
+   */
+  validateLocalFolder: (
+    pluginId: string,
+    companyId: string,
+    folderKey: string,
+    input: PluginLocalFolderSaveInput,
+  ) =>
+    api.post<PluginLocalFolderStatus>(
+      `/plugins/${pluginId}/companies/${companyId}/local-folders/${encodeURIComponent(folderKey)}/validate`,
+      input,
+    ),
+
+  /**
+   * Persist a company-scoped local folder path and return its inspected status.
+   */
+  configureLocalFolder: (
+    pluginId: string,
+    companyId: string,
+    folderKey: string,
+    input: PluginLocalFolderSaveInput,
+  ) =>
+    api.put<PluginLocalFolderStatus>(
+      `/plugins/${pluginId}/companies/${companyId}/local-folders/${encodeURIComponent(folderKey)}`,
+      input,
+    ),
 
   // ===========================================================================
   // Bridge proxy endpoints — used by the plugin UI bridge runtime

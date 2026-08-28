@@ -1,5 +1,7 @@
 import {
+  Component,
   type ClipboardEvent,
+  type ErrorInfo,
   forwardRef,
   useCallback,
   useEffect,
@@ -11,6 +13,8 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type TouchEvent as ReactTouchEvent,
+  type ReactElement,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -29,31 +33,47 @@ import {
   quotePlugin,
   tablePlugin,
   thematicBreakPlugin,
+  defaultSvgIcons,
+  type IconKey,
   type RealmPlugin,
 } from "@mdxeditor/editor";
-import { buildAgentMentionHref, buildProjectMentionHref, buildUserMentionHref } from "@paperclipai/shared";
-import { Boxes, User } from "lucide-react";
+import {
+  buildAgentMentionHref,
+  buildIssueReferenceHref,
+  buildProjectMentionHref,
+  buildRoutineMentionHref,
+  buildUserMentionHref,
+} from "@paperclipai/shared";
+import { Boxes, CalendarClock, Hash, User, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
 import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
+import {
+  escapeUnsupportedAngleBrackets,
+  unescapeAngleBracketEscapes,
+} from "../lib/angle-bracket-markdown";
+import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
-import { useEditorAutocomplete, type SkillCommandOption } from "../context/EditorAutocompleteContext";
+import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
 
 export interface MentionOption {
   id: string;
   name: string;
-  kind?: "agent" | "project" | "user";
+  kind?: "agent" | "project" | "user" | "issue";
   agentId?: string;
   agentIcon?: string | null;
   projectId?: string;
   projectColor?: string | null;
   userId?: string;
+  /** Issue/task references (PAP-95f). `name` carries the searchable identifier + title. */
+  issueId?: string;
+  issueIdentifier?: string;
 }
 
 /* ---- Editor props ---- */
@@ -68,20 +88,55 @@ interface MarkdownEditorProps {
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Called when a non-image file is dropped onto the editor (e.g. .zip). */
   onDropFile?: (file: File) => Promise<void>;
+  /** When set to `parent`, a wrapper owns drag/drop behavior and visuals. */
+  fileDropTarget?: "editor" | "parent";
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
+  /** Render the rich editor without allowing edits. */
+  readOnly?: boolean;
 }
 
 export interface MarkdownEditorRef {
   focus: () => void;
+  insertMarkdown: (markdown: string) => void;
+}
+
+class MarkdownEditorRichErrorBoundary extends Component<
+  { children: ReactNode; onError: (error: unknown) => void },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("Markdown rich editor failed; falling back to raw textarea", {
+      error,
+      componentStack: info.componentStack,
+    });
+    this.props.onError(error);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
 }
 
 function readHtmlAttribute(attrs: string, name: string): string | null {
   const match = new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(attrs);
   return match?.[2] ?? match?.[3] ?? match?.[4] ?? null;
+}
+
+/** MDXEditor icon override: the image chip's delete button gets the lucide X. */
+function editorIconFor(name: IconKey): ReactElement {
+  if (name === "delete_small") return <X aria-hidden />;
+  return defaultSvgIcons[name];
 }
 
 function convertHtmlImagesToMarkdown(text: string): string {
@@ -98,9 +153,33 @@ function convertHtmlImagesToMarkdown(text: string): string {
   });
 }
 
+/**
+ * Convert a stored value into the exact markdown handed to MDXEditor.
+ *
+ * The angle-bracket escape runs last, after the `<img>` rewrite, because that
+ * rewrite has to match a bare `<img` tag before the escape hides it.
+ */
 function prepareMarkdownForEditor(value: string): string {
   const normalizedLineEndings = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  return convertHtmlImagesToMarkdown(normalizedLineEndings);
+  // Recover escaped blockquotes (`\>`) so `>`-prefixed content renders as a real
+  // blockquote in the editor as well as on display (keeps import/export in sync).
+  const withBlockquotes = unescapeBlockquoteMarkers(normalizedLineEndings);
+  const withImages = convertHtmlImagesToMarkdown(withBlockquotes);
+  // The editor runs with `suppressHtmlProcessing`, so a bare `<` that opens an
+  // HTML construct would throw and drop the whole component to raw source.
+  // Escaping those brackets keeps ordinary prose — `<name>`, `</close>` — in the
+  // rich editor. `toStoredMarkdown` reverses it on the way out.
+  return escapeUnsupportedAngleBrackets(withImages);
+}
+
+/**
+ * Convert markdown exported by MDXEditor back into the form this product
+ * stores. Inverse of the rewrites `prepareMarkdownForEditor` applies, so the
+ * stored value never carries the editor's transport escaping — these fields
+ * feed agent prompts and must stay in the clean, human-authored form.
+ */
+function toStoredMarkdown(markdown: string): string {
+  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(markdown));
 }
 
 function escapeRegExp(value: string): string {
@@ -124,6 +203,10 @@ function hasMeaningfulEditorContent(node: Node | null): boolean {
   return Array.from(element.childNodes).some((child) => hasMeaningfulEditorContent(child));
 }
 
+function hasMarkdownImage(value: string): boolean {
+  return /!\[[\s\S]*?\]\([^)]+\)/.test(value);
+}
+
 function isRichEditorDomEmpty(
   editable: HTMLElement,
   expectedValue: string,
@@ -131,9 +214,11 @@ function isRichEditorDomEmpty(
 ): boolean {
   const expectedText = expectedValue.trim();
   if (!expectedText) return false;
+  const expectedHasImage = hasMarkdownImage(expectedText);
 
   const visibleText = (editable.textContent ?? "").trim();
   if (visibleText.length === 0) {
+    if (expectedHasImage) return false;
     return !Array.from(editable.childNodes).some((child) => hasMeaningfulEditorContent(child));
   }
 
@@ -143,6 +228,7 @@ function isRichEditorDomEmpty(
     && visibleText === normalizedPlaceholder
     && expectedText !== normalizedPlaceholder
   ) {
+    if (expectedHasImage) return false;
     return true;
   }
 
@@ -155,6 +241,36 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
   return !/^(javascript|data|vbscript):/i.test(trimmed);
 }
 
+function richEditorErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "Rich editor failed to render";
+}
+
+/**
+ * Why the rich editor was abandoned for this value. Surfaced in the fallback
+ * header so a bug report names the path that failed rather than describing the
+ * same generic message for three unrelated causes.
+ *
+ * - `MDE-PARSE`  the markdown importer rejected the source
+ * - `MDE-RENDER` the editor threw while rendering
+ * - `MDE-EMPTY`  the editor mounted but never painted the content
+ */
+type RichEditorErrorCode = "MDE-PARSE" | "MDE-RENDER" | "MDE-EMPTY";
+
+interface RichEditorError {
+  code: RichEditorErrorCode;
+  message: string;
+}
+
+/**
+ * The editor populates its DOM asynchronously, so "looks empty" is only
+ * trustworthy after it has had time to settle and then stayed empty. The first
+ * check debounces behind mutations; the second confirms the verdict once.
+ */
+const RICH_EDITOR_EMPTY_CHECK_MS = 100;
+const RICH_EDITOR_EMPTY_CONFIRM_MS = 200;
+
 /* ---- Mention detection helpers ---- */
 
 interface MentionState {
@@ -163,15 +279,21 @@ interface MentionState {
   query: string;
   top: number;
   left: number;
-  /** Viewport-relative coords for portal positioning */
+  /**
+   * Caret-aligned viewport coords for portal positioning. `viewportTop` /
+   * `viewportBottom` describe the active text line, and `viewportLeft` is the
+   * caret X (right edge of the last typed character) so the menu can sit on
+   * the same line, just to the right of the cursor.
+   */
   viewportTop: number;
+  viewportBottom: number;
   viewportLeft: number;
   textNode: Text;
   atPos: number;
   endPos: number;
 }
 
-type AutocompleteOption = MentionOption | SkillCommandOption;
+type AutocompleteOption = MentionOption | SlashCommandOption;
 
 interface MentionMenuViewport {
   offsetLeft: number;
@@ -190,6 +312,9 @@ const MENTION_MENU_HEIGHT = 208;
 const MENTION_MENU_PADDING = 8;
 const MENTION_MENU_ROW_HEIGHT = 34;
 const MENTION_MENU_CHROME_HEIGHT = 8;
+const MAX_AUTOCOMPLETE_OPTIONS = 50;
+/** Roughly one space-width of breathing room between the caret and the menu. */
+const MENTION_MENU_CARET_GAP = 10;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -241,7 +366,9 @@ export function findMentionMatch(
 
   if (atPos === -1) return null;
   const query = text.slice(atPos + 1, offset);
-  if (trigger === "skill" && /\s/.test(query)) return null;
+  if (trigger === "skill" && /\s/.test(query) && !query.toLowerCase().startsWith("routine:")) {
+    return null;
+  }
 
   return {
     trigger: trigger ?? "mention",
@@ -250,6 +377,36 @@ export function findMentionMatch(
     atPos,
     endPos: offset,
   };
+}
+
+interface CaretRect {
+  top: number;
+  bottom: number;
+  /** Caret X — the right edge of the last typed character (or left edge of the next). */
+  x: number;
+}
+
+function measureCaretRect(textNode: Text, offset: number, atPos: number): CaretRect {
+  const length = textNode.textContent?.length ?? 0;
+  const rectFromRange = (start: number, end: number, side: "right" | "left"): CaretRect | null => {
+    if (start < 0 || end > length || end <= start) return null;
+    const range = document.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, end);
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return null;
+    return { top: rect.top, bottom: rect.bottom, x: side === "right" ? rect.right : rect.left };
+  };
+
+  // Prefer the character immediately before the caret — its right edge IS the caret X
+  // and its top/bottom describe the active line. Falls back to the char after the caret
+  // and finally the @ marker if nothing else gives us a valid rect.
+  return (
+    rectFromRange(Math.max(0, offset - 1), offset, "right")
+    ?? rectFromRange(offset, Math.min(length, offset + 1), "left")
+    ?? rectFromRange(atPos, atPos + 1, "right")
+    ?? { top: 0, bottom: 0, x: 0 }
+  );
 }
 
 function detectMention(container: HTMLElement): MentionState | null {
@@ -266,21 +423,20 @@ function detectMention(container: HTMLElement): MentionState | null {
   const match = findMentionMatch(text, offset);
   if (!match) return null;
 
-  // Get position relative to container
-  const tempRange = document.createRange();
-  tempRange.setStart(textNode, match.atPos);
-  tempRange.setEnd(textNode, match.atPos + 1);
-  const rect = tempRange.getBoundingClientRect();
+  // Anchor the menu to the live caret so it tracks each typed character instead of
+  // staying glued to the @ marker.
+  const caret = measureCaretRect(textNode as Text, offset, match.atPos);
   const containerRect = container.getBoundingClientRect();
 
   return {
     trigger: match.trigger,
     marker: match.marker,
     query: match.query,
-    top: rect.bottom - containerRect.top,
-    left: rect.left - containerRect.left,
-    viewportTop: rect.bottom,
-    viewportLeft: rect.left,
+    top: caret.top - containerRect.top,
+    left: caret.x - containerRect.left,
+    viewportTop: caret.top,
+    viewportBottom: caret.bottom,
+    viewportLeft: caret.x,
     textNode: textNode as Text,
     atPos: match.atPos,
     endPos: match.endPos,
@@ -307,7 +463,7 @@ function getMentionMenuViewport(): MentionMenuViewport {
 }
 
 export function computeMentionMenuPosition(
-  anchor: Pick<MentionState, "viewportTop" | "viewportLeft">,
+  anchor: Pick<MentionState, "viewportTop" | "viewportBottom" | "viewportLeft">,
   viewport: MentionMenuViewport,
   menuSize: MentionMenuSize = { width: MENTION_MENU_WIDTH, height: MENTION_MENU_HEIGHT },
 ) {
@@ -316,10 +472,23 @@ export function computeMentionMenuPosition(
   const minTop = viewport.offsetTop + MENTION_MENU_PADDING;
   const maxTop = viewport.offsetTop + viewport.height - menuSize.height;
 
-  return {
-    top: Math.max(minTop, Math.min(viewport.offsetTop + anchor.viewportTop + 4, maxTop)),
-    left: Math.max(minLeft, Math.min(viewport.offsetLeft + anchor.viewportLeft, maxLeft)),
-  };
+  // Place the menu's top edge on the current line so it sits next to the caret.
+  // If it would overflow below, flip above so the menu's bottom hugs the line.
+  const desiredTop = viewport.offsetTop + anchor.viewportTop;
+  let top: number;
+  if (desiredTop > maxTop) {
+    const flipped = viewport.offsetTop + anchor.viewportBottom - menuSize.height;
+    top = Math.max(minTop, Math.min(flipped, maxTop));
+  } else {
+    top = Math.max(minTop, desiredTop);
+  }
+
+  // Place the menu's left edge a small gap to the right of the caret X so
+  // there's roughly a space-width of breathing room between cursor and menu.
+  const desiredLeft = viewport.offsetLeft + anchor.viewportLeft + MENTION_MENU_CARET_GAP;
+  const left = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
+
+  return { top, left };
 }
 
 function getMentionMenuSize(optionCount: number): MentionMenuSize {
@@ -351,7 +520,23 @@ function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
   return false;
 }
 
+/** The human title of an issue mention — `name` minus its leading identifier. */
+export function issueMentionTitle(option: MentionOption): string {
+  const name = option.name.trim();
+  const identifier = option.issueIdentifier?.trim();
+  if (identifier && name.toLowerCase().startsWith(identifier.toLowerCase())) {
+    return name.slice(identifier.length).trim();
+  }
+  return name;
+}
+
 function mentionMarkdown(option: MentionOption): string {
+  if (option.kind === "issue" && option.issueIdentifier) {
+    // Insert a compact issue link (e.g. `[PAP-123](/issues/PAP-123)`). The chip
+    // decorator recognizes this href as an `issue` mention and renders it as a
+    // task chip; MarkdownBody linkifies the same href on display.
+    return `[${option.issueIdentifier}](${buildIssueReferenceHref(option.issueIdentifier)}) `;
+  }
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
   }
@@ -362,12 +547,21 @@ function mentionMarkdown(option: MentionOption): string {
   return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
 }
 
-function skillMarkdown(option: SkillCommandOption): string {
+function slashCommandLabel(option: SlashCommandOption): string {
+  return option.kind === "routine" ? `/routine:${option.name}` : `/${option.slug}`;
+}
+
+function slashCommandMarkdown(option: SlashCommandOption): string {
+  if (option.kind === "routine") {
+    return `[${slashCommandLabel(option)}](${buildRoutineMentionHref(option.routineId)}) `;
+  }
   return `[/${option.slug}](${option.href}) `;
 }
 
 function autocompleteMarkdown(option: AutocompleteOption): string {
-  return option.kind === "skill" ? skillMarkdown(option) : mentionMarkdown(option);
+  return option.kind === "skill" || option.kind === "routine"
+    ? slashCommandMarkdown(option)
+    : mentionMarkdown(option);
 }
 
 export function shouldAcceptAutocompleteKey(
@@ -400,7 +594,13 @@ function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string)
   if (option.kind === "skill") {
     return parsed.kind === "skill" && parsed.skillId === option.skillId;
   }
+  if (option.kind === "routine") {
+    return parsed.kind === "routine" && parsed.routineId === option.routineId;
+  }
 
+  if (option.kind === "issue" && option.issueIdentifier) {
+    return parsed.kind === "issue" && parsed.identifier === option.issueIdentifier;
+  }
   if (option.kind === "project" && option.projectId) {
     return parsed.kind === "project" && parsed.projectId === option.projectId;
   }
@@ -489,9 +689,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onBlur,
   imageUploadHandler,
   onDropFile,
+  fileDropTarget = "editor",
   bordered = true,
   mentions,
   onSubmit,
+  readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
@@ -510,7 +712,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [richEditorError, setRichEditorError] = useState<string | null>(null);
+  const [richEditorError, setRichEditorError] = useState<RichEditorError | null>(null);
   const dragDepthRef = useRef(0);
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
@@ -521,6 +723,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [mentionState, setMentionState] = useState<MentionState | null>(null);
   const mentionStateRef = useRef<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const autocompleteOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const skillEnterArmedRef = useRef(false);
   const autocompleteSelectionHandledRef = useRef(false);
   const mentionActive = mentionState !== null && (
@@ -566,11 +769,42 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           if (!q) return true;
           return command.aliases.some((alias) => alias.toLowerCase().includes(q));
         })
-        .slice(0, 8);
+        .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
     }
     if (!mentions) return [];
-    return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+    return mentions
+      .filter((m) => m.name.toLowerCase().includes(q))
+      .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
   }, [mentionState, mentions, slashCommands]);
+
+  const insertMarkdown = useCallback((markdown: string) => {
+    if (readOnly) return;
+    if (!richEditorError && ref.current) {
+      // MDXEditor's insertMarkdown silently no-ops without a Lexical selection
+      // (an editor that was never focused). Focus first — the callback runs
+      // once focus (and a selection: caret kept, else rootEnd) is in place.
+      const editor = ref.current;
+      // Inserted markdown reaches the same importer as the mounted document, so
+      // it needs the same angle-bracket escaping to survive it.
+      const editorMarkdown = escapeUnsupportedAngleBrackets(markdown);
+      editor.focus(() => editor.insertMarkdown(editorMarkdown), { defaultSelection: "rootEnd" });
+      return;
+    }
+    const textarea = fallbackTextareaRef.current;
+    if (!textarea) {
+      onChange(`${value}${markdown}`);
+      return;
+    }
+    const start = textarea.selectionStart ?? value.length;
+    const end = textarea.selectionEnd ?? value.length;
+    const next = `${value.slice(0, start)}${markdown}${value.slice(end)}`;
+    onChange(next);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      const cursor = start + markdown.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  }, [onChange, readOnly, richEditorError, value]);
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
@@ -580,7 +814,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
-  }), [richEditorError]);
+    insertMarkdown,
+  }), [insertMarkdown, richEditorError]);
 
   const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
     if (!element) return;
@@ -598,22 +833,44 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const container = containerRef.current;
     if (!container) return;
 
-    let timeoutId = 0;
+    let checkTimeoutId = 0;
+    let confirmTimeoutId = 0;
+    let mutationCount = 0;
+
+    const looksEmpty = () => {
+      const editable = container.querySelector('[contenteditable="true"]');
+      if (!(editable instanceof HTMLElement)) return false;
+      const activeElement = document.activeElement;
+      // A focused editor is the user's, not ours to second-guess.
+      if (activeElement === editable || editable.contains(activeElement)) return false;
+      return isRichEditorDomEmpty(editable, editorValue, placeholder);
+    };
+
+    // Two phases. Mounting (and especially remounting after "Retry rich
+    // editor", where focus sits on the button rather than the editor) leaves
+    // the editable momentarily empty, so a single immediate check reads a
+    // still-populating editor as a broken one. Wait, then confirm once; any
+    // mutation in between means content arrived and restarts the whole thing.
     const scheduleCheck = () => {
-      window.clearTimeout(timeoutId);
-      timeoutId = window.setTimeout(() => {
-        const editable = container.querySelector('[contenteditable="true"]');
-        if (!(editable instanceof HTMLElement)) return;
-        const activeElement = document.activeElement;
-        if (activeElement === editable || editable.contains(activeElement)) return;
-        if (isRichEditorDomEmpty(editable, editorValue, placeholder)) {
-          setRichEditorError("Rich editor failed to load content");
-        }
-      }, 0);
+      window.clearTimeout(checkTimeoutId);
+      window.clearTimeout(confirmTimeoutId);
+      checkTimeoutId = window.setTimeout(() => {
+        if (!looksEmpty()) return;
+        const mutationsAtCheck = mutationCount;
+        confirmTimeoutId = window.setTimeout(() => {
+          if (mutationCount !== mutationsAtCheck) return;
+          if (!looksEmpty()) return;
+          setRichEditorError({
+            code: "MDE-EMPTY",
+            message: "Rich editor failed to load content",
+          });
+        }, RICH_EDITOR_EMPTY_CONFIRM_MS);
+      }, RICH_EDITOR_EMPTY_CHECK_MS);
     };
 
     scheduleCheck();
     const observer = new MutationObserver(() => {
+      mutationCount += 1;
       scheduleCheck();
     });
     observer.observe(container, {
@@ -623,7 +880,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     });
 
     return () => {
-      window.clearTimeout(timeoutId);
+      window.clearTimeout(checkTimeoutId);
+      window.clearTimeout(confirmTimeoutId);
       observer.disconnect();
     };
   }, [editorValue, placeholder, richEditorError]);
@@ -653,7 +911,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 latestValueRef.current = updated;
                 echoIgnoreMarkdownRef.current = updated;
                 ref.current?.setMarkdown(updated);
-                onChange(updated);
+                // `updated` derives from `latestValueRef`, which is editor
+                // space; the parent only ever sees stored space.
+                onChange(toStoredMarkdown(updated));
                 requestAnimationFrame(() => {
                   ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
                 });
@@ -685,7 +945,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       markdownShortcutPlugin(),
     ];
     if (imageHandler) {
-      all.push(imagePlugin({ imageUploadHandler: imageHandler }));
+      // The inline image chip keeps only its remove affordance — no settings
+      // dialog, and the X glyph instead of MDXEditor's default trash can.
+      all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     }
     return all;
   }, [hasImageUpload]);
@@ -722,12 +984,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
-      if (parsed.kind === "skill") {
+      if (parsed.kind === "skill" || parsed.kind === "routine") {
         applyMentionChipDecoration(link, parsed);
         continue;
       }
 
-      if (parsed.kind === "user") {
+      if (parsed.kind === "user" || parsed.kind === "issue") {
         applyMentionChipDecoration(link, parsed);
         continue;
       }
@@ -815,6 +1077,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, [checkMention, mentionActive]);
 
   useEffect(() => {
+    if (!mentionActive) return;
+    autocompleteOptionRefs.current.length = filteredMentions.length;
+    if (mentionIndex >= filteredMentions.length) {
+      setMentionIndex(Math.max(0, filteredMentions.length - 1));
+      return;
+    }
+    const activeOption = autocompleteOptionRefs.current[mentionIndex];
+    if (!activeOption || typeof activeOption.scrollIntoView !== "function") return;
+    activeOption.scrollIntoView({ block: "nearest" });
+  }, [filteredMentions.length, mentionActive, mentionIndex]);
+
+  useEffect(() => {
     if (mentionActive) return;
     autocompleteSelectionHandledRef.current = false;
   }, [mentionActive]);
@@ -822,17 +1096,39 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   useEffect(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
     if (!editable) return;
-    decorateProjectMentions();
-    const observer = new MutationObserver(() => {
+    let frameId: number | null = null;
+    let disposed = false;
+    const observe = () => {
+      observer.observe(editable, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+    };
+    const flushDecorations = () => {
+      frameId = null;
+      if (disposed) return;
+      observer.disconnect();
       decorateProjectMentions();
+      if (!disposed) observe();
+    };
+    const scheduleDecorations = () => {
+      if (frameId !== null) return;
+      frameId = requestAnimationFrame(flushDecorations);
+    };
+    const observer = new MutationObserver(() => {
+      scheduleDecorations();
     });
-    observer.observe(editable, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-    });
-    return () => observer.disconnect();
-  }, [decorateProjectMentions, value]);
+
+    flushDecorations();
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+      }
+    };
+  }, [decorateProjectMentions]);
 
   const selectMention = useCallback(
     (option: AutocompleteOption) => {
@@ -846,7 +1142,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         latestValueRef.current = next;
         echoIgnoreMarkdownRef.current = next;
         ref.current?.setMarkdown(next);
-        onChange(next);
+        // `next` derives from `latestValueRef`, which is editor space; the
+        // parent only ever sees stored space.
+        onChange(toStoredMarkdown(next));
       }
 
       const restoreSelection = (attemptsRemaining: number) => {
@@ -890,12 +1188,49 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     }
   }, [selectMention]);
 
+  // Touch handling for the mention menu. We deliberately do NOT preventDefault
+  // on touchstart so the browser can still scroll the menu vertically; instead
+  // we record the start point and only treat the gesture as a selection if the
+  // finger lifted with negligible movement (i.e., a tap, not a scroll).
+  const touchStartPointRef = useRef<{ x: number; y: number } | null>(null);
+  const TOUCH_TAP_THRESHOLD_PX = 8;
+
+  const handleAutocompleteTouchStart = useCallback((event: ReactTouchEvent<HTMLButtonElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchStartPointRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleAutocompleteTouchMove = useCallback((event: ReactTouchEvent<HTMLButtonElement>) => {
+    const start = touchStartPointRef.current;
+    if (!start) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > TOUCH_TAP_THRESHOLD_PX) {
+      touchStartPointRef.current = null;
+    }
+  }, []);
+
+  const handleAutocompleteTouchEnd = useCallback((
+    event: ReactTouchEvent<HTMLButtonElement>,
+    option: AutocompleteOption,
+  ) => {
+    const start = touchStartPointRef.current;
+    touchStartPointRef.current = null;
+    if (!start) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > TOUCH_TAP_THRESHOLD_PX) {
+      return;
+    }
+    handleAutocompletePress(event, option);
+  }, [handleAutocompletePress]);
+
   function hasFilePayload(evt: DragEvent<HTMLDivElement>) {
     return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
   }
 
-  const canDropImage = Boolean(imageUploadHandler);
-  const canDropFile = Boolean(imageUploadHandler || onDropFile);
+  const canDropFile = fileDropTarget === "editor" && Boolean(imageUploadHandler || onDropFile);
   const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const clipboard = event.clipboardData;
     if (!clipboard || !ref.current) return;
@@ -907,7 +1242,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!looksLikeMarkdownPaste(rawText)) return;
 
     event.preventDefault();
-    ref.current.insertMarkdown(normalizeMarkdown(rawText));
+    ref.current.insertMarkdown(escapeUnsupportedAngleBrackets(normalizeMarkdown(rawText)));
+  }, []);
+
+  const handleRichEditorRenderError = useCallback((error: unknown) => {
+    setRichEditorError({ code: "MDE-RENDER", message: richEditorErrorMessage(error) });
+  }, []);
+
+  const handleRichEditorParseError = useCallback((error: unknown) => {
+    setRichEditorError({ code: "MDE-PARSE", message: richEditorErrorMessage(error) });
   }, []);
 
   const mentionMenuPosition = mentionState
@@ -929,11 +1272,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <p>
+            Rich editor unavailable for this markdown. Showing raw source instead.{" "}
+            <span data-testid="markdown-editor-fallback-code" className="font-mono">
+              {richEditorError.code}
+            </span>
+          </p>
           <button
             type="button"
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
             onClick={() => {
+              // The retry remounts MDXEditor, so re-arm the mount-time guard:
+              // a fresh mount can emit an empty onChange that would otherwise
+              // wipe the parent's value.
+              initialChildOnChangeRef.current = true;
               setRichEditorError(null);
             }}
           >
@@ -944,7 +1296,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           ref={fallbackTextareaRef}
           value={value}
           placeholder={placeholder}
+          readOnly={readOnly}
           onChange={(event) => {
+            if (readOnly) return;
             onChange(event.target.value);
             autoSizeFallbackTextarea(event.target);
           }}
@@ -956,7 +1310,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }
           }}
           className={cn(
-            "min-h-[12rem] w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
+            "min-h-(--sz-12rem) w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
             contentClassName,
           )}
         />
@@ -974,6 +1328,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         className,
       )}
       onKeyDownCapture={(e) => {
+        if (readOnly) return;
         // Cmd/Ctrl+Enter to submit
         if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -1031,21 +1386,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onDragEnter={(evt) => {
+        if (readOnly) return;
         if (!canDropFile || !hasFilePayload(evt)) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(evt) => {
+        if (readOnly) return;
         if (!canDropFile || !hasFilePayload(evt)) return;
         evt.preventDefault();
         evt.dataTransfer.dropEffect = "copy";
       }}
       onDragLeave={() => {
+        if (readOnly) return;
         if (!canDropFile) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
       onDrop={(evt) => {
+        if (readOnly) return;
         dragDepthRef.current = 0;
         setIsDragOver(false);
         if (!onDropFile) return;
@@ -1069,66 +1428,109 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }}
       onPasteCapture={handlePasteCapture}
     >
-      <MDXEditor
-        ref={setEditorRef}
-        markdown={editorValue}
-        placeholder={placeholder}
-        onChange={(next) => {
-          const echo = echoIgnoreMarkdownRef.current;
-          if (echo !== null && next === echo) {
-            echoIgnoreMarkdownRef.current = null;
-            latestValueRef.current = next;
-            return;
-          }
-          if (echo !== null) {
-            echoIgnoreMarkdownRef.current = null;
-          }
-
-          if (initialChildOnChangeRef.current) {
-            initialChildOnChangeRef.current = false;
-            if (next === "" && editorValue !== "") {
-              echoIgnoreMarkdownRef.current = editorValue;
-              ref.current?.setMarkdown(editorValue);
-              return;
+      <MarkdownEditorRichErrorBoundary onError={handleRichEditorRenderError}>
+        <MDXEditor
+          ref={setEditorRef}
+          markdown={editorValue}
+          iconComponentFor={editorIconFor}
+          suppressHtmlProcessing
+          placeholder={placeholder}
+          readOnly={readOnly}
+          onChange={(rawNext) => {
+            if (readOnly) return;
+            // Reverse the editor-only rewrites: blockquotes the exporter escaped
+            // as `\>` (so a `>`-prefixed line the user typed survives even when
+            // the WYSIWYG shortcut didn't fire), and the `\<` transport escaping
+            // that keeps bare angle brackets off the HTML parser.
+            const next = toStoredMarkdown(rawNext);
+            const echo = echoIgnoreMarkdownRef.current;
+            if (echo !== null) {
+              echoIgnoreMarkdownRef.current = null;
+              // `echo` is what we handed to `setMarkdown`, so it is in editor
+              // space while `next` is in stored space. Accept either form —
+              // otherwise every prop sync of a value containing an escaped
+              // bracket reads as a real edit and notifies the parent.
+              if (next === echo || next === toStoredMarkdown(echo)) {
+                latestValueRef.current = echo;
+                return;
+              }
             }
-          }
-          latestValueRef.current = next;
-          onChange(next);
-        }}
-        onBlur={() => onBlur?.()}
-        onError={(payload) => {
-          setRichEditorError(payload.error);
-        }}
-        className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
-        contentEditableClassName={cn(
-          "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
-          contentClassName,
-        )}
-        additionalLexicalNodes={[MentionAwareLinkNode, mentionAwareLinkNodeReplacement]}
-        plugins={plugins}
-      />
+
+            if (initialChildOnChangeRef.current) {
+              initialChildOnChangeRef.current = false;
+              if (next === "" && editorValue !== "") {
+                echoIgnoreMarkdownRef.current = editorValue;
+                ref.current?.setMarkdown(editorValue);
+                return;
+              }
+            }
+            // `latestValueRef` is compared against `editorValue`, so it has to
+            // hold editor space; storing `next` would make every edit containing
+            // an escaped bracket look like a pending prop sync and trigger a
+            // redundant `setMarkdown` that resets the caret.
+            latestValueRef.current = prepareMarkdownForEditor(next);
+            onChange(next);
+          }}
+          onBlur={() => onBlur?.()}
+          onError={(payload) => {
+            handleRichEditorParseError(payload.error);
+          }}
+          className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
+          contentEditableClassName={cn(
+            "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
+            contentClassName,
+          )}
+          additionalLexicalNodes={[MentionAwareLinkNode, mentionAwareLinkNodeReplacement]}
+          plugins={plugins}
+        />
+      </MarkdownEditorRichErrorBoundary>
 
       {/* Mention dropdown — rendered via portal so it isn't clipped by overflow containers */}
-      {mentionActive && filteredMentions.length > 0 &&
+      {mentionActive && filteredMentions.length > 0 && mentionMenuPosition &&
         createPortal(
           <div
-            className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            data-paperclip-floating-ui=""
+            data-testid="mention-autocomplete-menu"
+            className="pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto overscroll-contain rounded-md border border-border bg-popover shadow-md"
             style={{
-              top: Math.min(mentionState.viewportTop + 4, window.innerHeight - 208),
-              left: Math.max(8, Math.min(mentionState.viewportLeft, window.innerWidth - 188)),
+              top: mentionMenuPosition.top,
+              left: mentionMenuPosition.left,
+              touchAction: "pan-y",
+              WebkitOverflowScrolling: "touch",
+            }}
+            onWheelCapture={(event) => {
+              // Modal scroll locks treat this body-level portal as outside the
+              // dialog. Keep wheel input on the menu so the lock cannot cancel it.
+              event.stopPropagation();
+            }}
+            onTouchMove={(event) => {
+              // Let the touched option observe movement first, then keep the
+              // native event from reaching a modal's document-level scroll lock.
+              event.stopPropagation();
             }}
           >
             {filteredMentions.map((option, i) => (
               <button
                 key={option.id}
                 type="button"
+                tabIndex={-1}
+                ref={(node) => {
+                  autocompleteOptionRefs.current[i] = node;
+                }}
                 className={cn(
                   "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
                   i === mentionIndex && "bg-accent",
                 )}
-                onPointerDown={(e) => handleAutocompletePress(e, option)}
+                onPointerDown={(e) => {
+                  // Touch is handled via onTouchStart/onTouchEnd so vertical scrolling
+                  // isn't swallowed; only handle mouse/pen here.
+                  if (e.pointerType === "touch") return;
+                  handleAutocompletePress(e, option);
+                }}
                 onMouseDown={(e) => handleAutocompletePress(e, option)}
-                onTouchStart={(e) => handleAutocompletePress(e, option)}
+                onTouchStart={handleAutocompleteTouchStart}
+                onTouchMove={handleAutocompleteTouchMove}
+                onTouchEnd={(e) => handleAutocompleteTouchEnd(e, option)}
                 onMouseEnter={() => {
                   if (mentionStateRef.current?.trigger === "skill") {
                     skillEnterArmedRef.current = true;
@@ -1136,12 +1538,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   setMentionIndex(i);
                 }}
               >
-                {option.kind === "skill" ? (
+                {option.kind === "routine" ? (
+                  <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "issue" ? (
+                  <Hash className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "project" && option.projectId ? (
                   <span
                     className="inline-flex h-2 w-2 rounded-full border border-border/50"
-                    style={{ backgroundColor: option.projectColor ?? "#64748b" }}
+                    style={{ backgroundColor: option.projectColor ?? "var(--project-none)" }}
                   />
                 ) : option.kind === "user" ? (
                   <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -1151,20 +1557,43 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}
-                <span>{option.kind === "skill" ? `/${option.slug}` : option.name}</span>
+                {option.kind === "issue" && option.issueIdentifier ? (
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+                      {option.issueIdentifier}
+                    </span>
+                    <span className="truncate">{issueMentionTitle(option)}</span>
+                  </span>
+                ) : (
+                  <span className="truncate">
+                    {option.kind === "skill" || option.kind === "routine"
+                      ? slashCommandLabel(option)
+                      : option.name}
+                  </span>
+                )}
+                {option.kind === "issue" && (
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
+                    Task
+                  </span>
+                )}
                 {option.kind === "project" && option.projectId && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Project
                   </span>
                 )}
                 {option.kind === "user" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     User
                   </span>
                 )}
                 {option.kind === "skill" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Skill
+                  </span>
+                )}
+                {option.kind === "routine" && (
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
+                    Routine
                   </span>
                 )}
               </button>

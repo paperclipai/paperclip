@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PAP-14557 — Monitor visibility wireframes</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --panel: #ffffff;
+    --ink: #111111;
+    --muted: #666666;
+    --line: #e5e5e0;
+    --accent: #d33;
+    --maxw: 1200px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 15px/1.55 -apple-system, system-ui, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+
+  .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+
+  .toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow: auto;
+    padding: 24px 16px 24px 24px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    font-size: 13px;
+    z-index: 20;
+  }
+  .toc h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .toc h2 { font-size: 12px; margin: 24px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .toc a { display: block; text-decoration: none; padding: 6px 8px; margin-left: -8px; border-radius: 4px; color: var(--ink); }
+  .toc a:hover { background: var(--bg); }
+  .toc .num { display: inline-block; width: 22px; color: var(--muted); }
+  .toc .toc-summary { display: none; }
+  .toc .toc-body { display: block; }
+
+  main { padding: 48px 56px 96px; max-width: 1300px; min-width: 0; }
+
+  header.hero { max-width: var(--maxw); margin-bottom: 64px; }
+  header.hero .crumb { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  header.hero h1 { font-size: 36px; line-height: 1.15; margin: 8px 0 16px; }
+  header.hero p { color: var(--muted); max-width: 720px; font-size: 16px; }
+  header.hero .pills { margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  header.hero .pill { font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); }
+
+  section { scroll-margin-top: 24px; max-width: var(--maxw); margin-bottom: 96px; }
+  section .lede { color: var(--muted); margin: 0 0 12px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 700; }
+  section h2 { font-size: 28px; line-height: 1.2; margin: 0 0 8px; }
+  section h2 .step-num { display: inline-block; width: 40px; color: var(--muted); }
+  section h3 { font-size: 16px; margin: 24px 0 8px; }
+  section .desc { color: var(--muted); margin: 0 0 24px; max-width: 760px; }
+
+  .grid {
+    display: grid; gap: 24px;
+    grid-template-columns: minmax(0, 1.4fr) 220px minmax(0, 0.9fr);
+    align-items: start;
+  }
+  .grid.no-mobile { grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr); }
+  @media (max-width: 1180px) {
+    .grid { grid-template-columns: minmax(0, 1fr) 200px; }
+    .grid.no-mobile { grid-template-columns: minmax(0, 1fr); }
+    .grid > .notes-col { grid-column: 1 / -1; }
+  }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .grid > .mobile-col { max-width: 280px; } }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; }
+    .toc {
+      position: sticky; top: 0;
+      height: auto; max-height: 60vh;
+      padding: 12px 16px;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .toc .toc-summary {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      list-style: none;
+      padding: 4px 0;
+    }
+    .toc .toc-summary::-webkit-details-marker { display: none; }
+    .toc .toc-summary .title { font-size: 13px; font-weight: 600; }
+    .toc .toc-summary .crumb { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+    .toc .toc-summary .chevron {
+      width: 10px; height: 10px;
+      border-right: 1.5px solid var(--ink);
+      border-bottom: 1.5px solid var(--ink);
+      transform: rotate(45deg);
+      transition: transform 120ms ease;
+      margin-right: 4px;
+    }
+    .toc[open] .toc-summary .chevron { transform: rotate(225deg) translate(-2px, -2px); }
+    .toc .toc-body { display: none; padding-top: 8px; border-top: 1px solid var(--line); margin-top: 8px; }
+    .toc[open] .toc-body { display: block; }
+    main { padding: 24px 20px 64px; }
+    header.hero { margin-bottom: 40px; }
+    header.hero h1 { font-size: 28px; }
+    header.hero p { font-size: 15px; }
+    section { margin-bottom: 64px; scroll-margin-top: 80px; }
+    section h2 { font-size: 24px; }
+    section h2 .step-num { width: 32px; }
+    .flow-section { padding: 20px; margin-bottom: 40px; scroll-margin-top: 80px; }
+  }
+
+  @media (max-width: 560px) {
+    main { padding: 16px 14px 56px; }
+    header.hero { margin-bottom: 32px; }
+    header.hero h1 { font-size: 24px; line-height: 1.2; }
+    header.hero p { font-size: 14px; }
+    section { margin-bottom: 48px; }
+    section h2 { font-size: 20px; line-height: 1.25; }
+    section h2 .step-num { width: 28px; }
+    section h3 { font-size: 15px; margin: 20px 0 6px; }
+    section .desc { font-size: 14px; }
+    .grid { gap: 16px; }
+    .flow-section { padding: 16px; border-radius: 8px; }
+    .wire .label { padding: 8px 10px; font-size: 11px; gap: 8px; }
+    body { font-size: 14px; }
+  }
+
+  .wire {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: zoom-in;
+    transition: transform 80ms ease, box-shadow 80ms ease;
+  }
+  .wire:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
+  .wire .label {
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .wire img { display: block; width: 100%; height: auto; background: #fff; }
+  .wire.mobile-wire img { max-width: 220px; margin: 0 auto; }
+
+  .ref {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+  .ref .label { font-size: 12px; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: baseline; }
+  .ref img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; cursor: zoom-in; }
+
+  .notes ul { padding-left: 20px; margin: 8px 0; }
+  .notes li { margin-bottom: 6px; }
+  .notes .why {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ink);
+    padding: 14px 18px;
+    border-radius: 4px;
+    margin-top: 12px;
+    font-size: 14px;
+  }
+
+  .flow-section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 32px; margin-bottom: 64px; max-width: var(--maxw); }
+  .flow-section h2 { margin-top: 0; }
+  .flow-section .wire { margin-top: 16px; }
+
+  .lightbox {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.86);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 100;
+    cursor: zoom-out;
+    padding: 32px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 30px 80px rgba(0,0,0,0.4); border-radius: 4px; }
+  .lightbox .close { position: absolute; top: 16px; right: 24px; font-size: 28px; color: #fff; cursor: pointer; }
+  .lightbox .caption { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 13px; opacity: 0.9; }
+
+  @media (max-width: 560px) {
+    .lightbox { padding: 12px; overflow: auto; touch-action: pinch-zoom; }
+    .lightbox.open { display: block; }
+    .lightbox img { display: block; width: 100%; max-width: none; max-height: none; height: auto; margin: 40px auto 56px; box-shadow: none; }
+    .lightbox .close { position: fixed; top: 8px; right: 12px; font-size: 32px; }
+    .lightbox .caption { position: fixed; left: 50%; transform: translateX(-50%); font-size: 12px; bottom: 12px; text-align: center; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 6px 12px; }
+  }
+
+  .footer { color: var(--muted); font-size: 12px; max-width: var(--maxw); border-top: 1px solid var(--line); padding-top: 24px; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <details class="toc">
+      <summary class="toc-summary">
+        <span>
+          <span class="crumb">PAP-14557 · Monitor visibility</span><br>
+          <span class="title">Jump to a screen</span>
+        </span>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <nav class="toc-body" aria-label="Section navigation">
+        <h1>PAP-14557</h1>
+        <div style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">Monitor visibility wireframes</div>
+
+        <h2>Flow</h2>
+        <a href="#flow"><span class="num">⤳</span>The three surfaces</a>
+
+        <h2>Screens</h2>
+        <a href="#s1"><span class="num">1</span>Task page top — banner</a>
+        <a href="#s2"><span class="num">2</span>Above the composer — strip</a>
+        <a href="#s3"><span class="num">3</span>Properties row + tooltip</a>
+        <a href="#s4"><span class="num">4</span>State matrix + copy rules</a>
+
+        <h2>Open questions</h2>
+        <a href="#open"><span class="num">?</span>For reviewer</a>
+      </nav>
+    </details>
+
+    <main>
+      <header class="hero">
+        <div class="crumb">PAP-14557 · Wireframes</div>
+        <h1>Make a waiting monitor obvious</h1>
+        <p>When an issue has a monitor armed, nothing on the page says so unless you squint at a truncated properties row. These wireframes surface the same monitor state in three places — a banner at the top of the task page, a strip directly above the reply composer, and a readable two-line properties row with a hover tooltip for full details. Every surface shows both the exact time and how far away it is from now.</p>
+        <div class="pills">
+          <span class="pill">4 screens + 2 mobile</span>
+          <span class="pill">Desktop + mobile</span>
+          <span class="pill">Lo-fi · monochrome</span>
+          <span class="pill">Click any wireframe to zoom</span>
+        </div>
+      </header>
+
+      <section id="flow" class="flow-section">
+        <div class="lede">Flow</div>
+        <h2>One monitor state, three surfaces</h2>
+        <p class="desc">The banner, the composer strip, and the properties row are all fed by the same state + copy rules (screen 04), so they can never disagree. Red dashed marks are annotation callouts, not UI.</p>
+        <div class="wire" data-zoom data-caption="Flow — the three surfaces">
+          <div class="label"><span>flow.svg</span><span>1280×304</span></div>
+          <img src="wireframes/flow.svg" alt="Flow diagram of the three monitor surfaces" />
+        </div>
+      </section>
+
+      <section id="s1">
+        <div class="lede">Step 1 · Task page top</div>
+        <h2><span class="step-num">1.</span>Monitor banner under the title</h2>
+        <p class="desc">A full-width banner sits between the issue title and the description whenever a monitor is scheduled, due, or overdue. Headline leads with the relative time ("resumes in 2h 12m"); the second line gives the exact local time, the attempt count, and what is being watched. "Check now" fires the monitor immediately; "Edit" opens the existing monitor editor.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="01 · Task page top with monitor banner (desktop)">
+            <div class="label"><span>01-issue-top.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/01-issue-top.svg" alt="Task page top with monitor banner (desktop) wireframe" />
+          </div>
+          <div class="wire mobile-wire mobile-col" data-zoom data-caption="01 · Task page (mobile)">
+            <div class="label"><span>mobile</span><span>375×812</span></div>
+            <img src="wireframes/01-issue-top-mobile.svg" alt="Task page with monitor banner (mobile) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Monitor banner: bold relative time first, exact time + attempt + watched service second, actions on the right. On mobile the actions drop below the text.</li>
+                <li><b>2</b> — Properties Monitor row switches to the two-line layout (detail on screen 3). On mobile (callouts 2–3 on the phone frame) the collapsed properties bar carries a compact "in 2h 12m" chip and the strip repeats above the composer.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> today the only always-visible signal is the truncated properties row; the existing "Monitor scheduled" card renders in the description area where it scrolls away and is easy to miss. The banner is pinned to the page header area so the very first glance answers "why is nothing happening, and when will it?"</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s2">
+        <div class="lede">Step 2 · Thread bottom</div>
+        <h2><span class="step-num">2.</span>Strip above the reply composer</h2>
+        <p class="desc">The bottom of the thread is where you go to ask "what's happening?" — so the answer sits right there. A compact strip directly above the composer repeats the resume time (exact + relative + attempt) with a "Check now" action, and a one-line hint under the composer explains that replying wakes the agent before the scheduled check.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="02 · Monitor strip above the composer (desktop)">
+            <div class="label"><span>02-composer.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/02-composer.svg" alt="Monitor strip above composer (desktop) wireframe" />
+          </div>
+          <div class="wire mobile-wire mobile-col" data-zoom data-caption="02 · Monitor strip above the composer (mobile)">
+            <div class="label"><span>mobile</span><span>375×812</span></div>
+            <img src="wireframes/02-composer-mobile.svg" alt="Monitor strip above composer (mobile) wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="ref">
+              <div class="label"><span>Reference</span><span>current thread bottom</span></div>
+              <img src="screenshots/current-thread-bottom.png" alt="Current thread bottom with no monitor indication" data-zoom />
+            </div>
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Monitor strip: anchored to the composer (scrolls with it), not part of the comment list. Same copy system as the banner.</li>
+                <li><b>2</b> — Wake hint under the composer: sets the expectation that sending a message preempts the scheduled check.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> in the reference screenshot the last comment says a monitor is armed only in prose ("issue monitor fires 16:08Z"), and once more comments land even that disappears. The strip keeps the resume time visible at the exact spot where a human decides whether to wait or to nudge.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s3">
+        <div class="lede">Step 3 · Properties pane</div>
+        <h2><span class="step-num">3.</span>Readable Monitor row + details tooltip</h2>
+        <p class="desc">The properties row stops cramming label, date, and attempt onto one colliding line. Collapsed: two lines — bold relative time, then muted "absolute time · Attempt N". Hover (tap on mobile) opens a details card with the full timestamp incl. timezone, watched service, notes, last-trigger info, and quick actions. Click still opens the existing editor popover.</p>
+        <div class="grid no-mobile">
+          <div class="wire" data-zoom data-caption="03 · Properties Monitor row — before / after / hover">
+            <div class="label"><span>03-properties-monitor.svg</span><span>1280×800 · component sheet</span></div>
+            <img src="wireframes/03-properties-monitor.svg" alt="Properties monitor row redesign wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="ref">
+              <div class="label"><span>Reference</span><span>current properties row</span></div>
+              <img src="screenshots/current-properties-monitor.png" alt="Current cramped monitor properties row" data-zoom />
+            </div>
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Current failure: "Next check" truncates to "Ne…", the date shows the year but no time, and "Attempt 1" wraps into a two-line crumb.</li>
+                <li><b>2</b> — Proposed collapsed row: relative time is the headline; absolute time and attempt live on a second muted line sized for the 352px pane.</li>
+                <li><b>3</b> — Hover/tap tooltip: exact timestamp with timezone, watched service, notes, last-trigger state, and Check now / Edit / Clear without opening the editor.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> the row currently tries to show four facts in one 200px slot, so none of them are readable. Two lines fit the pane; everything else moves to a tooltip you summon only when you care about specifics.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="s4">
+        <div class="lede">Step 4 · System</div>
+        <h2><span class="step-num">4.</span>State matrix and copy rules</h2>
+        <p class="desc">All three surfaces share one formatter. Relative time always leads and uses two units under 24h ("in 2h 12m", not "in 2h" — today's single-unit rounding is why the current UI feels vague). Overdue and due-now states get explicit copy instead of silently showing a past date.</p>
+        <div class="grid no-mobile">
+          <div class="wire" data-zoom data-caption="04 · Monitor state matrix">
+            <div class="label"><span>04-states.svg</span><span>1280×800 · component sheet</span></div>
+            <img src="wireframes/04-states.svg" alt="Monitor state matrix wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>States covered</h3>
+              <ul>
+                <li>Scheduled — under 1h / under 24h / beyond today.</li>
+                <li>Retrying — attempt count &gt; 1 gets visual weight.</li>
+                <li>Due now / overdue — explicit copy, never a stale-looking past date.</li>
+                <li>Cleared / none — muted, no clock icon, banner and strip hidden.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> a single copy system means the banner, strip, and row can never disagree about when the task resumes, and edge states (overdue, cleared) stop looking like bugs.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="open">
+        <div class="lede">For reviewer</div>
+        <h2>Open questions</h2>
+        <div class="notes">
+          <ul>
+            <li><b>Banner vs. existing card</b> — there is already an "IssueMonitorActivityCard" that renders in the description area. Proposal: promote/replace it with the pinned banner (screen 1) rather than showing both. OK?</li>
+            <li><b>Strip stickiness</b> — should the composer strip scroll with the thread (inline, as drawn) or stick to the composer even mid-scroll? Drawn as anchored to the composer.</li>
+            <li><b>Relative-time precision</b> — adopt the two-unit format ("in 2h 12m") everywhere, including the existing scheduled-retry row which uses the same formatter?</li>
+            <li><b>Hover vs. click</b> — the properties row currently opens the editor on click. Proposal keeps click = editor, hover/tap = read-only details tooltip. Fine, or should tap open the editor directly on mobile?</li>
+            <li><b>Live countdown</b> — should the relative time tick live (re-render every minute) or is on-load accuracy enough?</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="footer">
+        Wireframes follow the in-tree <code>wireframe</code> skill house style — black on white, 1.5pt strokes, 8px grid, type sizes 12/14/20/28. Red dashed annotations are the call-out layer only and not part of the proposed UI.
+      </div>
+    </main>
+  </div>
+
+  <div class="lightbox" id="lb" aria-hidden="true">
+    <span class="close" id="lbClose">×</span>
+    <img id="lbImg" alt="" />
+    <div class="caption" id="lbCap"></div>
+  </div>
+
+<script>
+  const lb = document.getElementById('lb');
+  const lbImg = document.getElementById('lbImg');
+  const lbCap = document.getElementById('lbCap');
+  const lbClose = document.getElementById('lbClose');
+
+  document.querySelectorAll('[data-zoom]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const target = el.tagName === 'IMG' ? el : el.querySelector('img');
+      if (!target) return;
+      lbImg.src = target.src;
+      lbImg.alt = target.alt;
+      lbCap.textContent = el.dataset.caption || target.alt || '';
+      lb.classList.add('open');
+    });
+  });
+
+  function close() { lb.classList.remove('open'); }
+  lb.addEventListener('click', close);
+  lbClose.addEventListener('click', close);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  const toc = document.querySelector('details.toc');
+  if (toc) {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const apply = () => { toc.open = !mq.matches; };
+    apply();
+    mq.addEventListener('change', apply);
+    toc.querySelectorAll('.toc-body a').forEach((a) => {
+      a.addEventListener('click', () => { if (mq.matches) toc.open = false; });
+    });
+  }
+</script>
+</body>
+</html>

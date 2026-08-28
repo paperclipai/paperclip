@@ -1,17 +1,46 @@
-import { useEffect, useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
+import type { Issue } from "@paperclipai/shared";
+
+const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
+const ISSUES_PAGE_SIZE = 100;
+
+export function getNextIssuesPageOffset(
+  loadedPageSize: number,
+  currentOffset: number,
+  pageSize: number = ISSUES_PAGE_SIZE,
+): number | undefined {
+  return loadedPageSize >= pageSize ? currentOffset + pageSize : undefined;
+}
+
+export function mergeIssuePagesStable<T extends { id: string }>(pages: T[][]): T[] {
+  const seenIssueIds = new Set<string>();
+  const merged: T[] = [];
+
+  for (const page of pages) {
+    for (const issue of page) {
+      if (seenIssueIds.has(issue.id)) continue;
+      seenIssueIds.add(issue.id);
+      merged.push(issue);
+    }
+  }
+
+  return merged;
+}
 
 export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
   const url = new URL(currentHref);
@@ -33,13 +62,27 @@ export function Issues() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const fetchNextPageInFlightRef = useRef(false);
 
-  const initialSearch = searchParams.get("q") ?? "";
+  const urlSearch = searchParams.get("q") ?? "";
+  const [searchOverride, setSearchOverride] = useState<{ search: string; locationSearch: string } | null>(null);
+  const syncedSearch = useMemo(() => {
+    if (typeof window !== "undefined" && searchOverride?.locationSearch === window.location.search) {
+      return searchOverride.search;
+    }
+    return urlSearch;
+  }, [searchOverride, urlSearch, location.search]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
+  const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
+  const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
     const nextUrl = buildIssuesSearchUrl(window.location.href, search);
-    if (!nextUrl) return;
+    if (!nextUrl) {
+      setSearchOverride(null);
+      return;
+    }
     window.history.replaceState(window.history.state, "", nextUrl);
+    setSearchOverride({ search, locationSearch: window.location.search });
   }, []);
 
   const { data: agents } = useQuery({
@@ -49,30 +92,33 @@ export function Issues() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+  const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
+    enabled: !!selectedCompanyId,
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
+  });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
   });
-
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        "Tasks",
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
@@ -80,19 +126,57 @@ export function Issues() {
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
+    setBreadcrumbs([{ label: "Tasks" }]);
   }, [setBreadcrumbs]);
 
-  const { data: issues, isLoading, error } = useQuery({
+  const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
+
+  const {
+    data: issuePages,
+    isLoading,
+    isFetchingNextPage,
+    error,
+    hasNextPage,
+    fetchNextPage,
+  } = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
+      "workspace",
+      workspaceIdFilter ?? "__all__",
+      "compact",
       "with-routine-executions",
+      "infinite",
+      issuePageSize,
     ],
-    queryFn: () => issuesApi.list(selectedCompanyId!, { participantAgentId, includeRoutineExecutions: true }),
+    queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
+      participantAgentId,
+      workspaceId: workspaceIdFilter,
+      includeRoutineExecutions: true,
+      limit: issuePageSize,
+      offset: pageParam,
+      sortField: "updated",
+      sortDir: "desc",
+    }, { signal }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextIssuesPageOffset(lastPage.length, lastPageParam, issuePageSize),
     enabled: !!selectedCompanyId,
+    placeholderData: (previousData) => previousData,
   });
+
+  const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const hasMoreServerIssues = syncedSearch.trim().length === 0
+    && hasNextPage === true;
+  const loadMoreServerIssues = useCallback(() => {
+    if (!hasNextPage || isFetchingNextPage || fetchNextPageInFlightRef.current) return;
+    fetchNextPageInFlightRef.current = true;
+    void fetchNextPage({ cancelRefetch: false }).finally(() => {
+      fetchNextPageInFlightRef.current = false;
+    });
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -103,13 +187,14 @@ export function Issues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
+    return <EmptyState icon={CircleDot} message="Select an organization to view tasks." />;
   }
 
   return (
     <IssuesList
       issues={issues ?? []}
       isLoading={isLoading}
+      isLoadingMoreIssues={isFetchingNextPage}
       error={error as Error | null}
       agents={agents}
       projects={projects}
@@ -117,11 +202,14 @@ export function Issues() {
       viewStateKey="paperclip:issues-view"
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialSearch={initialSearch}
+      initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+      initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
       enableRoutineVisibilityFilter
+      hasMoreIssues={hasMoreServerIssues}
+      onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId ? { participantAgentId } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
     />
   );
 }

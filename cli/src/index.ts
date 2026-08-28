@@ -1,38 +1,94 @@
 import { Command } from "commander";
+import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
 import { envCommand } from "./commands/env.js";
+import { channelsCommand } from "./commands/channels.js";
 import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
+import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
 import { registerIssueCommands } from "./commands/client/issue.js";
 import { registerAgentCommands } from "./commands/client/agent.js";
+import { registerProjectCommands } from "./commands/client/project.js";
+import { registerGoalCommands } from "./commands/client/goal.js";
 import { registerApprovalCommands } from "./commands/client/approval.js";
 import { registerActivityCommands } from "./commands/client/activity.js";
 import { registerDashboardCommands } from "./commands/client/dashboard.js";
 import { registerRoutineCommands } from "./commands/routines.js";
+import { registerPipelineCommands } from "./commands/pipelines.js";
 import { registerFeedbackCommands } from "./commands/client/feedback.js";
+import { registerSecretCommands } from "./commands/client/secrets.js";
+import { registerSkillsCommands } from "./commands/client/skills.js";
+import { registerTeamCommands } from "./commands/client/teams.js";
 import { applyDataDirOverride, type DataDirOptionLike } from "./config/data-dir.js";
 import { loadPaperclipEnvFile } from "./config/env.js";
 import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
+import { registerConnectCommand } from "./commands/client/connect.js";
+import { registerTokenCommands } from "./commands/client/token.js";
+import { registerPromptCommands } from "./commands/client/prompt.js";
+import { registerRunCommands } from "./commands/client/run.js";
+import { registerCostCommands } from "./commands/client/cost.js";
+import { registerWorkspaceCommands } from "./commands/client/workspace.js";
+import { registerAccessCommands } from "./commands/client/access.js";
+import { registerRoutineApiCommands } from "./commands/client/routine-api.js";
+import { registerAdapterCommands } from "./commands/client/adapter.js";
+import { registerAssetCommands } from "./commands/client/asset.js";
+import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
+import { installCommand } from "./commands/install.js";
+import { uninstallCommand } from "./commands/uninstall.js";
+import { updateCommand } from "./commands/update.js";
+import { registerServiceCommands } from "./commands/service.js";
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
   "Paperclip data directory root (isolates state from ~/.paperclip)";
 
+program.enablePositionalOptions();
+
 program
   .name("paperclipai")
   .description("Paperclip CLI — setup, diagnose, and configure your instance")
   .version(cliVersion);
+
+program
+  .command("install")
+  .description("Install Paperclip into a managed per-user CLI store")
+  .option("--canary", "Install the npm canary channel")
+  .option("--version <version>", "Install an exact published npm version")
+  .option("--ref <ref>", "Install a GitHub branch, tag, or commit SHA")
+  .option("--repo <owner/name>", "Override the GitHub repository used with --ref")
+  .option("-y, --yes", "Consent to git-ref code execution and supported shell PATH updates without prompting")
+  .action(installCommand);
+
+program
+  .command("uninstall")
+  .description("Remove the managed CLI install while preserving user data")
+  .action(uninstallCommand);
+
+program
+  .command("update")
+  .alias("upgrade")
+  .description("Check, update, or roll back the Paperclip CLI")
+  .option("--latest", "Switch to the latest stable channel")
+  .option("--canary", "Switch to the canary channel")
+  .option("--version <version>", "Install an exact published version")
+  .option("--rollback", "Flip back to the retained previous managed payload")
+  .option("--check", "Check for an available update without applying it")
+  .option("--dry-run", "Print the action without changing anything")
+  .option("--json", "Print machine-readable output")
+  .option("-y, --yes", "Confirm an explicit downgrade")
+  .option("--no-backup", "Skip the pre-update database backup")
+  .action(updateCommand);
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike;
@@ -52,6 +108,8 @@ program
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--bind <mode>", "Quickstart reachability preset (loopback, lan, tailnet)")
   .option("-y, --yes", "Accept quickstart defaults (trusted local loopback unless --bind is set) and start immediately", false)
+  .option("--install-service", "Install and start the background service after onboarding")
+  .option("--no-install-service", "Do not install or suggest the background service")
   .option("--run", "Start Paperclip immediately after saving config", false)
   .action(onboard);
 
@@ -73,6 +131,14 @@ program
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(envCommand);
+
+program
+  .command("channels")
+  .description("Show the release channels and which one this install follows")
+  .option("--json", "Machine-readable output")
+  .action(async (opts) => {
+    await channelsCommand(opts);
+  });
 
 program
   .command("configure")
@@ -103,7 +169,7 @@ program
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(addAllowedHostname);
 
-program
+const run = program
   .command("run")
   .description("Bootstrap local setup (onboard + doctor) and run Paperclip")
   .option("-c, --config <path>", "Path to config file")
@@ -112,7 +178,11 @@ program
   .option("--bind <mode>", "On first run, use onboarding reachability preset (loopback, lan, tailnet)")
   .option("--repair", "Attempt automatic repairs during doctor", true)
   .option("--no-repair", "Disable automatic repairs during doctor")
+  .option("--force", "Run even when the same instance is active under the service manager")
   .action(runCommand);
+
+registerRunCommands(run);
+registerServiceCommands(program);
 
 const heartbeat = program.command("heartbeat").description("Heartbeat utilities");
 
@@ -138,15 +208,32 @@ heartbeat
   .action(heartbeatRun);
 
 registerContextCommands(program);
+registerConnectCommand(program);
 registerCompanyCommands(program);
 registerIssueCommands(program);
 registerAgentCommands(program);
+registerProjectCommands(program);
+registerGoalCommands(program);
+registerTokenCommands(program);
+registerPromptCommands(program);
 registerApprovalCommands(program);
 registerActivityCommands(program);
 registerDashboardCommands(program);
+registerCostCommands(program);
+registerWorkspaceCommands(program);
+registerAccessCommands(program);
+registerRoutineApiCommands(program);
+registerAdapterCommands(program);
+registerAssetCommands(program);
+registerSkillCommands(program);
 registerRoutineCommands(program);
+registerPipelineCommands(program);
 registerFeedbackCommands(program);
+registerSecretCommands(program);
+registerSkillsCommands(program);
+registerTeamCommands(program);
 registerWorktreeCommands(program);
+registerEnvLabCommands(program);
 registerPluginCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
@@ -164,6 +251,8 @@ auth
 registerClientAuthCommands(auth);
 
 async function main(): Promise<void> {
+  warnIfUnsupportedNodeVersion(process.versions.node, (message) => console.warn(message));
+
   let failed = false;
   try {
     await program.parseAsync();

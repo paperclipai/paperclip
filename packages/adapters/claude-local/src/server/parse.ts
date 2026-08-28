@@ -1,8 +1,58 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
-import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
+import {
+  asString,
+  asNumber,
+  asBoolean,
+  parseObject,
+  parseJson,
+} from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
+// The legacy login-prompt markers. The Claude CLI prints these words when it
+// asks the user to log in. The detector matches them against any probe output
+// line, which includes the raw stdout and stderr. This scope is pre-existing.
+const CLAUDE_LOGIN_PROMPT_RE =
+  /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+
+// The token-failure markers. An assistant or model event can print these same
+// words as ordinary prose, so the detector matches them only against the parsed
+// terminal result fields of a failed run. See detectClaudeLoginRequired.
+const CLAUDE_AUTH_TOKEN_FAILURE_RE =
+  /(?:authentication[_\s-](?:failed|error)|failed\s+to\s+authenticate|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access)\s+token|(?:bearer|oauth|access)\s+token[\s\S]{0,40}(?:is\s+)?(?:invalid|expired|revoked))/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
+
+const CLAUDE_TRANSIENT_UPSTREAM_RE =
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+const CLAUDE_PROVIDER_QUOTA_RE =
+  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+const CLAUDE_MODEL_NOT_FOUND_RE =
+  /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
+const CLAUDE_EXTRA_USAGE_RESET_RE =
+  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+
+/**
+ * Sum the per-model usage ledger from a Claude CLI result event. The result
+ * event's top-level `usage` reflects only the main-loop message chain, so it
+ * undercounts output tokens whenever subagents or sidechains ran; `modelUsage`
+ * is the CLI's authoritative per-model accounting (it is what backs /cost).
+ * Cache-creation tokens are billed prompt tokens, so they count as input.
+ */
+export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null {
+  const byModel = parseObject(modelUsage);
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedInputTokens = 0;
+  let sawEntry = false;
+  for (const value of Object.values(byModel)) {
+    const entry = parseObject(value);
+    if (Object.keys(entry).length === 0) continue;
+    sawEntry = true;
+    inputTokens += asNumber(entry.inputTokens, 0) + asNumber(entry.cacheCreationInputTokens, 0);
+    outputTokens += asNumber(entry.outputTokens, 0);
+    cachedInputTokens += asNumber(entry.cacheReadInputTokens, 0);
+  }
+  if (!sawEntry) return null;
+  return { inputTokens, outputTokens, cachedInputTokens };
+}
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -50,13 +100,15 @@ export function parseClaudeStreamJson(stdout: string) {
       model,
       costUsd: null as number | null,
       usage: null as UsageSummary | null,
+      usageBasis: null as "per_run" | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
     };
   }
 
+  const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
   const usageObj = parseObject(finalResult.usage);
-  const usage: UsageSummary = {
+  const usage: UsageSummary = modelUsageTotals ?? {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
@@ -70,6 +122,9 @@ export function parseClaudeStreamJson(stdout: string) {
     model,
     costUsd,
     usage,
+    // modelUsage covers exactly this CLI invocation, so mark it per-run to
+    // keep the server from applying its session-cumulative delta heuristic.
+    usageBasis: "per_run" as const,
     summary,
     resultJson: finalResult,
   };
@@ -119,21 +174,63 @@ export function extractClaudeLoginUrl(text: string): string | null {
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
 
+// Collect the parsed terminal result fields that carry an auth failure. The
+// CLI writes the token-failure text to the result event, so the detector reads
+// the result string, the top-level error field, and the errors array. It never
+// reads the raw stdout, so an assistant event cannot inject a token marker.
+function collectClaudeTerminalText(parsed: Record<string, unknown>): string {
+  return [
+    asString(parsed.result, ""),
+    asString(parsed.error, ""),
+    ...extractClaudeErrorMessages(parsed),
+  ]
+    .map((field) => field.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Report whether the parsed terminal result marks the run as an auth failure.
+// The token-failure markers apply only to a failed run. A successful probe
+// whose answer text repeats an auth phrase does not classify as login required.
+function claudeResultIndicatesAuthFailure(parsed: Record<string, unknown>): boolean {
+  if (asBoolean(parsed.is_error, false)) return true;
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype.startsWith("error")) return true;
+  const status =
+    asNumber(parsed.api_error_status, 0) || asNumber(parsed.error_status, 0);
+  if (status === 401 || status === 403) return true;
+  if (asString(parsed.error, "").trim()) return true;
+  return extractClaudeErrorMessages(parsed).length > 0;
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const parsed = input.parsed ?? null;
+  const resultText = asString(parsed?.result, "").trim();
+
+  // The legacy login-prompt markers keep their broad scope. They match against
+  // every output line, which includes the parsed result, the parsed errors, and
+  // the raw stdout and stderr.
+  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  // The token-failure markers match only against the parsed terminal fields of
+  // a failed run. The raw stdout is untrusted, so a model that prints a token
+  // phrase, or a successful run that repeats one, does not flip the classifier.
+  const tokenFailure =
+    parsed !== null &&
+    claudeResultIndicatesAuthFailure(parsed) &&
+    CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
+
   return {
-    requiresLogin,
+    requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
   };
 }
@@ -154,17 +251,60 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   return parts.length > 1 ? parts.join(": ") : null;
 }
 
+export function isClaudeModelNotFoundError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const parsed = input.parsed ?? null;
+  const messages = [
+    input.errorMessage ?? "",
+    input.stdout ?? "",
+    input.stderr ?? "",
+    parsed ? asString(parsed.result, "") : "",
+    ...(parsed ? extractClaudeErrorMessages(parsed) : []),
+  ];
+  return messages.some((message) => CLAUDE_MODEL_NOT_FOUND_RE.test(message));
+}
+
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {
   if (!parsed) return false;
 
   const subtype = asString(parsed.subtype, "").trim().toLowerCase();
   if (subtype === "error_max_turns") return true;
 
-  const stopReason = asString(parsed.stop_reason, "").trim().toLowerCase();
-  if (stopReason === "max_turns") return true;
+  const structuredStopReasons = [
+    parsed.stop_reason,
+    parsed.stopReason,
+    parsed.error_code,
+    parsed.errorCode,
+  ].map((value) => asString(value, "").trim().toLowerCase());
 
-  const resultText = asString(parsed.result, "").trim();
-  return /max(?:imum)?\s+turns?/i.test(resultText);
+  return structuredStopReasons.some((reason) =>
+    reason === "max_turns" ||
+    reason === "max_turns_exhausted" ||
+    reason === "turn_limit" ||
+    reason === "turn_limit_exhausted",
+  );
+}
+
+export function isClaudeRefusalResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+
+  // A policy refusal exits the CLI cleanly (exitCode=0, is_error=false), so it
+  // must be detected from the structured fields rather than the failure flag.
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype === "model_refusal" || subtype === "refusal") return true;
+
+  const structuredStopReasons = [
+    parsed.stop_reason,
+    parsed.stopReason,
+    parsed.error_code,
+    parsed.errorCode,
+  ].map((value) => asString(value, "").trim().toLowerCase());
+
+  return structuredStopReasons.some((reason) => reason === "refusal");
 }
 
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
@@ -174,6 +314,247 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     .filter(Boolean);
 
   return allMessages.some((msg) =>
-    /no conversation found with session id|unknown session|session .* not found/i.test(msg),
+    /no conversation found with session id|unknown session|session .* not found|not a valid UUID|--resume requires a valid session|is not a UUID|does not match any session title/i.test(
+      msg,
+    ),
   );
+}
+
+export function isClaudePoisonedPreviousMessageIdError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /diagnostics\.previous_message_id.*starts with `msg_`/i.test(msg),
+  );
+}
+
+export function isClaudeImageProcessingError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /could not process image/i.test(msg),
+  );
+}
+
+function buildClaudeTransientHaystack(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): string {
+  const parsed = input.parsed ?? null;
+  const resultText = parsed ? asString(parsed.result, "") : "";
+  const parsedErrors = parsed ? extractClaudeErrorMessages(parsed) : [];
+  return [
+    input.errorMessage ?? "",
+    resultText,
+    ...parsedErrors,
+    input.stdout ?? "",
+    input.stderr ?? "",
+  ]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function readTimeZoneParts(date: Date, timeZone: string) {
+  const values = new Map(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).formatToParts(date).map((part) => [part.type, part.value]),
+  );
+  return {
+    year: Number.parseInt(values.get("year") ?? "", 10),
+    month: Number.parseInt(values.get("month") ?? "", 10),
+    day: Number.parseInt(values.get("day") ?? "", 10),
+    hour: Number.parseInt(values.get("hour") ?? "", 10),
+    minute: Number.parseInt(values.get("minute") ?? "", 10),
+  };
+}
+
+function normalizeResetTimeZone(timeZoneHint: string | null | undefined): string | null {
+  const normalized = timeZoneHint?.trim();
+  if (!normalized) return null;
+  if (/^(?:utc|gmt)$/i.test(normalized)) return "UTC";
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date(0));
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function dateFromTimeZoneWallClock(input: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  timeZone: string;
+}): Date | null {
+  let candidate = new Date(Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0));
+  const targetUtc = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0, 0);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const actual = readTimeZoneParts(candidate, input.timeZone);
+    const actualUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, 0, 0);
+    const offsetMs = targetUtc - actualUtc;
+    if (offsetMs === 0) break;
+    candidate = new Date(candidate.getTime() + offsetMs);
+  }
+
+  const verified = readTimeZoneParts(candidate, input.timeZone);
+  if (
+    verified.year !== input.year ||
+    verified.month !== input.month ||
+    verified.day !== input.day ||
+    verified.hour !== input.hour ||
+    verified.minute !== input.minute
+  ) {
+    return null;
+  }
+
+  return candidate;
+}
+
+function nextClockTimeInTimeZone(input: {
+  now: Date;
+  hour: number;
+  minute: number;
+  timeZoneHint: string;
+}): Date | null {
+  const timeZone = normalizeResetTimeZone(input.timeZoneHint);
+  if (!timeZone) return null;
+
+  const nowParts = readTimeZoneParts(input.now, timeZone);
+  let retryAt = dateFromTimeZoneWallClock({
+    year: nowParts.year,
+    month: nowParts.month,
+    day: nowParts.day,
+    hour: input.hour,
+    minute: input.minute,
+    timeZone,
+  });
+  if (!retryAt) return null;
+
+  if (retryAt.getTime() <= input.now.getTime()) {
+    const nextDay = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 0, 0, 0, 0));
+    retryAt = dateFromTimeZoneWallClock({
+      year: nextDay.getUTCFullYear(),
+      month: nextDay.getUTCMonth() + 1,
+      day: nextDay.getUTCDate(),
+      hour: input.hour,
+      minute: input.minute,
+      timeZone,
+    });
+  }
+
+  return retryAt;
+}
+
+function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
+  const normalized = clockText.trim().replace(/\s+/g, " ");
+  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+  if (!match) return null;
+
+  const hour12 = Number.parseInt(match[1] ?? "", 10);
+  const minute = Number.parseInt(match[2] ?? "0", 10);
+  if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+
+  let hour24 = hour12 % 12;
+  if ((match[3] ?? "").toLowerCase() === "p") hour24 += 12;
+
+  if (timeZoneHint) {
+    const explicitRetryAt = nextClockTimeInTimeZone({
+      now,
+      hour: hour24,
+      minute,
+      timeZoneHint,
+    });
+    if (explicitRetryAt) return explicitRetryAt;
+  }
+
+  const retryAt = new Date(now);
+  retryAt.setHours(hour24, minute, 0, 0);
+  if (retryAt.getTime() <= now.getTime()) {
+    retryAt.setDate(retryAt.getDate() + 1);
+  }
+  return retryAt;
+}
+
+export function extractClaudeRetryNotBefore(
+  input: {
+    parsed?: Record<string, unknown> | null;
+    stdout?: string | null;
+    stderr?: string | null;
+    errorMessage?: string | null;
+  },
+  now = new Date(),
+): Date | null {
+  const haystack = buildClaudeTransientHaystack(input);
+  const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
+  if (!match) return null;
+  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+}
+
+export function isClaudeTransientUpstreamError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const parsed = input.parsed ?? null;
+  // Deterministic failures are handled by their own classifiers.
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+    return false;
+  }
+  const loginMeta = detectClaudeLoginRequired({
+    parsed,
+    stdout: input.stdout ?? "",
+    stderr: input.stderr ?? "",
+  });
+  if (loginMeta.requiresLogin) return false;
+
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  if (isClaudeProviderQuotaError(input)) return false;
+  return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
+}
+
+export function isClaudeProviderQuotaError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const parsed = input.parsed ?? null;
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+    return false;
+  }
+  const loginMeta = detectClaudeLoginRequired({
+    parsed,
+    stdout: input.stdout ?? "",
+    stderr: input.stderr ?? "",
+  });
+  if (loginMeta.requiresLogin) return false;
+
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_PROVIDER_QUOTA_RE.test(haystack);
 }

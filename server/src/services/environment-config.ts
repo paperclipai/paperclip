@@ -1,0 +1,803 @@
+import { z } from "zod";
+import { randomUUID } from "node:crypto";
+import type { Db } from "@paperclipai/db";
+import type {
+  Environment,
+  EnvironmentDriver,
+  FakeSandboxEnvironmentConfig,
+  LocalEnvironmentConfig,
+  PluginEnvironmentConfig,
+  PluginSandboxEnvironmentConfig,
+  SandboxEnvironmentConfig,
+  SecretProvider,
+  SecretVersionSelector,
+  SshEnvironmentConfig,
+} from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
+import { parseObject } from "../adapters/utils.js";
+import { secretService } from "./secrets.js";
+import {
+  resolvePluginSandboxProviderDriverByKey,
+  validatePluginEnvironmentDriverConfig,
+  validatePluginSandboxProviderConfig,
+} from "./plugin-environment-driver.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  collectSecretRefPaths,
+  isUuidSecretRef,
+  parseSecretRefBindingObject,
+  readConfigValueAtPath,
+  writeConfigValueAtPath,
+} from "./json-schema-secret-refs.js";
+import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environment-custom-image-runtime.js";
+
+const secretRefSchema = z.object({
+  type: z.literal("secret_ref"),
+  secretId: z.string().guid(),
+  version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
+}).strict();
+
+const sshEnvironmentConfigSchema = z.object({
+  host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
+  port: z.coerce.number().int().min(1).max(65535).default(22),
+  username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  remoteWorkspacePath: z
+    .string({ error: "SSH environments require a remote workspace path." })
+    .trim()
+    .min(1, "SSH environments require a remote workspace path.")
+    .refine((value) => value.startsWith("/"), "SSH remote workspace path must be absolute."),
+  privateKey: z.null().optional().default(null),
+  privateKeySecretRef: secretRefSchema.optional().nullable().default(null),
+  knownHosts: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((value) => (value && value.length > 0 ? value : null)),
+  strictHostKeyChecking: z.boolean().optional().default(true),
+}).strict();
+
+const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
+  privateKey: z
+    .string()
+    .trim()
+    .optional()
+    .nullable()
+    .transform((value) => (value && value.length > 0 ? value : null)),
+}).strict();
+
+const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
+
+const fakeSandboxEnvironmentConfigSchema = z.object({
+  provider: z.literal("fake").default("fake"),
+  image: z
+    .string()
+    .trim()
+    .min(1, "Fake sandbox environments require an image.")
+    .default("ubuntu:24.04"),
+  reuseLease: z.boolean().optional().default(false),
+  streamRunLogs: z.boolean().optional(),
+  archiveOnRelease: z.boolean().optional(),
+}).strict();
+
+const pluginSandboxProviderKeySchema = z.string()
+  .trim()
+  .min(1, "Sandbox provider is required.")
+  .regex(
+    /^[a-z0-9][a-z0-9._-]*$/,
+    "Sandbox provider key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
+  );
+
+const pluginSandboxEnvironmentConfigSchema = z.object({
+  provider: pluginSandboxProviderKeySchema,
+  timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
+  reuseLease: z.boolean().optional().default(false),
+  streamRunLogs: z.boolean().optional(),
+  archiveOnRelease: z.boolean().optional(),
+}).catchall(z.unknown());
+
+const pluginEnvironmentConfigSchema = z.object({
+  pluginKey: z.string().min(1),
+  driverKey: z.string().min(1).regex(
+    /^[a-z0-9][a-z0-9._-]*$/,
+    "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
+  ),
+  driverConfig: z.record(z.string(), z.unknown()).optional().default({}),
+}).strict();
+
+export type ParsedEnvironmentConfig =
+  | { driver: "local"; config: LocalEnvironmentConfig }
+  | { driver: "ssh"; config: SshEnvironmentConfig }
+  | { driver: "sandbox"; config: SandboxEnvironmentConfig }
+  | { driver: "plugin"; config: PluginEnvironmentConfig };
+
+function toErrorMessage(error: z.ZodError) {
+  const first = error.issues[0];
+  if (!first) return "Invalid environment config.";
+  return first.message;
+}
+
+function getSandboxProvider(raw: Record<string, unknown>) {
+  return typeof raw.provider === "string" && raw.provider.trim().length > 0 ? raw.provider.trim() : "fake";
+}
+
+// Operator flags removed when session-output streaming moved to the verified
+// capability snapshot. A saved environment config can still carry a removed key.
+// The server now decides session-output streaming from the effective capability
+// snapshot alone, so no consumer reads these flags. Strip a removed key before
+// validation so a strict schema (the fake sandbox) still loads an old config,
+// and so the removed flag never reaches the parsed config.
+const REMOVED_SANDBOX_CONFIG_KEYS = ["streamAgentSessionOutput"] as const;
+
+function stripRemovedSandboxConfigKeys(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!REMOVED_SANDBOX_CONFIG_KEYS.some((key) => key in raw)) {
+    return raw;
+  }
+  const next = { ...raw };
+  for (const key of REMOVED_SANDBOX_CONFIG_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
+function parseSandboxEnvironmentConfig(
+  input: Record<string, unknown> | null | undefined,
+) {
+  const raw = stripRemovedSandboxConfigKeys(parseObject(input));
+  const provider = getSandboxProvider(raw);
+
+  if (provider === "fake") {
+    const parsed = fakeSandboxEnvironmentConfigSchema.safeParse(raw);
+    return parsed.success
+      ? ({ success: true as const, data: parsed.data satisfies FakeSandboxEnvironmentConfig })
+      : ({ success: false as const, error: parsed.error });
+  }
+
+  const parsed = pluginSandboxEnvironmentConfigSchema.safeParse(raw);
+  return parsed.success
+    ? ({ success: true as const, data: parsed.data satisfies PluginSandboxEnvironmentConfig })
+    : ({ success: false as const, error: parsed.error });
+}
+
+async function getSandboxProviderConfigSchema(
+  db: Db,
+  provider: string,
+): Promise<Record<string, unknown> | null> {
+  const resolved = await resolvePluginSandboxProviderDriverByKey({
+    db,
+    driverKey: provider,
+  });
+  const schema = resolved?.driver.configSchema;
+  return schema && typeof schema === "object" && !Array.isArray(schema)
+    ? schema as Record<string, unknown>
+    : null;
+}
+
+export async function resolveSandboxProviderSecretRefPaths(
+  db: Db,
+  provider: string,
+): Promise<Set<string>> {
+  return collectSecretRefPaths(await getSandboxProviderConfigSchema(db, provider));
+}
+
+function secretName(input: {
+  environmentName: string;
+  driver: EnvironmentDriver;
+  field: string;
+}) {
+  const slug = input.environmentName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "environment";
+  return `environment-${input.driver}-${slug}-${input.field}-${randomUUID().slice(0, 8)}`;
+}
+
+async function createEnvironmentSecret(input: {
+  db: Db;
+  companyId: string;
+  environmentName: string;
+  driver: EnvironmentDriver;
+  field: string;
+  provider: SecretProvider;
+  value: string;
+  actor?: { userId?: string | null; agentId?: string | null };
+}) {
+  const created = await secretService(input.db).create(
+    input.companyId,
+    {
+      name: secretName(input),
+      provider: input.provider,
+      value: input.value,
+      description: `Secret for ${input.environmentName} ${input.field}.`,
+    },
+    input.actor,
+  );
+  return {
+    type: "secret_ref" as const,
+    secretId: created.id,
+    version: "latest" as const,
+  };
+}
+
+/**
+ * Secret pickers submit `{ type: "secret_ref", secretId, version }` binding
+ * objects for `format: "secret-ref"` fields, while persisted configs store the
+ * bare secret id. Collapse binding objects to the secret id so every consumer
+ * downstream deals with one shape. Sandbox provider references always resolve
+ * the latest version, so pinned bindings are rejected rather than silently
+ * resolved to a different version than the caller asked for.
+ */
+function canonicalizeSecretRefValue(value: unknown, path: string): unknown {
+  const binding = parseSecretRefBindingObject(value);
+  if (!binding) return value;
+  if (binding.version !== "latest") {
+    throw unprocessable(
+      `Secret binding at ${path} pins version ${binding.version}; sandbox provider secret references always resolve the latest version.`,
+    );
+  }
+  return binding.secretId;
+}
+
+async function persistConfigSecretRefs(input: {
+  db: Db;
+  companyId: string;
+  environmentName: string;
+  driver: EnvironmentDriver;
+  secretProvider: SecretProvider;
+  config: Record<string, unknown>;
+  schema: Record<string, unknown> | null;
+  actor?: { userId?: string | null; agentId?: string | null };
+}): Promise<Record<string, unknown>> {
+  let nextConfig = { ...input.config };
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const rawValue = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof rawValue !== "string") continue;
+    const trimmed = rawValue.trim();
+    if (trimmed.length === 0) {
+      nextConfig = writeConfigValueAtPath(nextConfig, path, undefined);
+      continue;
+    }
+    if (isUuidSecretRef(trimmed)) {
+      nextConfig = writeConfigValueAtPath(nextConfig, path, trimmed);
+      continue;
+    }
+    const created = await createEnvironmentSecret({
+      db: input.db,
+      companyId: input.companyId,
+      environmentName: input.environmentName,
+      driver: input.driver,
+      field: path.replace(/[^a-z0-9]+/gi, "-").toLowerCase(),
+      provider: input.secretProvider,
+      value: trimmed,
+      actor: input.actor,
+    });
+    nextConfig = writeConfigValueAtPath(nextConfig, path, created.secretId);
+  }
+  return nextConfig;
+}
+
+async function resolveConfigSecretRefsForRuntime(input: {
+  db: Db;
+  companyId: string;
+  config: Record<string, unknown>;
+  schema: Record<string, unknown> | null;
+  context: {
+    consumerId: string;
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+  };
+}): Promise<Record<string, unknown>> {
+  const secrets = secretService(input.db);
+  let nextConfig = { ...input.config };
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    if (!input.context.consumerId) {
+      throw unprocessable("Runtime secret resolution requires an environment id");
+    }
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
+        consumerType: "environment",
+        consumerId: input.context.consumerId,
+        actorType: "system",
+        actorId: null,
+        issueId: input.context.issueId ?? null,
+        heartbeatRunId: input.context.heartbeatRunId ?? null,
+        configPath: path,
+      }),
+    );
+  }
+  return nextConfig;
+}
+
+async function resolveConfigSecretRefsForProbe(input: {
+  db: Db;
+  companyId: string;
+  config: Record<string, unknown>;
+  schema: Record<string, unknown> | null;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    heartbeatRunId?: string | null;
+  };
+}): Promise<Record<string, unknown>> {
+  const secrets = secretService(input.db);
+  let nextConfig = { ...input.config };
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    // Unsaved draft probes do not have an environment record yet, so they
+    // cannot rely on environment-bound secret resolution. Resolve directly for
+    // this ephemeral board-only probe and never persist the plaintext value.
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValueForEphemeralAccess(input.companyId, trimmed, "latest", {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: path,
+        actorType: input.accessContext?.actorType ?? "system",
+        actorId: input.accessContext?.actorId ?? null,
+        actorSource: input.accessContext?.actorSource,
+        heartbeatRunId: input.accessContext?.heartbeatRunId ?? null,
+      }),
+    );
+  }
+  return nextConfig;
+}
+
+export async function collectEnvironmentSecretRefs(input: {
+  db: Db;
+  environment: Pick<Environment, "id" | "driver" | "config">;
+}): Promise<Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }>> {
+  const parsed = parseEnvironmentDriverConfig(input.environment);
+  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
+    return [{
+      secretId: parsed.config.privateKeySecretRef.secretId,
+      configPath: "privateKeySecretRef",
+      versionSelector: parsed.config.privateKeySecretRef.version ?? "latest",
+    }];
+  }
+  if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
+    const schema = await getSandboxProviderConfigSchema(input.db, parsed.config.provider);
+    const refs: Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }> = [];
+    for (const path of collectSecretRefPaths(schema)) {
+      const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+      const binding = parseSecretRefBindingObject(current);
+      if (binding) {
+        refs.push({ secretId: binding.secretId, configPath: path, versionSelector: binding.version });
+        continue;
+      }
+      if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+        refs.push({ secretId: current.trim(), configPath: path, versionSelector: "latest" });
+      }
+    }
+    return refs;
+  }
+  return [];
+}
+
+export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): Record<string, unknown> {
+  const { provider: _provider, ...driverConfig } = config as Record<string, unknown>;
+  return driverConfig;
+}
+
+// The host owns this sandbox run-behavior flag, not the provider plugin. The
+// host reads it to select the run-log stream. The host passes the whole config
+// to the plugin, so a plugin that allowlists its own driver fields drops the
+// flag from its normalized config. Re-apply it from the parsed envelope after
+// the plugin normalizes, or a saved environment loses the operator opt-in and
+// the stream never starts.
+const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
+  "streamRunLogs",
+] as const;
+
+function applyHostOwnedSandboxStreamFlags(
+  normalizedConfig: Record<string, unknown>,
+  envelope: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...normalizedConfig };
+  for (const key of HOST_OWNED_SANDBOX_STREAM_FLAGS) {
+    if (envelope[key] !== undefined) {
+      merged[key] = envelope[key];
+    }
+  }
+  return merged;
+}
+
+export function normalizeEnvironmentConfig(input: {
+  driver: EnvironmentDriver;
+  config: Record<string, unknown> | null | undefined;
+}): Record<string, unknown> {
+  if (input.driver === "local") {
+    return { ...parseObject(input.config) };
+  }
+
+  if (input.driver === "ssh") {
+    const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data satisfies SshEnvironmentConfig;
+  }
+
+  if (input.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(input.config);
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data;
+  }
+
+  if (input.driver === "plugin") {
+    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data satisfies PluginEnvironmentConfig;
+  }
+
+  throw unprocessable(`Unsupported environment driver "${input.driver}".`);
+}
+
+export function normalizeEnvironmentConfigForProbe(input: {
+  db: Db;
+  companyId: string;
+  driver: EnvironmentDriver;
+  config: Record<string, unknown> | null | undefined;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    heartbeatRunId?: string | null;
+  };
+  pluginWorkerManager?: PluginWorkerManager;
+}): Promise<Record<string, unknown>> | Record<string, unknown> {
+  if (input.driver === "ssh") {
+    const parsed = sshEnvironmentConfigProbeSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data satisfies SshEnvironmentConfig;
+  }
+
+  if (input.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(input.config);
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    if (parsed.data.provider === "fake") {
+      return parsed.data;
+    }
+    if (!input.pluginWorkerManager) {
+      throw unprocessable("Sandbox provider config validation requires a running plugin worker manager.");
+    }
+    return validatePluginSandboxProviderConfig({
+      db: input.db,
+      workerManager: input.pluginWorkerManager,
+      provider: parsed.data.provider,
+      config: stripSandboxProviderEnvelope(parsed.data),
+    }).then(async (validated) => ({
+      provider: parsed.data.provider,
+      ...(await resolveConfigSecretRefsForProbe({
+        db: input.db,
+        companyId: input.companyId,
+        config: applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
+        accessContext: input.accessContext,
+        schema:
+          validated.driver.configSchema &&
+          typeof validated.driver.configSchema === "object" &&
+          !Array.isArray(validated.driver.configSchema)
+            ? validated.driver.configSchema as Record<string, unknown>
+            : null,
+      })),
+    }));
+  }
+
+  return normalizeEnvironmentConfig({
+    driver: input.driver,
+    config: input.config,
+  });
+}
+
+export async function normalizeEnvironmentConfigForPersistence(input: {
+  db: Db;
+  companyId: string;
+  environmentName: string;
+  driver: EnvironmentDriver;
+  secretProvider: SecretProvider;
+  config: Record<string, unknown> | null | undefined;
+  actor?: { userId?: string | null; agentId?: string | null };
+  pluginWorkerManager?: PluginWorkerManager;
+}): Promise<Record<string, unknown>> {
+  if (input.driver === "ssh") {
+    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    const secrets = secretService(input.db);
+    const { privateKey, ...stored } = parsed.data;
+    let nextPrivateKeySecretRef = stored.privateKeySecretRef;
+    if (privateKey) {
+      nextPrivateKeySecretRef = await createEnvironmentSecret({
+        db: input.db,
+        companyId: input.companyId,
+        environmentName: input.environmentName,
+        driver: input.driver,
+        field: "private-key",
+        provider: input.secretProvider,
+        value: privateKey,
+        actor: input.actor,
+      });
+      if (
+        stored.privateKeySecretRef &&
+        stored.privateKeySecretRef.secretId !== nextPrivateKeySecretRef.secretId
+      ) {
+        await secrets.remove(stored.privateKeySecretRef.secretId);
+      }
+    }
+    return {
+      ...stored,
+      privateKey: null,
+      privateKeySecretRef: nextPrivateKeySecretRef,
+    } satisfies SshEnvironmentConfig;
+  }
+
+  if (input.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(input.config);
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    if (parsed.data.provider === "fake") {
+      throw unprocessable(
+        "Built-in fake sandbox environments are reserved for internal probes and cannot be saved.",
+      );
+    }
+    if (!input.pluginWorkerManager) {
+      throw unprocessable("Sandbox provider config validation requires a running plugin worker manager.");
+    }
+    const validated = await validatePluginSandboxProviderConfig({
+      db: input.db,
+      workerManager: input.pluginWorkerManager,
+      provider: parsed.data.provider,
+      config: stripSandboxProviderEnvelope(parsed.data),
+    });
+    return await persistConfigSecretRefs({
+      db: input.db,
+      companyId: input.companyId,
+      environmentName: input.environmentName,
+      driver: input.driver,
+      secretProvider: input.secretProvider,
+      config: {
+        provider: parsed.data.provider,
+        ...applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
+      },
+      schema:
+        validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)
+          ? validated.driver.configSchema as Record<string, unknown>
+          : null,
+      actor: input.actor,
+    });
+  }
+
+  if (input.driver === "plugin") {
+    const parsed = pluginEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    if (!input.pluginWorkerManager) {
+      throw unprocessable("Plugin environment config validation requires a running plugin worker manager.");
+    }
+    return { ...(await validatePluginEnvironmentDriverConfig({
+      db: input.db,
+      workerManager: input.pluginWorkerManager,
+      config: parsed.data,
+    })) };
+  }
+
+  return normalizeEnvironmentConfig({
+    driver: input.driver,
+    config: input.config,
+  });
+}
+
+export async function resolveEnvironmentDriverConfigForRuntime(
+  db: Db,
+  companyId: string | null,
+  environment: Pick<Environment, "driver" | "config"> & Partial<Pick<Environment, "id">>,
+  context?: {
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+    // Force applying the active custom-image template even without a run/issue
+    // context. Operator-initiated `Test` probes have no issueId/heartbeatRunId
+    // but must still resolve the active custom image as prepared runtime
+    // configuration and tooling so the test reflects what real agent runs use.
+    applyCustomImageTemplate?: boolean;
+  },
+): Promise<ParsedEnvironmentConfig> {
+  const parsed = parseEnvironmentDriverConfig(environment);
+  const secrets = secretService(db);
+  const environmentId = environment.id;
+  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef && !environmentId) {
+    throw unprocessable("Runtime secret resolution requires an environment id");
+  }
+
+  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
+    if (!companyId) {
+      throw unprocessable("Runtime secret resolution requires a companyId context");
+    }
+    return {
+      driver: "ssh",
+      config: {
+        ...parsed.config,
+        privateKey: await secrets.resolveSecretValue(
+          companyId,
+          parsed.config.privateKeySecretRef.secretId,
+          parsed.config.privateKeySecretRef.version ?? "latest",
+          {
+            consumerType: "environment",
+            consumerId: environmentId!,
+            actorType: "system",
+            actorId: null,
+            issueId: context?.issueId ?? null,
+            heartbeatRunId: context?.heartbeatRunId ?? null,
+            configPath: "privateKeySecretRef",
+          },
+        ),
+      },
+    };
+  }
+
+  if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
+    const schema = await getSandboxProviderConfigSchema(db, parsed.config.provider);
+    let runtimeConfig = parsed.config;
+    if (companyId) {
+      runtimeConfig = await resolveConfigSecretRefsForRuntime({
+        db,
+        companyId,
+        config: parsed.config as Record<string, unknown>,
+        schema,
+        context: {
+          consumerId: environmentId!,
+          issueId: context?.issueId ?? null,
+          heartbeatRunId: context?.heartbeatRunId ?? null,
+        },
+      }) as SandboxEnvironmentConfig;
+    } else {
+      for (const path of collectSecretRefPaths(schema)) {
+        const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+        if (parseSecretRefBindingObject(current) || (typeof current === "string" && isUuidSecretRef(current.trim()))) {
+          throw unprocessable("Runtime secret resolution requires a companyId context");
+        }
+      }
+    }
+    return {
+      driver: "sandbox",
+      config: environmentId && (context?.issueId || context?.heartbeatRunId || context?.applyCustomImageTemplate)
+        ? await resolveActiveEnvironmentCustomImageTemplateForRuntime(db, {
+            environmentId,
+            baseConfig: parsed.config,
+            runtimeConfig,
+            // Match the capture-time fingerprint exclusions: secret-ref paths
+            // are excluded when the template's source fingerprint is computed,
+            // so they must be excluded when re-checking it here.
+            secretRefExcludePaths: collectSecretRefPaths(schema),
+          })
+        : runtimeConfig,
+    };
+  }
+
+  return parsed;
+}
+
+/**
+ * Resolve the connection secrets of a recorded sandbox config for a durable
+ * orphan-sandbox teardown. The retry reads the recorded config from the durable
+ * `pending_cleanup` lease row, not from the current environment. So this
+ * resolver must not require the environment binding: a delete removed the
+ * environment, or a provider change replaced the binding. It resolves each
+ * schema-declared secret ref by id at the latest version through
+ * `resolveSecretValueForSandboxCleanup`, which authorizes the read from the
+ * durable orphan record and skips the binding check. The resolved values are
+ * used once for the teardown RPC and never persisted.
+ */
+export async function resolveSandboxCleanupConfigSecrets(
+  db: Db,
+  companyId: string,
+  config: SandboxEnvironmentConfig,
+  context?: { issueId?: string | null; heartbeatRunId?: string | null },
+): Promise<SandboxEnvironmentConfig> {
+  if (config.provider === "fake") return config;
+  const schema = await getSandboxProviderConfigSchema(db, config.provider);
+  const secrets = secretService(db);
+  let nextConfig = { ...config } as Record<string, unknown>;
+  for (const path of collectSecretRefPaths(schema)) {
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValueForSandboxCleanup(companyId, trimmed, "latest", {
+        configPath: path,
+        issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null,
+      }),
+    );
+  }
+  return nextConfig as SandboxEnvironmentConfig;
+}
+
+export function readSshEnvironmentPrivateKeySecretId(
+  environment: Pick<Environment, "driver" | "config">,
+): string | null {
+  if (environment.driver !== "ssh") return null;
+  const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(environment.config));
+  if (!parsed.success) return null;
+  return parsed.data.privateKeySecretRef?.secretId ?? null;
+}
+
+export function parseEnvironmentDriverConfig(
+  environment: Pick<Environment, "driver" | "config">,
+): ParsedEnvironmentConfig {
+  if (environment.driver === "local") {
+    return {
+      driver: "local",
+      config: { ...parseObject(environment.config) },
+    };
+  }
+
+  if (environment.driver === "ssh") {
+    const parsed = sshEnvironmentConfigSchema.parse(parseObject(environment.config));
+    return {
+      driver: "ssh",
+      config: parsed,
+    };
+  }
+
+  if (environment.driver === "sandbox") {
+    const parsed = parseSandboxEnvironmentConfig(environment.config);
+    if (!parsed.success) {
+      throw parsed.error;
+    }
+    return {
+      driver: "sandbox",
+      config: parsed.data,
+    };
+  }
+
+  if (environment.driver === "plugin") {
+    const parsed = pluginEnvironmentConfigSchema.parse(parseObject(environment.config));
+    return {
+      driver: "plugin",
+      config: parsed,
+    };
+  }
+
+  throw new Error(`Unsupported environment driver "${environment.driver}".`);
+}

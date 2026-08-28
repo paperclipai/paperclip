@@ -16,6 +16,10 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { assertForegroundRunAllowed } from "../services/service-manager.js";
+import { removeRuntimeInfoForPid, writeRuntimeInfo } from "../runtime-info.js";
+import { printUpdateNotice } from "../update-notice.js";
+import { ensureWorktreeSeeded } from "./worktree.js";
 
 interface RunOptions {
   config?: string;
@@ -23,6 +27,7 @@ interface RunOptions {
   repair?: boolean;
   yes?: boolean;
   bind?: "loopback" | "lan" | "tailnet";
+  force?: boolean;
 }
 
 interface StartedServer {
@@ -35,6 +40,7 @@ interface StartedServer {
 export async function runCommand(opts: RunOptions): Promise<void> {
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  await assertForegroundRunAllowed(instanceId, opts.force);
 
   const homeDir = resolvePaperclipHomeDir();
   fs.mkdirSync(homeDir, { recursive: true });
@@ -45,6 +51,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;
   loadPaperclipEnvFile(configPath);
+  await printUpdateNotice(configPath);
 
   p.intro(pc.bgCyan(pc.black(" paperclipai run ")));
   p.log.message(pc.dim(`Home: ${paths.homeDir}`));
@@ -60,6 +67,11 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
     p.log.step("No config found. Starting onboarding...");
     await onboard({ config: configPath, invokedByRun: true, bind: opts.bind });
+  }
+
+  const seedResult = await ensureWorktreeSeeded({ config: configPath });
+  if (seedResult.seeded) {
+    p.log.success("Completed deferred worktree database seed.");
   }
 
   p.log.step("Running doctor checks...");
@@ -82,6 +94,16 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
+  writeRuntimeInfo({
+    schemaVersion: 1,
+    instanceId,
+    pid: process.pid,
+    host: startedServer.host,
+    port: startedServer.listenPort,
+    dashboardUrl: startedServer.apiUrl.replace(/\/api\/?$/, ""),
+    startedAt: new Date().toISOString(),
+  });
+  process.once("exit", () => removeRuntimeInfoForPid(process.pid, instanceId));
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");

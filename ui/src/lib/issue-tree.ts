@@ -34,3 +34,39 @@ export function countDescendants(id: string, childMap: Map<string, Issue[]>): nu
   const children = childMap.get(id) ?? [];
   return children.reduce((sum, c) => sum + 1 + countDescendants(c.id, childMap), 0);
 }
+
+/**
+ * Filters a flat issue list to only descendants of `rootId`.
+ *
+ * This is intentionally useful even when the list contains unrelated issues:
+ * stale servers may ignore newer descendant-scoped query params, and the UI
+ * must still avoid rendering global issue data in a sub-issue panel.
+ */
+export function filterIssueDescendants(rootId: string, items: Issue[]): Issue[] {
+  const childrenByParentId = new Map<string, Issue[]>();
+  for (const item of items) {
+    if (!item.parentId) continue;
+    const siblings = childrenByParentId.get(item.parentId) ?? [];
+    siblings.push(item);
+    childrenByParentId.set(item.parentId, siblings);
+  }
+
+  const descendants: Issue[] = [];
+  const seen = new Set<string>([rootId]);
+  let frontier = [rootId];
+
+  while (frontier.length > 0) {
+    const nextFrontier: string[] = [];
+    for (const parentId of frontier) {
+      for (const child of childrenByParentId.get(parentId) ?? []) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        descendants.push(child);
+        nextFrontier.push(child.id);
+      }
+    }
+    frontier = nextFrontier;
+  }
+
+  return descendants;
+}

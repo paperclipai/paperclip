@@ -62,12 +62,14 @@ export interface Config {
   authDisableSignUp: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
+  databaseMigrationUrl: string | undefined;
   embeddedPostgresDataDir: string;
   embeddedPostgresPort: number;
   databaseBackupEnabled: boolean;
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  workspaceReaperCooldownDays: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -119,11 +121,6 @@ export function loadConfig(): Config {
   const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
-  const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
-  const secretsStrictMode =
-    strictModeFromEnv !== undefined
-      ? strictModeFromEnv === "true"
-      : (fileSecrets?.strictMode ?? false);
 
   const providerFromEnvRaw = process.env.PAPERCLIP_SECRETS_PROVIDER;
   const providerFromEnv =
@@ -167,6 +164,11 @@ export function loadConfig(): Config {
       ? (deploymentModeFromEnvRaw as DeploymentMode)
       : null;
   const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
+  const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+  const secretsStrictMode =
+    strictModeFromEnv !== undefined
+      ? strictModeFromEnv === "true"
+      : (fileSecrets?.strictMode ?? deploymentMode === "authenticated");
   const deploymentExposureFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
   const deploymentExposureFromEnv =
     deploymentExposureFromEnvRaw &&
@@ -264,6 +266,21 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  // The terminal-workspace reaper waits this many days after an issue tree
+  // becomes terminal before it archives the workspace. A person can reopen the
+  // work inside this window. A value of 0 disables the cooldown and restores
+  // immediate reaping. A negative or non-numeric value falls back to the
+  // default. The day granularity and the default of 7 obey the
+  // PAPERCLIP_DB_BACKUP_RETENTION_DAYS precedent above.
+  const workspaceReaperCooldownDaysEnv =
+    process.env.PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS?.trim();
+  const workspaceReaperCooldownDaysRaw = Number(workspaceReaperCooldownDaysEnv);
+  const workspaceReaperCooldownDays =
+    workspaceReaperCooldownDaysEnv
+      && Number.isFinite(workspaceReaperCooldownDaysRaw)
+      && workspaceReaperCooldownDaysRaw >= 0
+      ? workspaceReaperCooldownDaysRaw
+      : 7;
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -297,6 +314,7 @@ export function loadConfig(): Config {
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+    databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),
@@ -305,6 +323,7 @@ export function loadConfig(): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    workspaceReaperCooldownDays,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"

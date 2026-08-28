@@ -5,7 +5,6 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
-  MEMBERSHIP_STATUSES,
   PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
@@ -75,7 +74,7 @@ export const createCliAuthChallengeSchema = z.object({
   command: z.string().min(1).max(240),
   clientName: z.string().max(120).optional().nullable(),
   requestedAccess: boardCliAuthAccessLevelSchema.default("board"),
-  requestedCompanyId: z.string().uuid().optional().nullable(),
+  requestedCompanyId: z.string().guid().optional().nullable(),
 });
 
 export type CreateCliAuthChallenge = z.infer<typeof createCliAuthChallengeSchema>;
@@ -85,6 +84,14 @@ export const resolveCliAuthChallengeSchema = z.object({
 });
 
 export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSchema>;
+
+export const createBoardApiKeySchema = z.object({
+  name: z.string().trim().min(1).max(120).default("paperclipai cli"),
+  expiresAt: z.coerce.date().optional().nullable(),
+  requestedCompanyId: z.string().guid().optional().nullable(),
+});
+
+export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
 
 export const updateMemberPermissionsSchema = z.object({
   grants: z.array(
@@ -97,9 +104,11 @@ export const updateMemberPermissionsSchema = z.object({
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
 
+const editableMembershipStatuses = ["pending", "active", "suspended"] as const;
+
 export const updateCompanyMemberSchema = z.object({
   membershipRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
-  status: z.enum(MEMBERSHIP_STATUSES).optional(),
+  status: z.enum(editableMembershipStatuses).optional(),
 }).refine((value) => value.membershipRole !== undefined || value.status !== undefined, {
   message: "membershipRole or status is required",
 });
@@ -108,7 +117,7 @@ export type UpdateCompanyMember = z.infer<typeof updateCompanyMemberSchema>;
 
 export const updateCompanyMemberWithPermissionsSchema = z.object({
   membershipRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
-  status: z.enum(MEMBERSHIP_STATUSES).optional(),
+  status: z.enum(editableMembershipStatuses).optional(),
   grants: updateMemberPermissionsSchema.shape.grants.default([]),
 }).refine((value) => value.membershipRole !== undefined || value.status !== undefined, {
   message: "membershipRole or status is required",
@@ -116,8 +125,28 @@ export const updateCompanyMemberWithPermissionsSchema = z.object({
 
 export type UpdateCompanyMemberWithPermissions = z.infer<typeof updateCompanyMemberWithPermissionsSchema>;
 
+export const archiveCompanyMemberSchema = z.object({
+  reassignment: z
+    .object({
+      assigneeAgentId: z.string().guid().optional().nullable(),
+      assigneeUserId: z.string().guid().optional().nullable(),
+    })
+    .optional()
+    .nullable(),
+}).superRefine((value, ctx) => {
+  if (value.reassignment?.assigneeAgentId && value.reassignment.assigneeUserId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Choose either an agent or user reassignment target",
+      path: ["reassignment"],
+    });
+  }
+});
+
+export type ArchiveCompanyMember = z.infer<typeof archiveCompanyMemberSchema>;
+
 export const updateUserCompanyAccessSchema = z.object({
-  companyIds: z.array(z.string().uuid()).default([]),
+  companyIds: z.array(z.string().guid()).default([]),
 });
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
@@ -150,8 +179,14 @@ const profileImageSchema = z
 
 export const currentUserProfileSchema = z.object({
   id: z.string().min(1),
-  email: z.string().email().nullable(),
-  name: z.string().min(1).max(120).nullable(),
+  email: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().email().nullable(),
+  ),
+  name: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().min(1).max(120).nullable(),
+  ),
   image: profileImageSchema.nullable(),
 });
 
@@ -163,6 +198,12 @@ export const authSessionSchema = z.object({
     userId: z.string().min(1),
   }),
   user: currentUserProfileSchema,
+  // The Sentry DSN for the current instance, or `null` when the operator has
+  // not set `SENTRY_DSN`. Required, not optional: a missing value must fail
+  // the response schema instead of silently disabling browser error
+  // monitoring. The browser reads this value to open its own Sentry gate —
+  // see `ui/src/lib/sentry.ts`.
+  sentryDsn: z.string().min(1).nullable(),
 });
 
 export type AuthSession = z.infer<typeof authSessionSchema>;

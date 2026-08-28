@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { printAcpxStreamEvent } from "@paperclipai/adapter-utils/acpx-engine/cli";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -93,14 +94,14 @@ function printTextMessage(prefix: string, colorize: (text: string) => string, me
 }
 
 function printUsage(parsed: Record<string, unknown>) {
-  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata);
+  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata) ?? asRecord(parsed.stats);
   const usageMetadata = asRecord(usage?.usageMetadata);
   const source = usageMetadata ?? usage ?? {};
   const input = asNumber(source.input_tokens, asNumber(source.inputTokens, asNumber(source.promptTokenCount)));
   const output = asNumber(source.output_tokens, asNumber(source.outputTokens, asNumber(source.candidatesTokenCount)));
   const cached = asNumber(
     source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount)),
+    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, asNumber(source.cached))),
   );
   const cost = asNumber(parsed.total_cost_usd, asNumber(parsed.cost_usd, asNumber(parsed.cost)));
   console.log(pc.blue(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
@@ -119,6 +120,11 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
   }
 
   const type = asString(parsed.type);
+
+  if (type.startsWith("acpx.")) {
+    printAcpxStreamEvent(line, _debug);
+    return;
+  }
 
   if (type === "system") {
     const subtype = asString(parsed.subtype);
@@ -151,6 +157,21 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
 
   if (type === "user") {
     printTextMessage("user", pc.gray, parsed.message);
+    return;
+  }
+
+  // Gemini CLI v0.38+ stream-json schema:
+  // {"type":"message","role":"assistant"|"user","content":"...","delta":?true}
+  if (type === "message") {
+    const role = asString(parsed.role).trim().toLowerCase();
+    if (role === "assistant") {
+      printTextMessage("assistant", pc.green, parsed.content);
+      return;
+    }
+    if (role === "user") {
+      printTextMessage("user", pc.gray, parsed.content);
+      return;
+    }
     return;
   }
 
@@ -190,10 +211,16 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
 
   if (type === "result") {
     printUsage(parsed);
-    const subtype = asString(parsed.subtype, "result");
-    const isError = parsed.is_error === true;
+    const status = asString(parsed.status).toLowerCase();
+    const isError =
+      parsed.is_error === true || status === "error" || status === "failed";
+    const subtype = asString(parsed.subtype, status || "result");
     if (subtype || isError) {
       console.log((isError ? pc.red : pc.blue)(`result: subtype=${subtype} is_error=${isError ? "true" : "false"}`));
+    }
+    if (isError) {
+      const text = errorText(parsed.error ?? parsed.message ?? parsed.result);
+      if (text) console.log(pc.red(`error: ${text}`));
     }
     return;
   }

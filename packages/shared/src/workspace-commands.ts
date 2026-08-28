@@ -1,4 +1,9 @@
 import type { WorkspaceCommandDefinition, WorkspaceRuntimeService } from "./types/workspace-runtime.js";
+import { forceLoopbackBindInCommand } from "./runtime-exposure/loopback-bind.js";
+
+type WorkspaceRuntimeServiceMatchCandidate =
+  & Pick<WorkspaceRuntimeService, "configIndex" | "serviceName" | "command" | "cwd">
+  & Pick<Partial<WorkspaceRuntimeService>, "exposure">;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -164,8 +169,23 @@ export function findWorkspaceCommandDefinition(
 
 export function scoreWorkspaceRuntimeServiceMatch(
   command: Pick<WorkspaceCommandDefinition, "serviceIndex" | "name" | "command" | "cwd">,
-  runtimeService: Pick<WorkspaceRuntimeService, "configIndex" | "serviceName" | "command" | "cwd">,
+  runtimeService: WorkspaceRuntimeServiceMatchCandidate,
 ) {
+  const exposedCommandMatches = Boolean(
+    command.command
+    && runtimeService.command
+    && runtimeService.exposure?.provider === "tailscale_https"
+    && runtimeService.command === forceLoopbackBindInCommand(command.command),
+  );
+  if (
+    command.command
+    && runtimeService.command
+    && runtimeService.command !== command.command
+    && !exposedCommandMatches
+  ) {
+    return -1;
+  }
+
   if (command.serviceIndex !== null && runtimeService.configIndex !== null && runtimeService.configIndex !== undefined) {
     return runtimeService.configIndex === command.serviceIndex ? 100 : -1;
   }
@@ -184,7 +204,7 @@ export function scoreWorkspaceRuntimeServiceMatch(
 }
 
 export function matchWorkspaceRuntimeServiceToCommand<
-  T extends Pick<WorkspaceRuntimeService, "configIndex" | "serviceName" | "command" | "cwd">,
+  T extends WorkspaceRuntimeServiceMatchCandidate,
 >(
   command: Pick<WorkspaceCommandDefinition, "serviceIndex" | "name" | "command" | "cwd">,
   runtimeServices: T[] | null | undefined,

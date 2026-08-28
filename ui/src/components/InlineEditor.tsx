@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { FoldCurtain } from "./FoldCurtain";
 
 interface InlineEditorProps {
   value: string;
@@ -15,6 +17,20 @@ interface InlineEditorProps {
   onDropFile?: (file: File) => Promise<void>;
   mentions?: MentionOption[];
   nullable?: boolean;
+  /** When true, long display-mode markdown is clipped with a fade curtain that expands on click. */
+  foldable?: boolean;
+  /**
+   * Optional host-resolved external object metadata. Forwarded to the read-mode
+   * `MarkdownBody` so resolved URLs render with the inline status icon prefix.
+   */
+  externalReferences?: MarkdownExternalReferenceMap;
+  /**
+   * Mount the multiline editor already in edit mode, focused — for hosts whose
+   * own affordance opens the editor (the description bubble's pencil, PAP-375).
+   */
+  defaultEditing?: boolean;
+  /** Notified when the multiline editor swaps between display and edit mode. */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -50,8 +66,13 @@ export function InlineEditor({
   imageUploadHandler,
   onDropFile,
   mentions,
+  foldable = false,
+  externalReferences,
+  defaultEditing = false,
+  onEditingChange,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
+  const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
   const lastPropValueRef = useRef(value);
@@ -59,6 +80,9 @@ export function InlineEditor({
   const markdownRef = useRef<MarkdownEditorRef>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurCommitFrameRef = useRef<(() => void) | null>(null);
+  const pendingFocusFrameRef = useRef<number | null>(null);
+  const justEnteredEditRef = useRef(multiline && defaultEditing);
+  const hasBeenFocusedRef = useRef(false);
   const {
     state: autosaveState,
     markDirty,
@@ -86,6 +110,10 @@ export function InlineEditor({
         blurCommitFrameRef.current();
         blurCommitFrameRef.current = null;
       }
+      if (pendingFocusFrameRef.current !== null) {
+        cancelAnimationFrame(pendingFocusFrameRef.current);
+        pendingFocusFrameRef.current = null;
+      }
     };
   }, []);
 
@@ -106,12 +134,40 @@ export function InlineEditor({
   }, [editing, autoSize]);
 
   useEffect(() => {
-    if (!editing || !multiline) return;
-    const frame = requestAnimationFrame(() => {
+    if (!multilineEditing || !multiline) return;
+    if (!justEnteredEditRef.current) return;
+    justEnteredEditRef.current = false;
+    if (pendingFocusFrameRef.current !== null) {
+      cancelAnimationFrame(pendingFocusFrameRef.current);
+    }
+    pendingFocusFrameRef.current = requestAnimationFrame(() => {
+      pendingFocusFrameRef.current = null;
       markdownRef.current?.focus();
     });
-    return () => cancelAnimationFrame(frame);
-  }, [editing, multiline]);
+    return () => {
+      if (pendingFocusFrameRef.current !== null) {
+        cancelAnimationFrame(pendingFocusFrameRef.current);
+        pendingFocusFrameRef.current = null;
+      }
+    };
+  }, [multilineEditing, multiline]);
+
+  // Once the editor has been focused at least once, it's blurred, and any
+  // autosave has settled, swap back to the MarkdownBody preview so inline
+  // issue refs render with status + quicklook.
+  useEffect(() => {
+    if (multilineFocused) {
+      hasBeenFocusedRef.current = true;
+      return;
+    }
+    if (!multiline || !multilineEditing) return;
+    if (!hasBeenFocusedRef.current) return;
+    if (autosaveState !== "idle") return;
+    hasBeenFocusedRef.current = false;
+    setMultilineEditing(false);
+    onEditingChange?.(false);
+  }, [multiline, multilineEditing, multilineFocused, autosaveState, onEditingChange]);
+
 
   const commit = useCallback(async (nextValue = draft) => {
     const valueToSave = nextValue.trim();
@@ -176,6 +232,9 @@ export function InlineEditor({
       setDraft(value);
       if (multiline) {
         setMultilineFocused(false);
+        setMultilineEditing(false);
+        onEditingChange?.(false);
+        hasBeenFocusedRef.current = false;
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur();
         }
@@ -212,6 +271,60 @@ export function InlineEditor({
   }, [autosaveState, commit, draft, markDirty, multiline, multilineFocused, nullable, reset, runSave, value]);
 
   if (multiline) {
+    const previewValue = autosaveState === "saved" || autosaveState === "idle" ? draft : value;
+    const hasValue = Boolean(previewValue.trim());
+    const showEditor = multilineEditing || multilineFocused || !hasValue;
+
+    if (!showEditor) {
+      const enterEditMode = () => {
+        if (multilineEditing) return;
+        justEnteredEditRef.current = true;
+        setMultilineEditing(true);
+        onEditingChange?.(true);
+      };
+      return (
+        <div
+          className={cn(markdownPad, "rounded transition-colors hover:bg-accent/20")}
+          onClick={(event) => {
+            if (event.defaultPrevented) return;
+            const target = event.target as HTMLElement | null;
+            if (target && target.closest("a,button,[data-mention-kind],[data-radix-popper-content-wrapper]")) {
+              return;
+            }
+            enterEditMode();
+          }}
+          onDragEnter={() => enterEditMode()}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            enterEditMode();
+          }}
+          role="textbox"
+          aria-multiline="true"
+          aria-label={placeholder}
+          tabIndex={0}
+        >
+          {foldable ? (
+            <FoldCurtain>
+              <MarkdownBody
+                className={cn("paperclip-edit-in-place-content", className)}
+                externalReferences={externalReferences}
+              >
+                {previewValue}
+              </MarkdownBody>
+            </FoldCurtain>
+          ) : (
+            <MarkdownBody
+              className={cn("paperclip-edit-in-place-content", className)}
+              externalReferences={externalReferences}
+            >
+              {previewValue}
+            </MarkdownBody>
+          )}
+        </div>
+      );
+    }
+
     return (
       <div
         className={cn(
@@ -219,12 +332,20 @@ export function InlineEditor({
           "rounded transition-colors",
           multilineFocused ? "bg-transparent" : "hover:bg-accent/20",
         )}
-        onFocusCapture={() => {
+        onFocusCapture={(event) => {
+          // Ignore focus events where the active element isn't actually inside
+          // the wrapper (React 19 can emit a synthetic focus after a blur).
+          const active = document.activeElement;
+          if (!(active instanceof Node) || !event.currentTarget.contains(active)) return;
           cancelPendingBlurCommit();
           setMultilineFocused(true);
         }}
         onBlurCapture={(event) => {
           if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          if (pendingFocusFrameRef.current !== null) {
+            cancelAnimationFrame(pendingFocusFrameRef.current);
+            pendingFocusFrameRef.current = null;
+          }
           scheduleBlurCommit(event.currentTarget);
         }}
         onKeyDown={handleKeyDown}
@@ -247,7 +368,7 @@ export function InlineEditor({
         <div className="flex min-h-4 items-center justify-end pr-1">
           <span
             className={cn(
-              "text-[11px] transition-opacity duration-150",
+              "text-(length:--text-micro) transition-opacity duration-150",
               autosaveState === "error" ? "text-destructive" : "text-muted-foreground",
               autosaveState === "idle" ? "opacity-0" : "opacity-100",
             )}

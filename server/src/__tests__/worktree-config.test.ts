@@ -1,7 +1,8 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyRuntimePortSelectionToConfig,
   maybePersistWorktreeRuntimePorts,
@@ -10,6 +11,19 @@ import {
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
+
+// The ambient shell can carry real PAPERCLIP_* settings (agent shells export
+// PAPERCLIP_CONFIG pointing at the live default instance). Repair helpers
+// resolve paths from these, so a test that forgets to override one would
+// otherwise rewrite the machine's real config/env files.
+beforeEach(() => {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("PAPERCLIP_")) {
+      delete process.env[key];
+    }
+  }
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
+});
 
 afterEach(() => {
   process.chdir(ORIGINAL_CWD);
@@ -24,7 +38,7 @@ afterEach(() => {
   }
 });
 
-function buildLegacyConfig(sharedRoot: string) {
+function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1:3100") {
   return {
     $meta: {
       version: 1,
@@ -56,7 +70,7 @@ function buildLegacyConfig(sharedRoot: string) {
     },
     auth: {
       baseUrlMode: "explicit" as const,
-      publicBaseUrl: "http://127.0.0.1:3100",
+      publicBaseUrl,
       disableSignUp: false,
     },
     storage: {
@@ -77,6 +91,25 @@ function buildLegacyConfig(sharedRoot: string) {
       localEncrypted: {
         keyFilePath: path.join(sharedRoot, "secrets", "master.key"),
       },
+    },
+  };
+}
+
+function buildIsolatedConfig(instanceRoot: string, serverPort: number, databasePort: number) {
+  const config = buildLegacyConfig(instanceRoot, `http://127.0.0.1:${serverPort}`);
+  return {
+    ...config,
+    database: {
+      ...config.database,
+      embeddedPostgresPort: databasePort,
+      backup: {
+        ...config.database.backup,
+        enabled: false,
+      },
+    },
+    server: {
+      ...config.server,
+      port: serverPort,
     },
   };
 }
@@ -109,6 +142,7 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PORT;
     delete process.env.PAPERCLIP_HOME;
     delete process.env.PAPERCLIP_INSTANCE_ID;
     delete process.env.PAPERCLIP_CONFIG;
@@ -126,6 +160,7 @@ describe("worktree config repair", () => {
     const instanceRoot = path.join(isolatedHome, "instances", "pap-884-ai-commits-component");
 
     expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(instanceRoot, "db"));
+    expect(repairedConfig.database.backup.enabled).toBe(false);
     expect(repairedConfig.database.backup.dir).toBe(path.join(instanceRoot, "data", "backups"));
     expect(repairedConfig.logging.logDir).toBe(path.join(instanceRoot, "logs"));
     expect(repairedConfig.storage.localDisk.baseDir).toBe(path.join(instanceRoot, "data", "storage"));
@@ -134,9 +169,200 @@ describe("worktree config repair", () => {
     expect(repairedEnv).toContain('PAPERCLIP_INSTANCE_ID="pap-884-ai-commits-component"');
     expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(await fs.realpath(configPath))}`);
     expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
-    expect(repairedEnv).toContain('PAPERCLIP_AGENT_JWT_SECRET="shared-secret"');
+    expect(repairedEnv).toContain('PAPERCLIP_DB_BACKUP_ENABLED="false"');
+    expect(repairedEnv).toContain("PAPERCLIP_AGENT_JWT_SECRET=shared-secret");
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
+    expect(process.env.PORT).toBe("3101");
     expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
+    expect(process.env.PAPERCLIP_DB_BACKUP_ENABLED).toBe("false");
+  });
+
+  it("disables backups in an otherwise isolated existing worktree config", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-backup-migration-"));
+    const worktreeRoot = path.join(tempRoot, "disable-worktree-backups");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const instanceRoot = path.join(isolatedHome, "instances", "disable-worktree-backups");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    const legacyIsolatedConfig = buildIsolatedConfig(instanceRoot, 3110, 54339);
+    legacyIsolatedConfig.database.backup.enabled = true;
+    await fs.writeFile(configPath, JSON.stringify(legacyIsolatedConfig, null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "# Keep this operator note during repair",
+        `PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`,
+        'PAPERCLIP_INSTANCE_ID="disable-worktree-backups"',
+        `PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`,
+        'PAPERCLIP_DB_BACKUP_ENABLED="true" # managed worktree policy',
+        'PAPERCLIP_IN_WORKTREE="true"',
+        'PAPERCLIP_WORKTREE_NAME="disable-worktree-backups"',
+        "# Keep this trailing note too",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_HOME = isolatedHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "disable-worktree-backups";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.PAPERCLIP_DB_BACKUP_ENABLED = "true";
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "disable-worktree-backups";
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+    const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const repairedEnv = await fs.readFile(envPath, "utf8");
+
+    expect(result).toEqual({ repairedConfig: true, repairedEnv: true });
+    expect(repairedConfig.database.backup.enabled).toBe(false);
+    expect(repairedEnv).toContain(
+      'PAPERCLIP_DB_BACKUP_ENABLED="false" # managed worktree policy',
+    );
+    expect(repairedEnv).toContain("# Keep this operator note during repair");
+    expect(repairedEnv).toContain("# Keep this trailing note too");
+    expect(process.env.PAPERCLIP_DB_BACKUP_ENABLED).toBe("false");
+  });
+
+  it("preserves an externally supplied PORT while repairing worktree config", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repair-external-port-"));
+    const worktreeRoot = path.join(tempRoot, "PAP-10341-runtime-managed-port");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+    const sharedRoot = path.join(tempRoot, ".paperclip", "instances", "default");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(buildLegacyConfig(sharedRoot), null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "PAPERCLIP_IN_WORKTREE=true",
+        "PAPERCLIP_WORKTREE_NAME=PAP-10341-runtime-managed-port",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-10341-runtime-managed-port";
+    process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    process.env.PORT = "32987";
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONTEXT;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+    const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+
+    expect(result.repairedConfig).toBe(true);
+    expect(repairedConfig.server.port).toBe(3101);
+    expect(process.env.PORT).toBe("32987");
+    expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
+  });
+
+  it("never rewrites a main-instance env when ambient worktree flags leak into the process", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-leak-"));
+    const homeDir = path.join(tempRoot, ".paperclip");
+    const instanceRoot = path.join(homeDir, "instances", "default");
+    const configPath = path.join(instanceRoot, "config.json");
+    const envPath = path.join(instanceRoot, ".env");
+
+    await fs.mkdir(instanceRoot, { recursive: true });
+    const originalConfig = JSON.stringify(buildLegacyConfig(instanceRoot), null, 2) + "\n";
+    await fs.writeFile(configPath, originalConfig, "utf8");
+    const cleanEnv = [
+      "# Paperclip environment variables",
+      "# Generated by `paperclip onboard`",
+      `PAPERCLIP_HOME=${JSON.stringify(homeDir)}`,
+      'PAPERCLIP_INSTANCE_ID="default"',
+      `PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`,
+      "",
+    ].join("\n");
+    await fs.writeFile(envPath, cleanEnv, "utf8");
+
+    process.chdir(tempRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.PAPERCLIP_HOME = homeDir;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PAPERCLIP_CONTEXT;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+
+    expect(result).toEqual({ repairedConfig: false, repairedEnv: false });
+    expect(await fs.readFile(envPath, "utf8")).toBe(cleanEnv);
+    expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
+    expect(process.env.PAPERCLIP_HOME).toBe(homeDir);
+    expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("default");
+  });
+
+  it("does not persist runtime ports into a main-instance config when ambient worktree flags leak in", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-leak-ports-"));
+    const homeDir = path.join(tempRoot, ".paperclip");
+    const instanceRoot = path.join(homeDir, "instances", "default");
+    const configPath = path.join(instanceRoot, "config.json");
+
+    await fs.mkdir(instanceRoot, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(buildLegacyConfig(instanceRoot), null, 2) + "\n", "utf8");
+
+    process.chdir(tempRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.PAPERCLIP_HOME = homeDir;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
+
+    maybePersistWorktreeRuntimePorts({ serverPort: 3999, databasePort: 54399 });
+
+    const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(writtenConfig.server.port).toBe(3100);
+    expect(writtenConfig.database.embeddedPostgresPort).toBe(54329);
+  });
+
+  it("does not adopt a .paperclip config whose own env does not declare a worktree", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-unattested-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const paperclipDir = path.join(repoRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    const originalConfig =
+      JSON.stringify(buildLegacyConfig(path.join(tempRoot, "shared")), null, 2) + "\n";
+    await fs.writeFile(configPath, originalConfig, "utf8");
+    const nonWorktreeEnv = [
+      "# Paperclip environment variables",
+      `PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`,
+      "",
+    ].join("\n");
+    await fs.writeFile(envPath, nonWorktreeEnv, "utf8");
+
+    process.chdir(repoRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
+    process.env.PAPERCLIP_WORKTREES_DIR = path.join(tempRoot, ".paperclip-worktrees");
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+
+    expect(result).toEqual({ repairedConfig: false, repairedEnv: false });
+    expect(await fs.readFile(envPath, "utf8")).toBe(nonWorktreeEnv);
+    expect(await fs.readFile(configPath, "utf8")).toBe(originalConfig);
   });
 
   it("avoids sibling worktree ports when repairing legacy configs", async () => {
@@ -197,6 +423,10 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-880-thumbs-capture-for-evals-feature";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
@@ -204,6 +434,152 @@ describe("worktree config repair", () => {
     expect(result.repairedConfig).toBe(true);
     expect(repairedConfig.server.port).toBe(3102);
     expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
+  });
+
+  it("serializes and persists cross-repo worktree port reservations", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-port-registry-"));
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const firstWorktreeRoot = path.join(tempRoot, "repo-one", "PAP-14013-import-bulk-skills");
+    const secondWorktreeRoot = path.join(tempRoot, "repo-two", "PAP-14069-port-conflicts");
+    const firstConfigPath = path.join(firstWorktreeRoot, ".paperclip", "config.json");
+    const secondConfigPath = path.join(secondWorktreeRoot, ".paperclip", "config.json");
+
+    const writeWorktree = async (
+      worktreeRoot: string,
+      name: string,
+      databaseMode: "embedded-postgres" | "postgres" = "embedded-postgres",
+    ) => {
+      const paperclipDir = path.join(worktreeRoot, ".paperclip");
+      const instanceRoot = path.join(isolatedHome, "instances", name.toLowerCase());
+      const config = buildIsolatedConfig(instanceRoot, 45439, 55439);
+      await fs.mkdir(paperclipDir, { recursive: true });
+      await fs.writeFile(
+        path.join(paperclipDir, "config.json"),
+        `${JSON.stringify({
+          ...config,
+          database: {
+            ...config.database,
+            mode: databaseMode,
+            ...(databaseMode === "postgres"
+              ? { connectionString: "postgres://paperclip:paperclip@127.0.0.1:55439/paperclip" }
+              : {}),
+          },
+        }, null, 2)}\n`,
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(paperclipDir, ".env"),
+        [
+          "# Paperclip environment variables",
+          "PAPERCLIP_IN_WORKTREE=true",
+          `PAPERCLIP_WORKTREE_NAME=${name}`,
+          `PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`,
+          `PAPERCLIP_INSTANCE_ID=${name.toLowerCase()}`,
+          `PAPERCLIP_CONFIG=${JSON.stringify(path.join(paperclipDir, "config.json"))}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+    };
+
+    const activateWorktree = (worktreeRoot: string, name: string) => {
+      process.chdir(worktreeRoot);
+      process.env.PAPERCLIP_IN_WORKTREE = "true";
+      process.env.PAPERCLIP_WORKTREE_NAME = name;
+      process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+      process.env.PAPERCLIP_HOME = isolatedHome;
+      process.env.PAPERCLIP_INSTANCE_ID = name.toLowerCase();
+      process.env.PAPERCLIP_CONFIG = path.join(worktreeRoot, ".paperclip", "config.json");
+      delete process.env.PORT;
+      delete process.env.DATABASE_URL;
+    };
+
+    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills", "postgres");
+    await writeWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
+    const staleLockPath = path.join(isolatedHome, ".worktree-port-reservations.lock");
+    await fs.mkdir(staleLockPath, { recursive: true });
+    const staleLockTime = new Date(Date.now() - 6_000);
+    await fs.utimes(staleLockPath, staleLockTime, staleLockTime);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    activateWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
+    expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(false);
+    await expect(fs.stat(staleLockPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    activateWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
+    expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(true);
+
+    const firstConfig = JSON.parse(await fs.readFile(firstConfigPath, "utf8"));
+    const secondConfig = JSON.parse(await fs.readFile(secondConfigPath, "utf8"));
+    const registry = JSON.parse(
+      await fs.readFile(path.join(isolatedHome, "worktree-port-reservations.json"), "utf8"),
+    );
+
+    expect(firstConfig.server.port).toBe(45439);
+    expect(firstConfig.database.embeddedPostgresPort).toBe(55439);
+    expect(secondConfig.server.port).toBe(45440);
+    expect(secondConfig.database.embeddedPostgresPort).toBe(55440);
+    expect(secondConfig.auth.publicBaseUrl).toBe("http://127.0.0.1:45440/");
+    expect(registry.configPaths).toEqual([firstConfigPath, secondConfigPath].sort());
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("Worktree port conflict detected"));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("server: 45439 -> 45440"));
+
+    warning.mockClear();
+    expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(false);
+    const persistedConfig = JSON.parse(await fs.readFile(secondConfigPath, "utf8"));
+    expect(persistedConfig.server.port).toBe(45440);
+    expect(persistedConfig.database.embeddedPostgresPort).toBe(55440);
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("ignores stale migrated env paths when the dev runner resolved the local config", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-migrated-env-"));
+    const worktreeRoot = path.join(tempRoot, "PAP-9940-what-can-we-learn");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+    const oldHome = "/old/home/.paperclip-worktrees";
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(buildLegacyConfig(oldHome), null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "PAPERCLIP_HOME=/old/home/.paperclip-worktrees",
+        "PAPERCLIP_INSTANCE_ID=pap-9940-what-can-we-learn",
+        "PAPERCLIP_CONFIG=/old/home/paperclip/.paperclip/worktrees/PAP-9940-what-can-we-learn/.paperclip/config.json",
+        "PAPERCLIP_CONTEXT=/old/home/.paperclip-worktrees/context.json",
+        "PAPERCLIP_IN_WORKTREE=true",
+        "PAPERCLIP_WORKTREE_NAME=PAP-9940-what-can-we-learn",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONTEXT;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+    const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const repairedEnv = await fs.readFile(envPath, "utf8");
+    const instanceRoot = path.join(isolatedHome, "instances", "pap-9940-what-can-we-learn");
+
+    expect(result).toEqual({
+      repairedConfig: true,
+      repairedEnv: true,
+    });
+    expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(instanceRoot, "db"));
+    expect(repairedConfig.secrets.localEncrypted.keyFilePath).toBe(path.join(instanceRoot, "secrets", "master.key"));
+    expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
+    expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`);
+    expect(repairedEnv).not.toContain("/old/home");
   });
 
   it("does not persist transient runtime home overrides over repo-local worktree env", async () => {
@@ -299,7 +675,7 @@ describe("worktree config repair", () => {
 
     expect(result).toEqual({
       repairedConfig: true,
-      repairedEnv: false,
+      repairedEnv: true,
     });
     expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(stableInstanceRoot, "db"));
     expect(repairedConfig.database.backup.dir).toBe(path.join(stableInstanceRoot, "data", "backups"));
@@ -309,6 +685,7 @@ describe("worktree config repair", () => {
       path.join(stableInstanceRoot, "secrets", "master.key"),
     );
     expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
+    expect(repairedEnv).toContain('PAPERCLIP_DB_BACKUP_ENABLED="false"');
     expect(repairedEnv).not.toContain(`PAPERCLIP_HOME=${JSON.stringify(transientHome)}`);
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
   });
@@ -426,6 +803,10 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
@@ -435,7 +816,7 @@ describe("worktree config repair", () => {
     expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
   });
 
-  it("persists runtime-selected worktree ports back into config", async () => {
+  it("persists runtime-selected worktree ports back into explicit-port auth URLs", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-ports-"));
     const worktreeRoot = path.join(tempRoot, "PAP-878-create-a-mine-tab-in-inbox");
     const paperclipDir = path.join(worktreeRoot, ".paperclip");
@@ -448,7 +829,7 @@ describe("worktree config repair", () => {
       configPath,
       JSON.stringify(
         {
-          ...buildLegacyConfig(instanceRoot),
+          ...buildLegacyConfig(instanceRoot, "http://my-host.ts.net:3100"),
           database: {
             mode: "embedded-postgres",
             embeddedPostgresDataDir: path.join(instanceRoot, "db"),
@@ -498,12 +879,20 @@ describe("worktree config repair", () => {
       "utf8",
     );
 
+    await fs.writeFile(
+      path.join(paperclipDir, ".env"),
+      ["# Paperclip environment variables", "PAPERCLIP_IN_WORKTREE=true", ""].join("\n"),
+      "utf8",
+    );
+
     process.chdir(worktreeRoot);
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-878-create-a-mine-tab-in-inbox";
     process.env.PAPERCLIP_HOME = isolatedHome;
     process.env.PAPERCLIP_INSTANCE_ID = "pap-878-create-a-mine-tab-in-inbox";
     process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
 
     maybePersistWorktreeRuntimePorts({
       serverPort: 3103,
@@ -514,20 +903,207 @@ describe("worktree config repair", () => {
 
     expect(writtenConfig.server.port).toBe(3103);
     expect(writtenConfig.database.embeddedPostgresPort).toBe(54335);
-    expect(writtenConfig.auth.publicBaseUrl).toBe("http://127.0.0.1:3103/");
+    expect(writtenConfig.auth.publicBaseUrl).toBe("http://my-host.ts.net:3103/");
   });
 
-  it("can update the in-memory config without rewriting env-driven ports", () => {
-    const { config, changed } = applyRuntimePortSelectionToConfig(buildLegacyConfig("/tmp/shared"), {
-      serverPort: 3104,
-      databasePort: 54340,
-      allowServerPortWrite: false,
-      allowDatabasePortWrite: true,
+  it("does not rewrite no-port public auth URLs when persisting runtime-selected ports", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-public-ports-"));
+    const worktreeRoot = path.join(tempRoot, "PAP-125-public-base-url");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const instanceRoot = path.join(isolatedHome, "instances", "pap-125-public-base-url");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          ...buildLegacyConfig(instanceRoot, "https://paperclip.example"),
+          database: {
+            mode: "embedded-postgres",
+            embeddedPostgresDataDir: path.join(instanceRoot, "db"),
+            embeddedPostgresPort: 54331,
+            backup: {
+              enabled: true,
+              intervalMinutes: 60,
+              retentionDays: 30,
+              dir: path.join(instanceRoot, "data", "backups"),
+            },
+          },
+          logging: {
+            mode: "file",
+            logDir: path.join(instanceRoot, "logs"),
+          },
+          server: {
+            deploymentMode: "local_trusted",
+            exposure: "private",
+            host: "127.0.0.1",
+            port: 3101,
+            allowedHostnames: [],
+            serveUi: true,
+          },
+          storage: {
+            provider: "local_disk",
+            localDisk: {
+              baseDir: path.join(instanceRoot, "data", "storage"),
+            },
+            s3: {
+              bucket: "paperclip",
+              region: "us-east-1",
+              prefix: "",
+              forcePathStyle: false,
+            },
+          },
+          secrets: {
+            provider: "local_encrypted",
+            strictMode: false,
+            localEncrypted: {
+              keyFilePath: path.join(instanceRoot, "secrets", "master.key"),
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    await fs.writeFile(
+      path.join(paperclipDir, ".env"),
+      ["# Paperclip environment variables", "PAPERCLIP_IN_WORKTREE=true", ""].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-125-public-base-url";
+    process.env.PAPERCLIP_HOME = isolatedHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "pap-125-public-base-url";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
+
+    maybePersistWorktreeRuntimePorts({
+      serverPort: 3103,
+      databasePort: 54335,
     });
+
+    const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+
+    expect(writtenConfig.server.port).toBe(3103);
+    expect(writtenConfig.database.embeddedPostgresPort).toBe(54335);
+    expect(writtenConfig.auth.publicBaseUrl).toBe("https://paperclip.example");
+  });
+
+  it("preserves top-level and nested config extensions while persisting runtime ports", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-config-extensions-"));
+    const worktreeRoot = path.join(tempRoot, "config-extensions");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const instanceRoot = path.join(isolatedHome, "instances", "config-extensions");
+    const base = buildIsolatedConfig(instanceRoot, 3101, 54331);
+    const config = {
+      ...base,
+      topLevelExtension: { enabled: true },
+      database: {
+        ...base.database,
+        backup: {
+          ...base.database.backup,
+          backupExtension: "keep",
+        },
+      },
+      server: {
+        ...base.server,
+        serverExtension: "keep",
+      },
+      storage: {
+        ...base.storage,
+        localDisk: {
+          ...base.storage.localDisk,
+          driverExtension: "keep",
+        },
+      },
+    };
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    await fs.writeFile(
+      path.join(paperclipDir, ".env"),
+      ["# Paperclip environment variables", "PAPERCLIP_IN_WORKTREE=true", ""].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "config-extensions";
+    process.env.PAPERCLIP_HOME = isolatedHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "config-extensions";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
+
+    const open = vi.spyOn(fsSync, "openSync");
+    const sync = vi.spyOn(fsSync, "fsyncSync");
+    maybePersistWorktreeRuntimePorts({ serverPort: 3103, databasePort: 54335 });
+
+    expect(open).toHaveBeenCalledWith(paperclipDir, "r");
+    expect(sync).toHaveBeenCalled();
+
+    const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(writtenConfig).toMatchObject({
+      topLevelExtension: { enabled: true },
+      database: {
+        embeddedPostgresPort: 54335,
+        backup: { backupExtension: "keep" },
+      },
+      server: {
+        port: 3103,
+        serverExtension: "keep",
+      },
+      storage: {
+        localDisk: { driverExtension: "keep" },
+      },
+    });
+
+    const stableTime = new Date("2020-01-01T00:00:00.000Z");
+    await fs.utimes(configPath, stableTime, stableTime);
+    maybePersistWorktreeRuntimePorts({ serverPort: 3103, databasePort: 54335 });
+    expect((await fs.stat(configPath)).mtimeMs).toBe(stableTime.getTime());
+  });
+
+  it("can update the in-memory config when auth URL already includes a port", () => {
+    const { config, changed } = applyRuntimePortSelectionToConfig(
+      buildLegacyConfig("/tmp/shared", "http://my-host.ts.net:3100"),
+      {
+        serverPort: 3104,
+        databasePort: 54340,
+        allowServerPortWrite: false,
+        allowDatabasePortWrite: true,
+      },
+    );
 
     expect(changed).toBe(true);
     expect(config.server.port).toBe(3100);
     expect(config.database.embeddedPostgresPort).toBe(54340);
-    expect(config.auth.publicBaseUrl).toBe("http://127.0.0.1:3104/");
+    expect(config.auth.publicBaseUrl).toBe("http://my-host.ts.net:3104/");
+  });
+
+  it("does not rewrite the in-memory config when auth URL has no explicit port", () => {
+    const { config, changed } = applyRuntimePortSelectionToConfig(
+      buildLegacyConfig("/tmp/shared", "https://paperclip.example"),
+      {
+        serverPort: 3104,
+        databasePort: 54340,
+        allowServerPortWrite: false,
+        allowDatabasePortWrite: true,
+      },
+    );
+
+    expect(changed).toBe(true);
+    expect(config.server.port).toBe(3100);
+    expect(config.database.embeddedPostgresPort).toBe(54340);
+    expect(config.auth.publicBaseUrl).toBe("https://paperclip.example");
   });
 });

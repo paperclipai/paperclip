@@ -1,5 +1,12 @@
 import type { CSSProperties } from "react";
-import { parseAgentMentionHref, parseProjectMentionHref, parseSkillMentionHref, parseUserMentionHref } from "@paperclipai/shared";
+import {
+  parseAgentMentionHref,
+  parseIssueReferenceHref,
+  parseProjectMentionHref,
+  parseRoutineMentionHref,
+  parseSkillMentionHref,
+  parseUserMentionHref,
+} from "@paperclipai/shared";
 import { getAgentIcon } from "./agent-icons";
 import { hexToRgb, pickTextColorForPillBg } from "./color-contrast";
 
@@ -8,6 +15,10 @@ export type ParsedMentionChip =
       kind: "agent";
       agentId: string;
       icon: string | null;
+    }
+  | {
+      kind: "issue";
+      identifier: string;
     }
   | {
       kind: "project";
@@ -22,11 +33,27 @@ export type ParsedMentionChip =
       kind: "skill";
       skillId: string;
       slug: string | null;
+    }
+  | {
+      kind: "routine";
+      routineId: string;
     };
 
 const iconMaskCache = new Map<string, string>();
 
 export function parseMentionChipHref(href: string): ParsedMentionChip | null {
+  if (/^https?:\/\//i.test(href.trim())) {
+    return null;
+  }
+
+  const issue = parseIssueReferenceHref(href);
+  if (issue) {
+    return {
+      kind: "issue",
+      identifier: issue.identifier,
+    };
+  }
+
   const agent = parseAgentMentionHref(href);
   if (agent) {
     return {
@@ -59,6 +86,14 @@ export function parseMentionChipHref(href: string): ParsedMentionChip | null {
       kind: "skill",
       skillId: skill.skillId,
       slug: skill.slug,
+    };
+  }
+
+  const routine = parseRoutineMentionHref(href);
+  if (routine) {
+    return {
+      kind: "routine",
+      routineId: routine.routineId,
     };
   }
 
@@ -111,7 +146,9 @@ export function clearMentionChipDecoration(element: HTMLElement) {
   element.classList.remove(
     "paperclip-mention-chip",
     "paperclip-mention-chip--agent",
+    "paperclip-mention-chip--issue",
     "paperclip-mention-chip--project",
+    "paperclip-mention-chip--routine",
     "paperclip-mention-chip--user",
     "paperclip-mention-chip--skill",
     "paperclip-project-mention-chip",

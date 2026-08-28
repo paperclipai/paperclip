@@ -141,6 +141,8 @@ Hierarchical reporting structure. CEO at top, reports cascade down.
 
 **Full visibility across the org.** Every agent can see the entire org chart, all tasks, all agents. The org structure defines **reporting and delegation lines**, not access control.
 
+Visibility settings on an agent profile (where supported) do not alter company-level visibility for tasks, projects, issues, comments, costs, or activity. Those work-object privacy controls are not a V1 feature until centralized scoped authorization is in place.
+
 Each agent publishes a short description of their responsibilities and capabilities — almost like skills ("when I'm relevant"). This lets other agents discover who can help with what.
 
 ### Cross-Team Work
@@ -422,6 +424,7 @@ Paperclip manages task-linked work artifacts: issue documents (rich-text plans, 
 When an agent crashes or disappears mid-task, Paperclip does **not** auto-reassign or auto-release the task. Instead:
 
 - Paperclip surfaces stale tasks (tasks in `in_progress` with no recent activity) through dashboards and reporting
+- Paperclip may perform bounded continuity repair with the same assigned agent; when that is exhausted or unsafe, it opens a board-owned recovery action without waking a substitute agent
 - Paperclip does not fail silently — the auditing and visibility tools make problems obvious
 - Recovery is handled by humans or by emergent processes (e.g. a project manager agent whose job is to monitor for stale work and surface it)
 

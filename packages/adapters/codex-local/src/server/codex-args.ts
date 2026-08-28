@@ -2,7 +2,10 @@ import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/s
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   isCodexLocalFastModeSupported,
+  normalizeCodexModel,
 } from "../index.js";
+
+const SKIP_GIT_REPO_CHECK_FLAG = "--skip-git-repo-check";
 
 export type BuildCodexExecArgsResult = {
   args: string[];
@@ -25,15 +28,18 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function formatFastModeSupportedModels(): string {
-  return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
+  return `${CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ")} or manually configured model IDs`;
 }
 
 export function buildCodexExecArgs(
   config: unknown,
-  options: { resumeSessionId?: string | null } = {},
+  options: {
+    resumeSessionId?: string | null;
+    skipGitRepoCheck?: boolean;
+  } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
-  const model = asString(record.model, "").trim();
+  const model = normalizeCodexModel(asString(record.model, ""));
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),
@@ -48,6 +54,14 @@ export function buildCodexExecArgs(
   const extraArgs = readExtraArgs(record);
 
   const args = ["exec", "--json"];
+  // Codex rejects a repeated `--skip-git-repo-check` ("cannot be used multiple
+  // times"). The adapter injects this flag for sandbox execution, so when an
+  // operator's extraArgs already carry it the injection would abort the run
+  // with exit code 2. Skip the injection in that case and let the operator's
+  // copy stand.
+  if (options.skipGitRepoCheck && !extraArgs.includes(SKIP_GIT_REPO_CHECK_FLAG)) {
+    args.push(SKIP_GIT_REPO_CHECK_FLAG);
+  }
   if (search) args.unshift("--search");
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (model) args.push("--model", model);

@@ -1,0 +1,28 @@
+{
+  "name": "@paperclipai/tailscale-https-broker",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Least-privilege host broker that manages only Paperclip-owned, same-number Tailscale HTTPS-to-loopback listeners for managed branch runtimes.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "bin": {
+    "paperclip-tailscale-https-broker": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/build-native.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/build-native.mjs && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

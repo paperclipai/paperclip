@@ -49,6 +49,10 @@ export function authRoutes(db: Db) {
         userId: req.actor.userId,
       },
       user,
+      // The browser reads this value to open its own Sentry gate — see
+      // `ui/src/lib/sentry.ts`. `req.actor.type` already gates this whole
+      // handler, so no second authorization check runs here.
+      sentryDsn: process.env.SENTRY_DSN || null,
     }));
   });
 

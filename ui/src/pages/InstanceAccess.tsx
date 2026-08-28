@@ -6,6 +6,7 @@ import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { Card } from "@/components/ui/card";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -21,7 +22,8 @@ export function InstanceAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings", href: "/instance/settings/general" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Access" },
     ]);
   }, [setBreadcrumbs]);
@@ -51,7 +53,11 @@ export function InstanceAccess() {
   useEffect(() => {
     if (!userAccessQuery.data) return;
     setSelectedCompanyIds(
-      new Set(userAccessQuery.data.companyAccess.map((membership) => membership.companyId)),
+      new Set(
+        userAccessQuery.data.companyAccess
+          .filter((membership) => membership.status === "active")
+          .map((membership) => membership.companyId),
+      ),
     );
   }, [userAccessQuery.data]);
 
@@ -60,7 +66,7 @@ export function InstanceAccess() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
-      pushToast({ title: "Company access updated", tone: "success" });
+      pushToast({ title: "Organization access updated", tone: "success" });
     },
   });
 
@@ -101,12 +107,12 @@ export function InstanceAccess() {
           <h1 className="text-lg font-semibold">Instance Access</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Search users, manage instance-admin status, and control which companies they can access.
+          Search users, manage instance-admin status, and control which organizations they can access.
         </p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
-        <section className="space-y-4 rounded-xl border border-border bg-card p-4">
+      <div className="grid gap-6 lg:grid-cols-(--gtc-34)">
+        <Card className="block space-y-4 p-4">
           <label className="block space-y-2 text-sm">
             <span className="font-medium">Search users</span>
             <input
@@ -138,14 +144,14 @@ export function InstanceAccess() {
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {user.activeCompanyMembershipCount} active company memberships
+                  {user.activeCompanyMembershipCount} active organization memberships
                 </div>
               </button>
             ))}
           </div>
-        </section>
+        </Card>
 
-        <section className="space-y-4 rounded-xl border border-border bg-card p-5">
+        <Card className="block space-y-4 p-5">
           {!selectedUserId ? (
             <div className="text-sm text-muted-foreground">Select a user to inspect instance access.</div>
           ) : userAccessQuery.isLoading ? (
@@ -176,9 +182,9 @@ export function InstanceAccess() {
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold">Company access</h2>
+                  <h2 className="text-sm font-semibold">Organization access</h2>
                   <p className="text-sm text-muted-foreground">
-                    Toggle company membership for this user. New access defaults to an active operator membership.
+                    Toggle organization membership for this user. New access defaults to an active operator membership.
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -210,7 +216,7 @@ export function InstanceAccess() {
                     onClick={() => updateCompanyAccessMutation.mutate()}
                     disabled={updateCompanyAccessMutation.isPending}
                   >
-                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save company access"}
+                    {updateCompanyAccessMutation.isPending ? "Saving…" : "Save organization access"}
                   </Button>
                 </div>
               </div>
@@ -238,7 +244,7 @@ export function InstanceAccess() {
               </div>
             </>
           )}
-        </section>
+        </Card>
       </div>
     </div>
   );

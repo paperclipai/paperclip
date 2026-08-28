@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/terminal.schema.json",
+  "title": "PRP run terminal state",
+  "type": "object",
+  "required": [
+    "schema",
+    "turnTerminalState",
+    "runTerminalState",
+    "reportedWorkDisposition"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip.prp.terminal.v1" },
+    "turnTerminalState": {
+      "enum": ["completed", "failed", "interrupted", "cancelled"]
+    },
+    "runTerminalState": { "enum": ["succeeded", "failed", "cancelled"] },
+    "reportedWorkDisposition": {
+      "enum": ["done", "blocked", "needs_review", "yielded"]
+    },
+    "workAssessmentId": { "type": "string", "minLength": 1 },
+    "statusDecisionId": { "type": "string", "minLength": 1 },
+    "stopReason": { "$ref": "https://paperclip.dev/schemas/prp/v1/stop-reason.schema.json" }
+  },
+  "additionalProperties": true
+}

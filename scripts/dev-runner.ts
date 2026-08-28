@@ -1,13 +1,15 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
-import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
+import { applyDevRunnerOptions } from "./dev-runner-options.ts";
+import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
-import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -20,6 +22,18 @@ import {
 const BIND_MODES = ["loopback", "lan", "tailnet", "custom"] as const;
 type BindMode = (typeof BIND_MODES)[number];
 
+const mode = process.argv[2] === "watch" ? "watch" : "dev";
+let cliArgs: string[];
+let dataDir: string | null;
+try {
+  const appliedOptions = applyDevRunnerOptions(process.argv.slice(3), process.env, repoRoot);
+  cliArgs = appliedOptions.forwardedArgs;
+  dataDir = appliedOptions.dataDir;
+} catch (error) {
+  console.error(`[paperclip] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
 const worktreeEnvBootstrap = bootstrapDevRunnerWorktreeEnv(repoRoot, process.env);
 if (worktreeEnvBootstrap.missingEnv) {
   console.error(
@@ -27,14 +41,21 @@ if (worktreeEnvBootstrap.missingEnv) {
   );
   process.exit(1);
 }
+if (isWorktreeSeedPending(repoRoot)) {
+  console.error(
+    "[paperclip] this worktree database is seed-pending. Run `pnpm paperclipai worktree ensure-seeded` before `pnpm dev`.",
+  );
+  process.exit(1);
+}
 
-const mode = process.argv[2] === "watch" ? "watch" : "dev";
-const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerRestartRequestFilePath = path.join(repoRoot, ".paperclip", "dev-server-restart-request.json");
+const devServerStatusToken = mode === "dev" ? randomUUID() : null;
+const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
 
 const watchedDirectories = [
   "cli",
@@ -43,6 +64,7 @@ const watchedDirectories = [
   "packages/adapter-utils",
   "packages/adapters",
   "packages/db",
+  "packages/skills-catalog",
   "packages/plugins/sdk",
   "packages/shared",
 ].map((relativePath) => path.join(repoRoot, relativePath));
@@ -67,6 +89,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
+  ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
 ]);
 
@@ -78,6 +101,7 @@ const tailscaleAuthFlagNames = new Set([
 let tailscaleAuth = false;
 let bindMode: BindMode | null = null;
 let bindHost: string | null = null;
+const managedRuntimeExposure = process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https";
 const forwardedArgs: string[] = [];
 
 for (let index = 0; index < cliArgs.length; index += 1) {
@@ -121,6 +145,10 @@ if (!bindMode && process.env.npm_config_bind && BIND_MODES.includes(process.env.
 if (!bindHost && process.env.npm_config_bind_host) {
   bindHost = process.env.npm_config_bind_host;
 }
+if (managedRuntimeExposure) {
+  bindMode = "custom";
+  bindHost = "127.0.0.1";
+}
 if (bindMode === "custom" && !bindHost) {
   console.error("[paperclip] --bind custom requires --bind-host <host>");
   process.exit(1);
@@ -133,10 +161,12 @@ const env: NodeJS.ProcessEnv = {
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = devServerStatusToken ?? "";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
 if (mode === "watch") {
+  delete env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
   env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
@@ -160,7 +190,7 @@ if (tailscaleAuth || bindMode) {
   } else {
     env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
     env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-    env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
+    env.PAPERCLIP_AUTH_BASE_URL_MODE = managedRuntimeExposure ? "explicit" : "auto";
     console.log(
       `[paperclip] dev mode: authenticated/private (bind=${effectiveBind}${bindHost ? `:${bindHost}` : ""})`,
     );
@@ -177,7 +207,7 @@ if (tailscaleAuth || bindMode) {
 const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
 const devService = createDevServiceIdentity({
   mode,
-  forwardedArgs,
+  forwardedArgs: dataDir ? [...forwardedArgs, `--data-dir=${dataDir}`] : forwardedArgs,
   networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
 });
@@ -253,68 +283,14 @@ function exitForSignal(signal: NodeJS.Signals) {
   process.exit(1);
 }
 
-function toRelativePath(absolutePath: string) {
-  return path.relative(repoRoot, absolutePath).split(path.sep).join("/");
-}
-
-function readSignature(absolutePath: string) {
-  const stats = statSync(absolutePath);
-  return `${Math.trunc(stats.mtimeMs)}:${stats.size}`;
-}
-
-function addFileToSnapshot(snapshot: Map<string, string>, absolutePath: string) {
-  const relativePath = toRelativePath(absolutePath);
-  if (ignoredRelativePaths.has(relativePath)) return;
-  if (!shouldTrackDevServerPath(relativePath)) return;
-  snapshot.set(relativePath, readSignature(absolutePath));
-}
-
-function walkDirectory(snapshot: Map<string, string>, absoluteDirectory: string) {
-  if (!existsSync(absoluteDirectory)) return;
-
-  for (const entry of readdirSync(absoluteDirectory, { withFileTypes: true })) {
-    if (ignoredDirectoryNames.has(entry.name)) continue;
-
-    const absolutePath = path.join(absoluteDirectory, entry.name);
-    if (entry.isDirectory()) {
-      walkDirectory(snapshot, absolutePath);
-      continue;
-    }
-    if (entry.isFile() || entry.isSymbolicLink()) {
-      addFileToSnapshot(snapshot, absolutePath);
-    }
-  }
-}
-
 function collectWatchedSnapshot() {
-  const snapshot = new Map<string, string>();
-
-  for (const absoluteDirectory of watchedDirectories) {
-    walkDirectory(snapshot, absoluteDirectory);
-  }
-  for (const absoluteFile of watchedFiles) {
-    if (!existsSync(absoluteFile)) continue;
-    addFileToSnapshot(snapshot, absoluteFile);
-  }
-
-  return snapshot;
-}
-
-function diffSnapshots(previous: Map<string, string>, next: Map<string, string>) {
-  const changed = new Set<string>();
-
-  for (const [relativePath, signature] of next) {
-    if (previous.get(relativePath) !== signature) {
-      changed.add(relativePath);
-    }
-  }
-  for (const relativePath of previous.keys()) {
-    if (!next.has(relativePath)) {
-      changed.add(relativePath);
-    }
-  }
-
-  return [...changed].sort();
+  return collectDevServerWatchedSnapshot({
+    repoRoot,
+    watchedDirectories,
+    watchedFiles,
+    ignoredDirectoryNames,
+    ignoredRelativePaths,
+  }) as Map<string, string>;
 }
 
 function ensureDevStatusDirectory() {
@@ -343,6 +319,13 @@ function writeDevServerStatus() {
 function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
+  rmSync(devServerRestartRequestFilePath, { force: true });
+}
+
+function consumeDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
+  rmSync(devServerRestartRequestFilePath, { force: true });
+  return true;
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -553,7 +536,9 @@ async function scanForBackendChanges() {
 }
 
 async function getDevHealthPayload() {
-  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`);
+  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, {
+    headers: devServerStatusToken ? { [devServerStatusTokenHeader]: devServerStatusToken } : undefined,
+  });
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }
@@ -626,7 +611,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequested = consumeDevServerRestartRequest();
+  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -638,11 +624,15 @@ async function maybeAutoRestartChild() {
   }
 
   const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+  if (!devServer?.enabled) {
     restartInFlight = false;
     return;
   }
-  if ((devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }

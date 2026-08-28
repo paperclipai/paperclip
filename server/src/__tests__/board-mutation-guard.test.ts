@@ -5,7 +5,7 @@ import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 
 function createApp(
   actorType: "board" | "agent",
-  boardSource: "session" | "local_implicit" | "board_key" = "session",
+  boardSource: "session" | "local_implicit" | "board_key" | "cloud_tenant" = "session",
 ) {
   const app = express();
   app.use(express.json());
@@ -66,6 +66,12 @@ describe("boardMutationGuard", () => {
     expect([200, 204]).toContain(res.status);
   });
 
+  it("allows trusted Cloud tenant mutations without origin", async () => {
+    const app = createApp("board", "cloud_tenant");
+    const res = await request(app).post("/mutate").send({ ok: true });
+    expect([200, 204]).toContain(res.status);
+  });
+
   it("allows board mutations from trusted origin", async () => {
     const app = createApp("board");
     const res = await request(app)
@@ -84,13 +90,14 @@ describe("boardMutationGuard", () => {
     expect([200, 204]).toContain(res.status);
   });
 
-  it("allows board mutations when x-forwarded-host matches origin", async () => {
+  it("allows HTTPS branch-runtime mutations when forwarded MagicDNS host and non-standard port match", async () => {
     const app = createApp("board");
     const res = await request(app)
       .post("/mutate")
       .set("Host", "127.0.0.1")
-      .set("X-Forwarded-Host", "10.90.10.20:3443")
-      .set("Origin", "https://10.90.10.20:3443")
+      .set("X-Forwarded-Host", "branch-runner.tail123.ts.net:42000")
+      .set("X-Forwarded-Proto", "https")
+      .set("Origin", "https://branch-runner.tail123.ts.net:42000")
       .send({ ok: true });
     expect([200, 204]).toContain(res.status);
   });
