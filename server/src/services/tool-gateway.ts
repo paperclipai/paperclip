@@ -837,6 +837,8 @@ export function createToolGatewayService(
     }) => Promise<typeof connectionGrants.$inferSelect>;
     /** Test seam for resolving Vercel Connect credentials. */
     vercelConnectClient?: VercelConnectClient | null;
+    /** Test seam for reproducing the managed-argument drift expiry race. */
+    beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
       gatewayRequests: Partial<McpGatewayRateLimitConfig>;
@@ -4999,6 +5001,7 @@ export function createToolGatewayService(
       { actionRequestId: input.actionRequestId, invocationId: input.invocationId, tool: input.toolName },
     );
     const now = new Date();
+    await options.beforeManagedArgumentDriftExpiry?.();
     const [expired] = await db
       .update(toolActionRequests)
       .set({ status: "expired", resolvedAt: now, updatedAt: now })
@@ -5007,6 +5010,7 @@ export function createToolGatewayService(
         inArray(toolActionRequests.status, ["approved", "executing"]),
       ))
       .returning({ id: toolActionRequests.id });
+    if (!expired) return error;
     await db
       .update(toolInvocations)
       .set({
@@ -5019,14 +5023,12 @@ export function createToolGatewayService(
         updatedAt: now,
       })
       .where(eq(toolInvocations.id, input.invocationId));
-    if (expired) {
-      await reflectToolActionInteractionLifecycle({
-        actionRequestId: expired.id,
-        status: "expired",
-        errorCode: error.reasonCode,
-        errorMessage: error.message,
-      });
-    }
+    await reflectToolActionInteractionLifecycle({
+      actionRequestId: expired.id,
+      status: "expired",
+      errorCode: error.reasonCode,
+      errorMessage: error.message,
+    });
     return error;
   }
 
