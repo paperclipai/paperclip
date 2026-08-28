@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  PERMISSION_KEYS,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -242,3 +243,29 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+/**
+ * Grants (or revokes) a single scoped `permissionKey` on an agent principal,
+ * e.g. `agents:configure` or `agents:suggest-changes`. This is distinct from
+ * `updateAgentPermissionsSchema`, which only covers the fixed
+ * canCreateAgents/canCreateSkills/canAssignTasks/trustPreset fields. Prior to
+ * this schema there was no REST route that could grant an arbitrary
+ * `PermissionKey` to an agent principal after creation.
+ *
+ * Deliberately `.strict()` and does not accept a `scope` field: `scopeAllows()`
+ * in authorization.ts treats any unrecognized scope key as unconstrained, so
+ * an arbitrary caller-supplied scope on a sensitive grant like
+ * `agents:configure` could silently widen to an unrestricted company-wide
+ * grant instead of the intended narrower one. `.strict()` makes a request
+ * that includes `scope` (or any other unknown field) fail closed with a 400
+ * instead of silently stripping it and persisting an unrestricted grant. This
+ * route only ever calls `setPrincipalPermission(..., scope: null)`. If a
+ * scoped grant is ever needed here, validate against the specific recognized
+ * scope keys (see scopeAllows), not an open record.
+ */
+export const updateAgentGrantSchema = z.object({
+  permissionKey: z.enum(PERMISSION_KEYS),
+  enabled: z.boolean(),
+}).strict();
+
+export type UpdateAgentGrant = z.infer<typeof updateAgentGrantSchema>;
