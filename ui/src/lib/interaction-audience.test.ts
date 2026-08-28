@@ -128,7 +128,7 @@ describe("describeInteractionAudience", () => {
       }),
       creatorLabel: "You",
     });
-    expect(excluded.summary).toBe("Anyone in the company except you can respond.");
+    expect(excluded.summary).toBe("Anyone in the organization except you can respond.");
   });
 
   it("falls back to a generic creator phrase when the creator label is unknown", () => {

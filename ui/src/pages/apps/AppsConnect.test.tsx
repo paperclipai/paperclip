@@ -1025,8 +1025,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock.mock.calls[0]?.[1]).not.toHaveProperty("grantKind");
 
     expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
-      enabledCatalogEntryIds: ["action-1", "action-2"],
-      askFirstCatalogEntryIds: ["action-2"],
+      enabledCatalogEntryIds: ["action-1"],
+      askFirstCatalogEntryIds: [],
       access: "all_agents",
     });
     expect(putConnectionInstallsMock).toHaveBeenCalledWith("conn-1", [

@@ -144,7 +144,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await mock?.close();
   });
 
-  test("Connect wizard happy path: link mode → access → install → success", async ({ page, request }) => {
+  test("Connect wizard happy path: link mode → success", async ({ page, request }) => {
     const seed = await newCompany(request, "connect");
 
     await gotoConnect(page, seed.prefix);
@@ -166,21 +166,10 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
 
-    // The streamlined wizard enables discovered actions and applies its
-    // risk-based ask-first defaults when setup finishes, then goes directly to
-    // the access step. Classification remains covered by the server suite.
-    await expect(page.getByRole("heading", { name: /Who can use/i })).toBeVisible({ timeout: 30_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-03-who-step.png`, fullPage: true });
-
-    await page.getByRole("button", { name: /Continue to install/i }).click();
-    await expect(page.getByRole("heading", { name: /Install .* tools\?/i })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-04-install-step.png`, fullPage: true });
-
-    // Finish.
-    await page.getByRole("button", { name: /Finish setup/i }).click();
-
-    // Success step.
-    await expect(page.getByText(/ready|all set|done/i).first()).toBeVisible({ timeout: 20_000 });
+    // Link-mode setup uses the safe organization/any-agent defaults, enables
+    // discovered actions, and applies risk-based ask-first defaults in one
+    // commit. Classification remains covered by the server suite.
+    await expect(page.getByRole("heading", { name: /is ready\.$/i })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
     // Verify the mock saw a tools/list call from the catalog refresh.

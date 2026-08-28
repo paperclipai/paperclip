@@ -123,10 +123,6 @@ test.describe.serial("not-connected app page", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
 
     await page.getByRole("button", { name: "Check link" }).click();
-    await expect(page.getByRole("heading", { name: "Who can use Bla?" })).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Continue to install" }).click();
-    await expect(page.getByRole("heading", { name: /Install .* tools\?/i })).toBeVisible({ timeout: 20_000 });
-    await page.getByRole("button", { name: "Finish setup" }).click();
     await expect(page.getByRole("heading", { name: "Bla is ready." })).toBeVisible({ timeout: 20_000 });
 
     const apps = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
