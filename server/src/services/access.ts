@@ -42,6 +42,26 @@ export function accessService(db: Db) {
     userId: string,
     now: Date,
   ) {
+    const departingAudienceRows = await tx.select({
+      grantId: connectionGrantMembers.grantId,
+    }).from(connectionGrantMembers).where(and(
+      eq(connectionGrantMembers.companyId, companyId),
+      eq(connectionGrantMembers.subjectType, "user"),
+      eq(connectionGrantMembers.subjectId, userId),
+    ));
+    const departingAudienceGrantIds = [...new Set(departingAudienceRows.map((row) => row.grantId))];
+    const affectedAudienceRows = departingAudienceGrantIds.length === 0 ? [] : await tx.select({
+      grantId: connectionGrantMembers.grantId,
+      subjectId: connectionGrantMembers.subjectId,
+    }).from(connectionGrantMembers).where(and(
+      eq(connectionGrantMembers.companyId, companyId),
+      eq(connectionGrantMembers.subjectType, "user"),
+      inArray(connectionGrantMembers.grantId, departingAudienceGrantIds),
+    ));
+    const soleAudienceGrantIds = new Set(departingAudienceGrantIds.filter((grantId) =>
+      affectedAudienceRows.filter((row) => row.grantId === grantId).length === 1,
+    ));
+
     const ownedGrants = await tx.select({
       id: connectionGrants.id,
       connectionId: connectionGrants.connectionId,
@@ -164,7 +184,9 @@ export function accessService(db: Db) {
         const hasSurvivingOrganizationAudience = grant.kind === "organization"
           && grant.status === "active"
           && (
-            remainingGrantAudience.length === 0
+            soleAudienceGrantIds.has(grant.id)
+              ? true
+              : remainingGrantAudience.length === 0
               ? existingMemberUserIds.size > 0
               : remainingGrantAudience.some((member) => existingMemberUserIds.has(member.subjectId))
           );
@@ -175,11 +197,11 @@ export function accessService(db: Db) {
           } else if (grant.kind === "user" || hasSurvivingOrganizationAudience) {
             // A connection may temporarily carry separate user grants that
             // reference the same credential, or an organization grant may
-            // still have another persisted audience member. Removing the sole
-            // named audience member leaves an organization-wide grant, so keep
-            // its credential when another company member remains. Pending,
-            // suspended, and archived memberships are intentionally included
-            // because company access can reactivate each of them later.
+            // still have another persisted audience member. A sole named
+            // audience is retained below as a blocked grant instead of being
+            // widened to company scope. Pending, suspended, and archived
+            // memberships are intentionally included because company access
+            // can reactivate each of them later.
             retainedSecretIds.add(ref.secretId);
             sharedConnectionSecretIds.add(ref.secretId);
           }
@@ -283,6 +305,21 @@ export function accessService(db: Db) {
       eq(connectionGrantMembers.subjectType, "user"),
       eq(connectionGrantMembers.subjectId, userId),
     ));
+    if (soleAudienceGrantIds.size > 0) {
+      // Zero persisted audience rows normally means organization-wide access.
+      // Removing the only named member must not silently widen that restricted
+      // grant, so preserve its credential for recovery but make it unusable
+      // until an operator chooses a new audience or reauthorizes it.
+      await tx.update(connectionGrants).set({
+        status: "needs_reauthorization",
+        updatedAt: now,
+      }).where(and(
+        eq(connectionGrants.companyId, companyId),
+        eq(connectionGrants.kind, "organization"),
+        eq(connectionGrants.status, "active"),
+        inArray(connectionGrants.id, [...soleAudienceGrantIds]),
+      ));
+    }
     if (removedDelegations.length > 0) {
       const connectionByGrant = new Map(ownedGrants.map((grant) => [grant.id, grant.connectionId]));
       await tx.insert(toolAccessAuditEvents).values(removedDelegations.map((delegation) => ({

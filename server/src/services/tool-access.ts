@@ -8386,27 +8386,33 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         throw badRequest("Only an organization identity has an audience; a personal identity belongs to its owner");
       }
       const requested = [...new Set(memberUserIds.map((id) => id.trim()).filter(Boolean))];
-      if (requested.length > 0) {
-        const memberships = await db
-          .select({ principalId: companyMemberships.principalId })
-          .from(companyMemberships)
-          .where(and(
-            eq(companyMemberships.companyId, connection.companyId),
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.status, "active"),
-            inArray(companyMemberships.principalId, requested),
-          ));
-        const active = new Set(memberships.map((row) => row.principalId));
-        const unknown = requested.filter((id) => !active.has(id));
-        if (unknown.length > 0) {
-          throw unprocessable("Every audience member must be an active member of this company", {
-            code: "audience_member_not_in_company",
-            unknownUserIds: unknown,
-          });
-        }
-      }
       const binding = actorBinding(actor);
       const members = await db.transaction(async (tx) => {
+        if (requested.length > 0) {
+          // Membership removal takes the same row lock before sweeping grant
+          // audiences. Keeping validation and replacement in this transaction
+          // means removal either deletes our committed row or we observe the
+          // inactive membership and refuse to recreate it.
+          const memberships = await tx
+            .select({ principalId: companyMemberships.principalId })
+            .from(companyMemberships)
+            .where(and(
+              eq(companyMemberships.companyId, connection.companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.status, "active"),
+              inArray(companyMemberships.principalId, requested),
+            ))
+            .orderBy(asc(companyMemberships.id))
+            .for("update");
+          const active = new Set(memberships.map((row) => row.principalId));
+          const unknown = requested.filter((id) => !active.has(id));
+          if (unknown.length > 0) {
+            throw unprocessable("Every audience member must be an active member of this company", {
+              code: "audience_member_not_in_company",
+              unknownUserIds: unknown,
+            });
+          }
+        }
         await tx.delete(connectionGrantMembers).where(and(
           eq(connectionGrantMembers.companyId, connection.companyId),
           eq(connectionGrantMembers.grantId, grant.id),
@@ -9648,12 +9654,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
 
       if (grant.kind === "organization") {
+        const activeAudienceMember = actingUserId ? await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, connection.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, actingUserId),
+          eq(companyMemberships.status, "active"),
+        )).limit(1).then((rows) => rows[0] ?? null) : null;
         const audience = await db.select({ subjectId: connectionGrantMembers.subjectId }).from(connectionGrantMembers).where(and(
           eq(connectionGrantMembers.companyId, connection.companyId),
           eq(connectionGrantMembers.grantId, grant.id),
           eq(connectionGrantMembers.subjectType, "user"),
         ));
-        if (audience.length > 0 && (!actingUserId || !audience.some((member) => member.subjectId === actingUserId))) {
+        if (
+          (actingUserId !== null && !activeAudienceMember)
+          || (audience.length > 0 && (!actingUserId || !audience.some((member) => member.subjectId === actingUserId)))
+        ) {
           await fail(403, "The acting user is not in this grant's audience", "denied", "grant_audience_denied", {
             connection: { uid: connection.uid },
             subject,

@@ -479,7 +479,7 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
   });
 
-  it("retains an organization credential when its sole named audience member is archived", async () => {
+  it("blocks a restricted organization grant when its sole named audience member is archived", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const departing = await db.insert(companyMemberships).values({
       companyId: company.id,
@@ -553,7 +553,7 @@ describeEmbeddedPostgres("access service", () => {
     expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id)))
       .toHaveLength(1);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
-      .toEqual([expect.objectContaining({ status: "active", isDefault: true, credentialSecretRefs })]);
+      .toEqual([expect.objectContaining({ status: "needs_reauthorization", isDefault: true, credentialSecretRefs })]);
     expect(await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.grantId, organizationGrant.id)))
       .toHaveLength(0);
     expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
@@ -566,7 +566,7 @@ describeEmbeddedPostgres("access service", () => {
     expect(await db.select().from(companyMemberships).where(eq(companyMemberships.id, departing.id)))
       .toEqual([expect.objectContaining({ status: "active" })]);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
-      .toEqual([expect.objectContaining({ status: "active", credentialSecretRefs })]);
+      .toEqual([expect.objectContaining({ status: "needs_reauthorization", credentialSecretRefs })]);
   });
 
   it("revokes delegated personal connection access when membership is suspended", async () => {
@@ -655,7 +655,8 @@ describeEmbeddedPostgres("access service", () => {
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const definitions = await db.insert(userSecretDefinitions).values([
-      { companyId: company.id, key: `declared-${randomUUID()}`, name: "Declared credential" },
+      { companyId: company.id, key: `agent-declared-${randomUUID()}`, name: "Agent-declared credential" },
+      { companyId: company.id, key: `environment-declared-${randomUUID()}`, name: "Environment-declared credential" },
       { companyId: company.id, key: `bound-${randomUUID()}`, name: "Bound credential" },
     ]).returning();
     const secrets = await db.insert(companySecrets).values(definitions.map((definition, index) => ({
@@ -693,14 +694,24 @@ describeEmbeddedPostgres("access service", () => {
         configPath: `credentials.shared_${index}`,
       })),
     }).returning().then((rows) => rows[0]!);
-    await db.insert(userSecretDeclarations).values({
-      companyId: company.id,
-      userSecretDefinitionId: definitions[0]!.id,
-      targetType: "agent",
-      targetId: `surviving-agent-${randomUUID()}`,
-      configPath: "env.DECLARED_TOKEN",
-      envKey: "DECLARED_TOKEN",
-    });
+    await db.insert(userSecretDeclarations).values([
+      {
+        companyId: company.id,
+        userSecretDefinitionId: definitions[0]!.id,
+        targetType: "agent",
+        targetId: `surviving-agent-${randomUUID()}`,
+        configPath: "env.AGENT_TOKEN",
+        envKey: "AGENT_TOKEN",
+      },
+      {
+        companyId: company.id,
+        userSecretDefinitionId: definitions[1]!.id,
+        targetType: "environment",
+        targetId: `surviving-environment-${randomUUID()}`,
+        configPath: "env.ENVIRONMENT_TOKEN",
+        envKey: "ENVIRONMENT_TOKEN",
+      },
+    ]);
     await db.insert(companySecretBindings).values([
       ...secrets.map((secret, index) => ({
         companyId: company.id,
@@ -711,7 +722,7 @@ describeEmbeddedPostgres("access service", () => {
       })),
       {
         companyId: company.id,
-        secretId: secrets[1]!.id,
+        secretId: secrets[2]!.id,
         targetType: "environment",
         targetId: `surviving-environment-${randomUUID()}`,
         configPath: "env.BOUND_TOKEN",
@@ -721,7 +732,7 @@ describeEmbeddedPostgres("access service", () => {
     await accessService(db).updateMember(company.id, member.id, { status: "suspended" });
 
     expect(await db.select().from(companySecrets).where(inArray(companySecrets.id, secrets.map((secret) => secret.id))))
-      .toHaveLength(2);
+      .toHaveLength(3);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))
       .toEqual([expect.objectContaining({ status: "revoked", credentialSecretRefs: [] })]);
     expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
@@ -732,11 +743,11 @@ describeEmbeddedPostgres("access service", () => {
       })]);
     expect(await db.select().from(companySecretBindings)).toEqual([
       expect.objectContaining({
-        secretId: secrets[1]!.id,
+        secretId: secrets[2]!.id,
         targetType: "environment",
       }),
     ]);
-    expect(await db.select().from(userSecretDeclarations)).toHaveLength(1);
+    expect(await db.select().from(userSecretDeclarations)).toHaveLength(2);
   });
 
   it("preserves unrelated user-scoped secrets when membership is suspended", async () => {

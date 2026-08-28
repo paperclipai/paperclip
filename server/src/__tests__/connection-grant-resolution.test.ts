@@ -16,9 +16,11 @@ describe("connection grant resolution", () => {
   });
 
   it("allows an empty audience and rejects users outside a restricted audience", () => {
-    expect(isConnectionGrantAudienceAllowed([], "alice")).toBe(true);
-    expect(isConnectionGrantAudienceAllowed(["alice", "bob"], "alice")).toBe(true);
-    expect(isConnectionGrantAudienceAllowed(["alice", "bob"], "carol")).toBe(false);
-    expect(isConnectionGrantAudienceAllowed(["alice"], null)).toBe(false);
+    expect(isConnectionGrantAudienceAllowed([], "alice", true)).toBe(true);
+    expect(isConnectionGrantAudienceAllowed(["alice", "bob"], "alice", true)).toBe(true);
+    expect(isConnectionGrantAudienceAllowed(["alice", "bob"], "carol", true)).toBe(false);
+    expect(isConnectionGrantAudienceAllowed(["alice"], null, false)).toBe(false);
+    expect(isConnectionGrantAudienceAllowed([], "alice", false)).toBe(false);
+    expect(isConnectionGrantAudienceAllowed(["alice"], "alice", false)).toBe(false);
   });
 });

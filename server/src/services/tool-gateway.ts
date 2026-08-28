@@ -96,7 +96,12 @@ export function resolveCredentialGrantKind(
   return policy === "per_user" ? "user_authorization_required" : "organization";
 }
 
-export function isConnectionGrantAudienceAllowed(memberUserIds: string[], actingUserId: string | null): boolean {
+export function isConnectionGrantAudienceAllowed(
+  memberUserIds: string[],
+  actingUserId: string | null,
+  actingUserIsActiveMember: boolean,
+): boolean {
+  if (actingUserId !== null && !actingUserIsActiveMember) return false;
   return memberUserIds.length === 0 || (actingUserId !== null && memberUserIds.includes(actingUserId));
 }
 // When a human approves a parked write, the server carries it out on their
@@ -2762,7 +2767,17 @@ export function createToolGatewayService(
         eq(connectionGrantMembers.grantId, grant.id),
         eq(connectionGrantMembers.subjectType, "user"),
       ));
-      if (!isConnectionGrantAudienceAllowed(members.map((member) => member.subjectId), actingUserId)) {
+      const activeAudienceMember = actingUserId ? await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, connection.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, actingUserId),
+        eq(companyMemberships.status, "active"),
+      )).limit(1).then((rows) => rows[0] ?? null) : null;
+      if (!isConnectionGrantAudienceAllowed(
+        members.map((member) => member.subjectId),
+        actingUserId,
+        Boolean(activeAudienceMember),
+      )) {
         throw new ToolGatewayHttpError(403, "The acting user is not in this grant's audience", "grant_audience_denied", {
           connectionId: connection.id,
           grantId: grant.id,

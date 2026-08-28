@@ -1135,6 +1135,19 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(allowed.status).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
+    await db.update(companyMemberships).set({ status: "suspended" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
+    const inactiveAudienceMember = await request(app).post(`/api/agents/me/connections/${connection.id}/token`).send({});
+    expect(inactiveAudienceMember.status).toBe(403);
+    expect(inactiveAudienceMember.body).toMatchObject({ code: "grant_audience_denied", grantId: grant!.id });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await db.update(companyMemberships).set({ status: "active" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
+
     await db.delete(connectionGrantMembers).where(eq(connectionGrantMembers.grantId, grant!.id));
     await db.insert(connectionGrantMembers).values({
       companyId: company.id,
