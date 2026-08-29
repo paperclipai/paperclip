@@ -27,6 +27,7 @@ d("heartbeat context_snapshot expression index migration", () => {
     expect(names).toContain("heartbeat_runs_company_ctx_issue_created_idx");
     expect(names).toContain("heartbeat_runs_company_ctx_task_created_idx");
     expect(names).toContain("heartbeat_runs_company_ctx_taskkey_created_idx");
+    expect(names).toContain("heartbeat_runs_company_ctx_paperclip_issue_created_idx");
     expect(names).toContain("agent_wakeup_requests_company_payload_issue_idx");
 
     await sql.unsafe("SET enable_seqscan = off");
@@ -52,6 +53,16 @@ d("heartbeat context_snapshot expression index migration", () => {
     const taskKeyText = taskKeyPlan.map((r) => Object.values(r)[0]).join("\n");
     expect(taskKeyText).toContain("heartbeat_runs_company_ctx_taskkey_created_idx");
 
+    // run-secret-redaction valuesForIssue ORs issueId with paperclipIssue.id; the
+    // second branch needs its own expression index or the whole OR degrades to a
+    // sequential scan that detoasts every context_snapshot (measured 216k buffers
+    // per issue comments read on a 24k-row table).
+    const paperclipIssuePlan = await sql.unsafe(
+      "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND context_snapshot -> 'paperclipIssue' ->> 'id' = 'x' ORDER BY created_at DESC",
+    );
+    const paperclipIssueText = paperclipIssuePlan.map((r) => Object.values(r)[0]).join("\n");
+    expect(paperclipIssueText).toContain("heartbeat_runs_company_ctx_paperclip_issue_created_idx");
+
     const wakePlan = await sql.unsafe(
       "EXPLAIN SELECT id FROM agent_wakeup_requests WHERE company_id = '00000000-0000-0000-0000-000000000001' AND status = 'deferred_issue_execution' AND payload ->> 'issueId' = 'x' LIMIT 1",
     );
@@ -63,6 +74,7 @@ d("heartbeat context_snapshot expression index migration", () => {
     for (const migration of [
       "./migrations/0209_heartbeat_context_snapshot_indexes.sql",
       "./migrations/0210_heartbeat_context_taskkey_index.sql",
+      "./migrations/0231_heartbeat_context_paperclip_issue_index.sql",
     ]) {
       const migrationSql = await readFile(
         fileURLToPath(new URL(migration, import.meta.url)),
