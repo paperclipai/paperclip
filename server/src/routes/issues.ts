@@ -4262,6 +4262,16 @@ export function issueRoutes(
     return false;
   }
 
+  /**
+   * Guards agent mutations on human-assigned (gate) issues.
+   *
+   * When this function returns `true` it installs a `res.end` override that
+   * restores the one-shot grant claim before the 4xx response bytes leave the
+   * server. Route handlers that commit a protected mutation MUST signal this by
+   * setting `res.locals.humanGateMutationCommitted = true` immediately after the
+   * DB write; the override skips the restore in that case so the approval is not
+   * reusable for a second run of the same mutation.
+   */
   async function assertHumanAssignedIssueMutationAllowed(
     req: Request,
     res: Response,
