@@ -12714,7 +12714,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
-        await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+        const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness);
+        if (
+          cancelled &&
+          staleness.errorCode === "issue_assignee_changed" &&
+          readNonEmptyString(context.retryReason) === "missing_issue_comment"
+        ) {
+          // A missing-comment retry owns the execution lock until its stale-claim
+          // cancellation releases it. Defer dispatch until this scheduler invocation
+          // relinquishes its per-agent start lock, otherwise a promoted follow-up for
+          // the former assignee would recursively wait on that same lock.
+          await releaseIssueExecutionAndPromote(cancelled, {
+            suppressImmediateRecovery: true,
+            deferPromotedStart: true,
+          });
+        }
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -17109,7 +17123,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      deferPromotedStart?: boolean;
+    } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -17261,7 +17278,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
             ),
           )
-          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .orderBy(
+            sql`case when ${agentWakeupRequests.agentId} = ${issue.assigneeAgentId} then 0 else 1 end`,
+            asc(agentWakeupRequests.requestedAt),
+          )
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
@@ -17875,6 +17895,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    if (options.deferPromotedStart) {
+      queueMicrotask(() => {
+        void startNextQueuedRunForAgent(promotedRun.agentId).catch((err) => {
+          logger.error({ err, agentId: promotedRun.agentId }, "failed to start deferred promoted run");
+        });
+      });
+      return;
+    }
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
