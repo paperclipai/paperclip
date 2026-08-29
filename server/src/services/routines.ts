@@ -2217,7 +2217,7 @@ export function routineService(
                 : null,
             })),
           ),
-        findLiveExecutionIssue(row),
+        findOpenExecutionIssue(row),
         listManagedRoutineMetadata([row.id]),
       ]);
 
