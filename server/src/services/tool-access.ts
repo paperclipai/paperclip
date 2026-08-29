@@ -3440,8 +3440,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return row;
   }
 
-  async function ensureDefaultOrganizationGrant(connection: typeof toolConnections.$inferSelect) {
-    const [existing] = await db
+  async function ensureDefaultOrganizationGrant(
+    connection: typeof toolConnections.$inferSelect,
+    dbClient: ToolAccessMutationDb = db,
+  ) {
+    const [existing] = await dbClient
       .select()
       .from(connectionGrants)
       .where(and(
@@ -3459,7 +3462,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // sending an unauthenticated request after an apparently successful
       // setup. Reconnecting is also the explicit recovery path for a revoked
       // shared identity, so it is correct to reactivate that default grant here.
-      const [updated] = await db
+      const [updated] = await dbClient
         .update(connectionGrants)
         .set({
           credentialSecretRefs: connection.credentialSecretRefs,
@@ -3474,7 +3477,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!updated) throw new Error("Failed to update default connection grant");
       return updated;
     }
-    const [created] = await db
+    const [created] = await dbClient
       .insert(connectionGrants)
       .values({
         companyId: connection.companyId,
@@ -3676,8 +3679,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function syncCredentialBindings(
     connection: typeof toolConnections.$inferSelect,
     grantSecretRefs: ToolCredentialSecretRef[] = [],
+    dbClient: ToolAccessMutationDb = db,
   ) {
-    await db
+    await dbClient
       .delete(companySecretBindings)
       .where(
         and(
@@ -3709,7 +3713,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ref,
     ])).values()];
     const secretRows = bindings.length > 0
-      ? await db.select({
+      ? await dbClient.select({
           id: companySecrets.id,
           scope: companySecrets.scope,
           userSecretDefinitionId: companySecrets.userSecretDefinitionId,
@@ -3721,7 +3725,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const secretById = new Map(secretRows.map((row) => [row.id, row]));
     const definitionIds = [...new Set(secretRows.flatMap((row) => row.userSecretDefinitionId ? [row.userSecretDefinitionId] : []))];
     const definitions = definitionIds.length > 0
-      ? await db.select({ id: userSecretDefinitions.id, key: userSecretDefinitions.key })
+      ? await dbClient.select({ id: userSecretDefinitions.id, key: userSecretDefinitions.key })
           .from(userSecretDefinitions)
           .where(and(
             eq(userSecretDefinitions.companyId, connection.companyId),
@@ -3749,11 +3753,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       connection.companyId,
       { targetType: "tool_connection", targetId: connection.id },
       userDeclarations,
-      { replaceAll: true },
+      { replaceAll: true, db: dbClient },
     );
     const companyBindings = bindings.filter((ref) => secretById.get(ref.secretId)?.scope !== "user");
     if (companyBindings.length === 0) return;
-    await db.insert(companySecretBindings).values(companyBindings.map((ref) => ({
+    await dbClient.insert(companySecretBindings).values(companyBindings.map((ref) => ({
       companyId: connection.companyId,
       secretId: ref.secretId,
       targetType: "tool_connection" as const,
@@ -6014,23 +6018,28 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     actor?: ActorInfo;
     existingRefs?: typeof connectionGrants.$inferSelect.credentialSecretRefs;
     ownerUserId?: string;
+  }, context?: {
+    dbClient: ToolAccessMutationDb;
+    secretClient: ReturnType<typeof secretService>;
   }) {
+    const dbClient = context?.dbClient ?? db;
+    const secretClient = context?.secretClient ?? secrets;
     const existing = input.existingRefs === undefined
       ? oauthSecretRef(input.connection, input.configPath)
       : input.existingRefs.find((ref) => ref.configPath === input.configPath);
     if (existing) {
-      await secrets.rotate(existing.secretId, { value: input.value }, actorForSecret(input.actor));
+      await secretClient.rotate(existing.secretId, { value: input.value }, actorForSecret(input.actor));
       return existing;
     }
     if (input.ownerUserId) {
       const definitionKey = `tool_oauth.${input.connection.id}.${input.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`;
-      let [definition] = await db.select().from(userSecretDefinitions).where(and(
+      let [definition] = await dbClient.select().from(userSecretDefinitions).where(and(
         eq(userSecretDefinitions.companyId, input.companyId),
         eq(userSecretDefinitions.key, definitionKey),
         isNull(userSecretDefinitions.deletedAt),
       )).limit(1);
       if (!definition) {
-        [definition] = await db.insert(userSecretDefinitions).values({
+        [definition] = await dbClient.insert(userSecretDefinitions).values({
           companyId: input.companyId,
           key: definitionKey,
           name: `${input.connection.name} ${input.label}`,
@@ -6041,7 +6050,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId : null,
         }).onConflictDoNothing().returning();
         if (!definition) {
-          [definition] = await db.select().from(userSecretDefinitions).where(and(
+          [definition] = await dbClient.select().from(userSecretDefinitions).where(and(
             eq(userSecretDefinitions.companyId, input.companyId),
             eq(userSecretDefinitions.key, definitionKey),
             isNull(userSecretDefinitions.deletedAt),
@@ -6049,7 +6058,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
       }
       if (!definition) throw new Error("Failed to create personal OAuth secret definition");
-      const [existingUserValue] = await db.select().from(companySecrets).where(and(
+      const [existingUserValue] = await dbClient.select().from(companySecrets).where(and(
         eq(companySecrets.companyId, input.companyId),
         eq(companySecrets.scope, "user"),
         eq(companySecrets.ownerUserId, input.ownerUserId),
@@ -6063,7 +6072,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // rotate it instead of colliding with the one-value-per-definition
         // constraint.
         if (existingUserValue.status !== "active") {
-          await secrets.updateCurrentUserSecretValue(
+          await secretClient.updateCurrentUserSecretValue(
             input.companyId,
             input.ownerUserId,
             existingUserValue.id,
@@ -6071,7 +6080,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             actorForSecret(input.actor),
           );
         }
-        const secret = await secrets.rotateCurrentUserSecretValue(
+        const secret = await secretClient.rotateCurrentUserSecretValue(
           input.companyId,
           input.ownerUserId,
           existingUserValue.id,
@@ -6086,7 +6095,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           label: input.label,
         };
       }
-      const secret = await secrets.createCurrentUserSecretValue(input.companyId, input.ownerUserId, {
+      const secret = await secretClient.createCurrentUserSecretValue(input.companyId, input.ownerUserId, {
         definitionId: definition.id,
         value: input.value,
       }, actorForSecret(input.actor));
@@ -6098,7 +6107,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         label: input.label,
       };
     }
-    const secret = await secrets.create(input.companyId, {
+    const secret = await secretClient.create(input.companyId, {
       name: `${input.connection.name} ${input.label} ${randomUUID().slice(0, 8)}`,
       key: `tool_app.${randomUUID()}.${input.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
       provider: "local_encrypted",
@@ -8739,6 +8748,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         if (!membership) {
           throw forbidden("Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.");
         }
+        const txSecrets = secretService(tx);
+        const txSecretContext = { dbClient: tx, secretClient: txSecrets };
 
         const [existingUserGrant] = await tx.select().from(connectionGrants).where(and(
           eq(connectionGrants.companyId, connection.companyId),
@@ -8756,7 +8767,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           actor: input.actor,
           existingRefs: subjectCredentialSecretRefs,
           ownerUserId: stateRow.subjectUserId!,
-        });
+        }, txSecretContext);
         const nextCredentialSecretRefs = [
           ...subjectCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
           accessRef,
@@ -8771,7 +8782,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             actor: input.actor,
             existingRefs: subjectCredentialSecretRefs,
             ownerUserId: stateRow.subjectUserId!,
-          }));
+          }, txSecretContext));
         } else {
           const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
           if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
@@ -8824,7 +8835,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             oauth: { expiresAt, scope: token.scope, tokenType: token.tokenType },
           },
         };
-        await tx.update(toolConnections).set({
+        const [updatedConnection] = await tx.update(toolConnections).set({
           status: "active",
           enabled: true,
           authKind: "oauth",
@@ -8843,7 +8854,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
               )
             : connection.credentialSecretRefs,
           updatedAt: new Date(),
-        }).where(eq(toolConnections.id, connection.id));
+        })
+          .where(eq(toolConnections.id, connection.id))
+          .returning();
+        if (!updatedConnection) throw new Error("OAuth connection was not found");
+        connection = updatedConnection;
         await tx.update(toolApplications).set({
           status: "active",
           updatedAt: new Date(),
@@ -8868,17 +8883,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             eq(issueThreadInteractions.companyId, connection.companyId),
           ));
         }
+        await syncCredentialBindings(
+          connection,
+          connection.credentialPolicy === "per_user" ? personalCredentialSecretRefs : [],
+          tx,
+        );
       });
 
       // Personal OAuth used to return immediately after saving the grant. That
       // left the connection draft/paused and its catalog empty, so the person
       // who had just consented landed on a false "Nothing to test" state.
       // Activate and discover with the just-issued token before returning.
-      connection = await getConnectionRow(connection.id, connection.companyId);
-      await syncCredentialBindings(
-        connection,
-        connection.credentialPolicy === "per_user" ? personalCredentialSecretRefs : [],
-      );
       const refresh = await refreshCatalog(connection.id, input.actor, {
         enableAllByDefault: true,
         credentialHeaders: { Authorization: `Bearer ${token.accessToken}` },
@@ -8918,6 +8933,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!membership) {
         throw forbidden("Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.");
       }
+      const txSecrets = secretService(tx);
+      const txSecretContext = { dbClient: tx, secretClient: txSecrets };
 
       const subjectCredentialSecretRefs = connection.credentialSecretRefs;
       const accessRef = await createOrRotateOAuthSecret({
@@ -8927,7 +8944,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         label: "OAuth access token",
         value: token.accessToken,
         actor: input.actor,
-      });
+      }, txSecretContext);
       const nextCredentialSecretRefs = [
         ...subjectCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
         accessRef,
@@ -8940,7 +8957,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           label: "OAuth refresh token",
           value: token.refreshToken,
           actor: input.actor,
-        }));
+        }, txSecretContext));
       } else {
         const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
         if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
@@ -9006,8 +9023,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // Synchronize it after every successful callback/rotation so all real tool
       // execution paths receive the credentials that setup and catalog discovery
       // just proved.
-      await ensureDefaultOrganizationGrant(connection);
-      await syncCredentialBindings(connection);
+      await ensureDefaultOrganizationGrant(connection, tx);
+      await syncCredentialBindings(connection, [], tx);
     });
 
     await checkConnectionHealth(connection.id, input.actor);

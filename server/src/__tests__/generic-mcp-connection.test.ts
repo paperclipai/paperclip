@@ -10,6 +10,7 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  connectionGrants,
   companySecretBindings,
   companySecrets,
   companySecretVersions,
@@ -29,7 +30,7 @@ import {
   toolProfiles,
   toolRuntimeSlots,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -356,6 +357,24 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  async function waitForBlockedMembershipUpdate() {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const [waiting] = await db.execute<{ waiting: boolean }>(sql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_stat_activity
+          WHERE state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%company_memberships%'
+            AND query ILIKE '%for update%'
+        ) AS waiting
+      `);
+      if (waiting?.waiting) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return false;
+  }
 
   it("discovers every tool for a public unknown endpoint without activating the draft", async () => {
     installMcpOAuthFixture({ auth: "public" });
@@ -762,6 +781,49 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
   });
 
+  it("completes organization OAuth with a single database connection", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const callbackDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const service = toolAccessService(callbackDb);
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+
+    try {
+      await callbackDb.execute(sql`select pg_backend_pid()`);
+      const connected = await service.connectGalleryApp(company.id, {
+        link: MCP_URL,
+        name: "Fixture single-pool OAuth",
+      });
+      const start = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: REDIRECT_URI,
+        actor: { actorType: "user", actorId: "board-user" },
+      });
+      const authorizationUrl = new URL(start.authorizationUrl);
+      const code = fixture.issueAuthorizationCode(start.authorizationUrl);
+
+      const completed = await Promise.race([
+        service.completeOAuthCallback({
+          state: authorizationUrl.searchParams.get("state")!,
+          code,
+          iss: ISSUER,
+          redirectUri: REDIRECT_URI,
+          actor: { actorType: "user", actorId: "board-user" },
+        }),
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => {
+            void callbackDb.$client.end({ timeout: 0 })
+              .finally(() => reject(new Error("OAuth callback self-deadlocked with maxConnections=1")));
+          }, 5_000);
+        }),
+      ]);
+
+      expect(completed.connection).toMatchObject({ status: "active", enabled: true });
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
+    }
+  }, 15_000);
+
   it("rejects organization OAuth completion after the initiating user loses write access", async () => {
     const fixture = installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
@@ -802,6 +864,105 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(connection!.credentialSecretRefs.some((ref) => ref.configPath === "oauth.access_token")).toBe(false);
     expect(connection!.credentialSecretRefs.some((ref) => ref.configPath === "oauth.refresh_token")).toBe(false);
   });
+
+  it("serializes organization OAuth completion behind membership revocation", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const callbackDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const removalDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const service = toolAccessService(callbackDb);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    let releaseRemoval!: () => void;
+    const removalMayCommit = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    let membershipLocked!: () => void;
+    const membershipIsLocked = new Promise<void>((resolve) => {
+      membershipLocked = resolve;
+    });
+
+    const connected = await service.connectGalleryApp(company.id, {
+      link: MCP_URL,
+      name: "Fixture concurrent revocation OAuth",
+    });
+    const start = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor,
+    });
+    const authorizationUrl = new URL(start.authorizationUrl);
+    const code = fixture.issueAuthorizationCode(start.authorizationUrl);
+    const beforeSecrets = await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id));
+    const beforeVersions = await db.select().from(companySecretVersions);
+    const beforeBindings = await db.select().from(companySecretBindings).where(eq(companySecretBindings.companyId, company.id));
+    const beforeGrants = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.companyId, company.id),
+      eq(connectionGrants.connectionId, connected.connectionId),
+    ));
+
+    const removal = removalDb.transaction(async (tx) => {
+      await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, company.id),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, "board-user"),
+      )).for("update");
+      membershipLocked();
+      await removalMayCommit;
+      await tx.update(companyMemberships).set({
+        membershipRole: "viewer",
+        updatedAt: new Date(),
+      }).where(and(
+        eq(companyMemberships.companyId, company.id),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, "board-user"),
+      ));
+    });
+
+    await membershipIsLocked;
+    const completion = service.completeOAuthCallback({
+      state: authorizationUrl.searchParams.get("state")!,
+      code,
+      iss: ISSUER,
+      redirectUri: REDIRECT_URI,
+      actor,
+    }).then(
+      (value) => ({ value, error: null }),
+      (error: unknown) => ({ value: null, error }),
+    );
+
+    try {
+      expect(await waitForBlockedMembershipUpdate()).toBe(true);
+      releaseRemoval();
+      await removal;
+      const outcome = await completion;
+      expect(outcome.value).toBeNull();
+      expect(outcome.error).toMatchObject({
+        status: 403,
+        message: expect.stringContaining("membership no longer permits connection changes"),
+      });
+
+      const [connection] = await db.select().from(toolConnections).where(eq(
+        toolConnections.id,
+        connected.connectionId,
+      ));
+      expect(connection).toMatchObject({ status: "draft" });
+      expect(connection!.credentialSecretRefs).toEqual([]);
+      await expect(db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id)))
+        .resolves.toHaveLength(beforeSecrets.length);
+      await expect(db.select().from(companySecretVersions)).resolves.toHaveLength(beforeVersions.length);
+      await expect(db.select().from(companySecretBindings).where(eq(companySecretBindings.companyId, company.id)))
+        .resolves.toHaveLength(beforeBindings.length);
+      const afterGrants = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, company.id),
+        eq(connectionGrants.connectionId, connected.connectionId),
+      ));
+      expect(afterGrants).toEqual(beforeGrants);
+    } finally {
+      releaseRemoval();
+      await removal.catch(() => undefined);
+      await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
+      await removalDb.$client.end({ timeout: 0 }).catch(() => undefined);
+    }
+  }, 15_000);
 
   it("discovers a pathful issuer through the OIDC suffix form too", async () => {
     installMcpOAuthFixture({ auth: "oauth", wellKnownStyle: "oidc-suffix" });
