@@ -289,7 +289,16 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
     detectCommand: input.detectCommand,
     env: input.env,
   });
-  if (installCheck) checks.push(installCheck);
+  // The generic install helper may include a bounded stdout/stderr tail in its
+  // detail field. A Claude environment Test must not surface that raw remote
+  // output because it can contain credentials, tokens, or provider paths.
+  if (installCheck) {
+    checks.push({
+      code: installCheck.code,
+      level: installCheck.level,
+      message: installCheck.message,
+    });
+  }
 
   const hasExplicitClaudeConfigDir = isNonEmptyString(input.env.CLAUDE_CONFIG_DIR);
   if (

@@ -51,6 +51,12 @@ export async function testEnvironment(
   }
 
   const checks: AdapterEnvironmentCheck[] = [];
+  checks.push({
+    code: "claude_engine_selected",
+    level: "info",
+    message: "Execution engine selected: Claude CLI.",
+    hint: "Set engine=acp to use the Claude ACP lane.",
+  });
   if (!engineSelection.explicit && engineSelection.fallbackReason) {
     checks.push({
       code: "claude_acp_default_fallback",
@@ -85,12 +91,12 @@ export async function testEnvironment(
       level: "info",
       message: `Working directory is valid: ${cwd}`,
     });
-  } catch (err) {
+  } catch {
     checks.push({
       code: "claude_cwd_invalid",
       level: "error",
-      message: err instanceof Error ? err.message : "Invalid working directory",
-      detail: cwd,
+      message: "The Claude CLI working directory is not available on the selected target.",
+      hint: "Choose a valid working directory on the selected execution target, then retry the Test.",
     });
   }
 
@@ -129,12 +135,12 @@ export async function testEnvironment(
       level: "info",
       message: `Command is executable: ${command}`,
     });
-  } catch (err) {
+  } catch {
     checks.push({
       code: "claude_command_unresolvable",
       level: "error",
-      message: err instanceof Error ? err.message : "Command is not executable",
-      detail: command,
+      message: "The Claude CLI command is not available on the selected target.",
+      hint: "Install Claude on the selected execution target, then retry the Test.",
     });
   }
 
@@ -212,7 +218,6 @@ export async function testEnvironment(
         code: "claude_hello_probe_skipped_custom_command",
         level: "warn",
         message: "Skipped hello probe because command is not `claude`.",
-        detail: command,
         hint: "Use the `claude` CLI command to run the automatic login and installation probe.",
       });
     } else if (localProbe && !localProbe.command) {
