@@ -4220,7 +4220,7 @@ export function issueRoutes(
     humanOwnerUserId: string,
   ) {
     const actor = getActorInfo(req);
-    await logActivity(db, {
+    const activity = await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -4240,6 +4240,26 @@ export function issueRoutes(
         humanOwnerUserId,
       },
     });
+    return activity;
+  }
+
+  function isHumanGateGrantClaimConflict(error: unknown): boolean {
+    for (
+      let current = error, depth = 0;
+      current && typeof current === "object" && depth < 5;
+      current = (current as { cause?: unknown }).cause, depth += 1
+    ) {
+      const candidate = current as { code?: string; constraint?: string; message?: string };
+      if (
+        candidate.code === "23505" &&
+        (candidate.constraint === "activity_log_human_gate_grant_claim_uq" ||
+          (typeof candidate.message === "string" &&
+            candidate.message.includes("activity_log_human_gate_grant_claim_uq")))
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async function assertHumanAssignedIssueMutationAllowed(
@@ -4268,12 +4288,39 @@ export function issueRoutes(
       return false;
     }
     const grant = await findHumanMutationGrant(req, issue, humanOwnerUserId);
-    if (grant) {
-      await logAuthorizedMutation(grant, req, issue, humanOwnerUserId);
-      return true;
+    if (!grant) {
+      res.status(403).json(humanOwnedIssueMutationError(issue, humanOwnerUserId));
+      return false;
     }
-    res.status(403).json(humanOwnedIssueMutationError(issue, humanOwnerUserId));
-    return false;
+    // Claim the grant atomically. The partial unique index
+    // activity_log_human_gate_grant_claim_uq ensures at most one INSERT
+    // succeeds for a given (entity_id, interactionId) pair. A concurrent
+    // request that finds the same unconsumed grant fails here with 23505
+    // instead of proceeding to a second mutation.
+    let claimedActivityId: string;
+    try {
+      const claimed = await logAuthorizedMutation(grant, req, issue, humanOwnerUserId);
+      claimedActivityId = claimed.id;
+    } catch (err) {
+      if (isHumanGateGrantClaimConflict(err)) {
+        // Another concurrent request already claimed this grant.
+        res.status(403).json(humanOwnedIssueMutationError(issue, humanOwnerUserId));
+        return false;
+      }
+      throw err;
+    }
+    // Consume-after-success: if the route handler returns a non-2xx status
+    // (e.g., a validation error fires after the guard), undo the claim so the
+    // agent can retry with the same approval. The undo runs asynchronously
+    // after the response is flushed — it does not affect what is sent.
+    res.on("finish", () => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        db.delete(activityLog)
+          .where(eq(activityLog.id, claimedActivityId))
+          .catch(() => { /* undo is best-effort; a missed undo means the human re-creates the card */ });
+      }
+    });
+    return true;
   }
 
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
