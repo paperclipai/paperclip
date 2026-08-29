@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -67,6 +68,8 @@ export interface WorkspaceGitScanInput {
   cacheTtlMs?: number;
   /** Per-operation wall-clock deadline. Defaults to the process-wide setting. */
   timeoutMs?: number;
+  /** Maximum time this operation may wait for a subprocess slot. */
+  queueTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
@@ -76,16 +79,33 @@ export interface WorkspaceGitSchedulerSnapshot {
   activeCount: number;
   queuedCount: number;
   inFlightCount: number;
+  waiterCount: number;
+  resolvingCount: number;
+  totalDemandCount: number;
+  maxTotalDemand: number;
+  maxWaitersPerKey: number;
   cacheEntryCount: number;
   cacheBytes: number;
+  negativeBackoffEntryCount: number;
+  peaks: {
+    active: number;
+    queued: number;
+    waiters: number;
+    perKeyWaiters: number;
+    totalDemand: number;
+  };
   totals: {
     started: number;
     succeeded: number;
     failed: number;
     timedOut: number;
     cancelled: number;
+    aborted: number;
     saturated: number;
+    rejected: number;
+    forcedKilled: number;
     cacheHits: number;
+    negativeBackoffHits: number;
     singleFlightJoins: number;
   };
 }
@@ -113,8 +133,12 @@ export type WorkspaceGitRunner = (
 export interface WorkspaceGitOperationSchedulerOptions {
   concurrency?: number;
   queueCapacity?: number;
+  maxTotalDemand?: number;
+  maxWaitersPerKey?: number;
   timeoutMs?: number;
+  queueTimeoutMs?: number;
   killGraceMs?: number;
+  negativeBackoffMs?: number;
   defaultCacheTtlMs?: number;
   maxCacheEntries?: number;
   maxCacheBytes?: number;
@@ -145,12 +169,14 @@ interface PendingScan {
   fairnessKeys: readonly string[];
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
+  queueTimeoutMs: number;
   maxStdoutBytes: number;
   maxStderrBytes: number;
   cacheTtlMs: number;
   enqueuedAt: number;
   state: "queued" | "running";
   controller: AbortController;
+  queueTimer: NodeJS.Timeout | null;
   waiters: Map<symbol, Waiter>;
   joinCount: number;
 }
@@ -169,10 +195,19 @@ interface WarningBucket {
   suppressed: number;
 }
 
+interface NegativeBackoffEntry {
+  expiresAt: number;
+  error: WorkspaceGitScanError;
+}
+
 const DEFAULT_CONCURRENCY = 2;
 const DEFAULT_QUEUE_CAPACITY = 32;
+const DEFAULT_MAX_TOTAL_DEMAND = 128;
+const DEFAULT_MAX_WAITERS_PER_KEY = 16;
 const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_QUEUE_TIMEOUT_MS = 1_000;
 const DEFAULT_KILL_GRACE_MS = 250;
+const DEFAULT_NEGATIVE_BACKOFF_MS = 500;
 const DEFAULT_CACHE_TTL_MS = 10_000;
 const DEFAULT_CACHE_ENTRIES = 64;
 const DEFAULT_CACHE_BYTES = 8 * 1024 * 1024;
@@ -201,12 +236,25 @@ export function workspaceGitSchedulerOptionsFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): Required<Pick<
   WorkspaceGitOperationSchedulerOptions,
-  "concurrency" | "queueCapacity" | "timeoutMs" | "defaultCacheTtlMs"
+  | "concurrency"
+  | "queueCapacity"
+  | "maxTotalDemand"
+  | "maxWaitersPerKey"
+  | "timeoutMs"
+  | "queueTimeoutMs"
+  | "killGraceMs"
+  | "negativeBackoffMs"
+  | "defaultCacheTtlMs"
 >> {
   return {
     concurrency: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY", DEFAULT_CONCURRENCY, 1, 16),
     queueCapacity: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_CAPACITY", DEFAULT_QUEUE_CAPACITY, 0, 1_024),
+    maxTotalDemand: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_TOTAL_DEMAND_CAP", DEFAULT_MAX_TOTAL_DEMAND, 2, 4_096),
+    maxWaitersPerKey: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_PER_KEY_WAITER_CAP", DEFAULT_MAX_WAITERS_PER_KEY, 1, 1_024),
     timeoutMs: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_TIMEOUT_MS", DEFAULT_TIMEOUT_MS, 100, 120_000),
+    queueTimeoutMs: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_TIMEOUT_MS", DEFAULT_QUEUE_TIMEOUT_MS, 10, 120_000),
+    killGraceMs: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_KILL_GRACE_MS", DEFAULT_KILL_GRACE_MS, 1, 10_000),
+    negativeBackoffMs: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_NEGATIVE_BACKOFF_MS", DEFAULT_NEGATIVE_BACKOFF_MS, 0, 60_000),
     defaultCacheTtlMs: envInteger(env, "PAPERCLIP_WORKSPACE_GIT_SCAN_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS, 0, 60_000),
   };
 }
@@ -220,6 +268,7 @@ function scanKey(input: {
   args: readonly string[];
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
+  queueTimeoutMs: number;
   maxStdoutBytes: number;
   maxStderrBytes: number;
 }): string {
@@ -240,34 +289,36 @@ function scanKey(input: {
       args: input.args,
       semanticEnv,
       timeoutMs: input.timeoutMs,
+      queueTimeoutMs: input.queueTimeoutMs,
       maxStdoutBytes: input.maxStdoutBytes,
       maxStderrBytes: input.maxStderrBytes,
     }))
     .digest("hex");
 }
 
-function abortError(workspaceHash: string): WorkspaceGitScanError {
+function abortError(workspaceHash: string, details: Record<string, unknown> = {}): WorkspaceGitScanError {
   return new WorkspaceGitScanError(
     WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled,
     "Workspace Git scan was cancelled",
-    { workspaceHash },
+    { workspaceHash, ...details },
   );
 }
 
-function signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+function signalChild(child: ChildProcess, signal: NodeJS.Signals): boolean {
+  if (child.exitCode !== null || child.signalCode !== null) return false;
   if (process.platform !== "win32" && child.pid) {
     try {
       process.kill(-child.pid, signal);
-      return;
+      return true;
     } catch {
       // Fall back to the direct child if the process group already disappeared.
     }
   }
   try {
-    child.kill(signal);
+    return child.kill(signal);
   } catch {
     // The close/error handler owns settlement; an already-dead child is benign.
+    return false;
   }
 }
 
@@ -299,12 +350,16 @@ function createSpawnRunner(input: {
     let termination: "timeout" | "cancelled" | "output_limit" | null = null;
     let spawnError: Error | null = null;
     let settled = false;
+    let forcedKill = false;
+    let killTimer: NodeJS.Timeout | null = null;
 
     const terminate = (reason: NonNullable<typeof termination>) => {
       if (termination) return;
       termination = reason;
       signalChild(child, "SIGTERM");
-      killTimer = setTimeout(() => signalChild(child, "SIGKILL"), runInput.killGraceMs);
+      killTimer = setTimeout(() => {
+        forcedKill = signalChild(child, "SIGKILL") || forcedKill;
+      }, runInput.killGraceMs);
       killTimer.unref?.();
     };
 
@@ -324,19 +379,20 @@ function createSpawnRunner(input: {
 
     const onAbort = () => terminate("cancelled");
     runInput.signal.addEventListener("abort", onAbort, { once: true });
-    child.stdout?.on("data", (chunk) => {
+    const onStdoutData = (chunk: Buffer | string) => {
       stdoutBytes = append(chunk, stdoutChunks, stdoutBytes, runInput.maxStdoutBytes);
-    });
-    child.stderr?.on("data", (chunk) => {
+    };
+    const onStderrData = (chunk: Buffer | string) => {
       stderrBytes = append(chunk, stderrChunks, stderrBytes, runInput.maxStderrBytes);
-    });
+    };
+    child.stdout?.on("data", onStdoutData);
+    child.stderr?.on("data", onStderrData);
     child.once("error", (error) => {
       spawnError = error;
     });
 
     const timeoutTimer = setTimeout(() => terminate("timeout"), runInput.timeoutMs);
     timeoutTimer.unref?.();
-    let killTimer: NodeJS.Timeout | null = null;
 
     child.once("close", (code, childSignal) => {
       if (settled) return;
@@ -344,6 +400,8 @@ function createSpawnRunner(input: {
       clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
       runInput.signal.removeEventListener("abort", onAbort);
+      child.stdout?.off("data", onStdoutData);
+      child.stderr?.off("data", onStderrData);
       const stdout = Buffer.concat(stdoutChunks).toString("utf8");
       const stderr = Buffer.concat(stderrChunks).toString("utf8");
       const workspaceHash = workspaceIdentity(runInput.canonicalWorkspacePath);
@@ -352,12 +410,12 @@ function createSpawnRunner(input: {
         reject(new WorkspaceGitScanError(
           WORKSPACE_GIT_SCAN_ERROR_CODES.timeout,
           `Workspace Git scan timed out after ${runInput.timeoutMs}ms`,
-          { workspaceHash, timeoutMs: runInput.timeoutMs },
+          { workspaceHash, timeoutMs: runInput.timeoutMs, forcedKill },
         ));
         return;
       }
       if (termination === "cancelled") {
-        reject(abortError(workspaceHash));
+        reject(abortError(workspaceHash, { forcedKill }));
         return;
       }
       if (termination === "output_limit") {
@@ -370,6 +428,7 @@ function createSpawnRunner(input: {
             stderrBytes,
             maxStdoutBytes: runInput.maxStdoutBytes,
             maxStderrBytes: runInput.maxStderrBytes,
+            forcedKill,
           },
         ));
         return;
@@ -404,8 +463,12 @@ function createSpawnRunner(input: {
 export class WorkspaceGitOperationScheduler {
   private readonly concurrency: number;
   private readonly queueCapacity: number;
+  private readonly maxTotalDemand: number;
+  private readonly maxWaitersPerKey: number;
   private readonly timeoutMs: number;
+  private readonly queueTimeoutMs: number;
   private readonly killGraceMs: number;
+  private readonly negativeBackoffMs: number;
   private readonly defaultCacheTtlMs: number;
   private readonly maxCacheEntries: number;
   private readonly maxCacheBytes: number;
@@ -417,27 +480,49 @@ export class WorkspaceGitOperationScheduler {
   private readonly inFlight = new Map<string, PendingScan>();
   private readonly queue: PendingScan[] = [];
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly negativeBackoff = new Map<string, NegativeBackoffEntry>();
+  private readonly running = new Set<PendingScan>();
   private readonly lastServedByFairnessKey = new Map<string, number>();
   private readonly warningBuckets = new Map<string, WarningBucket>();
+  private readonly resolvingByPreliminaryKey = new Map<string, number>();
   private cacheBytes = 0;
   private activeCount = 0;
+  private waiterCount = 0;
+  private resolvingCount = 0;
+  private shuttingDown = false;
   private serviceSequence = 0;
+  private readonly peaks = {
+    active: 0,
+    queued: 0,
+    waiters: 0,
+    perKeyWaiters: 0,
+    totalDemand: 0,
+  };
+  private readonly shutdownWaiters = new Set<() => void>();
   private readonly totals = {
     started: 0,
     succeeded: 0,
     failed: 0,
     timedOut: 0,
     cancelled: 0,
+    aborted: 0,
     saturated: 0,
+    rejected: 0,
+    forcedKilled: 0,
     cacheHits: 0,
+    negativeBackoffHits: 0,
     singleFlightJoins: 0,
   };
 
   constructor(options: WorkspaceGitOperationSchedulerOptions = {}) {
     this.concurrency = clampInteger(options.concurrency, DEFAULT_CONCURRENCY, 1, 16);
     this.queueCapacity = clampInteger(options.queueCapacity, DEFAULT_QUEUE_CAPACITY, 0, 1_024);
+    this.maxTotalDemand = clampInteger(options.maxTotalDemand, DEFAULT_MAX_TOTAL_DEMAND, 2, 4_096);
+    this.maxWaitersPerKey = clampInteger(options.maxWaitersPerKey, DEFAULT_MAX_WAITERS_PER_KEY, 1, 1_024);
     this.timeoutMs = clampInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 1, 120_000);
+    this.queueTimeoutMs = clampInteger(options.queueTimeoutMs, DEFAULT_QUEUE_TIMEOUT_MS, 1, 120_000);
     this.killGraceMs = clampInteger(options.killGraceMs, DEFAULT_KILL_GRACE_MS, 1, 10_000);
+    this.negativeBackoffMs = clampInteger(options.negativeBackoffMs, DEFAULT_NEGATIVE_BACKOFF_MS, 0, 60_000);
     this.defaultCacheTtlMs = clampInteger(options.defaultCacheTtlMs, DEFAULT_CACHE_TTL_MS, 0, 60_000);
     this.maxCacheEntries = clampInteger(options.maxCacheEntries, DEFAULT_CACHE_ENTRIES, 0, 10_000);
     this.maxCacheBytes = clampInteger(options.maxCacheBytes, DEFAULT_CACHE_BYTES, 0, 1024 * 1024 * 1024);
@@ -453,32 +538,162 @@ export class WorkspaceGitOperationScheduler {
 
   snapshot(): WorkspaceGitSchedulerSnapshot {
     this.pruneExpiredCache();
+    this.pruneNegativeBackoff();
     return {
       activeCount: this.activeCount,
       queuedCount: this.queue.length,
       inFlightCount: this.inFlight.size,
+      waiterCount: this.waiterCount,
+      resolvingCount: this.resolvingCount,
+      totalDemandCount: this.totalDemandCount(),
+      maxTotalDemand: this.maxTotalDemand,
+      maxWaitersPerKey: this.maxWaitersPerKey,
       cacheEntryCount: this.cache.size,
       cacheBytes: this.cacheBytes,
+      negativeBackoffEntryCount: this.negativeBackoff.size,
+      peaks: { ...this.peaks },
       totals: { ...this.totals },
     };
   }
 
-  async run(input: WorkspaceGitScanInput): Promise<WorkspaceGitScanResult> {
-    if (input.signal?.aborted) throw abortError("unresolved");
+  async shutdown(): Promise<void> {
+    // Close admission before inspecting any current work. A call already in
+    // canonical-path resolution remains counted until it observes this flag,
+    // releases its reservation, and fails without starting a child.
+    this.shuttingDown = true;
+    for (const scan of [...this.queue]) {
+      this.cancelQueuedScan(scan, "scheduler_shutdown");
+    }
+    for (const scan of this.running) scan.controller.abort();
+    if (this.activeCount === 0 && this.resolvingCount === 0) return;
+    await new Promise<void>((resolve) => this.shutdownWaiters.add(resolve));
+  }
+
+  private settleShutdownWaiters(): void {
+    if (!this.shuttingDown || this.activeCount > 0 || this.resolvingCount > 0) return;
+    for (const resolve of this.shutdownWaiters) resolve();
+    this.shutdownWaiters.clear();
+  }
+
+  private totalDemandCount(): number {
+    // Active and queued operations are counted independently from their live
+    // callers. A canonical-path resolution reserves two units because it can
+    // become one queued/running operation plus its first waiter.
+    return this.activeCount + this.queue.length + this.waiterCount + (this.resolvingCount * 2);
+  }
+
+  private saturationError(
+    operation: string,
+    workspaceHash: string,
+    phase: "global_demand" | "per_key_waiters" | "queue",
+    details: Record<string, unknown> = {},
+  ): WorkspaceGitScanError {
+    this.totals.saturated += 1;
+    this.totals.rejected += 1;
+    this.warnRateLimited(`saturated:${phase}`, {
+      event: "workspace_git_scan",
+      operation,
+      workspaceHash,
+      outcome: "saturated",
+      phase,
+      activeCount: this.activeCount,
+      queuedCount: this.queue.length,
+      waiterCount: this.waiterCount,
+      totalDemandCount: this.totalDemandCount(),
+      saturationCount: this.totals.saturated,
+      rejectedCount: this.totals.rejected,
+    }, "workspace Git scan demand saturated");
+    return new WorkspaceGitScanError(
+      WORKSPACE_GIT_SCAN_ERROR_CODES.saturated,
+      "Workspace Git readiness is temporarily unavailable because scan demand is full",
+      {
+        workspaceHash,
+        phase,
+        activeCount: this.activeCount,
+        queuedCount: this.queue.length,
+        waiterCount: this.waiterCount,
+        totalDemandCount: this.totalDemandCount(),
+        maxTotalDemand: this.maxTotalDemand,
+        retryAfterSeconds: 1,
+        ...details,
+      },
+    );
+  }
+
+  run(input: WorkspaceGitScanInput): Promise<WorkspaceGitScanResult> {
+    if (this.shuttingDown) {
+      this.totals.cancelled += 1;
+      return Promise.reject(abortError("unresolved", { reason: "scheduler_shutdown" }));
+    }
+    if (input.signal?.aborted) {
+      this.totals.cancelled += 1;
+      this.totals.aborted += 1;
+      return Promise.reject(abortError("unresolved"));
+    }
+    // Canonicalization itself allocates an fs promise. Reserve the worst-case
+    // cost of one operation plus its first waiter before doing that work, so an
+    // arbitrary request storm cannot move the unbounded queue one layer up.
+    if (this.totalDemandCount() + 2 > this.maxTotalDemand) {
+      return Promise.reject(this.saturationError(input.operation, "unresolved", "global_demand"));
+    }
+    const preliminaryKey = createHash("sha256")
+      .update(JSON.stringify({ workspacePath: path.resolve(input.workspacePath), args: input.args }))
+      .digest("hex");
+    const resolvingForKey = this.resolvingByPreliminaryKey.get(preliminaryKey) ?? 0;
+    if (resolvingForKey >= this.maxWaitersPerKey) {
+      return Promise.reject(this.saturationError(input.operation, "unresolved", "per_key_waiters", {
+        resolvingForKey,
+        maxWaitersPerKey: this.maxWaitersPerKey,
+        phaseDetail: "canonical_path_resolution",
+      }));
+    }
+    this.resolvingCount += 1;
+    this.resolvingByPreliminaryKey.set(preliminaryKey, resolvingForKey + 1);
+    this.recordPeaks(resolvingForKey + 1);
+    return this.resolveAndSchedule(input, preliminaryKey);
+  }
+
+  private async resolveAndSchedule(
+    input: WorkspaceGitScanInput,
+    preliminaryKey: string,
+  ): Promise<WorkspaceGitScanResult> {
+    let resolutionReserved = true;
+    const releaseResolution = () => {
+      if (!resolutionReserved) return;
+      resolutionReserved = false;
+      this.resolvingCount = Math.max(0, this.resolvingCount - 1);
+      const nextForKey = (this.resolvingByPreliminaryKey.get(preliminaryKey) ?? 1) - 1;
+      if (nextForKey <= 0) this.resolvingByPreliminaryKey.delete(preliminaryKey);
+      else this.resolvingByPreliminaryKey.set(preliminaryKey, nextForKey);
+      this.settleShutdownWaiters();
+    };
+
     let canonicalWorkspacePath: string;
     try {
       canonicalWorkspacePath = await fs.realpath(input.workspacePath);
     } catch (error) {
+      releaseResolution();
       throw new WorkspaceGitScanError(
         WORKSPACE_GIT_SCAN_ERROR_CODES.failed,
         "Workspace Git scan path is unavailable",
         { cause: error instanceof Error ? error.message : String(error) },
       );
     }
-    if (input.signal?.aborted) throw abortError(workspaceIdentity(canonicalWorkspacePath));
+    if (this.shuttingDown) {
+      releaseResolution();
+      this.totals.cancelled += 1;
+      throw abortError(workspaceIdentity(canonicalWorkspacePath), { reason: "scheduler_shutdown" });
+    }
+    if (input.signal?.aborted) {
+      releaseResolution();
+      this.totals.cancelled += 1;
+      this.totals.aborted += 1;
+      throw abortError(workspaceIdentity(canonicalWorkspacePath));
+    }
 
     const workspaceHash = workspaceIdentity(canonicalWorkspacePath);
     const timeoutMs = clampInteger(input.timeoutMs, this.timeoutMs, 1, 120_000);
+    const queueTimeoutMs = clampInteger(input.queueTimeoutMs, this.queueTimeoutMs, 1, 120_000);
     const maxStdoutBytes = clampInteger(input.maxStdoutBytes, this.maxStdoutBytes, 1, 128 * 1024 * 1024);
     const maxStderrBytes = clampInteger(input.maxStderrBytes, this.maxStderrBytes, 1, 128 * 1024 * 1024);
     const key = scanKey({
@@ -486,6 +701,7 @@ export class WorkspaceGitOperationScheduler {
       args: input.args,
       env: input.env,
       timeoutMs,
+      queueTimeoutMs,
       maxStdoutBytes,
       maxStderrBytes,
     });
@@ -494,6 +710,7 @@ export class WorkspaceGitOperationScheduler {
     // consume a result populated earlier by the file browser.
     const cached = cacheTtlMs > 0 ? this.readCache(key) : null;
     if (cached) {
+      releaseResolution();
       this.totals.cacheHits += 1;
       logger.debug({
         event: "workspace_git_scan",
@@ -503,6 +720,8 @@ export class WorkspaceGitOperationScheduler {
         singleFlightJoined: false,
         activeCount: this.activeCount,
         queuedCount: this.queue.length,
+        waiterCount: this.waiterCount,
+        totalDemandCount: this.totalDemandCount(),
         cacheHitCount: this.totals.cacheHits,
       }, "workspace Git scan cache hit");
       return {
@@ -515,40 +734,46 @@ export class WorkspaceGitOperationScheduler {
       };
     }
 
+    const backedOff = this.readNegativeBackoff(key);
+    if (backedOff) {
+      releaseResolution();
+      this.totals.negativeBackoffHits += 1;
+      this.totals.rejected += 1;
+      throw backedOff;
+    }
+
     const existing = this.inFlight.get(key);
     if (existing) {
+      if (existing.waiters.size >= this.maxWaitersPerKey) {
+        const error = this.saturationError(input.operation, workspaceHash, "per_key_waiters", {
+          waiterCount: existing.waiters.size,
+          maxWaitersPerKey: this.maxWaitersPerKey,
+        });
+        this.writeNegativeBackoff(key, error);
+        releaseResolution();
+        throw error;
+      }
       existing.joinCount += 1;
       this.totals.singleFlightJoins += 1;
+      releaseResolution();
       return this.addWaiter(existing, input.signal, true);
     }
 
     if (this.activeCount >= this.concurrency && this.queue.length >= this.queueCapacity) {
-      this.totals.saturated += 1;
-      this.warnRateLimited("saturated", {
-        event: "workspace_git_scan",
-        operation: input.operation,
-        workspaceHash,
-        outcome: "saturated",
-        activeCount: this.activeCount,
-        queuedCount: this.queue.length,
-        saturationCount: this.totals.saturated,
-      }, "workspace Git scan queue saturated");
-      throw new WorkspaceGitScanError(
-        WORKSPACE_GIT_SCAN_ERROR_CODES.saturated,
-        "Changed files are temporarily unavailable because the Git scan queue is full",
-        {
-          workspaceHash,
-          activeCount: this.activeCount,
-          queuedCount: this.queue.length,
-          retryAfterSeconds: 1,
-        },
-      );
+      const error = this.saturationError(input.operation, workspaceHash, "queue");
+      this.writeNegativeBackoff(key, error);
+      releaseResolution();
+      throw error;
     }
 
     const fairnessKeys = Array.from(new Set([
       `repository:${workspaceHash}`,
       ...(input.fairnessKeys ?? []).filter(Boolean),
     ])).sort();
+    // Transfer the two-unit path-resolution reservation synchronously into one
+    // operation plus its first waiter. No other JavaScript can interleave in
+    // this transition, and demand accounting never temporarily double-counts it.
+    releaseResolution();
     const scan: PendingScan = {
       key,
       operation: input.operation,
@@ -558,17 +783,22 @@ export class WorkspaceGitOperationScheduler {
       fairnessKeys,
       env: input.env,
       timeoutMs,
+      queueTimeoutMs,
       maxStdoutBytes,
       maxStderrBytes,
       cacheTtlMs,
       enqueuedAt: this.now(),
       state: "queued",
       controller: new AbortController(),
+      queueTimer: null,
       waiters: new Map(),
       joinCount: 0,
     };
     this.inFlight.set(key, scan);
     this.queue.push(scan);
+    this.recordPeaks();
+    scan.queueTimer = setTimeout(() => this.timeoutQueuedScan(scan), queueTimeoutMs);
+    scan.queueTimer.unref?.();
     const promise = this.addWaiter(scan, input.signal, false);
     this.drain();
     return promise;
@@ -579,7 +809,12 @@ export class WorkspaceGitOperationScheduler {
     signal: AbortSignal | undefined,
     joined: boolean,
   ): Promise<WorkspaceGitScanResult> {
-    if (signal?.aborted) return Promise.reject(abortError(scan.workspaceHash));
+    if (signal?.aborted) {
+      this.totals.cancelled += 1;
+      this.totals.aborted += 1;
+      if (scan.waiters.size === 0 && scan.state === "queued") this.removeEmptyQueuedScan(scan);
+      return Promise.reject(abortError(scan.workspaceHash));
+    }
     return new Promise((resolve, reject) => {
       const waiter: Waiter = {
         id: Symbol("workspace-git-waiter"),
@@ -591,26 +826,28 @@ export class WorkspaceGitOperationScheduler {
       if (signal) {
         waiter.onAbort = () => {
           this.removeWaiter(scan, waiter);
+          this.totals.aborted += 1;
           reject(abortError(scan.workspaceHash));
         };
         signal.addEventListener("abort", waiter.onAbort, { once: true });
       }
       scan.waiters.set(waiter.id, waiter);
+      this.waiterCount += 1;
+      this.recordPeaks(scan.waiters.size);
     });
   }
 
   private removeWaiter(scan: PendingScan, waiter: Waiter): void {
     if (!scan.waiters.delete(waiter.id)) return;
+    this.waiterCount = Math.max(0, this.waiterCount - 1);
+    this.totals.cancelled += 1;
     if (waiter.signal && waiter.onAbort) {
       waiter.signal.removeEventListener("abort", waiter.onAbort);
     }
     if (scan.waiters.size > 0) return;
 
     if (scan.state === "queued") {
-      const index = this.queue.indexOf(scan);
-      if (index >= 0) this.queue.splice(index, 1);
-      this.inFlight.delete(scan.key);
-      this.totals.cancelled += 1;
+      this.removeEmptyQueuedScan(scan);
       logger.debug({
         event: "workspace_git_scan",
         operation: scan.operation,
@@ -631,11 +868,72 @@ export class WorkspaceGitOperationScheduler {
     scan.controller.abort();
   }
 
+  private removeEmptyQueuedScan(scan: PendingScan): void {
+    if (scan.queueTimer) {
+      clearTimeout(scan.queueTimer);
+      scan.queueTimer = null;
+    }
+    const index = this.queue.indexOf(scan);
+    if (index >= 0) this.queue.splice(index, 1);
+    if (this.inFlight.get(scan.key) === scan) this.inFlight.delete(scan.key);
+  }
+
+  private timeoutQueuedScan(scan: PendingScan): void {
+    if (scan.state !== "queued" || !this.queue.includes(scan)) return;
+    const error = new WorkspaceGitScanError(
+      WORKSPACE_GIT_SCAN_ERROR_CODES.timeout,
+      `Workspace Git scan exceeded its ${scan.queueTimeoutMs}ms queue-wait deadline`,
+      {
+        workspaceHash: scan.workspaceHash,
+        phase: "queue",
+        queueTimeoutMs: scan.queueTimeoutMs,
+        retryAfterSeconds: 1,
+      },
+    );
+    this.totals.timedOut += 1;
+    this.totals.rejected += scan.waiters.size;
+    this.writeNegativeBackoff(scan.key, error);
+    this.settleQueuedScan(scan, error);
+    this.warnRateLimited("timeout:queue", {
+      event: "workspace_git_scan",
+      operation: scan.operation,
+      workspaceHash: scan.workspaceHash,
+      outcome: "timeout",
+      phase: "queue",
+      queueWaitMs: Math.max(0, this.now() - scan.enqueuedAt),
+      activeCount: this.activeCount,
+      queuedCount: this.queue.length,
+      waiterCount: this.waiterCount,
+      timeoutCount: this.totals.timedOut,
+    }, "workspace Git scan queue wait timed out");
+  }
+
+  private cancelQueuedScan(scan: PendingScan, reason: string): void {
+    if (scan.state !== "queued" || !this.queue.includes(scan)) return;
+    this.totals.cancelled += scan.waiters.size;
+    this.settleQueuedScan(scan, abortError(scan.workspaceHash, { reason }));
+  }
+
+  private settleQueuedScan(scan: PendingScan, error: WorkspaceGitScanError): void {
+    this.removeEmptyQueuedScan(scan);
+    for (const waiter of scan.waiters.values()) {
+      this.detachWaiter(waiter);
+      this.waiterCount = Math.max(0, this.waiterCount - 1);
+      waiter.reject(error);
+    }
+    scan.waiters.clear();
+    this.drain();
+    this.pruneFairnessState();
+  }
+
   private drain(): void {
+    if (this.shuttingDown) return;
     while (this.activeCount < this.concurrency && this.queue.length > 0) {
       const index = this.nextFairQueueIndex();
       const scan = this.queue.splice(index, 1)[0]!;
       if (scan.waiters.size === 0) {
+        if (scan.queueTimer) clearTimeout(scan.queueTimer);
+        scan.queueTimer = null;
         this.inFlight.delete(scan.key);
         continue;
       }
@@ -666,8 +964,14 @@ export class WorkspaceGitOperationScheduler {
   }
 
   private start(scan: PendingScan): void {
+    if (scan.queueTimer) {
+      clearTimeout(scan.queueTimer);
+      scan.queueTimer = null;
+    }
     scan.state = "running";
     this.activeCount += 1;
+    this.running.add(scan);
+    this.recordPeaks(scan.waiters.size);
     this.totals.started += 1;
     this.serviceSequence += 1;
     for (const key of scan.fairnessKeys) this.lastServedByFairnessKey.set(key, this.serviceSequence);
@@ -706,6 +1010,7 @@ export class WorkspaceGitOperationScheduler {
     };
     for (const waiter of scan.waiters.values()) {
       this.detachWaiter(waiter);
+      this.waiterCount = Math.max(0, this.waiterCount - 1);
       waiter.resolve({ ...responseBase, singleFlightJoined: waiter.joined });
     }
     logger.info({
@@ -717,6 +1022,8 @@ export class WorkspaceGitOperationScheduler {
       executionMs: Math.max(0, this.now() - startedAt),
       activeCount: this.activeCount,
       queuedCount: this.queue.length,
+      waiterCount: this.waiterCount,
+      totalDemandCount: this.totalDemandCount(),
       cacheHit: false,
       singleFlightJoinCount: scan.joinCount,
       exitOutcome: "zero",
@@ -739,6 +1046,7 @@ export class WorkspaceGitOperationScheduler {
         );
     if (normalized.code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout) {
       this.totals.timedOut += 1;
+      this.writeNegativeBackoff(scan.key, normalized);
       this.warnRateLimited("timeout", {
         event: "workspace_git_scan",
         operation: scan.operation,
@@ -755,8 +1063,21 @@ export class WorkspaceGitOperationScheduler {
     } else {
       this.totals.failed += 1;
     }
+    if (
+      normalized.details
+      && typeof normalized.details === "object"
+      && (normalized.details as { forcedKill?: unknown }).forcedKill === true
+    ) {
+      this.totals.forcedKilled += 1;
+    }
+    const forcedKill = Boolean(
+      normalized.details
+      && typeof normalized.details === "object"
+      && (normalized.details as { forcedKill?: unknown }).forcedKill === true,
+    );
     for (const waiter of scan.waiters.values()) {
       this.detachWaiter(waiter);
+      this.waiterCount = Math.max(0, this.waiterCount - 1);
       waiter.reject(normalized);
     }
     logger.info({
@@ -768,8 +1089,11 @@ export class WorkspaceGitOperationScheduler {
       executionMs: Math.max(0, this.now() - startedAt),
       activeCount: this.activeCount,
       queuedCount: this.queue.length,
+      waiterCount: this.waiterCount,
+      totalDemandCount: this.totalDemandCount(),
       cacheHit: false,
       singleFlightJoinCount: scan.joinCount,
+      forcedKill,
       exitOutcome: normalized.code,
     }, "workspace Git scan finished without a result");
     this.release(scan);
@@ -782,11 +1106,17 @@ export class WorkspaceGitOperationScheduler {
   }
 
   private release(scan: PendingScan): void {
+    if (scan.queueTimer) {
+      clearTimeout(scan.queueTimer);
+      scan.queueTimer = null;
+    }
     scan.waiters.clear();
     if (this.inFlight.get(scan.key) === scan) this.inFlight.delete(scan.key);
+    this.running.delete(scan);
     this.activeCount = Math.max(0, this.activeCount - 1);
     this.drain();
     this.pruneFairnessState();
+    this.settleShutdownWaiters();
   }
 
   private pruneFairnessState(): void {
@@ -800,6 +1130,14 @@ export class WorkspaceGitOperationScheduler {
     }
   }
 
+  private recordPeaks(perKeyWaiters = 0): void {
+    this.peaks.active = Math.max(this.peaks.active, this.activeCount);
+    this.peaks.queued = Math.max(this.peaks.queued, this.queue.length);
+    this.peaks.waiters = Math.max(this.peaks.waiters, this.waiterCount);
+    this.peaks.perKeyWaiters = Math.max(this.peaks.perKeyWaiters, perKeyWaiters);
+    this.peaks.totalDemand = Math.max(this.peaks.totalDemand, this.totalDemandCount());
+  }
+
   private readCache(key: string): CacheEntry | null {
     const entry = this.cache.get(key);
     if (!entry) return null;
@@ -811,6 +1149,30 @@ export class WorkspaceGitOperationScheduler {
     this.cache.delete(key);
     this.cache.set(key, entry);
     return entry;
+  }
+
+  private readNegativeBackoff(key: string): WorkspaceGitScanError | null {
+    const entry = this.negativeBackoff.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= this.now()) {
+      this.negativeBackoff.delete(key);
+      return null;
+    }
+    return entry.error;
+  }
+
+  private writeNegativeBackoff(key: string, error: WorkspaceGitScanError): void {
+    if (this.negativeBackoffMs <= 0) return;
+    this.negativeBackoff.delete(key);
+    this.negativeBackoff.set(key, {
+      expiresAt: this.now() + this.negativeBackoffMs,
+      error,
+    });
+    while (this.negativeBackoff.size > this.maxTotalDemand) {
+      const oldestKey = this.negativeBackoff.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      this.negativeBackoff.delete(oldestKey);
+    }
   }
 
   private writeCache(key: string, scan: PendingScan, result: WorkspaceGitRunnerResult): void {
@@ -844,6 +1206,13 @@ export class WorkspaceGitOperationScheduler {
     const now = this.now();
     for (const [key, entry] of this.cache) {
       if (entry.expiresAt <= now) this.deleteCacheEntry(key, entry);
+    }
+  }
+
+  private pruneNegativeBackoff(): void {
+    const now = this.now();
+    for (const [key, entry] of this.negativeBackoff) {
+      if (entry.expiresAt <= now) this.negativeBackoff.delete(key);
     }
   }
 

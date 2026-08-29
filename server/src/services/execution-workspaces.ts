@@ -20,6 +20,7 @@ import type {
   ExecutionWorkspaceDeliveryState,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceCloseAction,
+  ExecutionWorkspaceCloseGitInspection,
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceConfig,
@@ -54,7 +55,11 @@ import {
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
-import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import {
+  isWorkspaceGitScanError,
+  workspaceGitOperationScheduler,
+} from "./workspace-git-operation-scheduler.js";
+import { closeReadinessDemandLimiter } from "./execution-workspace-close-readiness-demand.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
@@ -89,6 +94,20 @@ function issueTerminalTimestamp(issue: {
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+const GIT_UNAVAILABLE_BLOCKING_REASON =
+  "Paperclip could not verify the workspace git status. Retry or explicitly acknowledge unavailable Git readiness before destructive cleanup.";
+const CLOSE_READINESS_GIT_CACHE_TTL_MS = readBoundedEnvInteger(
+  "PAPERCLIP_CLOSE_READINESS_GIT_CACHE_TTL_MS",
+  1_000,
+  0,
+  5_000,
+);
+
+function readBoundedEnvInteger(key: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(process.env[key]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
 
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
 // value is sanitized: it never contains a repository URL, a host path, or git
@@ -403,13 +422,20 @@ async function runExpensiveGitStatus(input: {
   cwd: string;
   operation: string;
   fairnessKeys?: readonly string[];
+  signal?: AbortSignal;
+  cacheTtlMs?: number;
+  timeoutMs?: number;
+  queueTimeoutMs?: number;
 }) {
   return workspaceGitOperationScheduler.run({
     workspacePath: input.cwd,
     args: input.args,
     operation: input.operation,
     fairnessKeys: input.fairnessKeys,
-    cacheTtlMs: 0,
+    signal: input.signal,
+    cacheTtlMs: input.cacheTtlMs ?? 0,
+    timeoutMs: input.timeoutMs,
+    queueTimeoutMs: input.queueTimeoutMs,
   });
 }
 
@@ -783,8 +809,38 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
   }
 }
 
-async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
+type CloseReadinessGitScanContext = {
+  signal?: AbortSignal;
+  fairnessKeys?: readonly string[];
+  cacheTtlMs?: number;
+};
+
+function unavailableGitInspection(
+  error: unknown,
+  fallbackMessage: string,
+): ExecutionWorkspaceCloseGitInspection {
+  if (isWorkspaceGitScanError(error)) {
+    return {
+      state: "unavailable",
+      errorCode: error.code,
+      message: error.message,
+      retryable: error.code !== "workspace_git_scan_cancelled",
+    };
+  }
+  return {
+    state: "unavailable",
+    errorCode: "workspace_git_inspection_failed",
+    message: error instanceof Error ? error.message : fallbackMessage,
+    retryable: true,
+  };
+}
+
+async function inspectGitCloseReadiness(
+  workspace: ExecutionWorkspace,
+  scanContext: CloseReadinessGitScanContext = {},
+): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
+  gitInspection: ExecutionWorkspaceCloseGitInspection;
   warnings: string[];
   statusInspectionSucceeded: boolean;
 }> {
@@ -793,55 +849,133 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   const createdByRuntime = workspace.providerType === "git_worktree"
     ? isRuntimeOwnedGitBranch(workspace.metadata)
     : workspace.metadata?.createdByRuntime === true;
+  // Archiving a shared workspace removes only the execution-session record; it
+  // never removes or mutates the underlying project workspace. Git state is
+  // therefore intentionally not a close-safety input for this mode.
+  if (workspace.mode === "shared_workspace") {
+    return {
+      git: null,
+      gitInspection: { state: "not_applicable", errorCode: null, message: null, retryable: false },
+      warnings,
+      statusInspectionSucceeded: true,
+    };
+  }
   const expectsGitInspection =
     workspace.providerType === "git_worktree" ||
     Boolean(workspace.repoUrl || workspace.baseRef || workspace.branchName || workspacePath);
 
   if (!expectsGitInspection) {
-    return { git: null, warnings, statusInspectionSucceeded: true };
-  }
-
-  if (!workspacePath) {
-    warnings.push("Workspace has no local path, so Paperclip cannot inspect git status before close.");
-    return { git: null, warnings, statusInspectionSucceeded: false };
-  }
-
-  if (!(await pathExists(workspacePath))) {
-    warnings.push(`Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`);
     return {
-      git: {
-        repoRoot: null,
-        workspacePath,
-        branchName: workspace.branchName,
-        baseRef: workspace.baseRef,
-        hasDirtyTrackedFiles: false,
-        hasUntrackedFiles: false,
-        dirtyEntryCount: 0,
-        untrackedEntryCount: 0,
-        aheadCount: null,
-        behindCount: null,
-        isMergedIntoBase: null,
-        createdByRuntime,
-      },
+      git: null,
+      gitInspection: { state: "not_applicable", errorCode: null, message: null, retryable: false },
       warnings,
       statusInspectionSucceeded: true,
     };
   }
 
+  if (!workspacePath) {
+    const message = "Workspace has no local path, so Paperclip cannot inspect git status before close.";
+    warnings.push(message);
+    closeReadinessDemandLimiter.recordDegraded();
+    return {
+      git: null,
+      gitInspection: {
+        state: "unavailable",
+        errorCode: "workspace_git_path_unavailable",
+        message,
+        retryable: false,
+      },
+      warnings,
+      statusInspectionSucceeded: false,
+    };
+  }
+
+  if (!(await pathExists(workspacePath))) {
+    const message = `Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`;
+    warnings.push(message);
+    closeReadinessDemandLimiter.recordDegraded();
+    return {
+      git: null,
+      gitInspection: {
+        state: "unavailable",
+        errorCode: "workspace_git_path_unavailable",
+        message,
+        retryable: false,
+      },
+      warnings,
+      statusInspectionSucceeded: false,
+    };
+  }
+
+  const fairnessKeys = Array.from(new Set([
+    `company:${workspace.companyId}`,
+    `workspace:${workspace.id}`,
+    ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+    ...(scanContext.fairnessKeys ?? []),
+  ]));
+  const runInspectionGit = (args: readonly string[], operation: string) => runExpensiveGitStatus({
+    args,
+    cwd: workspacePath,
+    operation,
+    fairnessKeys,
+    signal: scanContext.signal,
+    cacheTtlMs: scanContext.cacheTtlMs ?? 0,
+  });
+
   let repoRoot: string | null = null;
   try {
-    repoRoot = (await runGit(["rev-parse", "--show-toplevel"], workspacePath)).stdout.trim() || null;
+    repoRoot = (await runInspectionGit(
+      ["rev-parse", "--show-toplevel"],
+      "execution_workspaces.close_readiness_root",
+    )).stdout.trim() || null;
   } catch (error) {
-    warnings.push(
-      `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const message = `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`;
+    warnings.push(message);
+    closeReadinessDemandLimiter.recordDegraded();
+    return {
+      git: null,
+      gitInspection: unavailableGitInspection(error, message),
+      warnings,
+      statusInspectionSucceeded: false,
+    };
+  }
+
+  if (!repoRoot) {
+    const message = `Could not identify a Git repository for "${workspacePath}".`;
+    warnings.push(message);
+    closeReadinessDemandLimiter.recordDegraded();
+    return {
+      git: null,
+      gitInspection: {
+        state: "unavailable",
+        errorCode: "workspace_git_repository_unavailable",
+        message,
+        retryable: true,
+      },
+      warnings,
+      statusInspectionSucceeded: false,
+    };
   }
 
   let branchName = workspace.branchName;
-  if (repoRoot && !branchName) {
+  if (!branchName) {
     try {
-      branchName = (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], workspacePath)).stdout.trim() || null;
-    } catch {
+      branchName = (await runInspectionGit(
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        "execution_workspaces.close_readiness_branch",
+      )).stdout.trim() || null;
+    } catch (error) {
+      if (isWorkspaceGitScanError(error)) {
+        const message = `Could not inspect the Git branch for "${workspacePath}": ${error.message}`;
+        warnings.push(message);
+        closeReadinessDemandLimiter.recordDegraded();
+        return {
+          git: null,
+          gitInspection: unavailableGitInspection(error, message),
+          warnings,
+          statusInspectionSucceeded: false,
+        };
+      }
       branchName = workspace.branchName;
     }
   }
@@ -849,32 +983,30 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   let dirtyEntryCount = 0;
   let untrackedEntryCount = 0;
   let statusInspectionSucceeded = false;
-  if (repoRoot) {
-    try {
-      const statusOutput = (await runExpensiveGitStatus({
-        args: ["status", "--porcelain=v1", "--untracked-files=all"],
-        cwd: workspacePath,
-        operation: "execution_workspaces.close_readiness_status",
-        fairnessKeys: [
-          `company:${workspace.companyId}`,
-          `workspace:${workspace.id}`,
-          ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
-        ],
-      })).stdout;
-      for (const line of statusOutput.split(/\r?\n/)) {
-        if (!line) continue;
-        if (line.startsWith("??")) {
-          untrackedEntryCount += 1;
-          continue;
-        }
-        dirtyEntryCount += 1;
+  try {
+    const statusOutput = (await runInspectionGit(
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      "execution_workspaces.close_readiness_status",
+    )).stdout;
+    for (const line of statusOutput.split(/\r?\n/)) {
+      if (!line) continue;
+      if (line.startsWith("??")) {
+        untrackedEntryCount += 1;
+        continue;
       }
-      statusInspectionSucceeded = true;
-    } catch (error) {
-      warnings.push(
-        `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
-      );
+      dirtyEntryCount += 1;
     }
+    statusInspectionSucceeded = true;
+  } catch (error) {
+    const message = `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`;
+    warnings.push(message);
+    closeReadinessDemandLimiter.recordDegraded();
+    return {
+      git: null,
+      gitInspection: unavailableGitInspection(error, message),
+      warnings,
+      statusInspectionSucceeded: false,
+    };
   }
 
   let aheadCount: number | null = null;
@@ -882,28 +1014,51 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   let isMergedIntoBase: boolean | null = null;
   const baseRef = workspace.baseRef;
 
-  if (repoRoot && baseRef) {
+  if (baseRef) {
     try {
-      const counts = (await runGit(["rev-list", "--left-right", "--count", `${baseRef}...HEAD`], workspacePath)).stdout.trim();
+      const counts = (await runInspectionGit(
+        ["rev-list", "--left-right", "--count", `${baseRef}...HEAD`],
+        "execution_workspaces.close_readiness_revision_counts",
+      )).stdout.trim();
       const [behindRaw, aheadRaw] = counts.split(/\s+/);
       behindCount = behindRaw ? Number.parseInt(behindRaw, 10) : 0;
       aheadCount = aheadRaw ? Number.parseInt(aheadRaw, 10) : 0;
     } catch (error) {
-      warnings.push(
-        `Could not compare this workspace against ${baseRef}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = `Could not compare this workspace against ${baseRef}: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      closeReadinessDemandLimiter.recordDegraded();
+      return {
+        git: null,
+        gitInspection: unavailableGitInspection(error, message),
+        warnings,
+        statusInspectionSucceeded: false,
+      };
     }
 
     try {
-      await runGit(["merge-base", "--is-ancestor", "HEAD", baseRef], workspacePath);
+      await runInspectionGit(
+        ["merge-base", "--is-ancestor", "HEAD", baseRef],
+        "execution_workspaces.close_readiness_ancestry",
+      );
       isMergedIntoBase = true;
     } catch (error) {
-      const code = typeof error === "object" && error && "code" in error ? (error as { code?: unknown }).code : null;
-      if (code === 1) isMergedIntoBase = false;
-      else {
-        warnings.push(
-          `Could not determine whether this workspace is merged into ${baseRef}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      const details = isWorkspaceGitScanError(error)
+        && error.details
+        && typeof error.details === "object"
+        ? error.details as { exitCode?: unknown }
+        : null;
+      if (details?.exitCode === 1) {
+        isMergedIntoBase = false;
+      } else {
+        const message = `Could not determine whether this workspace is merged into ${baseRef}: ${error instanceof Error ? error.message : String(error)}`;
+        warnings.push(message);
+        closeReadinessDemandLimiter.recordDegraded();
+        return {
+          git: null,
+          gitInspection: unavailableGitInspection(error, message),
+          warnings,
+          statusInspectionSucceeded: false,
+        };
       }
     }
   }
@@ -923,6 +1078,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       isMergedIntoBase,
       createdByRuntime,
     },
+    gitInspection: { state: "available", errorCode: null, message: null, retryable: false },
     warnings,
     statusInspectionSucceeded,
   };
@@ -1354,6 +1510,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   async function assessDelivery(
     workspace: ExecutionWorkspaceRow,
     git: ExecutionWorkspaceCloseGitReadiness | null,
+    scanContext: CloseReadinessGitScanContext = {},
   ) {
     const issueTree = await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
@@ -1373,7 +1530,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
     const workspaceHeadSha = git?.repoRoot && git.workspacePath
-      ? await runGit(["rev-parse", "HEAD"], git.workspacePath)
+      ? await runExpensiveGitStatus({
+          args: ["rev-parse", "HEAD"],
+          cwd: git.workspacePath,
+          operation: "execution_workspaces.close_readiness_head",
+          fairnessKeys: [
+            `company:${workspace.companyId}`,
+            `workspace:${workspace.id}`,
+            ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+            ...(scanContext.fairnessKeys ?? []),
+          ],
+          signal: scanContext.signal,
+          cacheTtlMs: scanContext.cacheTtlMs ?? 0,
+        })
         .then((result) => result.stdout.trim() || null)
         .catch(() => null)
       : null;
@@ -1449,10 +1618,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       throw new Error("Refusing terminal workspace cleanup because the expected git HEAD is unknown");
     }
 
+    const fairnessKeys = [
+      `company:${workspace.companyId}`,
+      `workspace:${workspace.id}`,
+      ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+    ];
     const [current, currentHeadSha, currentBranchName] = await Promise.all([
       inspectGitCloseReadiness(toExecutionWorkspace(workspace)),
-      readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
-      readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
+      runExpensiveGitStatus({
+        args: ["rev-parse", "HEAD"],
+        cwd: workspacePath,
+        operation: "execution_workspaces.close_readiness_fence_head",
+        fairnessKeys,
+        cacheTtlMs: 0,
+      }).then((result) => result.stdout.trim() || null).catch(() => null),
+      runExpensiveGitStatus({
+        args: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd: workspacePath,
+        operation: "execution_workspaces.close_readiness_fence_branch",
+        fairnessKeys,
+        cacheTtlMs: 0,
+      }).then((result) => result.stdout.trim() || null).catch(() => null),
     ]);
     if (!current.statusInspectionSucceeded) {
       throw new Error("Refusing terminal workspace cleanup because the git status could not be verified");
@@ -1468,10 +1654,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
   }
 
-  async function hydrateWorkspace(row: ExecutionWorkspaceRow, runtimeServices: WorkspaceRuntimeService[] = []) {
+  async function hydrateWorkspace(
+    row: ExecutionWorkspaceRow,
+    runtimeServices: WorkspaceRuntimeService[] = [],
+    scanContext: CloseReadinessGitScanContext = { cacheTtlMs: CLOSE_READINESS_GIT_CACHE_TTL_MS },
+  ) {
     const workspace = toExecutionWorkspace(row, runtimeServices);
-    const { git } = await inspectGitCloseReadiness(workspace);
-    const assessment = await assessDelivery(row, git);
+    const { git } = await inspectGitCloseReadiness(workspace, scanContext);
+    const assessment = await assessDelivery(row, git, scanContext);
     return toExecutionWorkspace(row, runtimeServices, assessment.deliveryState);
   }
 
@@ -2214,7 +2404,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       return null;
     },
 
-    getById: async (id: string) => {
+    getById: async (
+      id: string,
+      options: { inspectGit?: boolean; scanContext?: CloseReadinessGitScanContext } = {},
+    ) => {
       const row = await db
         .select()
         .from(executionWorkspaces)
@@ -2229,13 +2422,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         projectWorkspaceId: row.projectWorkspaceId,
       });
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
-      return hydrateWorkspace(
-        row,
-        (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
-      );
+      const runtimeServices = (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService);
+      if (options.inspectGit === false) return toExecutionWorkspace(row, runtimeServices);
+      return hydrateWorkspace(row, runtimeServices, options.scanContext);
     },
 
-    getCloseReadiness: async (id: string): Promise<ExecutionWorkspaceCloseReadiness | null> => {
+    getCloseReadiness: async (
+      id: string,
+      scanContext: CloseReadinessGitScanContext = {},
+    ): Promise<ExecutionWorkspaceCloseReadiness | null> => {
       const workspace = await db
         .select()
         .from(executionWorkspaces)
@@ -2302,16 +2497,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+      const effectiveScanContext = {
+        ...scanContext,
+        cacheTtlMs: scanContext.cacheTtlMs ?? CLOSE_READINESS_GIT_CACHE_TTL_MS,
+      };
       const {
         git,
+        gitInspection,
         warnings: gitWarnings,
         statusInspectionSucceeded,
-      } = await inspectGitCloseReadiness(executionWorkspace);
-      const { deliveryState } = await assessDelivery(workspace, git);
+      } = await inspectGitCloseReadiness(executionWorkspace, effectiveScanContext);
+      const { deliveryState } = await assessDelivery(workspace, git, effectiveScanContext);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
       if (!statusInspectionSucceeded) {
-        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+        blockingReasons.push(GIT_UNAVAILABLE_BLOCKING_REASON);
       }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
@@ -2483,6 +2683,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           : warnings.length > 0
             ? "ready_with_warnings"
             : "ready";
+      const requiresGitUnavailableAcknowledgement = gitInspection.state === "unavailable";
 
       return {
         workspaceId: workspace.id,
@@ -2490,6 +2691,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         state,
         blockingReasons,
         warnings,
+        requiresGitUnavailableAcknowledgement,
+        gitInspection,
         linkedIssues: linkedIssueSummaries,
         plannedActions,
         isDestructiveCloseAllowed: blockingReasons.length === 0,

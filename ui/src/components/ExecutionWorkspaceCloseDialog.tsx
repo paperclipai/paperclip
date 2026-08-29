@@ -1,12 +1,15 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Loader2 } from "lucide-react";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useToastActions } from "../context/ToastContext";
+import { usePageVisibility } from "../lib/page-visibility";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, issueUrl } from "../lib/utils";
 import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -45,16 +48,52 @@ export function ExecutionWorkspaceCloseDialog({
 }: ExecutionWorkspaceCloseDialogProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
+  const { visible: pageVisible } = usePageVisibility();
+  const [acknowledgeGitUnavailable, setAcknowledgeGitUnavailable] = useState(false);
+  const [retryCoolingDown, setRetryCoolingDown] = useState(false);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const actionLabel = currentStatus === "cleanup_failed" ? "Retry close" : "Close workspace";
+  const readinessQueryKey = useMemo(
+    () => queryKeys.executionWorkspaces.closeReadiness(workspaceId),
+    [workspaceId],
+  );
 
   const readinessQuery = useQuery({
-    queryKey: queryKeys.executionWorkspaces.closeReadiness(workspaceId),
-    queryFn: () => executionWorkspacesApi.getCloseReadiness(workspaceId),
-    enabled: open,
+    queryKey: readinessQueryKey,
+    queryFn: ({ signal }) => executionWorkspacesApi.getCloseReadiness(workspaceId, { signal }),
+    enabled: open && pageVisible,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
+  useEffect(() => {
+    if (open && pageVisible) return;
+    void queryClient.cancelQueries({ queryKey: readinessQueryKey, exact: true });
+    setAcknowledgeGitUnavailable(false);
+  }, [open, pageVisible, queryClient, readinessQueryKey]);
+
+  useEffect(() => {
+    setAcknowledgeGitUnavailable(false);
+    setRetryCoolingDown(false);
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    return () => {
+      void queryClient.cancelQueries({ queryKey: readinessQueryKey, exact: true });
+    };
+  }, [queryClient, readinessQueryKey, workspaceId]);
+
+  useEffect(() => () => {
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+  }, []);
+
   const closeWorkspace = useMutation({
-    mutationFn: () => executionWorkspacesApi.update(workspaceId, { status: "archived" }),
+    mutationFn: () => executionWorkspacesApi.update(workspaceId, {
+      status: "archived",
+      ...(acknowledgeGitUnavailable ? { acknowledgeGitUnavailable: true } : {}),
+    }),
     onSuccess: (workspace) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(workspace.id), workspace);
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(workspace.companyId) });
@@ -76,6 +115,10 @@ export function ExecutionWorkspaceCloseDialog({
   });
 
   const readiness = readinessQuery.data ?? null;
+  const canAcknowledgeUnavailableGit = Boolean(
+    readiness?.requiresGitUnavailableAcknowledgement
+    && readiness.blockingReasons.length === 1,
+  );
   const blockingIssues = readiness?.linkedIssues.filter((issue) => !issue.isTerminal) ?? [];
   const otherLinkedIssues = readiness?.linkedIssues.filter((issue) => issue.isTerminal) ?? [];
   const confirmDisabled =
@@ -83,7 +126,18 @@ export function ExecutionWorkspaceCloseDialog({
     closeWorkspace.isPending ||
     readinessQuery.isLoading ||
     readiness == null ||
-    readiness.state === "blocked";
+    (readiness.state === "blocked" && !(canAcknowledgeUnavailableGit && acknowledgeGitUnavailable));
+
+  const retryReadiness = () => {
+    if (retryCoolingDown) return;
+    setRetryCoolingDown(true);
+    setAcknowledgeGitUnavailable(false);
+    void readinessQuery.refetch({ cancelRefetch: true });
+    retryTimerRef.current = setTimeout(() => {
+      setRetryCoolingDown(false);
+      retryTimerRef.current = null;
+    }, 1_000);
+  };
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => {
@@ -104,8 +158,11 @@ export function ExecutionWorkspaceCloseDialog({
             Checking whether this workspace is safe to close...
           </div>
         ) : readinessQuery.error ? (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-            {readinessQuery.error instanceof Error ? readinessQuery.error.message : "Failed to inspect workspace close readiness."}
+          <div className="space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            <div>{readinessQuery.error instanceof Error ? readinessQuery.error.message : "Failed to inspect workspace close readiness."}</div>
+            <Button type="button" variant="outline" onClick={retryReadiness} disabled={retryCoolingDown}>
+              Retry readiness check
+            </Button>
           </div>
         ) : readiness ? (
           <div className="space-y-4">
@@ -205,6 +262,30 @@ export function ExecutionWorkspaceCloseDialog({
                     </div>
                   </div>
                 </div>
+              </section>
+            ) : null}
+
+            {readiness.gitInspection.state === "unavailable" ? (
+              <section className="space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">
+                <div>
+                  <div className="font-medium text-destructive">Git status unavailable</div>
+                  <div className="mt-1 text-muted-foreground">
+                    {readiness.gitInspection.message ?? "Paperclip could not inspect this workspace's Git state."}
+                  </div>
+                </div>
+                <Button type="button" variant="outline" onClick={retryReadiness} disabled={retryCoolingDown}>
+                  Retry readiness check
+                </Button>
+                {canAcknowledgeUnavailableGit ? (
+                  <label className="flex items-start gap-2 text-muted-foreground">
+                    <Checkbox
+                      checked={acknowledgeGitUnavailable}
+                      onCheckedChange={(checked) => setAcknowledgeGitUnavailable(checked === true)}
+                      aria-label="Acknowledge unavailable Git status"
+                    />
+                    <span>I understand Git status is unknown and want to continue with destructive cleanup.</span>
+                  </label>
+                ) : null}
               </section>
             ) : null}
 

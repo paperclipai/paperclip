@@ -564,8 +564,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       expect(readiness).toMatchObject({
         state: "blocked",
         isDestructiveCloseAllowed: false,
+        requiresGitUnavailableAcknowledgement: true,
+        gitInspection: { state: "unavailable" },
         blockingReasons: [
-          "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+          "Paperclip could not verify the workspace git status. Retry or explicitly acknowledge unavailable Git readiness before destructive cleanup.",
         ],
       });
 
@@ -588,8 +590,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     let statusScanCount = 0;
     const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
       .mockImplementation(async (input) => {
-        statusScanCount += 1;
-        if (statusScanCount > 1) throw new Error("scan timed out");
+        if (input.operation === "execution_workspaces.close_readiness_status") {
+          statusScanCount += 1;
+          if (statusScanCount > 1) throw new Error("scan timed out");
+        }
         return originalRun(input);
       });
 
@@ -1927,6 +1931,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       isSharedWorkspace: true,
       isProjectPrimaryWorkspace: true,
       isDestructiveCloseAllowed: true,
+      gitInspection: { state: "not_applicable" },
     });
     expect(readiness?.blockingReasons).toEqual([]);
     expect(readiness?.warnings).toEqual(expect.arrayContaining([

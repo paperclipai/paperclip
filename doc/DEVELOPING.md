@@ -446,18 +446,36 @@ When effective run config changes, Paperclip may intentionally skip a saved adap
 
 ## Workspace Git Scan Protection
 
-Paperclip applies one process-wide scheduler to expensive host-side workspace Git enumeration, including changed-file browsing, runtime/finalization cleanliness guards, and adapter sandbox-sync snapshots. The scheduler defaults to two active scans and a bounded queue of 32. Identical scans of the same canonical worktree share one subprocess, while successful changed-file listings are cached for 10 seconds. Correctness-sensitive runtime guards bypass the result cache.
+Paperclip applies one process-wide scheduler to expensive host-side workspace Git enumeration, including changed-file browsing, execution-workspace close readiness, runtime/finalization cleanliness guards, and adapter sandbox-sync snapshots. The scheduler defaults to two active scans, a bounded queue of 32 operation keys, 128 total demand units, and 16 live waiters per identical scan. The total cap includes active and queued operations, joined single-flight callers, and conservative reservations made before canonical-path resolution, so overload is rejected before another filesystem promise, listener, or timer is allocated. Identical scans of the same canonical worktree share one subprocess, while successful changed-file listings are cached for 10 seconds. Correctness-sensitive runtime guards bypass the result cache.
 
-The cache intentionally trades up to a few seconds of changed-file freshness for stable server latency. The file browser retains an explicit refresh action, does not start its query while the panel or browser tab is hidden, and presents overloads as retryable failures rather than an empty workspace. A full queue returns `503` with code `workspace_git_scan_saturated`; a scan exceeding its wall-clock limit returns `504` with code `workspace_git_scan_timeout`. Both responses include `Retry-After: 1`.
+Queued scans have a separate one-second wait deadline. Running Git is placed in a controllable process group on platforms that support it; timeout, caller abort, and shutdown send `SIGTERM`, wait 250 ms, then send `SIGKILL`. The active slot is retained until the child closes and stream listeners are detached. Failed scans receive a 500 ms negative backoff so a retry burst cannot immediately recreate the same work.
+
+The cache intentionally trades up to a few seconds of changed-file freshness for stable server latency. The file browser retains an explicit refresh action, does not start its query while the panel or browser tab is hidden, and presents overloads as retryable failures rather than an empty workspace. A full queue or demand cap returns `503` with code `workspace_git_scan_saturated`; a queue or execution deadline returns `504` with code `workspace_git_scan_timeout`. Both responses include `Retry-After: 1`.
+
+Execution-workspace close-readiness requests have an additional synchronous admission gate before database lookup: 64 requests globally, eight for one workspace, and 32 for one tenant by default. The request deadline is 10 seconds. Disconnecting the HTTP caller removes its scheduler waiter immediately; the last waiter cancels queued or running Git. Close-readiness success results use a separate one-second cache. The dialog does not fetch while closed or while the document is hidden, disables focus/reconnect/automatic retry, and exposes a debounced manual Retry action.
+
+The production scans that appeared to run for 53–99 seconds despite an eight-second timeout were not evidence of a reliable eight-second wall-clock deadline: the timeout callback ran on the same Node event loop that thousands of joined callers, responses, and logs had starved. Queue wait had no deadline, and a scheduler slot could not be released until child `close`. Bounding callers before allocation keeps the event loop able to deliver deadlines; the queue deadline, forced process-group termination, close-based slot release, and shutdown reaping then bound every child terminal path.
 
 Environment overrides:
 
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY` (default `2`, range `1`–`16`)
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_CAPACITY` (default `32`, range `0`–`1024`)
+- `PAPERCLIP_WORKSPACE_GIT_SCAN_TOTAL_DEMAND_CAP` (default `128`, range `2`–`4096`)
+- `PAPERCLIP_WORKSPACE_GIT_SCAN_PER_KEY_WAITER_CAP` (default `16`, range `1`–`1024`)
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_TIMEOUT_MS` (default `8000`, range `100`–`120000`)
+- `PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_TIMEOUT_MS` (default `1000`, range `10`–`120000`)
+- `PAPERCLIP_WORKSPACE_GIT_SCAN_KILL_GRACE_MS` (default `250`, range `1`–`10000`)
+- `PAPERCLIP_WORKSPACE_GIT_SCAN_NEGATIVE_BACKOFF_MS` (default `500`, range `0`–`60000`)
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_CACHE_TTL_MS` (default `10000`, range `0`–`60000`)
+- `PAPERCLIP_CLOSE_READINESS_GLOBAL_WAITER_CAP` (default `64`, range `1`–`4096`)
+- `PAPERCLIP_CLOSE_READINESS_PER_WORKSPACE_WAITER_CAP` (default `8`, range `1`–`1024`)
+- `PAPERCLIP_CLOSE_READINESS_PER_TENANT_WAITER_CAP` (default `32`, range `1`–`2048`)
+- `PAPERCLIP_CLOSE_READINESS_REQUEST_TIMEOUT_MS` (default `10000`, range `100`–`120000`)
+- `PAPERCLIP_CLOSE_READINESS_GIT_CACHE_TTL_MS` (default `1000`, range `0`–`5000`)
 
-Structured `workspace_git_scan` logs expose the operation name, a non-reversible workspace-path hash, queue and execution durations, active/queued counts, cache and single-flight use, and terminal outcome. Saturation and timeout warnings are rate-limited so an overload does not create a second logging storm.
+Structured `workspace_git_scan` logs expose the operation name, a non-reversible workspace-path hash, queue and execution durations, active/queued/waiter counts, cache and single-flight use, forced kills, and terminal outcome. Close-readiness admission has its own aggregate counters for admitted, rejected, aborted, timed-out, and degraded requests. Full authenticated health responses expose both bounded snapshots plus process heap/RSS under `workspaceGitProtection`. Saturation and timeout warnings are rate-limited so an overload does not create a second logging storm.
+
+Release note: close-readiness responses now include `gitInspection` and `requiresGitUnavailableAcknowledgement`. Saturation or timeout is represented as unavailable Git state, never as a clean tree. Closing remains blocked unless the operator explicitly sends `acknowledgeGitUnavailable: true`; that acknowledgement is accepted only when unavailable Git inspection is the sole remaining blocker. Route-level admission overload returns `503 close_readiness_saturated` with `Retry-After: 1` before workspace lookup.
 
 ## Worktree-local Instances
 

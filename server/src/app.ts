@@ -114,6 +114,7 @@ import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { workspaceGitOperationScheduler } from "./services/workspace-git-operation-scheduler.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -940,6 +941,10 @@ export async function createApp(
       viteHmrServer?.close();
       hostServiceCleanup.disposeAll();
       hostServiceCleanup.teardown();
+      // Abort queued scans and await every running Git process group's close
+      // event before process teardown. The scheduler deliberately holds its
+      // slots until children and pipes are reaped, including after SIGKILL.
+      await workspaceGitOperationScheduler.shutdown();
       // Cancel every live setup-token login session and AWAIT the cancellation,
       // so each direct child stops and the server releases each lease before the
       // caller stops the database and the provider. A lease release that

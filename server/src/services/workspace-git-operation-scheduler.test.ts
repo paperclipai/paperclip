@@ -51,18 +51,33 @@ describe("WorkspaceGitOperationScheduler", () => {
     expect(workspaceGitSchedulerOptionsFromEnv({})).toEqual({
       concurrency: 2,
       queueCapacity: 32,
+      maxTotalDemand: 128,
+      maxWaitersPerKey: 16,
       timeoutMs: 8_000,
+      queueTimeoutMs: 1_000,
+      killGraceMs: 250,
+      negativeBackoffMs: 500,
       defaultCacheTtlMs: 10_000,
     });
     expect(workspaceGitSchedulerOptionsFromEnv({
       PAPERCLIP_WORKSPACE_GIT_SCAN_CONCURRENCY: "4",
       PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_CAPACITY: "12",
+      PAPERCLIP_WORKSPACE_GIT_SCAN_TOTAL_DEMAND_CAP: "40",
+      PAPERCLIP_WORKSPACE_GIT_SCAN_PER_KEY_WAITER_CAP: "7",
       PAPERCLIP_WORKSPACE_GIT_SCAN_TIMEOUT_MS: "5000",
+      PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_TIMEOUT_MS: "300",
+      PAPERCLIP_WORKSPACE_GIT_SCAN_KILL_GRACE_MS: "75",
+      PAPERCLIP_WORKSPACE_GIT_SCAN_NEGATIVE_BACKOFF_MS: "250",
       PAPERCLIP_WORKSPACE_GIT_SCAN_CACHE_TTL_MS: "7000",
     })).toEqual({
       concurrency: 4,
       queueCapacity: 12,
+      maxTotalDemand: 40,
+      maxWaitersPerKey: 7,
       timeoutMs: 5_000,
+      queueTimeoutMs: 300,
+      killGraceMs: 75,
+      negativeBackoffMs: 250,
       defaultCacheTtlMs: 7_000,
     });
   });
@@ -147,6 +162,47 @@ describe("WorkspaceGitOperationScheduler", () => {
     releases.shift()?.();
     await Promise.all([active, queued]);
     expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
+  });
+
+  it("expires queued work, reuses a brief negative backoff, and releases every waiter", async () => {
+    const workspace = await makeWorkspace();
+    const gate = deferred<void>();
+    const scheduler = createWorkspaceGitOperationScheduler({
+      concurrency: 1,
+      queueCapacity: 2,
+      queueTimeoutMs: 25,
+      negativeBackoffMs: 250,
+      runner: async () => {
+        await gate.promise;
+        return { stdout: "", stderr: "" };
+      },
+    });
+    const active = scheduler.run(scanInput(workspace, "active"));
+    await vi.waitFor(() => expect(scheduler.snapshot().activeCount).toBe(1));
+    const queuedInput = scanInput(workspace, "queued");
+
+    await expect(scheduler.run(queuedInput)).rejects.toMatchObject({
+      code: WORKSPACE_GIT_SCAN_ERROR_CODES.timeout,
+      details: expect.objectContaining({ phase: "queue" }),
+    });
+    await expect(scheduler.run(queuedInput)).rejects.toMatchObject({
+      code: WORKSPACE_GIT_SCAN_ERROR_CODES.timeout,
+    });
+    expect(scheduler.snapshot()).toMatchObject({
+      activeCount: 1,
+      queuedCount: 0,
+      waiterCount: 1,
+      totals: { negativeBackoffHits: 1 },
+    });
+
+    gate.resolve();
+    await active;
+    expect(scheduler.snapshot()).toMatchObject({
+      activeCount: 0,
+      queuedCount: 0,
+      waiterCount: 0,
+      inFlightCount: 0,
+    });
   });
 
   it("coalesces the same canonical key and cleans single-flight state after success and failure", async () => {
@@ -351,6 +407,9 @@ describe("WorkspaceGitOperationScheduler", () => {
       'if (process.argv.includes("hang")) {',
       '  process.on("SIGTERM", () => {});',
       '  setInterval(() => {}, 1000);',
+      '} else if (process.argv.includes("flood")) {',
+      '  process.on("SIGTERM", () => {});',
+      '  setInterval(() => fs.writeSync(1, "x".repeat(1024)), 10);',
       '} else {',
       '  process.stdout.write("ok");',
       '}',
@@ -367,18 +426,23 @@ describe("WorkspaceGitOperationScheduler", () => {
       PAPERCLIP_FAKE_GIT_PID_PATH: pidPath,
     };
 
+    const timeoutStartedAt = Date.now();
     await expect(scheduler.run({ ...scanInput(workspace, "hang"), env })).rejects.toMatchObject({
       status: 504,
       code: WORKSPACE_GIT_SCAN_ERROR_CODES.timeout,
     });
+    expect(Date.now() - timeoutStartedAt).toBeLessThan(1_000);
     const killedPid = Number(await fs.readFile(pidPath, "utf8"));
     expect(() => process.kill(killedPid, 0)).toThrow();
+    expect(scheduler.snapshot().totals.forcedKilled).toBe(1);
     const outputScheduler = createWorkspaceGitOperationScheduler({
       concurrency: 1,
-      timeoutMs: 1_000,
+      // Process startup can be slow in a loaded serialized CI shard. This
+      // fixture verifies output-limit termination, not the execution deadline.
+      timeoutMs: 5_000,
       killGraceMs: 50,
       gitBinary: process.execPath,
-      gitArgsPrefix: ["-e", 'process.stdout.write("x".repeat(65536)); setInterval(() => {}, 1000);'],
+      gitArgsPrefix: [scriptPath],
     });
     await expect(outputScheduler.run({
       ...scanInput(workspace, "flood"),
@@ -388,24 +452,109 @@ describe("WorkspaceGitOperationScheduler", () => {
       status: 503,
       code: WORKSPACE_GIT_SCAN_ERROR_CODES.outputLimit,
     });
+    const outputLimitedPid = Number(await fs.readFile(pidPath, "utf8"));
+    expect(() => process.kill(outputLimitedPid, 0)).toThrow();
     expect(outputScheduler.snapshot()).toMatchObject({ activeCount: 0, inFlightCount: 0 });
     await expect(scheduler.run({ ...scanInput(workspace, "ok"), env })).resolves.toMatchObject({
       cacheHit: false,
       singleFlightJoined: false,
     });
     expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
+  }, 10_000);
+
+  it("reaps a SIGTERM-resistant child before scheduler shutdown completes", async () => {
+    const workspace = await makeWorkspace();
+    const scriptPath = path.join(path.dirname(workspace), "fake-git-shutdown.mjs");
+    const pidPath = path.join(path.dirname(workspace), "fake-git-shutdown.pid");
+    await fs.writeFile(scriptPath, [
+      'import fs from "node:fs";',
+      'fs.writeFileSync(process.env.PAPERCLIP_FAKE_GIT_PID_PATH, String(process.pid));',
+      'process.on("SIGTERM", () => {});',
+      'setInterval(() => {}, 1000);',
+    ].join("\n"), "utf8");
+    const scheduler = createWorkspaceGitOperationScheduler({
+      concurrency: 1,
+      timeoutMs: 5_000,
+      killGraceMs: 50,
+      gitBinary: process.execPath,
+      gitArgsPrefix: [scriptPath],
+    });
+    const env = {
+      ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+      PAPERCLIP_FAKE_GIT_PID_PATH: pidPath,
+    };
+    const scan = scheduler.run({ ...scanInput(workspace, "hang"), env }).catch((error) => error);
+    let childPid = 0;
+    await vi.waitFor(async () => {
+      childPid = Number(await fs.readFile(pidPath, "utf8"));
+      expect(childPid).toBeGreaterThan(0);
+    });
+
+    await scheduler.shutdown();
+    await expect(scan).resolves.toMatchObject({ code: WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled });
+    expect(() => process.kill(childPid, 0)).toThrow();
+    expect(scheduler.snapshot()).toMatchObject({
+      activeCount: 0,
+      queuedCount: 0,
+      waiterCount: 0,
+      totalDemandCount: 0,
+      totals: { forcedKilled: 1 },
+    });
   });
 
-  it("coalesces 500 requests over two repositories into two bounded scans", async () => {
-    const firstWorkspace = await makeWorkspace("repo-a");
-    const secondWorkspace = await makeWorkspace("repo-b");
+  it("closes admission and waits for canonical-path resolution during shutdown", async () => {
+    const workspace = await makeWorkspace();
+    const realpathGate = deferred<string>();
+    vi.spyOn(fs, "realpath").mockImplementationOnce(() => realpathGate.promise);
+    const runner = vi.fn<WorkspaceGitRunner>(async () => ({ stdout: "", stderr: "" }));
+    const scheduler = createWorkspaceGitOperationScheduler({ runner });
+
+    const resolvingScan = scheduler.run(scanInput(workspace, "resolving")).catch((error) => error);
+    await vi.waitFor(() => expect(scheduler.snapshot().resolvingCount).toBe(1));
+
+    let shutdownSettled = false;
+    const shutdown = scheduler.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+    await expect(scheduler.run(scanInput(workspace, "late"))).rejects.toMatchObject({
+      code: WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled,
+      details: expect.objectContaining({ reason: "scheduler_shutdown" }),
+    });
+
+    realpathGate.resolve(workspace);
+    await shutdown;
+    await expect(resolvingScan).resolves.toMatchObject({
+      code: WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled,
+      details: expect.objectContaining({ reason: "scheduler_shutdown" }),
+    });
+    expect(runner).not.toHaveBeenCalled();
+    expect(scheduler.snapshot()).toMatchObject({
+      activeCount: 0,
+      queuedCount: 0,
+      waiterCount: 0,
+      resolvingCount: 0,
+      inFlightCount: 0,
+      totalDemandCount: 0,
+    });
+  });
+
+  it("keeps a 10,000-request storm, including 5,000 hot-key callers, within hard caps", async () => {
+    const baselineMemory = process.memoryUsage();
+    const root = await makeWorkspace("repos");
+    const workspaces = Array.from({ length: 80 }, (_, index) => path.join(root, `repo-${index}`));
+    await Promise.all(workspaces.map((workspace) => fs.mkdir(workspace)));
     const gate = deferred<void>();
     let active = 0;
     let peakActive = 0;
     let calls = 0;
     const scheduler = createWorkspaceGitOperationScheduler({
       concurrency: 2,
-      queueCapacity: 4,
+      queueCapacity: 32,
+      maxTotalDemand: 64,
+      maxWaitersPerKey: 8,
+      queueTimeoutMs: 5_000,
       runner: async () => {
         calls += 1;
         active += 1;
@@ -415,19 +564,70 @@ describe("WorkspaceGitOperationScheduler", () => {
         return { stdout: "", stderr: "" };
       },
     });
-    const requests = Array.from({ length: 500 }, (_, index) => scheduler.run(scanInput(
-      index % 2 === 0 ? firstWorkspace : secondWorkspace,
-      "same",
-      [`company:${index % 17}`, `actor:${index % 73}`, `issue:${index}`],
-    )));
+    const requests = Array.from({ length: 10_000 }, (_, index) => {
+      const hot = index < 5_000;
+      return scheduler.run(scanInput(
+        hot ? workspaces[0]! : workspaces[1 + (index % (workspaces.length - 1))]!,
+        "same",
+        [`company:${index % 17}`, `actor:${index % 73}`, `issue:${index}`],
+      )).then(
+        () => "completed" as const,
+        (error: unknown) => error instanceof WorkspaceGitScanError ? error.code : "unexpected",
+      );
+    });
 
-    await vi.waitFor(() => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(498));
-    expect(scheduler.snapshot()).toMatchObject({ activeCount: 2, queuedCount: 0, inFlightCount: 2 });
+    await vi.waitFor(() => expect(scheduler.snapshot().resolvingCount).toBe(0));
+    const duringStorm = scheduler.snapshot();
+    expect(duringStorm.activeCount).toBeLessThanOrEqual(2);
+    expect(duringStorm.queuedCount).toBeLessThanOrEqual(32);
+    expect(duringStorm.waiterCount).toBeLessThanOrEqual(64);
+    expect(duringStorm.totalDemandCount).toBeLessThanOrEqual(64);
+    expect(duringStorm.peaks).toMatchObject({
+      active: 2,
+      perKeyWaiters: 8,
+    });
+    expect(duringStorm.peaks.queued).toBeLessThanOrEqual(32);
+    expect(duringStorm.peaks.waiters).toBeLessThanOrEqual(64);
+    expect(duringStorm.peaks.totalDemand).toBeLessThanOrEqual(64);
+    const peakMemory = process.memoryUsage();
     gate.resolve();
-    await Promise.all(requests);
+    const outcomes = await Promise.all(requests);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const settledMemory = process.memoryUsage();
+    const finalSnapshot = scheduler.snapshot();
+    const rejected = outcomes.filter(
+      (outcome) => outcome === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated,
+    ).length;
+    const mib = 1024 * 1024;
 
-    expect({ calls, peakActive }).toEqual({ calls: 2, peakActive: 2 });
-    expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
+    expect(rejected).toBeGreaterThan(9_000);
+    expect(outcomes).not.toContain("unexpected");
+    expect({ peakActive }).toEqual({ peakActive: 2 });
+    expect(calls).toBeLessThanOrEqual(34);
+    expect(finalSnapshot).toMatchObject({
+      activeCount: 0,
+      queuedCount: 0,
+      waiterCount: 0,
+      resolvingCount: 0,
+      inFlightCount: 0,
+      totalDemandCount: 0,
+    });
+    console.info("close-readiness scheduler stress evidence", {
+      requests: requests.length,
+      hotKeyRequests: 5_000,
+      completed: outcomes.length - rejected,
+      rejected,
+      peakActiveChildren: peakActive,
+      peakQueueDepth: duringStorm.peaks.queued,
+      peakWaiters: duringStorm.peaks.waiters,
+      peakPerKeyWaiters: duringStorm.peaks.perKeyWaiters,
+      peakTotalDemand: duringStorm.peaks.totalDemand,
+      heapPeakDeltaMiB: Number(((peakMemory.heapUsed - baselineMemory.heapUsed) / mib).toFixed(1)),
+      rssPeakDeltaMiB: Number(((peakMemory.rss - baselineMemory.rss) / mib).toFixed(1)),
+      heapSettledDeltaMiB: Number(((settledMemory.heapUsed - baselineMemory.heapUsed) / mib).toFixed(1)),
+      rssSettledDeltaMiB: Number(((settledMemory.rss - baselineMemory.rss) / mib).toFixed(1)),
+      terminalDemand: finalSnapshot.totalDemandCount,
+    });
   });
 });
 

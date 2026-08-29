@@ -150,6 +150,20 @@ describe("GET /health", () => {
       status: "ok",
       version: serverVersion,
       serverInfo: testServerInfo,
+      workspaceGitProtection: {
+        scheduler: {
+          activeCount: 0,
+          queuedCount: 0,
+          waiterCount: 0,
+        },
+        closeReadinessDemand: {
+          waiterCount: 0,
+        },
+        processMemory: {
+          heapUsedBytes: expect.any(Number),
+          rssBytes: expect.any(Number),
+        },
+      },
     });
   });
 

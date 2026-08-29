@@ -8,7 +8,7 @@ import type {
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 
 type WorkspaceOverviewFilters = {
@@ -93,8 +93,8 @@ export const executionWorkspacesApi = {
     return api.get<ExecutionWorkspace[]>(`/companies/${companyId}/execution-workspaces${qs ? `?${qs}` : ""}`);
   },
   get: (id: string) => api.get<ExecutionWorkspace>(`/execution-workspaces/${id}`),
-  getCloseReadiness: (id: string) =>
-    api.get<ExecutionWorkspaceCloseReadiness>(`/execution-workspaces/${id}/close-readiness`),
+  getCloseReadiness: (id: string, options?: RequestOptions) =>
+    api.get<ExecutionWorkspaceCloseReadiness>(`/execution-workspaces/${id}/close-readiness`, options),
   listWorkspaceOperations: (id: string) =>
     api.get<WorkspaceOperation[]>(`/execution-workspaces/${id}/workspace-operations`),
   controlRuntimeServices: (

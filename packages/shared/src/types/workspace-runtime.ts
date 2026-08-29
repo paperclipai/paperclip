@@ -47,6 +47,11 @@ export type ExecutionWorkspaceCloseReadinessState =
   | "ready_with_warnings"
   | "blocked";
 
+export type ExecutionWorkspaceCloseGitInspectionState =
+  | "available"
+  | "unavailable"
+  | "not_applicable";
+
 export type ExecutionWorkspaceCloseActionKind =
   | "archive_record"
   | "stop_runtime_services"
@@ -148,6 +153,13 @@ export interface ExecutionWorkspaceCloseGitReadiness {
   createdByRuntime: boolean;
 }
 
+export interface ExecutionWorkspaceCloseGitInspection {
+  state: ExecutionWorkspaceCloseGitInspectionState;
+  errorCode: string | null;
+  message: string | null;
+  retryable: boolean;
+}
+
 export interface ExecutionWorkspaceCloseReadiness {
   workspaceId: string;
   deliveryState: ExecutionWorkspaceDeliveryState;
@@ -157,8 +169,10 @@ export interface ExecutionWorkspaceCloseReadiness {
   linkedIssues: ExecutionWorkspaceCloseLinkedIssue[];
   plannedActions: ExecutionWorkspaceCloseAction[];
   isDestructiveCloseAllowed: boolean;
+  requiresGitUnavailableAcknowledgement: boolean;
   isSharedWorkspace: boolean;
   isProjectPrimaryWorkspace: boolean;
+  gitInspection: ExecutionWorkspaceCloseGitInspection;
   git: ExecutionWorkspaceCloseGitReadiness | null;
   runtimeServices: WorkspaceRuntimeService[];
 }
