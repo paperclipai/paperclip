@@ -19,6 +19,13 @@ interface StatusIconProps {
   showLabel?: boolean;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
+  /**
+   * When set, every entry other than the current status is disabled in the
+   * picker and shows this string as its tooltip. Used while a pending
+   * execution-policy stage requires the comment-bearing Approve/Request
+   * changes flow instead of this picker's bare `{ status }` PATCH (MYLA-785).
+   */
+  changeLockedReason?: string;
 }
 
 function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
@@ -75,7 +82,15 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, blockerAttention, onChange, className, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({
+  status,
+  blockerAttention,
+  onChange,
+  className,
+  showLabel,
+  size = "md",
+  changeLockedReason,
+}: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
@@ -125,21 +140,30 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="start">
-        {allStatuses.map((s) => (
-          <Button
-            key={s}
-            variant="ghost"
-            size="sm"
-            className={cn("w-full justify-start gap-2 text-xs", s === status && "bg-accent")}
-            onClick={() => {
-              onChange(s);
-              setOpen(false);
-            }}
-          >
-            <StatusIcon status={s} size="lg" />
-            {statusLabel(s)}
-          </Button>
-        ))}
+        {allStatuses.map((s) => {
+          const locked = Boolean(changeLockedReason) && s !== status;
+          return (
+            <Button
+              key={s}
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "w-full justify-start gap-2 text-xs",
+                s === status && "bg-accent",
+                locked && "opacity-50",
+              )}
+              disabled={locked}
+              title={locked ? changeLockedReason : undefined}
+              onClick={() => {
+                onChange(s);
+                setOpen(false);
+              }}
+            >
+              <StatusIcon status={s} size="lg" />
+              {statusLabel(s)}
+            </Button>
+          );
+        })}
       </PopoverContent>
     </Popover>
   );

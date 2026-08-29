@@ -129,6 +129,10 @@ import {
   IssueMonitorComposerStrip,
   hasVisibleMonitorSurface,
 } from "../components/IssueMonitorBanner";
+import {
+  IssueExecutionStageApprovalBanner,
+  isExecutionStagePendingForUser,
+} from "../components/IssueExecutionStageApprovalBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties, type IssuePropertiesDocumentDeepLink } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
@@ -4546,6 +4550,11 @@ export function IssueDetail() {
             size="lg"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => updateIssue.mutate({ status })}
+            changeLockedReason={
+              isExecutionStagePendingForUser(issue, currentUserId)
+                ? "This stage needs a comment — use Approve or Request changes below."
+                : undefined
+            }
           />
           {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
           {SHOW_TASK_PRIORITY_UI && (
@@ -4891,6 +4900,8 @@ export function IssueDetail() {
           onCheckNow={() => checkIssueMonitorNow.mutate()}
           checkingNow={checkIssueMonitorNow.isPending}
         />
+
+        <IssueExecutionStageApprovalBanner issue={issue} currentUserId={currentUserId} />
 
         {taskChatShellEnabled ? null : (
           <InlineEditor
