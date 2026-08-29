@@ -10,9 +10,10 @@
 --
 -- The index is partial: it covers only the action that records human-gate
 -- grant consumption, and only rows where interactionId is present (every
--- well-formed entry). Existing rows are unaffected; the IF NOT EXISTS
+-- well-formed entry). Existing rows are unaffected and the IF NOT EXISTS
 -- guard makes the migration safe to replay.
--- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable; this partial index covers only new human-gate claim rows (none exist yet) so there is no backfill and the lock window is negligible.
+--
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: partial index on a new action variant with zero existing rows — no backfill and negligible lock window
 CREATE UNIQUE INDEX IF NOT EXISTS "activity_log_human_gate_grant_claim_uq"
 ON "activity_log"
 USING btree (entity_id, ((details->>'interactionId')))
