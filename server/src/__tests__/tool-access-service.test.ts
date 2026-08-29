@@ -54,6 +54,10 @@ import { createToolGatewayService as createToolGatewayServiceBase, type ToolGate
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import type { ComposioClient } from "../services/composio.js";
+import {
+  GMAIL_CONNECTOR_SCOPES,
+  type PaperclipIdGmailConnector,
+} from "../services/paperclip-id-gmail-connector.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -72,6 +76,28 @@ function createTestToolAccessService(
     remoteHttpRequest: async (url, init) => fetch(url, init),
     ...options,
   });
+}
+
+function fakeGmailConnector(companyId: string, userId: string): PaperclipIdGmailConnector {
+  const credentials = {
+    v: 1 as const,
+    accessToken: "gmail-access-token",
+    refreshToken: "gmail-refresh-token",
+    tokenType: "Bearer",
+    accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    scopes: [...GMAIL_CONNECTOR_SCOPES],
+    subject: userId,
+    companyId,
+  };
+  return {
+    startAuthorization: vi.fn(async ({ returnState }) => ({
+      authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(returnState)}`,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    })),
+    claim: vi.fn(async () => credentials),
+    refresh: vi.fn(async () => credentials),
+    revoke: vi.fn(async () => undefined),
+  };
 }
 
 function createToolGatewayService(
@@ -643,6 +669,24 @@ describeEmbeddedPostgres("tool access service", () => {
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  async function waitForBlockedMembershipUpdate() {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const [waiting] = await db.execute<{ waiting: boolean }>(sql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_stat_activity
+          WHERE state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%company_memberships%'
+            AND query ILIKE '%for update%'
+        ) AS waiting
+      `);
+      if (waiting?.waiting) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return false;
+  }
 
   it("mints generic exchange connection tokens through the agent route and stores only hashes", async () => {
     const company = await createCompany(db);
@@ -4199,6 +4243,161 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     expect(updated.transportConfig).toEqual(updated.config);
   });
+
+  it("completes brokered Gmail OAuth with a single database connection", async () => {
+    const company = await createCompany(db);
+    const userId = `gmail-member-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, []);
+    const callbackDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const service = createTestToolAccessService(callbackDb, {
+      paperclipIdGmailConnector: fakeGmailConnector(company.id, userId),
+    });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const gmailDefinition = getConnectableAppDefinition("gmail")!;
+    const previousOwnershipAvailability = gmailDefinition.ownershipAvailability;
+    gmailDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+    mockToolsList([]);
+
+    try {
+      await callbackDb.execute(sql`select pg_backend_pid()`);
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "gmail",
+        connectionMethodKey: "paperclip-draft",
+        grantKind: "user",
+        name: "Gmail single-pool callback",
+      }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/paperclip-id/callback",
+        actor,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+
+      const completed = await Promise.race([
+        service.completePaperclipIdGmailCallback({ state, claimId: "gmail-claim", actor }),
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => {
+            void callbackDb.$client.end({ timeout: 0 })
+              .finally(() => reject(new Error("Gmail OAuth callback self-deadlocked with maxConnections=1")));
+          }, 5_000);
+        }),
+      ]);
+
+      expect(completed.connection).toMatchObject({ status: "active", enabled: true });
+      const [grant] = await callbackDb.select().from(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, connected.connectionId),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, userId),
+      ));
+      expect(grant).toMatchObject({ status: "active" });
+      expect(grant!.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual([
+        "oauth.access_token",
+        "oauth.refresh_token",
+      ]);
+    } finally {
+      gmailDefinition.ownershipAvailability = previousOwnershipAvailability;
+      if (deadline) clearTimeout(deadline);
+      await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
+    }
+  }, 15_000);
+
+  it("serializes brokered Gmail OAuth completion behind membership revocation", async () => {
+    const company = await createCompany(db);
+    const userId = `gmail-member-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, []);
+    const callbackDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const removalDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const service = createTestToolAccessService(callbackDb, {
+      paperclipIdGmailConnector: fakeGmailConnector(company.id, userId),
+    });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const gmailDefinition = getConnectableAppDefinition("gmail")!;
+    const previousOwnershipAvailability = gmailDefinition.ownershipAvailability;
+    gmailDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    let releaseRemoval!: () => void;
+    const removalMayCommit = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    let membershipLocked!: () => void;
+    const membershipIsLocked = new Promise<void>((resolve) => {
+      membershipLocked = resolve;
+    });
+    let removal: Promise<void> | null = null;
+    mockToolsList([]);
+
+    try {
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "gmail",
+        connectionMethodKey: "paperclip-draft",
+        grantKind: "user",
+        name: "Gmail concurrent revocation callback",
+      }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/paperclip-id/callback",
+        actor,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      const beforeSecrets = await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id));
+      const beforeGrants = await db.select().from(connectionGrants).where(eq(
+        connectionGrants.connectionId,
+        connected.connectionId,
+      ));
+
+      removal = removalDb.transaction(async (tx) => {
+        await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, company.id),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+        )).for("update");
+        membershipLocked();
+        await removalMayCommit;
+        await tx.update(companyMemberships).set({
+          membershipRole: "viewer",
+          updatedAt: new Date(),
+        }).where(and(
+          eq(companyMemberships.companyId, company.id),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+        ));
+      });
+
+      await membershipIsLocked;
+      const completion = service.completePaperclipIdGmailCallback({
+        state,
+        claimId: "gmail-claim",
+        actor,
+      }).then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      );
+
+      expect(await waitForBlockedMembershipUpdate()).toBe(true);
+      releaseRemoval();
+      await removal;
+      const outcome = await completion;
+      expect(outcome.value).toBeNull();
+      expect(outcome.error).toMatchObject({
+        status: 403,
+        message: expect.stringContaining("membership no longer permits connection changes"),
+      });
+
+      const [connection] = await db.select().from(toolConnections).where(eq(
+        toolConnections.id,
+        connected.connectionId,
+      ));
+      expect(connection).toMatchObject({ status: "draft", enabled: false });
+      await expect(db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id)))
+        .resolves.toHaveLength(beforeSecrets.length);
+      await expect(db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId)))
+        .resolves.toEqual(beforeGrants);
+    } finally {
+      gmailDefinition.ownershipAvailability = previousOwnershipAvailability;
+      releaseRemoval();
+      await removal?.catch(() => undefined);
+      await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
+      await removalDb.$client.end({ timeout: 0 }).catch(() => undefined);
+    }
+  }, 15_000);
 
   it("synchronizes shared OAuth credentials to the organization grant used by gateway calls", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");

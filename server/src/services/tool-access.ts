@@ -8541,130 +8541,139 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
     const method = galleryEntry ? connectionMethodForConnection(galleryEntry, connection) : null;
-    if (method?.oauthStrategy !== "paperclip_id_connector" || !stateRow.subjectUserId) {
+    const subjectUserId = stateRow.subjectUserId;
+    if (method?.oauthStrategy !== "paperclip_id_connector" || !subjectUserId) {
       throw badRequest("OAuth state does not belong to a Gmail connector flow");
     }
     const credentials = await gmailConnector.claim({
-      subject: stateRow.subjectUserId,
+      subject: subjectUserId,
       companyId: stateRow.companyId,
       claimId: input.claimId,
     });
-    if (!credentials.refreshToken) {
+    const refreshToken = credentials.refreshToken;
+    if (!refreshToken) {
       throw unprocessable("Google did not return offline access. Reconnect Gmail and grant both requested scopes.", {
         code: "oauth_refresh_missing",
       });
     }
 
-    const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
-      eq(companyMemberships.companyId, connection.companyId),
-      eq(companyMemberships.principalType, "user"),
-      eq(companyMemberships.principalId, stateRow.subjectUserId),
-      eq(companyMemberships.status, "active"),
-      ne(companyMemberships.membershipRole, "viewer"),
-    )).limit(1);
-    if (!membership) {
-      throw forbidden("Your company membership no longer permits connection changes. Restore non-viewer access before you connect Gmail again.");
-    }
-    const [existingUserGrant] = await db.select().from(connectionGrants).where(and(
-      eq(connectionGrants.companyId, connection.companyId),
-      eq(connectionGrants.connectionId, connection.id),
-      eq(connectionGrants.kind, "user"),
-      eq(connectionGrants.subjectUserId, stateRow.subjectUserId),
-    )).limit(1);
-    const existingRefs = existingUserGrant?.credentialSecretRefs ?? [];
-    const accessRef = await createOrRotateOAuthSecret({
-      companyId: connection.companyId,
-      connection,
-      configPath: "oauth.access_token",
-      label: "Gmail access token",
-      value: credentials.accessToken,
-      actor: input.actor,
-      existingRefs,
-      ownerUserId: stateRow.subjectUserId,
-    });
-    const refreshRef = await createOrRotateOAuthSecret({
-      companyId: connection.companyId,
-      connection,
-      configPath: "oauth.refresh_token",
-      label: "Gmail refresh token",
-      value: credentials.refreshToken,
-      actor: input.actor,
-      existingRefs,
-      ownerUserId: stateRow.subjectUserId,
-    });
-    const credentialSecretRefs = [
-      ...existingRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
-      accessRef,
-      refreshRef,
-    ];
-    const grantValues = {
-      providerTenant: {
-        name: "Gmail",
-        externalId: credentials.subject,
-        oauth: {
-          strategy: "paperclip_id_connector",
-          accessTokenExpiresAt: credentials.accessTokenExpiresAt,
-          scopes: credentials.scopes,
-          tokenType: credentials.tokenType,
-        },
-      },
-      credentialSecretRefs,
-      status: "active" as const,
-      revokedAt: null,
-      revokedByAgentId: null,
-      revokedByUserId: null,
-      updatedAt: now(),
-    };
-    if (existingUserGrant) {
-      await db.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
-    } else {
-      await db.insert(connectionGrants).values({
+    await db.transaction(async (tx) => {
+      // Keep Gmail credential persistence serialized with membership suspension,
+      // downgrade, and removal. A successful claim is only durable while the
+      // initiating user still holds live connection-management authority.
+      const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, connection.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, subjectUserId),
+        eq(companyMemberships.status, "active"),
+        ne(companyMemberships.membershipRole, "viewer"),
+      )).limit(1).for("update");
+      if (!membership) {
+        throw forbidden("Your company membership no longer permits connection changes. Restore non-viewer access before you connect Gmail again.");
+      }
+      const txSecrets = secretService(tx);
+      const txSecretContext = { dbClient: tx, secretClient: txSecrets };
+      const [existingUserGrant] = await tx.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "user"),
+        eq(connectionGrants.subjectUserId, subjectUserId),
+      )).limit(1);
+      const existingRefs = existingUserGrant?.credentialSecretRefs ?? [];
+      const accessRef = await createOrRotateOAuthSecret({
         companyId: connection.companyId,
-        connectionId: connection.id,
-        kind: "user",
-        subjectUserId: stateRow.subjectUserId,
-        ...grantValues,
-        isDefault: false,
-        createdByUserId: stateRow.subjectUserId,
-      });
-    }
-    const nextConfig = {
-      ...connection.config,
-      oauth: {
-        ...oauthConfig(connection),
-        strategy: "paperclip_id_connector",
-        provider: "gmail",
-        resource: method.defaults?.serverUrl,
-        scopes: [...GMAIL_CONNECTOR_SCOPES],
-      },
-    };
-    [connection] = await db.update(toolConnections).set({
-      status: "active",
-      enabled: true,
-      authKind: "oauth",
-      config: nextConfig,
-      transportConfig: nextConfig,
-      updatedAt: now(),
-    }).where(eq(toolConnections.id, connection.id)).returning();
-    await db.update(toolApplications).set({ status: "active", updatedAt: now() }).where(eq(toolApplications.id, connection.applicationId));
-    await syncCredentialBindings(connection, credentialSecretRefs);
-    const linkedInteractionKind = stateRow.interactionId
-      ? await db
-          .select({ kind: issueThreadInteractions.kind })
-          .from(issueThreadInteractions)
-          .where(eq(issueThreadInteractions.id, stateRow.interactionId))
-          .limit(1)
-          .then((rows) => rows[0]?.kind ?? null)
-      : null;
-    if (stateRow.interactionId && linkedInteractionKind === "request_confirmation") {
-      await db.update(issueThreadInteractions).set({
-        status: "accepted",
-        result: { version: 1, outcome: "accepted" },
-        resolvedByUserId: stateRow.subjectUserId,
-        resolvedAt: now(),
+        connection,
+        configPath: "oauth.access_token",
+        label: "Gmail access token",
+        value: credentials.accessToken,
+        actor: input.actor,
+        existingRefs,
+        ownerUserId: subjectUserId,
+      }, txSecretContext);
+      const refreshRef = await createOrRotateOAuthSecret({
+        companyId: connection.companyId,
+        connection,
+        configPath: "oauth.refresh_token",
+        label: "Gmail refresh token",
+        value: refreshToken,
+        actor: input.actor,
+        existingRefs,
+        ownerUserId: subjectUserId,
+      }, txSecretContext);
+      const credentialSecretRefs = [
+        ...existingRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
+        accessRef,
+        refreshRef,
+      ];
+      const grantValues = {
+        providerTenant: {
+          name: "Gmail",
+          externalId: credentials.subject,
+          oauth: {
+            strategy: "paperclip_id_connector",
+            accessTokenExpiresAt: credentials.accessTokenExpiresAt,
+            scopes: credentials.scopes,
+            tokenType: credentials.tokenType,
+          },
+        },
+        credentialSecretRefs,
+        status: "active" as const,
+        revokedAt: null,
+        revokedByAgentId: null,
+        revokedByUserId: null,
         updatedAt: now(),
-      }).where(eq(issueThreadInteractions.id, stateRow.interactionId));
-    }
+      };
+      if (existingUserGrant) {
+        await tx.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
+      } else {
+        await tx.insert(connectionGrants).values({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          kind: "user",
+          subjectUserId,
+          ...grantValues,
+          isDefault: false,
+          createdByUserId: subjectUserId,
+        });
+      }
+      const nextConfig = {
+        ...connection.config,
+        oauth: {
+          ...oauthConfig(connection),
+          strategy: "paperclip_id_connector",
+          provider: "gmail",
+          resource: method.defaults?.serverUrl,
+          scopes: [...GMAIL_CONNECTOR_SCOPES],
+        },
+      };
+      [connection] = await tx.update(toolConnections).set({
+        status: "active",
+        enabled: true,
+        authKind: "oauth",
+        config: nextConfig,
+        transportConfig: nextConfig,
+        updatedAt: now(),
+      }).where(eq(toolConnections.id, connection.id)).returning();
+      await tx.update(toolApplications).set({ status: "active", updatedAt: now() }).where(eq(toolApplications.id, connection.applicationId));
+      await syncCredentialBindings(connection, credentialSecretRefs, tx);
+      const linkedInteractionKind = stateRow.interactionId
+        ? await tx
+            .select({ kind: issueThreadInteractions.kind })
+            .from(issueThreadInteractions)
+            .where(eq(issueThreadInteractions.id, stateRow.interactionId))
+            .limit(1)
+            .then((rows) => rows[0]?.kind ?? null)
+        : null;
+      if (stateRow.interactionId && linkedInteractionKind === "request_confirmation") {
+        await tx.update(issueThreadInteractions).set({
+          status: "accepted",
+          result: { version: 1, outcome: "accepted" },
+          resolvedByUserId: subjectUserId,
+          resolvedAt: now(),
+          updatedAt: now(),
+        }).where(eq(issueThreadInteractions.id, stateRow.interactionId));
+      }
+    });
     const refresh = await refreshCatalog(connection.id, input.actor, {
       enableAllByDefault: false,
       credentialHeaders: { Authorization: `Bearer ${credentials.accessToken}` },
