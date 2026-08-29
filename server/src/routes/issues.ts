@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -647,6 +647,63 @@ function issueWriteAuthorizationReason(
 ) {
   if (decision !== true && decision.reason) return decision.reason;
   return req.actor.type === "agent" ? "allow_scoped_agent_write" : "allow_board_actor";
+}
+
+const HUMAN_GATE_TITLE_PATTERN = /\bhuman[-\s]?gate\b/i;
+const DEFAULT_HUMAN_GATE_ASSIGNEE_USER_ID = "2oOBvLZFtR89lYt0VPuyXz5bWBybx2wU";
+
+function isHumanGateIssueTitle(title: string | null | undefined) {
+  return HUMAN_GATE_TITLE_PATTERN.test(title ?? "");
+}
+
+function humanGateAssigneeUserId() {
+  return process.env.PAPERCLIP_HUMAN_GATE_ASSIGNEE_USER_ID?.trim() || DEFAULT_HUMAN_GATE_ASSIGNEE_USER_ID;
+}
+
+function humanGateAssignmentDetails(input: {
+  issueId?: string | null;
+  assigneeUserId?: string | null;
+  assigneeAgentId?: string | null;
+}) {
+  const supportedAssigneeUserId = humanGateAssigneeUserId();
+  return {
+    issueId: input.issueId ?? null,
+    requestedAssigneeUserId: input.assigneeUserId ?? null,
+    requestedAssigneeAgentId: input.assigneeAgentId ?? null,
+    supportedPayload: {
+      assigneeUserId: supportedAssigneeUserId,
+      assigneeAgentId: null,
+    },
+    securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+  };
+}
+
+function humanGateAssignmentError(input: {
+  issueId?: string | null;
+  assigneeUserId?: string | null;
+  assigneeAgentId?: string | null;
+}) {
+  return {
+    error: "Human-gate issues must be assigned to Jon as a human assignee and must not be assigned to an agent",
+    details: humanGateAssignmentDetails(input),
+  };
+}
+
+function assertAgentHumanGateCreateAssignmentAllowed(
+  req: Request,
+  res: Response,
+  input: {
+    title?: string | null;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+  },
+) {
+  if (req.actor.type !== "agent") return true;
+  if (!isHumanGateIssueTitle(input.title)) return true;
+  const expectedAssigneeUserId = humanGateAssigneeUserId();
+  if (input.assigneeUserId === expectedAssigneeUserId && input.assigneeAgentId == null) return true;
+  res.status(422).json(humanGateAssignmentError(input));
+  return false;
 }
 
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
@@ -3947,6 +4004,7 @@ export function issueRoutes(
       assigneeUserId: string | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
+      responsibleUserId?: string | null;
     },
   ) {
     if (req.actor.type !== "agent") return true;
@@ -3987,6 +4045,314 @@ export function issueRoutes(
 
   function isDefaultOpenIssueWriteDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_visible_issue_write";
+  }
+
+  const HUMAN_ASSIGNED_ISSUE_MUTATION_GRANT_TTL_MS = 60 * 60 * 1000;
+  const HUMAN_AUTHORIZED_AGENT_MUTATION_ACTION = "issue.human_authorized_agent_mutation";
+
+  function isCommentOnlyMutation(req: Request) {
+    const body = req.body as Record<string, unknown> | null | undefined;
+    if (req.method === "POST" && /^\/issues\/[^/]+\/comments$/.test(req.path)) {
+      return body?.reopen !== true && body?.resume !== true && body?.interrupt !== true;
+    }
+    if (req.method !== "PATCH") return false;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const keys = Object.keys(body);
+    return keys.length === 1 && typeof body.comment === "string" && body.comment.trim().length > 0;
+  }
+
+  function isHumanAssignedIssueInteractionBootstrap(req: Request) {
+    if (req.method !== "POST" || !/^\/issues\/[^/]+\/interactions$/.test(req.path)) return false;
+    const body = req.body as Record<string, unknown> | null | undefined;
+    return body?.kind === "request_confirmation" || body?.kind === "request_checkbox_confirmation";
+  }
+
+  function humanOwnedIssueMutationError(
+    issue: {
+      id: string;
+      assigneeUserId: string | null;
+      responsibleUserId?: string | null;
+    },
+    humanOwnerUserId: string | null,
+  ) {
+    return {
+      error: "Agent mutation of a human-assigned issue requires an accepted request_confirmation from the human assignee",
+      details: {
+        issueId: issue.id,
+        assigneeUserId: issue.assigneeUserId,
+        responsibleUserId: issue.responsibleUserId ?? null,
+        humanOwnerUserId,
+        authorizationHint:
+          "Create a request_confirmation or request_checkbox_confirmation on this issue with payload.authorizationScope "
+          + "covering the requested mutation, then wait for the human owner to accept it.",
+        securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+      },
+    };
+  }
+
+  async function isHumanGateIssueForMutationGuard(issue: { id: string; title?: string | null }) {
+    if (isHumanGateIssueTitle(issue.title)) return true;
+    if (issue.title !== undefined) return false;
+    const loaded = await svc.getById(issue.id);
+    return isHumanGateIssueTitle(loaded?.title);
+  }
+
+  function requestedHumanMutationClass(req: Request) {
+    const body = req.body as Record<string, unknown> | null | undefined;
+    if (req.method === "POST" && /^\/issues\/[^/]+\/comments$/.test(req.path)) {
+      if (body?.interrupt === true) return "issue:interrupt";
+      if (body?.resume === true) return "issue:resume";
+      if (body?.reopen === true) return "issue:reopen";
+      return "issue:comment";
+    }
+    if (req.method === "DELETE" && /^\/issues\/[^/]+$/.test(req.path)) return "issue:delete";
+    if (req.method === "PUT" && /^\/issues\/[^/]+\/documents\/[^/]+$/.test(req.path)) return "issue:document";
+    if (req.method === "POST" && /^\/issues\/[^/]+\/interactions$/.test(req.path)) return "issue:interaction";
+    if (req.method === "POST" && /^\/issues\/[^/]+\/children$/.test(req.path)) return "issue:child_create";
+    if (req.method === "POST" && /^\/issues\/[^/]+\/accepted-plan-decompositions$/.test(req.path)) {
+      return "issue:child_create";
+    }
+    if (req.method === "PATCH") {
+      if (body?.interrupt === true) return "issue:interrupt";
+      if (body?.resume === true) return "issue:resume";
+      if (body?.reopen === true) return "issue:reopen";
+      if (body?.status === "done") return "issue:close";
+      if (body?.status !== undefined) return "issue:status";
+      if (body?.assigneeAgentId !== undefined || body?.assigneeUserId !== undefined) return "issue:assign";
+      if (body?.blockedByIssueIds !== undefined) return "issue:relations";
+    }
+    return "issue:mutate";
+  }
+
+  function readAuthorizationScope(payload: unknown): unknown {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    return (payload as Record<string, unknown>).authorizationScope ?? null;
+  }
+
+  function authorizationScopeCovers(scope: unknown, requestedClass: string): boolean {
+    const acceptedWildcards = new Set(["*", "issue:*", "issue:mutate", "human_assigned_issue:mutate"]);
+    const acceptedAliases = new Set<string>([requestedClass]);
+    if (requestedClass === "issue:close") acceptedAliases.add("issue:status");
+    if (requestedClass === "issue:reopen" || requestedClass === "issue:resume" || requestedClass === "issue:interrupt") {
+      acceptedAliases.add("issue:status");
+      acceptedAliases.add("issue:lifecycle");
+    }
+    if (requestedClass === "issue:child_create") acceptedAliases.add("issue:create_child");
+
+    if (typeof scope === "string") return acceptedWildcards.has(scope) || acceptedAliases.has(scope);
+    if (Array.isArray(scope)) return scope.some((entry) => authorizationScopeCovers(entry, requestedClass));
+    if (scope && typeof scope === "object") {
+      const record = scope as Record<string, unknown>;
+      if (record.kind === "issue_mutation" || record.kind === "human_assigned_issue_mutation") {
+        return authorizationScopeCovers(record.action ?? record.actions ?? record.scope ?? record.scopes, requestedClass);
+      }
+      if (record.action || record.actions || record.scope || record.scopes) {
+        return authorizationScopeCovers(record.action ?? record.actions ?? record.scope ?? record.scopes, requestedClass);
+      }
+    }
+    return false;
+  }
+
+  async function findHumanMutationGrant(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeUserId: string | null;
+      responsibleUserId?: string | null;
+    },
+    humanOwnerUserId: string | null,
+  ) {
+    if (!humanOwnerUserId) return null;
+    const requestedClass = requestedHumanMutationClass(req);
+    const minResolvedAt = new Date(Date.now() - HUMAN_ASSIGNED_ISSUE_MUTATION_GRANT_TTL_MS);
+    const rows = await db
+      .select({
+        id: issueThreadInteractions.id,
+        resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+        payload: issueThreadInteractions.payload,
+        resolvedAt: issueThreadInteractions.resolvedAt,
+      })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, issue.companyId),
+        eq(issueThreadInteractions.issueId, issue.id),
+        inArray(issueThreadInteractions.kind, ["request_confirmation", "request_checkbox_confirmation"]),
+        eq(issueThreadInteractions.status, "accepted"),
+        eq(issueThreadInteractions.resolvedByUserId, humanOwnerUserId),
+        isNull(issueThreadInteractions.resolvedByAgentId),
+        gte(issueThreadInteractions.resolvedAt, minResolvedAt),
+      ))
+      .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
+
+    const candidates = rows.filter((row) =>
+      row.resolvedAt && authorizationScopeCovers(readAuthorizationScope(row.payload), requestedClass)
+    );
+    if (candidates.length === 0) return null;
+
+    const activityRows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, issue.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issue.id),
+        eq(activityLog.action, HUMAN_AUTHORIZED_AGENT_MUTATION_ACTION),
+      ));
+    const consumedInteractionIds = new Set(
+      activityRows
+        .map((row) => row.details?.interactionId)
+        .filter((interactionId): interactionId is string => typeof interactionId === "string"),
+    );
+    const grant = candidates.find((row) => !consumedInteractionIds.has(row.id));
+    return grant ? { ...grant, action: requestedClass } : null;
+  }
+
+  async function logAuthorizedMutation(
+    grant: NonNullable<Awaited<ReturnType<typeof findHumanMutationGrant>>>,
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeUserId: string | null;
+      responsibleUserId?: string | null;
+    },
+    humanOwnerUserId: string,
+  ) {
+    const actor = getActorInfo(req);
+    const activity = await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: HUMAN_AUTHORIZED_AGENT_MUTATION_ACTION,
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        interactionId: grant.id,
+        resolvedByUserId: grant.resolvedByUserId,
+        action: grant.action,
+        actorAgentId: actor.agentId,
+        runId: actor.runId,
+        assigneeUserId: issue.assigneeUserId,
+        responsibleUserId: issue.responsibleUserId ?? null,
+        humanOwnerUserId,
+      },
+    });
+    return activity;
+  }
+
+  function isHumanGateGrantClaimConflict(error: unknown): boolean {
+    for (
+      let current = error, depth = 0;
+      current && typeof current === "object" && depth < 5;
+      current = (current as { cause?: unknown }).cause, depth += 1
+    ) {
+      const candidate = current as { code?: string; constraint?: string; message?: string };
+      if (
+        candidate.code === "23505" &&
+        (candidate.constraint === "activity_log_human_gate_grant_claim_uq" ||
+          (typeof candidate.message === "string" &&
+            candidate.message.includes("activity_log_human_gate_grant_claim_uq")))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Guards agent mutations on human-assigned (gate) issues.
+   *
+   * When this function returns `true` it installs a `res.end` override that
+   * restores the one-shot grant claim on any error response where the mutation
+   * did not commit. Route handlers that commit a protected mutation MUST signal
+   * this by setting `res.locals.humanGateMutationCommitted = true` immediately
+   * after the DB write; the override uses that flag — not the status code —
+   * to decide whether the grant is consumable.
+   */
+  async function assertHumanAssignedIssueMutationAllowed(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeUserId: string | null;
+      responsibleUserId?: string | null;
+      title?: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    if (isCommentOnlyMutation(req)) return true;
+    if (isHumanAssignedIssueInteractionBootstrap(req)) return true;
+    const expectedGateUserId = humanGateAssigneeUserId();
+    const isAssignedToGateUser = issue.assigneeUserId != null && issue.assigneeUserId === expectedGateUserId;
+    const isTitleMarkedHumanGate = issue.assigneeUserId == null
+      && await isHumanGateIssueForMutationGuard(issue);
+    if (!isAssignedToGateUser && !isTitleMarkedHumanGate) return true;
+    const humanOwnerUserId = issue.assigneeUserId
+      ?? (isTitleMarkedHumanGate ? issue.responsibleUserId ?? null : null);
+    if (humanOwnerUserId === null) {
+      res.status(403).json(humanOwnedIssueMutationError(issue, null));
+      return false;
+    }
+    const grant = await findHumanMutationGrant(req, issue, humanOwnerUserId);
+    if (!grant) {
+      res.status(403).json(humanOwnedIssueMutationError(issue, humanOwnerUserId));
+      return false;
+    }
+    // Claim the grant atomically. The partial unique index
+    // activity_log_human_gate_grant_claim_uq ensures at most one INSERT
+    // succeeds for a given (entity_id, interactionId) pair. A concurrent
+    // request that finds the same unconsumed grant fails here with 23505
+    // instead of proceeding to a second mutation.
+    let claimedActivityId: string;
+    try {
+      const claimed = await logAuthorizedMutation(grant, req, issue, humanOwnerUserId);
+      claimedActivityId = claimed.id;
+    } catch (err) {
+      if (isHumanGateGrantClaimConflict(err)) {
+        // Another concurrent request already claimed this grant.
+        res.status(403).json(humanOwnedIssueMutationError(issue, humanOwnerUserId));
+        return false;
+      }
+      throw err;
+    }
+    // Restore-on-error-pre-mutation: if the route handler returns any error
+    // status (4xx or 5xx) without having committed the protected mutation, undo
+    // the claim so the agent can retry with the same approval.
+    //
+    // `humanGateMutationCommitted` is the authoritative signal: route handlers
+    // MUST set `res.locals.humanGateMutationCommitted = true` immediately after
+    // the DB write. If the flag is false when the response ends, the mutation
+    // did not commit and the grant should be restored regardless of status code
+    // — a 5xx thrown before the write is indistinguishable from a 4xx
+    // validation rejection from the grant's perspective.
+    //
+    // The restore runs inside a res.end override so it completes before the
+    // response bytes reach the client. This closes the TOCTOU race where an
+    // immediate agent retry would see the claim as still consumed while the
+    // async cleanup was still pending.
+    const origEnd = res.end.bind(res);
+    let restorePending = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (res as any).end = (...args: any[]) => {
+      if (
+        !restorePending &&
+        res.statusCode >= 400 &&
+        !res.locals.humanGateMutationCommitted
+      ) {
+        restorePending = true;
+        db.delete(activityLog)
+          .where(eq(activityLog.id, claimedActivityId))
+          .then(() => origEnd(...args))
+          .catch(() => origEnd(...args));
+        return res;
+      }
+      return origEnd(...args);
+    };
+    return true;
   }
 
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
@@ -4068,12 +4434,14 @@ export function issueRoutes(
         });
         return false;
       }
+      if (!(await assertHumanAssignedIssueMutationAllowed(req, res, issue))) return false;
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
       return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
     }
+    if (!(await assertHumanAssignedIssueMutationAllowed(req, res, issue))) return false;
     if (issue.assigneeAgentId === null) {
       return true;
     }
@@ -4182,6 +4550,9 @@ export function issueRoutes(
       id: string;
       companyId: string;
       parentId?: string | null;
+      assigneeUserId?: string | null;
+      responsibleUserId?: string | null;
+      title?: string | null;
     },
     opts: { allowWatchdogIssue?: boolean } = {},
   ) {
@@ -4189,7 +4560,27 @@ export function issueRoutes(
     const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
     if (scope.kind === "none") return true;
     const result = await taskWatchdogScopeAllowsIssueMutation(db, scope, issue, opts);
-    if (result.kind !== "invalid") return assertFreshTaskWatchdogSourceMutation(res, scope, issue);
+    if (result.kind !== "invalid") {
+      const loadedIssue = issue.assigneeUserId === undefined || issue.responsibleUserId === undefined
+        ? await svc.getById(issue.id)
+        : null;
+      const assigneeUserId = issue.assigneeUserId !== undefined
+        ? issue.assigneeUserId
+        : loadedIssue?.assigneeUserId ?? null;
+      const responsibleUserId = issue.responsibleUserId !== undefined
+        ? issue.responsibleUserId
+        : loadedIssue?.responsibleUserId ?? null;
+      if (!(await assertHumanAssignedIssueMutationAllowed(req, res, {
+        id: issue.id,
+        companyId: issue.companyId,
+        assigneeUserId,
+        responsibleUserId,
+        title: issue.title as string | null | undefined,
+      }))) {
+        return false;
+      }
+      return assertFreshTaskWatchdogSourceMutation(res, scope, issue);
+    }
     res.status(403).json({
       error: result.detail,
       details: {
@@ -7449,6 +7840,9 @@ export function issueRoutes(
       lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
     });
     const doc = result.document;
+    // Signal that the protected mutation committed so the human-gate grant restore does not
+    // undo the claim if a subsequent post-write operation returns 4xx.
+    res.locals.humanGateMutationCommitted = true;
     const redirectedFromLockedDocument =
       "redirectedFromLockedDocument" in result ? result.redirectedFromLockedDocument : null;
     await issueReferencesSvc.syncDocument(doc.id);
@@ -8179,6 +8573,9 @@ export function issueRoutes(
       res.status(404).json({ error: "Work product not found" });
       return;
     }
+    // Signal that the protected mutation committed so the human-gate grant restore does not
+    // undo the claim if a subsequent post-write operation returns 4xx.
+    res.locals.humanGateMutationCommitted = true;
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
@@ -8531,6 +8928,11 @@ export function issueRoutes(
     if (watchdogProductBugFollowUp === false) return;
     const effectiveParentId = watchdogProductBugFollowUp ? null : rawCreateBody.parentId;
     let createParent: Awaited<ReturnType<typeof svc.getById>> | null = null;
+    if (!assertAgentHumanGateCreateAssignmentAllowed(req, res, {
+      title: rawCreateBody.title,
+      assigneeAgentId: rawCreateBody.assigneeAgentId ?? null,
+      assigneeUserId: rawCreateBody.assigneeUserId ?? null,
+    })) return;
     if (req.actor.type === "agent" && !effectiveParentId && !watchdogProductBugFollowUp && !isTaskBridgeKeyActor(req)) {
       const companyScopeDecision = await access.decide({
         actor: req.actor,
@@ -8816,6 +9218,7 @@ export function issueRoutes(
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
     if (!isTaskBridgeKeyActor(req) && !(await assertIssueWriteInfluenceAllowed(req, res, parent))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, parent, { allowVisibleIssueWrite: true }))) return;
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -8824,6 +9227,11 @@ export function issueRoutes(
       entityId: parent.id,
     });
     if (!sanitizedBody) return;
+    if (!assertAgentHumanGateCreateAssignmentAllowed(req, res, {
+      title: sanitizedBody.title as string | null | undefined,
+      assigneeAgentId: sanitizedBody.assigneeAgentId as string | null | undefined,
+      assigneeUserId: sanitizedBody.assigneeUserId as string | null | undefined,
+    })) return;
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       parent.companyId,
       sanitizedBody.assigneeAgentId as string | null | undefined,
@@ -8889,6 +9297,9 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
     });
+    // Signal that the protected mutation committed so the human-gate grant restore does not
+    // undo the claim if a subsequent post-write operation returns 4xx.
+    res.locals.humanGateMutationCommitted = true;
     await externalObjectsSvc.syncIssueSafely(issue.id);
 
     await logActivity(db, {
@@ -9006,6 +9417,11 @@ export function issueRoutes(
         entityId: sourceIssue.id,
       });
       if (!sanitizedChild) return;
+      if (!assertAgentHumanGateCreateAssignmentAllowed(req, res, {
+        title: sanitizedChild.title as string | null | undefined,
+        assigneeAgentId: sanitizedChild.assigneeAgentId as string | null | undefined,
+        assigneeUserId: sanitizedChild.assigneeUserId as string | null | undefined,
+      })) return;
       const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
         sourceIssue.companyId,
         sanitizedChild.assigneeAgentId as string | null | undefined,
@@ -10019,6 +10435,10 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    // Signal that the protected mutation committed so the human-gate grant restore
+    // in assertHumanAssignedIssueMutationAllowed does not undo the claim on any
+    // subsequent 4xx response (e.g. a post-mutation notification failure).
+    res.locals.humanGateMutationCommitted = true;
     for (const publication of postCommitActivityPublications) publishActivity(publication);
 
     if (enteringBlocked) {
@@ -11516,7 +11936,13 @@ export function issueRoutes(
         },
       });
 
-      if (continuationIssue) {
+      if (
+        continuationIssue
+        && (
+          continuationIssue.status !== issue.status
+          || continuationIssue.assigneeUserId !== (issue.assigneeUserId ?? null)
+        )
+      ) {
         await logActivity(db, {
           companyId: issue.companyId,
           actorType: actor.actorType,
@@ -12178,6 +12604,13 @@ export function issueRoutes(
             isDefaultOpenIssueWriteDecision(commentAccessDecision))));
     const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
     const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
+    if (
+      req.actor.type === "agent" &&
+      issue.assigneeUserId !== null &&
+      (reopenRequested || resumeRequested || interruptRequested)
+    ) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    }
     if (
       isClosed &&
       req.actor.type === "agent" &&

@@ -849,6 +849,46 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects mutation of a title-marked human gate whose assignee was cleared", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "todo",
+      title: "🔒 HUMAN GATE — approve production change",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      responsibleUserId: "board-user",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details).toMatchObject({
+      issueId,
+      assigneeUserId: null,
+      responsibleUserId: "board-user",
+      humanOwnerUserId: "board-user",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not treat bare responsible-user audit attribution as a human gate", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "done",
+      title: "AI Tool Radar — Daily ProductHunt + GitHub Monitor",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      responsibleUserId: "board-user",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .put(`/api/issues/${issueId}/documents/ledger`)
+      .send({ format: "markdown", body: "# unchanged bookkeeping" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
+  });
+
   it("keeps visible peer comments agent-class even when authorType tries to smuggle user wake privilege", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read" || input.action === "issue:comment",

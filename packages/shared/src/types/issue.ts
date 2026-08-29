@@ -1268,6 +1268,14 @@ export interface RequestConfirmationSecretProposalResult {
   updatedAt: string;
 }
 
+export type RequestConfirmationAuthorizationScope = string | string[];
+
+export interface RequestConfirmationAuthorizationWarning {
+  severity?: "routine" | "serious";
+  title?: string | null;
+  body?: string | null;
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1282,6 +1290,8 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
+  authorizationScope?: RequestConfirmationAuthorizationScope | null;
+  authorizationWarning?: RequestConfirmationAuthorizationWarning | null;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1306,6 +1316,8 @@ export interface RequestCheckboxConfirmationPayload {
   declineReasonPlaceholder?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  authorizationScope?: RequestConfirmationAuthorizationScope | null;
+  authorizationWarning?: RequestConfirmationAuthorizationWarning | null;
 }
 
 export type RequestItemVerdictValue = "approve" | "reject" | "defer";

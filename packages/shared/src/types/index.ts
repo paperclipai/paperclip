@@ -703,6 +703,8 @@ export type {
   RequestConfirmationIssueDocumentTarget,
   RequestConfirmationCustomTarget,
   RequestConfirmationTarget,
+  RequestConfirmationAuthorizationScope,
+  RequestConfirmationAuthorizationWarning,
   RequestConfirmationPayload,
   RequestConfirmationResult,
   RequestConfirmationToolActionPayload,
