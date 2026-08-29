@@ -4,6 +4,7 @@ import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, L
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useManagedSandboxOnly } from "@/hooks/useManagedSandboxOnly";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
@@ -63,6 +64,7 @@ export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
   const { data: plugin, isLoading: pluginLoading } = useQuery({
@@ -150,7 +152,12 @@ export function PluginSettings() {
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
   const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
   const localFolderDeclarations = plugin.manifestJson.localFolders ?? [];
-  const hasLocalFolders = localFolderDeclarations.length > 0;
+  // A plugin local folder is an absolute path on the execution host. Under the
+  // managed-sandbox-only policy the platform-managed environment owns the
+  // filesystem, so the whole section disappears and the Settings tab falls back
+  // to whatever else the plugin declares. The section also stays hidden until
+  // the policy is known.
+  const hasLocalFolders = localFolderDeclarations.length > 0 && !hideHostPaths;
   const environmentDriverNames = environmentDrivers
     .map((driver) => driver.displayName?.trim() || driver.driverKey)
     .filter((name, index, values) => values.indexOf(name) === index);

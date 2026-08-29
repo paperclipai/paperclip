@@ -39,6 +39,7 @@ import {
   getManagedInstanceConfig,
   type ManagedInstanceConfig,
 } from "./services/managed-config.js";
+import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
@@ -67,14 +68,15 @@ import {
   toolAccessService,
   workspaceOperationService,
 } from "./services/index.js";
+import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
-import { createDbAdapterAuthSessionStore } from "./services/codex-device-login-service.js";
+import { createDbAdapterAuthSessionStore } from "./services/device-login-service.js";
 import {
-  createCodexDeviceLoginReaper,
+  createDeviceLoginReaper,
   createProductionLoginSessionReaperRuntime,
-} from "./services/codex-device-login-reaper.js";
+} from "./services/device-login-reaper.js";
 import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
@@ -85,13 +87,6 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
-import {
-  createDuplexAggregateByteLedgerTelemetry,
-  DuplexAggregateByteLedger,
-  type DuplexAggregateByteLedgerMetricSink,
-} from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
-import { resolveDuplexAggregateCeilingBytesFromEnv } from "./duplex-aggregate-ceiling-env.js";
-import { DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL } from "@paperclipai/adapter-utils/duplex-observability";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -688,6 +683,22 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
+  // Operator setting defaults (PAPERCLIP_SETTING_DEFAULTS). Same fail-closed
+  // posture as the managed-config parse above: malformed JSON or an invalid
+  // value for a known field refuses startup; unknown field names only warn.
+  try {
+    const operatorDefaults = getOperatorSettingDefaults();
+    if (operatorDefaults && Object.keys(operatorDefaults).length > 0) {
+      logger.warn(
+        { defaultedSettings: Object.keys(operatorDefaults).sort() },
+        "operator setting defaults active",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "invalid PAPERCLIP_SETTING_DEFAULTS; refusing to start (fail closed)");
+    throw err;
+  }
+
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
@@ -766,57 +777,9 @@ export async function startServer(): Promise<StartedServer> {
       databaseBackupInFlight = false;
     }
   };
-  // The process-owned aggregate byte ledger for the sandbox duplex channel. One
-  // ledger per host process bounds the aggregate bytes that all live duplex routes
-  // retain. The route-count controller bounds only the route count, so without this
-  // ledger the per-route byte bounds multiply to many gigabytes at the maximum
-  // route count. The manager injects this same object into every worker handle, so
-  // one shared gauge bounds every host-side retention site.
-  //
-  // The optional operator override reads PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES.
-  // An absent variable uses the documented default. A present invalid, blank,
-  // whitespace-only, non-finite, zero, negative, non-integer, unsafe, or
-  // over-maximum value does not fail startup. The host process is multi-tenant, so
-  // one invalid environment value must not brick the whole host. The helper sends
-  // the raw string to the resolver, so a present blank value is invalid, not
-  // absent. The resolver rejects the invalid override and returns the safe default.
-  // The reporter logs the rejection loudly at error, so the misconfiguration stays
-  // visible while the host stays up. The log line carries only the rejected numeric
-  // value, never the raw string.
-  const duplexAggregateCeilingBytes = resolveDuplexAggregateCeilingBytesFromEnv(
-    process.env.PAPERCLIP_MAX_AGGREGATE_DUPLEX_ROUTE_BYTES,
-    (rejectedValue) => {
-      logger.error(
-        { rejectedValue },
-        "duplex aggregate byte ceiling override rejected; using the safe default",
-      );
-    },
-  );
-  // The server has no process metric pipeline yet, so the ledger telemetry maps to
-  // the structured logger. The gauge logs at debug. A reservation rejection logs at
-  // warn, because it marks an availability limit hit. An accounting-underflow defect
-  // logs at error, because it marks a real cleanup bug. Each record carries only the
-  // fixed metric name and the numeric value; no route, company, run, or payload
-  // value reaches a log line.
-  const duplexAggregateByteLedgerMetricSink: DuplexAggregateByteLedgerMetricSink = {
-    setGauge(name, value) {
-      logger.debug({ metric: name, value }, "duplex aggregate byte ledger gauge");
-    },
-    incrementCounter(name) {
-      if (name === DUPLEX_COUNTER_AGGREGATE_BYTE_ACCOUNTING_UNDERFLOW_TOTAL) {
-        logger.error({ metric: name }, "duplex aggregate byte ledger accounting underflow");
-        return;
-      }
-      logger.warn({ metric: name }, "duplex aggregate byte ledger reservation rejected");
-    },
-  };
-  const duplexAggregateByteLedger = new DuplexAggregateByteLedger({
-    ceilingBytes: duplexAggregateCeilingBytes,
-    telemetry: createDuplexAggregateByteLedgerTelemetry(duplexAggregateByteLedgerMetricSink),
-  });
-  const pluginWorkerManager = createPluginWorkerManager({ duplexAggregateByteLedger });
+  const pluginWorkerManager = createPluginWorkerManager();
   const heartbeat = config.heartbeatSchedulerEnabled
-    ? heartbeatService(db as any, { pluginWorkerManager, duplexAggregateByteLedger })
+    ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
@@ -1116,6 +1079,9 @@ export async function startServer(): Promise<StartedServer> {
   const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
   const environmentLeaseCleanupHeartbeat =
     heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
+  const questionResponseDeliveries = questionResponseDeliveryService(db as any, {
+    heartbeat: environmentLeaseCleanupHeartbeat,
+  });
   const runEnvironmentLeaseCleanupSweep = (backoffMs: number) =>
     environmentLeaseCleanupHeartbeat
       .sweepPendingCleanupLeases({ backoffMs })
@@ -1131,6 +1097,14 @@ export async function startServer(): Promise<StartedServer> {
     if (heartbeatSchedulerStopped) return;
     trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
+
+  await questionResponseDeliveries.sweepPending().then((result) => {
+    if (result.scanned > 0) {
+      logger.info(result, "startup question-response delivery sweep completed");
+    }
+  }).catch((err) => {
+    logger.error({ err }, "startup question-response delivery sweep failed");
+  });
 
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
@@ -1202,7 +1176,7 @@ export async function startServer(): Promise<StartedServer> {
     // any expired non-terminal session, retries the delete for any terminal
     // session left in `cleanup_pending`, and deletes a tagged lease that no live
     // session references.
-    const adapterLoginReaper = createCodexDeviceLoginReaper({
+    const adapterLoginReaper = createDeviceLoginReaper({
       store: createDbAdapterAuthSessionStore(db as any),
       runtime: createProductionLoginSessionReaperRuntime({
         db: db as any,
@@ -1540,6 +1514,16 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "periodic secret proposal expiry sweep failed");
+          }));
+
+        trackHeartbeatSchedulerWork(questionResponseDeliveries.sweepPending()
+          .then((result) => {
+            if (result.scanned > 0) {
+              logger.info(result, "periodic question-response delivery sweep completed");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic question-response delivery sweep failed");
           }));
 
         if (heartbeatSchedulerStopped) return;

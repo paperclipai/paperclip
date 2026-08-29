@@ -6,7 +6,6 @@ import {
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
-import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import {
   clampSpanLabel,
   getActiveStepContext,
@@ -208,10 +207,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // enters the sandbox environment. Absent keeps the safe no-op default in the
   // bridge, so the surface stays inert until the host injects a real recorder.
   duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
-  // The process-owned aggregate byte ledger. The seam stamps it onto the sandbox
-  // target next to the runner, so the live object stays on the host and never
-  // enters the sandbox environment. Absent keeps the bridge inert for this seam.
-  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }): Promise<AdapterExecutionTarget | null> {
   if (input.environment.driver === "local") {
     return {
@@ -340,10 +335,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
       // binds it to the fixed observability surface. Absent keeps the no-op
       // default, so the surface stays inert on a run with no injected recorder.
       duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
-      // Attach the process-owned aggregate byte ledger next to the runner. The
-      // bridge passes it to the broker, the decoder, and the response-body reader.
-      // Absent keeps the bridge inert for this seam.
-      duplexAggregateByteLedger: input.duplexAggregateByteLedger ?? null,
       ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,

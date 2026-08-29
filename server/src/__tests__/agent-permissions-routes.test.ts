@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -232,25 +233,6 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
   };
 }
 
-async function createApp(actor: Record<string, unknown>, dbOptions: { requireBoardApprovalForNewAgents?: boolean } = {}) {
-  const [{ errorHandler }, { agentRoutes }] = await Promise.all([
-    import("../middleware/index.js") as Promise<typeof import("../middleware/index.js")>,
-    import("../routes/agents.js") as Promise<typeof import("../routes/agents.js")>,
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as any).actor = {
-      ...actor,
-      companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
-    };
-    next();
-  });
-  app.use("/api", agentRoutes(createDbStub(dbOptions) as any));
-  app.use(errorHandler);
-  return app;
-}
-
 async function requestApp(
   app: express.Express,
   buildRequest: (baseUrl: string) => request.Test,
@@ -279,31 +261,31 @@ async function requestApp(
 }
 
 describe.sequential("agent permission routes", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [{ errorHandler }, { agentRoutes }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    ]);
+    return { errorHandler, agentRoutes };
+  });
+
+  function createApp(actor: Record<string, unknown>, dbOptions: { requireBoardApprovalForNewAgents?: boolean } = {}) {
+    const { errorHandler, agentRoutes } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        ...actor,
+        companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
+      };
+      next();
+    });
+    app.use("/api", agentRoutes(createDbStub(dbOptions) as any));
+    app.use(errorHandler);
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/access.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/agent-instructions.js");
-    vi.doUnmock("../services/agents.js");
-    vi.doUnmock("../services/approvals.js");
-    vi.doUnmock("../services/budgets.js");
-    vi.doUnmock("../services/company-skills.js");
-    vi.doUnmock("../services/heartbeat.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/instance-settings.js");
-    vi.doUnmock("../services/issue-approvals.js");
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../services/secrets.js");
-    vi.doUnmock("../services/environments.js");
-    vi.doUnmock("../services/workspace-operations.js");
-    vi.doUnmock("../adapters/index.js");
-    vi.doUnmock("../routes/agents.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    vi.doUnmock("@paperclipai/adapter-opencode-local/server");
-    registerModuleMocks();
     vi.resetAllMocks();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();

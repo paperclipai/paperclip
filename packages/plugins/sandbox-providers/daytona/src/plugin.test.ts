@@ -3460,21 +3460,10 @@ describe("daytona native file-sync hooks", () => {
     const mvCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("mv -f"));
     expect(mvCall).toBeDefined();
     const mvCommand = String(mvCall?.[0]);
-    // TOCTOU-hardened rename: each promotion re-canonicalizes the target's parent
-    // dir, confirms it is still confined, OPENS that dir as fd 8, re-verifies the
-    // pinned inode is in-root, then `mv`s into `/proc/self/fd/8/<base>` — all in ONE
-    // sh invocation, so neither an ancestor swap before the open nor a path swap
-    // after it can redirect the rename. The rename is wrapped in `sh -c '...'`, so
-    // inner single-quotes are shell-escaped; assert on the un-escaped components.
-    expect(mvCommand).toContain("_pc_resolve");
-    // The parent dir is opened as fd 8 and its pinned inode re-verified in-root
-    // before the rename, which targets the inode via /proc/self/fd/8 rather than the
-    // literal (swappable) path string.
+    // Each promotion is one plain `mv -f <scratch> <target>` command, batched
+    // together in a single sandbox invocation.
     expect(mvCommand).toContain(secretTemp);
-    expect(mvCommand).toContain('exec 8<"$_pc_tgt_dir"');
-    expect(mvCommand).toContain("_pc_fd_dir=$(_pc_resolve /proc/self/fd/8)");
-    expect(mvCommand).toContain("/proc/self/fd/8/");
-    expect(mvCommand).toContain("auth.json");
+    expect(mvCommand).toContain(`${REMOTE_DIR}/.secret/auth.json`);
     // Both temps are promoted (one mv line per rename).
     expect(mvCommand.match(/mv -f /g)).toHaveLength(2);
 
@@ -3546,8 +3535,8 @@ describe("daytona native file-sync hooks", () => {
     const transfer = spans.find((span) => span.name === "transfer");
     expect(transfer).toBeDefined();
     expect(transfer!.ended).toBe(true);
-    // The two serial guard round trips before the transfer: mkdir + confinement.
-    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
+    // One serial guard round trip before the transfer: mkdir (with the zstd probe).
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(1);
     expect(transfer!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
     expect(typeof transfer!.attributes["paperclip.sandbox.startup.transfer.wall_ms"]).toBe("number");
     // A bulk file upload builds no host tarball, so it opens no pack span.
@@ -3651,10 +3640,11 @@ describe("daytona native file-sync hooks", () => {
 
     const transfer = spans.find((span) => span.name === "transfer");
     expect(transfer).toBeDefined();
-    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
+    // One serial guard round trip before the transfer: mkdir.
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(1);
   });
 
-  it("opens ensureDirectory, checkSymlinkEscape, transfer, promote spans in call order for a file-mapping sync", async () => {
+  it("opens ensureDirectory, transfer, promote spans in call order for a file-mapping sync", async () => {
     const hostDir = await makeHostDir();
     const source = path.join(hostDir, "config.txt");
     await fs.writeFile(source, "plain");
@@ -3683,7 +3673,6 @@ describe("daytona native file-sync hooks", () => {
 
     expect(spans.map((span) => span.name)).toEqual([
       "ensureDirectory",
-      "checkSymlinkEscape",
       "transfer",
       "promote",
     ]);
@@ -3695,12 +3684,11 @@ describe("daytona native file-sync hooks", () => {
       if (span.name !== "transfer") {
         expect(span.attributes["paperclip.sandbox.startup.ensureDirectory.wall_ms"]).toBeUndefined();
         expect(span.attributes["paperclip.sandbox.startup.promote.wall_ms"]).toBeUndefined();
-        expect(span.attributes["paperclip.sandbox.startup.checkSymlinkEscape.wall_ms"]).toBeUndefined();
       }
     }
   });
 
-  it("opens pack, ensureDirectory, checkSymlinkEscape, transfer, extractTarball spans in call order for a directory-mapping sync", async () => {
+  it("opens pack, ensureDirectory, transfer, extractTarball spans in call order for a directory-mapping sync", async () => {
     const hostDir = await makeHostDir();
     const sourceDir = path.join(hostDir, "assets");
     await fs.mkdir(sourceDir, { recursive: true });
@@ -3733,7 +3721,6 @@ describe("daytona native file-sync hooks", () => {
     expect(spans.map((span) => span.name)).toEqual([
       "pack",
       "ensureDirectory",
-      "checkSymlinkEscape",
       "transfer",
       "extractTarball",
     ]);
@@ -3778,7 +3765,7 @@ describe("daytona native file-sync hooks", () => {
     expect(pack!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
   });
 
-  it("opens a checkSymlinkEscape span and a postUploadCommand span in call order for a post-upload command with a working directory", async () => {
+  it("opens a postUploadCommand span for a post-upload command with a working directory", async () => {
     const hostDir = await makeHostDir();
     const source = path.join(hostDir, "config.txt");
     await fs.writeFile(source, "plain");
@@ -3806,15 +3793,12 @@ describe("daytona native file-sync hooks", () => {
       restore();
     }
 
-    // The full order: the file mapping opens ensureDirectory, checkSymlinkEscape,
-    // transfer, promote; the post-upload command then opens its own cwd
-    // checkSymlinkEscape and the postUploadCommand span.
+    // The full order: the file mapping opens ensureDirectory, transfer, promote;
+    // the post-upload command then opens the postUploadCommand span.
     expect(spans.map((span) => span.name)).toEqual([
       "ensureDirectory",
-      "checkSymlinkEscape",
       "transfer",
       "promote",
-      "checkSymlinkEscape",
       "postUploadCommand",
     ]);
     const provision = spans.find((span) => span.name === "postUploadCommand");
@@ -3873,8 +3857,7 @@ describe("daytona native file-sync hooks", () => {
     expect(capturedTarListing).not.toContain("skip.log");
     expect(capturedTarListing).toMatch(/link\.txt ->|link\.txt link to/);
 
-    // The target dir is created by its own mkdir command (so the realpath guard
-    // that follows resolves real components), no longer inside the extract chain.
+    // The target dir is created by its own mkdir command, before the upload.
     const mkdirCall = sandbox.process.executeCommand.mock.calls.find(
       ([cmd]) =>
         String(cmd).includes("mkdir -p") &&
@@ -3882,26 +3865,14 @@ describe("daytona native file-sync hooks", () => {
         !String(cmd).includes("tar -xf"),
     );
     expect(mkdirCall).toBeDefined();
-    // The realpath symlink-escape guard runs on the target before extraction.
-    const inboundGuardCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) =>
-      String(cmd).includes("_pc_resolve"),
-    );
-    expect(inboundGuardCall).toBeDefined();
 
     const extractCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("tar -xf"));
     expect(extractCall).toBeDefined();
     const extractCommand = String(extractCall?.[0]);
-    // The extract binds validation and extraction into one sandbox invocation: it
-    // re-canonicalizes the target, opens the resolved dir as fd 9, re-verifies the
-    // PINNED inode (`/proc/self/fd/9`) is still in-root — closing the ancestor-swap
-    // race in the `open()` itself — then extracts via /proc/self/fd/9, binding
-    // extraction to the directory inode rather than the path string.
-    expect(extractCommand).toContain("_pc_resolve");
+    // The extract is one plain `tar -xf <scratch-tar> -C <target>` command,
+    // followed by removing the scratch tar.
     expect(extractCommand).toContain(".paperclip-runtime/assets");
     expect(extractCommand).toContain("tar -xf");
-    expect(extractCommand).toContain('exec 9<"$_pc_real"');
-    expect(extractCommand).toContain("_pc_fd_real=$(_pc_resolve /proc/self/fd/9)");
-    expect(extractCommand).toContain("-C /proc/self/fd/9");
     expect(extractCommand).toMatch(/rm -f .*\.paperclip-upload-.*\.tar/);
   });
 
@@ -4081,32 +4052,6 @@ describe("daytona native file-sync hooks", () => {
     await expect(fs.stat(badTarget)).rejects.toThrow();
   });
 
-  it("rejects a sync target path that escapes the workspace remote dir (path confinement)", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "evil.txt");
-    await fs.writeFile(source, "x");
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-escape",
-            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/../../etc/passwd`, kind: "file" }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/escapes the workspace remote dir|not a confined absolute path/);
-
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-  });
-
   it("syncOut rejects an outbound source whose in-sandbox realpath escapes the workspace remote dir, before any download", async () => {
     const hostDir = await makeHostDir();
     const sandbox = createMockSandbox();
@@ -4175,81 +4120,6 @@ describe("daytona native file-sync hooks", () => {
 
     expect(sandbox.fs.downloadFiles).not.toHaveBeenCalled();
     await expect(fs.stat(target)).rejects.toThrow();
-  });
-
-  it("syncIn rejects a file mapping whose in-sandbox target parent resolves outside the remote dir (symlinked-parent escape), before uploading", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "auth.json");
-    await fs.writeFile(source, "credential-material");
-
-    const sandbox = createMockSandbox();
-    // The lexical path check passes (the target string is confined), but the
-    // realpath guard on the materialized parent dir resolves outside the root:
-    // report the escape exit (42) for the `_pc_resolve` probe, green otherwise.
-    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
-      if (command.includes("_pc_resolve")) {
-        return { exitCode: 42, result: `ESCAPE:${REMOTE_DIR}/.secret`, artifacts: { stdout: "" } };
-      }
-      return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
-    });
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-in-escape",
-            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/.secret/auth.json`, kind: "file", mode: 0o600 }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/inbound symlink-escape guard command failed \(exit 42\)/);
-
-    // Fail-closed: the guard trips after mkdir but before any bytes are uploaded.
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-    expect(sandbox.fs.setFilePermissions).not.toHaveBeenCalled();
-  });
-
-  it("syncIn rejects a directory mapping whose in-sandbox target resolves outside the remote dir (symlinked-dir extraction), before uploading the tarball", async () => {
-    const hostDir = await makeHostDir();
-    const sourceDir = path.join(hostDir, "assets");
-    await fs.mkdir(sourceDir, { recursive: true });
-    await fs.writeFile(path.join(sourceDir, "a.txt"), "alpha");
-
-    const sandbox = createMockSandbox();
-    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
-      if (command.includes("_pc_resolve")) {
-        return { exitCode: 42, result: `ESCAPE:${REMOTE_DIR}/assets`, artifacts: { stdout: "" } };
-      }
-      return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
-    });
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-in-dir-escape",
-            files: [{ sourcePath: sourceDir, targetPath: `${REMOTE_DIR}/assets`, kind: "directory" }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/inbound symlink-escape guard command failed \(exit 42\)/);
-
-    // Fail-closed: no tarball is uploaded and no in-sandbox extraction runs.
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-    const extractCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("tar -xf"));
-    expect(extractCall).toBeUndefined();
   });
 
   it("syncIn sweeps staged temps when the batched rename fails mid-promotion", async () => {
@@ -4649,42 +4519,6 @@ describe("daytona native file-sync hooks", () => {
     });
   });
 
-  it("rejects a merged operation when either tar mapping target escapes the remote dir, before uploading", async () => {
-    const hostDir = await makeHostDir();
-    const gitTar = path.join(hostDir, "git-workspace.tar");
-    const overlayTar = path.join(hostDir, "workspace.tar");
-    await fs.writeFile(gitTar, "git-bytes");
-    await fs.writeFile(overlayTar, "overlay-bytes");
-    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
-
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "merged-escape",
-            files: [
-              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
-              // The overlay mapping target escapes the workspace remote dir.
-              { sourcePath: overlayTar, targetPath: `${REMOTE_DIR}/../../etc/workspace-upload.tar`, kind: "file" },
-            ],
-            postUploadCommands: [{ command: "git-history-extract" }, { command: "workspace-overlay-extract" }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/escapes the workspace remote dir|not a confined absolute path/);
-
-    // Neither tar uploaded: the confine check on the escaping mapping trips first.
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-  });
-
   it("stops the overlay and remove-deleted commands when the git extract fails (merged operation fail-fast)", async () => {
     const hostDir = await makeHostDir();
     const gitTar = path.join(hostDir, "git-workspace.tar");
@@ -4734,75 +4568,6 @@ describe("daytona native file-sync hooks", () => {
     expect(ran("git-history-extract")).toBe(true);
     expect(ran("workspace-overlay-extract")).toBe(false);
     expect(ran("remove-deleted-paths")).toBe(false);
-  });
-
-  it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "config.txt");
-    await fs.writeFile(source, "plain");
-
-    for (const badCwd of [`${REMOTE_DIR}/../etc`, "/etc"]) {
-      const sandbox = createMockSandbox();
-      mockGet.mockResolvedValue(sandbox);
-      await expect(
-        plugin.definition.onEnvironmentSyncIn?.({
-          driverKey: "daytona",
-          companyId: "company-1",
-          environmentId: "env-1",
-          config: { timeoutMs: 300000, reuseLease: false },
-          lease: syncLease(),
-          operations: [
-            {
-              operationId: "op-escape",
-              files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
-              postUploadCommands: [{ command: "run-me", cwd: badCwd }],
-            },
-          ],
-        }),
-      ).rejects.toThrow(/not a confined absolute path|escapes the workspace remote dir/);
-      // The command never ran — lexical confinement rejected it before exec.
-      expect(sandbox.process.executeCommand.mock.calls.some(([c]) => c === "run-me")).toBe(
-        false,
-      );
-    }
-  });
-
-  it("rejects a post-upload command whose cwd resolves outside the root via a symlink (realpath guard, C2)", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "config.txt");
-    await fs.writeFile(source, "plain");
-
-    const cwd = `${REMOTE_DIR}/link`;
-    const sandbox = createMockSandbox();
-    // The in-sandbox realpath symlink-escape guard for THIS cwd fails closed (exit
-    // 42), simulating a sandbox-planted symlink that resolves out of root.
-    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
-      if (command.includes("_pc_resolve") && command.includes(cwd)) {
-        return { exitCode: 42, result: "ESCAPE", artifacts: { stdout: "ESCAPE" } };
-      }
-      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
-    });
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "op-symlink",
-            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
-            postUploadCommands: [{ command: "run-me", cwd }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/symlink-escape guard|command failed/i);
-    expect(sandbox.process.executeCommand.mock.calls.some(([c]) => c === "run-me")).toBe(
-      false,
-    );
   });
 
   it("issues no extra exec when an operation has no post-upload commands (backward-compat)", async () => {

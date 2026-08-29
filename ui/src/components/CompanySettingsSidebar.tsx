@@ -1,12 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
-  Clock3,
   Cpu,
   Download,
   FlaskConical,
   KeyRound,
-  MailPlus,
   MonitorCog,
   Puzzle,
   Shield,
@@ -129,9 +127,6 @@ export function CompanySettingsSidebar() {
                 end
               />
             ))}
-          {showPage("company.invites") && (
-            <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
-          )}
           {showPage("company.secrets") && (
             <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
           )}
@@ -148,14 +143,6 @@ export function CompanySettingsSidebar() {
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
               label="Access"
               icon={Shield}
-              end
-            />
-          )}
-          {showPage("instance.heartbeats") && (
-            <SidebarNavItem
-              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`}
-              label="Heartbeats"
-              icon={Clock3}
               end
             />
           )}

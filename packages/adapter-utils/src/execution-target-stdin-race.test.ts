@@ -1796,7 +1796,7 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
     await waitFor(async () => (await findLivePidsByArgvSubstring(wrapperScriptSubstring)).length === 0, 8_000);
   }, 15_000);
 
-  // ---- PAP-5338: fail closed on an unusable creation time, and on every
+  // ---- PAP-5338: reject a change-time creation-time substitute, and every
   // lstat error during verification -------------------------------------
 
   async function waitForTrackedChildPid(pidFile: string): Promise<number> {
@@ -1822,18 +1822,17 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
   // ever starts, often within a few milliseconds of the child's own spawn()
   // call returning. A freshly spawned Node.js child needs real wall-clock
   // time just to boot before it can run its own code, so it can lose the
-  // race to write a pid file before terminate()'s SIGTERM reaches it. This
-  // is the correct, intended shape of a fail-fast capture: the child never
-  // gets a chance to become a live orphan. So these two tests prove death
-  // through the OS process table by the child's own script path (the same
-  // technique T15 above uses for the wrapper itself), which needs no
-  // cooperation from code inside the child.
+  // race to write a pid file before terminate()'s SIGTERM reaches it. The
+  // change-time fallback test below therefore proves death through the OS
+  // process table by the child's own script path (the same technique T15
+  // above uses for the wrapper itself), which needs no cooperation from code
+  // inside the child.
   async function expectNoLiveProcessByArgvSubstring(substring: string): Promise<void> {
     await waitFor(async () => (await findLivePidsByArgvSubstring(substring)).length === 0, 8_000);
     expect(await findLivePidsByArgvSubstring(substring)).toEqual([]);
   }
 
-  it("T16 fails closed at capture when the reported creation time is zero, so no orphan wrapper or child ever starts polling", async () => {
+  it("T16 accepts a zero creation time when the filesystem does not report birth time", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-birthtime-zero-"));
     cleanupDirs.push(rootDir);
     const pidFile = path.join(rootDir, "t16-child.pid");
@@ -1847,14 +1846,21 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
       fakeBirthtime: { target: "sessionDir", mode: "zero" },
     });
 
+    const pid = await waitForTrackedChildPid(pidFile);
+    expect(isPidAlive(pid)).toBe(true);
+    await writeFile(
+      path.join(wrapper.stdinDir, "000000000001.json"),
+      `${JSON.stringify({ type: "stdinEnd" })}\n`,
+      "utf8",
+    );
     await Promise.race([
       wrapper.exited,
       delay(8_000).then(() => {
         throw new Error("The wrapper process did not exit.");
       }),
     ]);
-    expect(wrapper.stderrText()).toMatch(/not usable/);
-    await expectNoLiveProcessByArgvSubstring(childPath);
+    expect(wrapper.exitInfo().code).toBe(0);
+    expect(wrapper.stderrText()).not.toMatch(/not usable/);
   }, 15_000);
 
   it("T17 fails closed at capture when the reported creation time follows the change time, so a change-time copy never passes as a real creation time", async () => {

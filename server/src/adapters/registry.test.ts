@@ -20,6 +20,18 @@ describe("built-in adapter login capabilities", () => {
     expect(() => assertValidAdapterLoginCapability(capability, "codex_local")).not.toThrow();
   });
 
+  it("registers the Grok device-login capability", () => {
+    const capability = requireServerAdapter("grok_local").loginCapability;
+    expect(capability).toBeDefined();
+    if (!capability) return;
+    expect(capability.panelMode).toBe("displayed_code");
+    expect(capability.timeoutPolicy).toBe("caller_bounded");
+    expect(capability.completionClaim).toBeUndefined();
+    expect(typeof capability.getCommand).toBe("function");
+    expect(typeof capability.parsePrompt).toBe("function");
+    expect(() => assertValidAdapterLoginCapability(capability, "grok_local")).not.toThrow();
+  });
+
   it("registers the Claude setup-token capability", () => {
     const capability = requireServerAdapter("claude_local").loginCapability;
     expect(capability).toBeDefined();

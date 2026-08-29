@@ -20,7 +20,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { Company } from "@paperclipai/shared";
+import { hidesCompanyPage, type Company } from "@paperclipai/shared";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { cloudApi, type CloudStackSummary } from "@/api/cloud";
@@ -36,6 +36,7 @@ import {
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { useSignOut } from "@/hooks/useSignOut";
 import { navigateTopLevel } from "@/lib/browserNavigation";
@@ -59,7 +60,6 @@ function WorkspaceIcon({ company }: { company: Company }) {
     <CompanyPatternIcon
       companyName={company.name}
       logoUrl={company.logoUrl}
-      brandColor={company.brandColor}
       className={WORKSPACE_ICON_CLASS}
     />
   );
@@ -91,7 +91,6 @@ function CurrentStackIcon({
     <CompanyPatternIcon
       companyName={displayName}
       logoUrl={company?.logoUrl}
-      brandColor={company?.brandColor}
       className={WORKSPACE_ICON_CLASS}
     />
   );
@@ -236,6 +235,14 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   // exactly one company, and switching means leaving this tenant host entirely.
   const cloud = useCloudInstance();
   const isCloud = Boolean(cloud);
+  // Invites now live on the Members page; hide the shortcut when the hosting
+  // operator hides either surface. Until the health response resolves, the
+  // hidden set is unknown — keep the shortcut out rather than flash it.
+  const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
+  const showInvitePeople =
+    hiddenSettingsLoaded &&
+    !hidesCompanyPage(hiddenSettings, "company.members") &&
+    !hidesCompanyPage(hiddenSettings, "company.invites");
   const cloudBaseUrl = cloud?.cloudBaseUrl ?? null;
   const stacksQuery = useQuery({
     queryKey: queryKeys.cloud.stacks,
@@ -480,23 +487,25 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             <DropdownMenuSeparator />
           </>
         )}
-        <DropdownMenuItem asChild disabled={isEditingOrder}>
-          <Link
-            to="/company/settings/invites"
-            onClick={(event) => {
-              if (isEditingOrder) {
-                event.preventDefault();
-                return;
-              }
-              closeNavigationChrome();
-            }}
-          >
-            <UserPlus className="size-4" />
-            <span className="truncate">
-              {currentName ? `Invite people to ${currentName}` : "Invite people"}
-            </span>
-          </Link>
-        </DropdownMenuItem>
+        {showInvitePeople ? (
+          <DropdownMenuItem asChild disabled={isEditingOrder}>
+            <Link
+              to="/company/settings/members?tab=invites"
+              onClick={(event) => {
+                if (isEditingOrder) {
+                  event.preventDefault();
+                  return;
+                }
+                closeNavigationChrome();
+              }}
+            >
+              <UserPlus className="size-4" />
+              <span className="truncate">
+                {currentName ? `Invite people to ${currentName}` : "Invite people"}
+              </span>
+            </Link>
+          </DropdownMenuItem>
+        ) : null}
         {session?.session ? (
           <>
             <DropdownMenuSeparator />

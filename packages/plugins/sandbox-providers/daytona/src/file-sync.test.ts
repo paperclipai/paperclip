@@ -157,6 +157,35 @@ describe("daytona file-sync inbound scratch cleanup", () => {
     );
     expect(standaloneRemoves).toHaveLength(0);
   });
+
+  it("writes an inbound file mapping to a sandbox path outside the workspace root", async () => {
+    const hostDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-daytona-outside-root-"));
+    cleanupDirs.push(hostDir);
+    const sourcePath = path.join(hostDir, "source.txt");
+    await fs.writeFile(sourcePath, "payload");
+
+    // A target outside the workspace remote dir. The inbound direction writes
+    // host data into the sandbox, and the sandbox already has read/write
+    // authority over its own filesystem, so the provider no longer confines
+    // the target to the remote dir.
+    const remoteDir = "/workspace";
+    const targetPath = "/etc/paperclip-outside-root.txt";
+    const uploadedDestinations: string[] = [];
+    const commands: RecordedCommand[] = [];
+    const sandbox = createMockSandbox({ uploadedDestinations, commands });
+
+    const operations: PluginSyncOperation[] = [{
+      operationId: "sync-op-outside-root",
+      files: [{ sourcePath, targetPath, kind: "file" }],
+    }];
+
+    const result = await performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 });
+
+    expect(result.operations[0].filesTransferred).toBe(1);
+    const promoteCommand = commands.map((entry) => entry.command).find((command) => command.includes("mv -f"));
+    expect(promoteCommand).toBeDefined();
+    expect(promoteCommand).toContain(targetPath);
+  });
 });
 
 // ---------------------------------------------------------------
@@ -189,24 +218,6 @@ async function writeCompressibleFile(filePath: string, sizeBytes: number): Promi
 
 async function writeIncompressibleFile(filePath: string, sizeBytes: number): Promise<void> {
   await fs.writeFile(filePath, crypto.randomBytes(sizeBytes));
-}
-
-/**
- * Extract the raw scratch pathname from a promote-script command's own text.
- * The promote script embeds the path inside `shellQuote`, and the WHOLE
- * script is itself `shellQuote`d again for the outer `sh -c` wrapper — so the
- * literal `'...'` delimiters around the path get escaped and are not a
- * reliable anchor. The path text itself has no shell metacharacters (it is
- * `remoteDir` + a UUID-based scratch name), so it survives both quoting
- * passes unchanged and is matched directly instead. The script always emits
- * the raw scratch's `exec 9> ...` line before the `.zst` scratch's
- * `zstd -d -c -- ...` line, so the FIRST match is always the raw name.
- */
-function extractRawScratchPath(command: string, remoteDir: string): string {
-  const escapedRoot = remoteDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = command.match(new RegExp(`${escapedRoot}/\\.paperclip-upload-[0-9a-f-]+`));
-  if (!match) throw new Error("test setup: could not find the raw scratch path in the promote script");
-  return match[0];
 }
 
 /**
@@ -251,27 +262,16 @@ function createRecordingSandbox(input: {
  * `setFilePermissions` apply real bytes/modes onto a real directory standing
  * in for the sandbox root. This proves the decompression/promotion script
  * for real, instead of only recording which commands the code would send.
- *
- * `beforeCommand` runs (and may `await` a filesystem mutation) immediately
- * before each real command executes. The race-regression test uses it to
- * plant a pre-created scratch name at exactly the moment a sandbox peer could
- * have observed the pathname (the R2 residual the design discloses), and the
- * parent-swap test uses it to swap a target's parent dir between the
- * confinement guard and the promotion round trip.
  */
 function createRealExecSandbox(input?: {
-  beforeCommand?: (command: string, index: number) => void | Promise<void>;
   uploadOverride?: (uploads: Array<{ source: string; destination: string }>) => Promise<boolean>;
 }) {
   const commands: RecordedCommand[] = [];
-  let index = 0;
   return {
     commands,
     sandbox: {
       process: {
         executeCommand: async (command: string) => {
-          await input?.beforeCommand?.(command, index);
-          index += 1;
           commands.push({ command });
           const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
           return { exitCode: result.status ?? 1, result: (result.stdout ?? "") + (result.stderr ?? "") };
@@ -325,9 +325,9 @@ describe("daytona file-sync inbound zstd transport compression", () => {
 
       expect(result.operations[0].filesTransferred).toBe(1);
       expect(result.operations[0].bytesTransferred).toBe(ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
-      // The promote script actually ran a real `zstd -d -c` — proves decompression
+      // The promote script actually ran a real `zstd -d -o` — proves decompression
       // happened, not just that the code called `uploadFiles`.
-      expect(commands.some((entry) => entry.command.includes("zstd -d -c"))).toBe(true);
+      expect(commands.some((entry) => entry.command.includes("zstd -d -o"))).toBe(true);
       expect(await sha256OfFile(targetPath)).toBe(await sha256OfFile(sourcePath));
 
       // Cleanup on success: no reserved scratch (raw or `.zst`) remains.
@@ -506,109 +506,7 @@ describe("daytona file-sync inbound zstd transport compression", () => {
       expect(remaining.filter((name) => name.includes(".paperclip-upload"))).toHaveLength(0); // scratch swept
     });
 
-    it("refuses a pre-created regular file at the raw scratch name (race regression, C1)", async () => {
-      const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
-      const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
-      const sourcePath = path.join(hostDir, "workspace-upload.tar");
-      await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
-      const targetPath = path.posix.join(remoteDir, "target.bin");
-
-      let injected = false;
-      const { sandbox } = createRealExecSandbox({
-        beforeCommand: async (command) => {
-          if (injected || !command.includes("zstd -d -c")) return;
-          const rawScratchPath = extractRawScratchPath(command, remoteDir);
-          injected = true;
-          // A peer that reads this command's own text (the R2 residual) claims
-          // the reserved name first, as a plain pre-existing file.
-          await fs.writeFile(rawScratchPath, "attacker-controlled pre-existing content");
-        },
-      });
-      const operations: PluginSyncOperation[] = [{
-        operationId: "sync-op-1",
-        files: [{ sourcePath, targetPath, kind: "file" }],
-      }];
-
-      await expect(
-        performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 }),
-      ).rejects.toThrow();
-
-      expect(injected).toBe(true);
-      await expect(fs.stat(targetPath)).rejects.toThrow(); // never promoted
-    });
-
-    it("refuses a pre-created symlink at the raw scratch name and never writes through it (race regression, C1)", async () => {
-      const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
-      const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
-      const sourcePath = path.join(hostDir, "workspace-upload.tar");
-      await writeCompressibleFile(sourcePath, ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
-      const targetPath = path.posix.join(remoteDir, "target.bin");
-      const sentinelPath = path.join(hostDir, "outside-the-workspace-root.txt");
-      const sentinelContent = "PRE-EXISTING CONTENT, MUST SURVIVE UNCHANGED\n";
-      await fs.writeFile(sentinelPath, sentinelContent);
-
-      let injected = false;
-      const { sandbox } = createRealExecSandbox({
-        beforeCommand: async (command) => {
-          if (injected || !command.includes("zstd -d -c")) return;
-          const rawScratchPath = extractRawScratchPath(command, remoteDir);
-          injected = true;
-          // A peer that reads this command's own text (the R2 residual) claims
-          // the reserved name first, as a symlink pointing OUTSIDE the workspace
-          // root — the attack shape a create-with-mode-not-check-then-create
-          // primitive must refuse.
-          await fs.symlink(sentinelPath, rawScratchPath);
-        },
-      });
-      const operations: PluginSyncOperation[] = [{
-        operationId: "sync-op-1",
-        files: [{ sourcePath, targetPath, kind: "file" }],
-      }];
-
-      await expect(
-        performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 }),
-      ).rejects.toThrow();
-
-      expect(injected).toBe(true);
-      await expect(fs.stat(targetPath)).rejects.toThrow(); // never promoted
-      // The symlink's target was never opened/written through: content unchanged,
-      // and no write landed outside the workspace root.
-      expect(await fs.readFile(sentinelPath, "utf8")).toBe(sentinelContent);
-    });
-
-    it("still fails at the fd re-verification when a target's parent dir is swapped after the confinement guard", async () => {
-      const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
-      const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
-      const outsideDir = await mkTempDir("paperclip-daytona-zstd-outside-");
-      const realParentDir = path.posix.join(remoteDir, "nested");
-      const targetPath = path.posix.join(realParentDir, "target.bin");
-      const sourcePath = path.join(hostDir, "small.bin");
-      await fs.writeFile(sourcePath, "small file, well below the compression threshold\n");
-
-      let swapped = false;
-      const { sandbox } = createRealExecSandbox({
-        beforeCommand: async (_command, index) => {
-          // index 0 = mkdir+probe, index 1 = checkSymlinkEscape, index 2 = promote.
-          if (index !== 2 || swapped) return;
-          swapped = true;
-          await fs.rm(realParentDir, { recursive: true, force: true });
-          await fs.symlink(outsideDir, realParentDir);
-        },
-      });
-      const operations: PluginSyncOperation[] = [{
-        operationId: "sync-op-1",
-        files: [{ sourcePath, targetPath, kind: "file" }],
-      }];
-
-      await expect(
-        performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 }),
-      ).rejects.toThrow(/ESCAPE|syncIn rename/);
-
-      expect(swapped).toBe(true);
-      expect(await fs.readdir(outsideDir)).toHaveLength(0); // nothing landed outside the root
-    });
-
-    it("applies mapping.mode via the retained descriptor, defaulting to 0600 when unset", async () => {
+    it("applies mapping.mode via chmod before promotion, when set", async () => {
       const remoteDir = await mkTempDir("paperclip-daytona-zstd-remote-");
       const hostDir = await mkTempDir("paperclip-daytona-zstd-host-");
       const sourceNoMode = path.join(hostDir, "no-mode.tar");
@@ -618,7 +516,21 @@ describe("daytona file-sync inbound zstd transport compression", () => {
       const targetNoMode = path.posix.join(remoteDir, "no-mode.bin");
       const targetWithMode = path.posix.join(remoteDir, "with-mode.bin");
 
-      const { sandbox } = createRealExecSandbox();
+      // `zstd -d -o` copies the mode of its INPUT (the uploaded `.zst`
+      // scratch) onto its output. Widen every `.zst` scratch to 0644 here,
+      // standing in for a Daytona upload that does not preserve a host-side
+      // 0600 origin. A pass on the no-mode assertion below then proves the
+      // promote script's OWN `chmod` forces 0600 — not that the scratch
+      // happened to arrive owner-only already.
+      const { sandbox } = createRealExecSandbox({
+        uploadOverride: async (uploads) => {
+          for (const upload of uploads) {
+            await fs.copyFile(upload.source, upload.destination);
+            if (upload.destination.endsWith(".zst")) await fs.chmod(upload.destination, 0o644);
+          }
+          return true;
+        },
+      });
       const operations: PluginSyncOperation[] = [{
         operationId: "sync-op-1",
         files: [
@@ -629,6 +541,11 @@ describe("daytona file-sync inbound zstd transport compression", () => {
 
       await performSyncIn({ sandbox: sandbox as never, operations, remoteDir, timeoutSeconds: 30 });
 
+      // A mapping with no `mode` lands owner-only (0600): the promote script
+      // always runs `chmod` on the decompressed file right after
+      // `zstd -d -o`, and uses 0600 when the mapping sets no `mode` — even
+      // though its `.zst` scratch arrived at 0644 above. A mapping with an
+      // explicit `mode` gets that mode instead.
       expect((await fs.stat(targetNoMode)).mode & 0o777).toBe(0o600);
       expect((await fs.stat(targetWithMode)).mode & 0o777).toBe(0o640);
     });
@@ -1012,7 +929,7 @@ describe("daytona file-sync inbound zstd transport compression", () => {
 
       await performSyncIn({ sandbox: sandbox as never, operations, remoteDir: "/workspace", timeoutSeconds: 123 });
 
-      expect(seenTimeouts.length).toBeGreaterThanOrEqual(4); // mkdir+probe, checkSymlinkEscape, transfer, promote
+      expect(seenTimeouts.length).toBeGreaterThanOrEqual(3); // mkdir and probe, transfer, promote
       expect(seenTimeouts.every((timeout) => timeout === 123)).toBe(true);
     });
   });

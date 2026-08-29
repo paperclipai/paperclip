@@ -254,6 +254,16 @@ describe("Apps routes", () => {
   });
 });
 
+describe("Retired settings routes", () => {
+  it("redirects the removed heartbeats page to the settings root instead of dropping the route", () => {
+    expect(appSource).toContain(
+      '<Route path="company/settings/instance/heartbeats" element={<Navigate to="/company/settings" replace />} />',
+    );
+    expect(appSource).not.toContain("<InstanceSettings");
+    expect(appSource).not.toContain('"./pages/InstanceSettings"');
+  });
+});
+
 describe("Decisions routes", () => {
   it("does not register decision-training views", () => {
     expect(appSource).not.toContain('path="decisions/training"');

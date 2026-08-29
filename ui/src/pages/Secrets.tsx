@@ -51,7 +51,9 @@ import type {
   UserSecretCoverageSummary,
   UserSecretDefinition,
 } from "@paperclipai/shared";
+import { hidesCompanySection } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
+import { useHiddenSettings } from "../hooks/useHiddenSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import {
@@ -652,6 +654,15 @@ export function Secrets() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const [activeTab, setActiveTab] = useState<SecretsTab>("secrets");
+  // Operator-hidden sub-tabs (UI-only; the secrets APIs stay live for agents).
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const hideVaultsTab = hidesCompanySection(hiddenSettings, "company.secrets.vaults");
+  const hideProposalsTab = hidesCompanySection(hiddenSettings, "company.secrets.proposals");
+  useEffect(() => {
+    if ((activeTab === "vaults" && hideVaultsTab) || (activeTab === "proposals" && hideProposalsTab)) {
+      setActiveTab("secrets");
+    }
+  }, [activeTab, hideVaultsTab, hideProposalsTab]);
   const [secretDetailTab, setSecretDetailTab] = useState("details");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
@@ -779,7 +790,7 @@ export function Secrets() {
       ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
       : ["secret-proposals", "__disabled__"],
     queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
-    enabled: Boolean(selectedCompanyId),
+    enabled: Boolean(selectedCompanyId) && !hideProposalsTab,
   });
 
   const secrets = secretsQuery.data ?? EMPTY_SECRETS;
@@ -1808,23 +1819,27 @@ export function Secrets() {
           items={[
             { value: "secrets", label: "Secrets" },
             { value: "my-secrets", label: "My secrets" },
-            { value: "vaults", label: "Provider vaults" },
-            {
-              value: "proposals",
-              label: (
-                <span className="inline-flex items-center gap-1.5">
-                  Proposals
-                  {pendingProposalCount > 0 ? (
-                    <Badge
-                      variant="outline"
-                      className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
-                    >
-                      {pendingProposalCount}
-                    </Badge>
-                  ) : null}
-                </span>
-              ),
-            },
+            ...(hideVaultsTab ? [] : [{ value: "vaults", label: "Provider vaults" }]),
+            ...(hideProposalsTab
+              ? []
+              : [
+                  {
+                    value: "proposals",
+                    label: (
+                      <span className="inline-flex items-center gap-1.5">
+                        Proposals
+                        {pendingProposalCount > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+                          >
+                            {pendingProposalCount}
+                          </Badge>
+                        ) : null}
+                      </span>
+                    ),
+                  },
+                ]),
           ]}
           align="start"
           value={activeTab}
@@ -1884,7 +1899,7 @@ export function Secrets() {
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
               onClick={() => openImportFromVault()}
-              onManageVaults={() => setActiveTab("vaults")}
+              onManageVaults={hideVaultsTab ? undefined : () => setActiveTab("vaults")}
               className="ml-auto"
             />
             {showFolderView ? (
@@ -2187,6 +2202,7 @@ export function Secrets() {
         >
           <MyUserSecretsTab companyId={selectedCompanyId} />
         </TabsContent>
+        {!hideVaultsTab && (
         <TabsContent value="vaults">
           <ProviderVaultsTab
             providers={providers}
@@ -2210,11 +2226,14 @@ export function Secrets() {
             }
           />
         </TabsContent>
+        )}
+        {!hideProposalsTab && (
         <TabsContent value="proposals">
           {selectedCompanyId ? (
             <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
           ) : null}
         </TabsContent>
+        )}
       </Tabs>
 
       <Sheet
@@ -2535,11 +2554,15 @@ export function Secrets() {
           providerConfigs={providerConfigs}
           existingSecrets={secrets}
           initialProviderConfigId={importInitialVaultId}
-          onManageVaults={() => {
-            setImportOpen(false);
-            setImportInitialVaultId(null);
-            setActiveTab("vaults");
-          }}
+          onManageVaults={
+            hideVaultsTab
+              ? undefined
+              : () => {
+                  setImportOpen(false);
+                  setImportInitialVaultId(null);
+                  setActiveTab("vaults");
+                }
+          }
           onImportComplete={() => {
             void secretsQuery.refetch();
           }}
@@ -3445,7 +3468,8 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
 interface ImportFromVaultButtonProps {
   providerConfigs: CompanySecretProviderConfig[];
   onClick: () => void;
-  onManageVaults: () => void;
+  /** Absent when the operator hides the Provider vaults tab. */
+  onManageVaults?: () => void;
   className?: string;
 }
 
@@ -3465,6 +3489,7 @@ function ImportFromVaultButton({
   if (awsConfigs.length === 0) return null;
 
   if (eligible.length === 0) {
+    if (!onManageVaults) return null;
     return (
       <Button
         variant="ghost"

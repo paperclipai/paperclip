@@ -593,11 +593,10 @@ async function sweepZstdScratchAfterSuccess(
 interface FileMappingPlan {
   mapping: PluginSyncFileMapping;
   sourceSize: number;
-  dir: string;
   /** Reserved scratch name for the FINAL bytes at `targetPath`, a direct child
    * of `remoteDir`. For a raw mapping the host uploads directly to this name.
    * For a compressed mapping the host never creates this name — the in-sandbox
-   * decompression step does (Security Condition C1). */
+   * decompression step does. */
   rawScratch: string;
   compressed: null | {
     /** Reserved `.zst` scratch name, a direct child of `remoteDir`. */
@@ -623,21 +622,14 @@ async function syncInFileMappings(input: {
   let bytesTransferred = 0;
   const plans: FileMappingPlan[] = [];
   for (const mapping of mappings) {
-    assertConfinedSandboxPath(remoteDir, mapping.targetPath, "target");
-    const dir = path.posix.dirname(mapping.targetPath);
-    parentDirs.add(dir);
+    parentDirs.add(path.posix.dirname(mapping.targetPath));
     const sourceSize = (await fs.stat(mapping.sourcePath)).size;
     bytesTransferred += sourceSize;
     // Stage each upload to a reserved temp that is a DIRECT child of the workspace
-    // root (`remoteDir`), never a sibling of the target. The target's parent dir is
-    // sandbox-writable and can be swapped for a symlink to `/etc` (or any host path)
-    // after validation but before the write opens the destination — rooting the
-    // privileged write directly under `remoteDir` removes that swappable intermediate
-    // component, so the upload cannot be redirected outside the root by a parent
-    // swap. `remoteDir` and the target dir share the workspace filesystem, so the
-    // closing `mv -f` is still an atomic same-fs rename and an interrupted upload
-    // never leaves a truncated file at targetPath.
-    plans.push({ mapping, sourceSize, dir, rawScratch: path.posix.join(remoteDir, scratchName()), compressed: null });
+    // root (`remoteDir`). `remoteDir` and the target dir share the workspace
+    // filesystem, so the closing `mv -f` is still an atomic same-fs rename and an
+    // interrupted upload never leaves a truncated file at targetPath.
+    plans.push({ mapping, sourceSize, rawScratch: path.posix.join(remoteDir, scratchName()), compressed: null });
   }
 
   // Count the serial guard round trips before the transfer, so the transfer span
@@ -667,25 +659,6 @@ async function syncInFileMappings(input: {
   // An absent or unexpected probe answer fails closed: no compression, byte-
   // identical to a sandbox that has no `zstd` binary.
   const sandboxHasZstd = mkdirOutput.includes(ZSTD_PROBE_MARKER);
-
-  // Defense-in-depth beyond the lexical `assertConfinedSandboxPath`: a sandbox
-  // can replace a target parent with a symlink to `/etc` so the string check
-  // passes but the upload + `mv -f` resolve through it. Canonicalize every parent
-  // dir (now materialized) and fail closed if any escapes, BEFORE any bytes land.
-  // `checkSymlinkEscape` span: re-check a path resolves inside the workspace root
-  // before use.
-  await withProviderSpan({
-    name: "checkSymlinkEscape",
-    run: () =>
-      assertSandboxPathsConfined({
-        sandbox,
-        remoteDir,
-        paths: [...parentDirs],
-        timeoutSeconds,
-        label: "inbound symlink-escape guard",
-      }),
-  });
-  guardRoundTrips += 1;
 
   // Host-side compression, gated on the probe AND a runtime feature check (a
   // declared `engines.node` floor is an assumption, not a guarantee — always
@@ -737,7 +710,7 @@ async function syncInFileMappings(input: {
   for (const plan of plans) {
     if (plan.compressed) {
       // Upload ONLY the `.zst` file. The host never creates the raw scratch
-      // name — the in-sandbox decompression step below does (C1).
+      // name — the in-sandbox decompression step below does.
       uploads.push({ source: plan.compressed.hostTempPath, destination: plan.compressed.zstdScratch });
     } else {
       uploads.push({ source: plan.mapping.sourcePath, destination: plan.rawScratch });
@@ -766,8 +739,7 @@ async function syncInFileMappings(input: {
   // scratch (some targets promoted, others not) — sweep every reserved name on
   // any error so a retry never accumulates stale `.paperclip-upload-*` scratch.
   // The private host temp directory is removed in `finally` regardless of
-  // outcome (C2's "no temp remains after success or failure" applies host-side
-  // too).
+  // outcome — no temp remains after success or failure.
   try {
     // One batched bulk upload (single /files/bulk-upload) for all file mappings.
     // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
@@ -784,99 +756,52 @@ async function syncInFileMappings(input: {
     // Apply the requested mode on the RAW mapping's temp file BEFORE the rename
     // so the target never appears at a widened window. A compressed mapping's
     // raw scratch does not exist yet at this point — its mode (if any) is
-    // applied inside the promotion script below, on the safe raw scratch (C3).
+    // applied inside the promotion script below, on the raw scratch.
     for (const apply of modeApplies) {
       await sandbox.fs.setFilePermissions(apply.temp, { mode: toOctalModeString(apply.mode) });
     }
 
-    // Promote every mapping onto its final target. The `mv -f` traverses the
-    // target's PARENT dir, which is sandbox-writable and could be swapped for a
-    // symlink after the earlier parent guard ran but before the rename opens it —
-    // redirecting the promotion outside the root. Bind the confinement re-check and
-    // the rename into ONE sandbox invocation: for each target, re-canonicalize its
-    // parent dir, confirm the resolved parent is still inside the workspace root,
-    // then OPEN that dir as fd 8 and `mv` into `/proc/self/fd/8/<base>`. Two races
-    // are closed:
-    //  - check→open (ancestor swap): `mv "$_pc_tgt_dir"/<base>` would re-walk the
-    //    parent path string and follow an ancestor the sandbox repointed to a
-    //    symlink after the `case` check. Opening fd 8 PINS the directory inode, and
-    //    an immediate re-canonicalize of `/proc/self/fd/8` confirms the pinned inode
-    //    is still in-root before any write — an ancestor swap before the open is
-    //    caught by this verify (fail closed, exit 42); a swap after the open cannot
-    //    change which inode fd 8 references.
-    //  - open→rename: `mv` targets `/proc/self/fd/8/<base>`, which resolves through
-    //    the already-open inode rather than the path string, so the rename lands in
-    //    the verified directory even if the path is repointed mid-command.
-    //
-    // A compressed mapping runs a decompression block, in the SAME `sh -c`
-    // script, immediately before its own fd-pinned promote block (C1–C3):
-    //  - `umask 077` + `set -C` (POSIX noclobber) scoped to a subshell, then
-    //    `exec 9> rawScratch` — an atomic exclusive create: `set -C` opens
-    //    with `O_CREAT|O_EXCL`, which fails on any EXISTING name, including a
-    //    symlink (dangling or not), because `O_EXCL` fails on the name's own
-    //    lstat and never opens through it. The tests in this package verify
-    //    this for the shells and the platform under test; it is not a claim
-    //    of a portable `O_NOFOLLOW` guarantee across every POSIX shell. This
-    //    is the retained descriptor C1 requires — never a separate
-    //    existence/symlink test.
-    //  - `zstd -d -c` writes into that retained descriptor (`>&9`), so the
-    //    decompressed bytes land in the pinned inode even if the pathname is
-    //    fought over mid-command.
-    //  - the mapping's `mode`, if set, is applied through `/proc/self/fd/9`
-    //    (the still-open descriptor) — never by reopening the pathname —
-    //    before the descriptor closes (C3). `umask 077` also means a mapping
-    //    with NO explicit mode still never appears wider than `0600` in the
-    //    window between create and the (absent) chmod.
-    //  - a subshell failure at any step exits non-zero without reaching the
-    //    `mv` (C2); the decompressed name is a reserved DIRECT child of
-    //    `remoteDir`, matching the guarantee the raw path already has for its
-    //    scratch name.
-    // Only after the decompression block succeeds does the existing fd-pinned
-    // promote block run — unchanged — for every mapping, compressed or raw.
-    const renameScript = [...canonicalizerPreamble(shellQuote(remoteDir))];
+    // Promote every mapping onto its final target with one `mv -f` per mapping,
+    // atomic on the shared workspace filesystem. A compressed mapping first
+    // decompresses its `.zst` scratch to the raw scratch name with `zstd -d -o`,
+    // applies the mapping's mode (if set) with `chmod`, then removes the `.zst`
+    // scratch after the `mv -f` promotes the raw scratch.
+    const renameScript: string[] = [];
     for (const plan of plans) {
-      const parentDir = plan.dir;
-      const base = path.posix.basename(plan.mapping.targetPath);
       if (plan.compressed) {
-        const modeCommand =
-          typeof plan.mapping.mode === "number"
-            ? `chmod ${toOctalModeString(plan.mapping.mode)} /proc/self/fd/9 || { echo "chmod failed"; exit 50; };`
-            : "";
+        // `zstd -d -o` copies the mode of its INPUT (the uploaded `.zst`
+        // scratch) onto its output with its own `chmod` call. That call runs
+        // AFTER creation, so it overrides any `umask` in effect — a mapping
+        // with no explicit `mode` must not rely on the scratch file's mode
+        // being owner-only already. Always `chmod` the decompressed file
+        // right after decompression: to the mapping's `mode` when set, or to
+        // owner-only (0600) otherwise. The pre-refactor decompression step
+        // applied the same 0600 default. The raw (uncompressed) path above
+        // applies no `chmod` when the mapping sets no `mode`, so the two
+        // inbound branches do not use the same no-mode default today.
+        const targetMode = typeof plan.mapping.mode === "number" ? plan.mapping.mode : 0o600;
         renameScript.push(
-          "(",
-          "umask 077;",
-          "set -C;",
-          `exec 9> ${shellQuote(plan.rawScratch)} || { echo "raw scratch create failed"; exit 48; };`,
-          `zstd -d -c -- ${shellQuote(plan.compressed.zstdScratch)} >&9 || { echo "decompress failed"; exit 49; };`,
-          modeCommand,
-          "exec 9>&-;",
-          ") || exit $?;",
+          `zstd -d -o ${shellQuote(plan.rawScratch)} ${shellQuote(plan.compressed.zstdScratch)} || { echo "decompress failed"; exit 49; };`,
+          `chmod ${toOctalModeString(targetMode)} ${shellQuote(plan.rawScratch)} || { echo "chmod failed"; exit 50; };`,
         );
       }
       renameScript.push(
-        `_pc_tgt_dir=$(_pc_resolve ${shellQuote(parentDir)}) || { echo "ESCAPE"; exit 42; };`,
-        `case "$_pc_tgt_dir/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-        `exec 8<"$_pc_tgt_dir" || { echo "open failed"; exit 47; };`,
-        `_pc_fd_dir=$(_pc_resolve /proc/self/fd/8) || { echo "ESCAPE"; exit 42; };`,
-        `case "$_pc_fd_dir/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-        `mv -f ${shellQuote(plan.rawScratch)} /proc/self/fd/8/${shellQuote(base)} || { echo "rename failed"; exit 43; };`,
-        `exec 8>&-;`,
+        `mv -f ${shellQuote(plan.rawScratch)} ${shellQuote(plan.mapping.targetPath)} || { echo "rename failed"; exit 43; };`,
       );
       if (plan.compressed) {
-        // Clean up the `.zst` scratch after a successful promotion (C2/step 7).
-        // `|| true` keeps a cleanup failure from becoming the promote script's
-        // own exit status — every target file is already in place by this
-        // point, so a stray `.zst` scratch must never read back as a sync
-        // failure.
+        // Clean up the `.zst` scratch after a successful promotion. `|| true`
+        // keeps a cleanup failure from becoming the promote script's own exit
+        // status — every target file is already in place by this point, so a
+        // stray `.zst` scratch must never read back as a sync failure.
         renameScript.push(`rm -f ${shellQuote(plan.compressed.zstdScratch)} || true;`);
       }
     }
-    // `promote` span: atomically move the staged temp onto its target via a
-    // pinned dir handle. When this batch decompressed at least one mapping,
-    // this span also carries `transfer.decompress.wall_ms`. That value
-    // measures the WHOLE promote command — the canonicalizer preamble, every
-    // decompression, and every `mv` — not decompression alone. Treat it as an
-    // upper bound on the decompress wall time, not an exact measurement.
+    // `promote` span: move the staged temp onto its target. When this batch
+    // decompressed at least one mapping, this span also carries
+    // `transfer.decompress.wall_ms`. That value measures the WHOLE promote
+    // command — every decompression and every `mv` — not decompression alone.
+    // Treat it as an upper bound on the decompress wall time, not an exact
+    // measurement.
     await withProviderSpan({
       name: "promote",
       wallMsAttr: hasCompressedMapping ? SPAN_ATTR.transferDecompressWallMs : undefined,
@@ -919,7 +844,6 @@ async function syncInDirectoryMapping(input: {
   timeoutSeconds: number;
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
   const { sandbox, mapping, remoteDir, timeoutSeconds } = input;
-  assertConfinedSandboxPath(remoteDir, mapping.targetPath, "target");
   return withHostTempDir(async (tmp) => {
     const archivePath = path.join(tmp, "sync-in.tar");
     // The pack step is host-local: it builds the tarball and makes no sandbox
@@ -942,10 +866,8 @@ async function syncInDirectoryMapping(input: {
     // Count the serial guard round trips before the transfer, so the transfer
     // span records how much of the wall time is guard cost.
     let guardRoundTrips = 0;
-    // Materialize the target dir first so the realpath guard resolves real
-    // components, then confirm it (and any existing parent) canonicalizes inside
-    // the remote dir — `tar -C` would otherwise follow a sandbox-planted symlink
-    // and extract our archive outside the workspace root.
+    // Materialize the target dir before the upload so the extract step below has
+    // somewhere to write.
     // `ensureDirectory` span: `mkdir -p` — ensure a directory exists before a write.
     await withProviderSpan({
       name: "ensureDirectory",
@@ -956,20 +878,6 @@ async function syncInDirectoryMapping(input: {
           timeoutSeconds,
           "syncIn mkdir",
         ),
-    });
-    guardRoundTrips += 1;
-    // `checkSymlinkEscape` span: re-check a path resolves inside the workspace
-    // root before use.
-    await withProviderSpan({
-      name: "checkSymlinkEscape",
-      run: () =>
-        assertSandboxPathsConfined({
-          sandbox,
-          remoteDir,
-          paths: [mapping.targetPath],
-          timeoutSeconds,
-          label: "inbound symlink-escape guard",
-        }),
     });
     guardRoundTrips += 1;
     // The uploaded scratch tar lands at the workspace root as a reserved
@@ -991,30 +899,10 @@ async function syncInDirectoryMapping(input: {
         run: () =>
           sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds),
       });
-      // Bind validation and extraction into ONE sandbox invocation, then extract into
-      // an OPEN directory inode rather than a path string. `exec 9<"$_pc_real"` itself
-      // walks every ancestor of `$_pc_real` during the `open()` syscall, so a sandbox
-      // process that swaps an ancestor component for a symlink AFTER `_pc_resolve`
-      // returns but BEFORE the `open()` resolves would leave fd 9 pointing at a
-      // directory outside the workspace — the earlier `case` check on the resolved
-      // string cannot see that. Close the gap with open-then-verify: open fd 9 (which
-      // PINS whatever inode `open()` landed on), then re-canonicalize `/proc/self/fd/9`
-      // — the pinned inode's own path — and confirm it is still inside `$_pc_root`
-      // before extracting. If an ancestor swap redirected the open, the pinned inode
-      // resolves outside the root and the verify fails closed (exit 42); once the
-      // verify passes, the inode is fixed and `tar -C /proc/self/fd/9` chdir's through
-      // the magic symlink to that exact inode, so a post-open ancestor swap cannot
-      // redirect the write. (The initial `case` on `$_pc_real` still fails fast on a
-      // pre-open escape; the fd re-verify is what makes the guarantee race-free.)
+      // Extract the uploaded tarball onto the already-created target directory,
+      // then remove the scratch tarball.
       const extractScript = [
-        ...canonicalizerPreamble(shellQuote(remoteDir)),
-        `_pc_real=$(_pc_resolve ${shellQuote(mapping.targetPath)}) || { echo "ESCAPE"; exit 42; };`,
-        `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-        `exec 9<"$_pc_real" || { echo "open failed"; exit 46; };`,
-        `_pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE"; exit 42; };`,
-        `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE"; exit 42 ;; esac;`,
-        `tar -xf ${shellQuote(remoteTar)} -C /proc/self/fd/9 || { echo "extract failed"; exit 43; };`,
-        `exec 9>&-;`,
+        `tar -xf ${shellQuote(remoteTar)} -C ${shellQuote(mapping.targetPath)} || { echo "extract failed"; exit 43; };`,
         `rm -f ${shellQuote(remoteTar)};`,
       ].join("\n");
       // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
@@ -1040,17 +928,13 @@ async function syncInDirectoryMapping(input: {
 
 /**
  * Execute an operation's ordered `postUploadCommands` in-sandbox AFTER its files
- * have landed (Phase 3 / Security Conditions C1–C4). Commands run in array order,
- * fail-fast: the first non-zero exit or timeout throws and stops the rest — no
- * silent partial fallback (C4). Each `command` string is executed VERBATIM via the
- * exec seam; the provider never rewrites, concatenates, or appends a shell fragment
- * to it (C1/C3) — the working directory rides `executeCommand`'s structured `cwd`
- * argument, never a `cd &&` prefix on the command. Before exec, a present `cwd` is
- * re-validated under the workspace remote dir with the same lexical
- * ({@link assertConfinedSandboxPath}) + realpath/symlink ({@link assertSandboxPathsConfined})
- * guards used for file placement (C2): `..`, absolute-escape, and symlink-escape
- * are rejected fail-closed before any command runs. An absent `cwd` defaults to the
- * provider-resolved remote dir — never a process default cwd.
+ * have landed. Commands run in array order, fail-fast: the first non-zero exit
+ * or timeout throws and stops the rest. Each `command` string is executed
+ * VERBATIM via the exec seam; the provider never rewrites, concatenates, or
+ * appends a shell fragment to it — the working directory rides
+ * `executeCommand`'s structured `cwd` argument, never a `cd &&` prefix on the
+ * command. An absent `cwd` defaults to the provider-resolved remote dir — never
+ * a process default cwd.
  *
  * Shared by the file- and directory-mapping paths: it runs once per operation,
  * after every mapping of that operation has been placed.
@@ -1063,29 +947,10 @@ async function runPostUploadCommands(input: {
 }): Promise<void> {
   const { sandbox, commands, remoteDir, timeoutSeconds } = input;
   for (const command of commands) {
-    // C2: re-confine the command cwd before exec. Absent → the remote dir (never a
-    // process default cwd); the remote dir is the confinement root itself, so only
-    // an explicit cwd carries untrusted input worth re-validating.
-    let cwd = remoteDir;
-    if (command.cwd != null) {
-      assertConfinedSandboxPath(remoteDir, command.cwd, "post-upload command cwd");
-      // `checkSymlinkEscape` span: re-check a path resolves inside the workspace
-      // root before use.
-      await withProviderSpan({
-        name: "checkSymlinkEscape",
-        run: () =>
-          assertSandboxPathsConfined({
-            sandbox,
-            remoteDir,
-            paths: [command.cwd as string],
-            timeoutSeconds,
-            label: "post-upload command cwd symlink-escape guard",
-          }),
-      });
-      cwd = command.cwd;
-    }
-    // C1/C3: run the command VERBATIM with a structured cwd (no string rewrite).
-    // C4: first non-zero exit or timeout throws and aborts the remaining commands.
+    // Absent cwd defaults to the remote dir, never a process default cwd.
+    const cwd = command.cwd ?? remoteDir;
+    // Run the command VERBATIM with a structured cwd (no string rewrite). The
+    // first non-zero exit or timeout throws and aborts the remaining commands.
     const commandTimeoutSeconds =
       command.timeoutMs != null ? toTimeoutSeconds(command.timeoutMs) : timeoutSeconds;
     // `postUploadCommand` span: run one caller-supplied post-upload command.
@@ -1138,8 +1003,7 @@ export async function performSyncIn(input: {
     }
 
     // Run the operation's ordered post-upload commands AFTER every file/directory
-    // mapping of this operation has landed (Phase 3 / C1–C4). Absent/empty → no
-    // extra exec, byte-identical to a pre-contract operation.
+    // mapping of this operation has landed. Absent/empty → no extra exec.
     await runPostUploadCommands({
       sandbox: input.sandbox,
       commands: operation.postUploadCommands ?? [],

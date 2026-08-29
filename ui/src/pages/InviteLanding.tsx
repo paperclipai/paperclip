@@ -123,7 +123,6 @@ function isApprovedHumanJoinPayload(payload: unknown, showsAgentForm: boolean) {
 type AwaitingJoinApprovalPanelProps = {
   companyDisplayName: string;
   companyLogoUrl: string | null;
-  companyBrandColor: string | null;
   invitedByUserName: string | null;
   claimSecret?: string | null;
   claimApiKeyPath?: string | null;
@@ -133,19 +132,16 @@ type AwaitingJoinApprovalPanelProps = {
 function InviteCompanyLogo({
   companyDisplayName,
   companyLogoUrl,
-  companyBrandColor,
   className,
 }: {
   companyDisplayName: string;
   companyLogoUrl: string | null;
-  companyBrandColor: string | null;
   className?: string;
 }) {
   return (
     <CompanyPatternIcon
       companyName={companyDisplayName}
       logoUrl={companyLogoUrl}
-      brandColor={companyBrandColor}
       logoFit="contain"
       className={className}
     />
@@ -155,7 +151,6 @@ function InviteCompanyLogo({
 function AwaitingJoinApprovalPanel({
   companyDisplayName,
   companyLogoUrl,
-  companyBrandColor,
   invitedByUserName,
   claimSecret = null,
   claimApiKeyPath = null,
@@ -170,7 +165,6 @@ function AwaitingJoinApprovalPanel({
           <InviteCompanyLogo
             companyDisplayName={companyDisplayName}
             companyLogoUrl={companyLogoUrl}
-            companyBrandColor={companyBrandColor}
             className="h-12 w-12 border border-zinc-800 rounded-none"
           />
           <h1 className="text-lg font-semibold">Request to join {companyDisplayName}</h1>
@@ -297,7 +291,6 @@ export function InviteLandingPage() {
   const companyName = invite?.companyName?.trim() || null;
   const companyDisplayName = companyName || "this Paperclip company";
   const companyLogoUrl = invite?.companyLogoUrl?.trim() || null;
-  const companyBrandColor = invite?.companyBrandColor?.trim() || null;
   const invitedByUserName = invite?.invitedByUserName?.trim() || null;
   const inviteMessage = invite?.inviteMessage?.trim() || null;
   const requestedHumanRole = formatHumanRole(invite?.humanRole);
@@ -475,7 +468,6 @@ export function InviteLandingPage() {
       <AwaitingJoinApprovalPanel
         companyDisplayName={companyDisplayName}
         companyLogoUrl={companyLogoUrl}
-        companyBrandColor={companyBrandColor}
         invitedByUserName={invitedByUserName}
       />
     );
@@ -530,7 +522,6 @@ export function InviteLandingPage() {
               <InviteCompanyLogo
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
-                companyBrandColor={companyBrandColor}
                 className="h-12 w-12 border border-zinc-800 rounded-none"
               />
               <h1 className="text-lg font-semibold">You joined the organization</h1>
@@ -546,7 +537,6 @@ export function InviteLandingPage() {
         <AwaitingJoinApprovalPanel
           companyDisplayName={companyDisplayName}
           companyLogoUrl={companyLogoUrl}
-          companyBrandColor={companyBrandColor}
           invitedByUserName={invitedByUserName}
           claimSecret={claimSecret}
           claimApiKeyPath={claimApiKeyPath}
@@ -565,7 +555,6 @@ export function InviteLandingPage() {
               <InviteCompanyLogo
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
-                companyBrandColor={companyBrandColor}
                 className="h-16 w-16 rounded-none border border-zinc-800"
               />
               <div className="min-w-0">

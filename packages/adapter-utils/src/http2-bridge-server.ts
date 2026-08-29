@@ -48,8 +48,29 @@ import {
 
 /** Server push. The transport never needs it. */
 export const HTTP2_BRIDGE_ENABLE_PUSH = false;
-/** Open streams. This matches the current broker limit ({@link DEFAULT_DUPLEX_BROKER_MAX_IN_FLIGHT_REQUESTS} in `duplex-bridge-broker.ts`). */
-export const HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS = 64;
+/**
+ * Open streams. The host keeps one forward, its request body, and its
+ * response body alive for the life of a stream, and — before this file binds
+ * each forward to its own stream's abort signal — a forward can outlive its
+ * stream's own HTTP/2 slot until the forward's own timeout runs out. Counting
+ * every retained `Buffer` and string copy of one stream's request and
+ * response body against the {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES}
+ * body limit (`sandbox-callback-bridge.ts`) gives an accounting peak of eight
+ * times that limit for one live forward. This bound is the per-route
+ * in-flight-body budget: `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 *
+ * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 8 * 262,144
+ * bytes = 8,388,608 bytes for one route.
+ *
+ * Known aggregate behavior: this budget applies to one route only. The host
+ * process admits up to `DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` (128, in
+ * `plugin-worker-manager.ts`) routes at the same time, and each route holds
+ * its own 8,388,608-byte peak. The process can therefore retain up to
+ * 1,073,741,824 bytes (1 GiB) of live body data across every route at once.
+ * This document accepts that ceiling: the host tracks no process-wide byte
+ * total, so no single route can starve another route's own budget, but the
+ * host also enforces no smaller sum across every route.
+ */
+export const HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS = 4;
 /** One decompressed header list. The Node default is 65535. */
 export const HTTP2_BRIDGE_MAX_HEADER_LIST_SIZE = 16384;
 /** The header-compression table. This keeps the Node default. */
@@ -105,8 +126,12 @@ export const HTTP2_BRIDGE_SERVER_OPTIONS: http2.ServerOptions = {
  * bound. This cap also bounds one single chunk: the wrapper checks a chunk's
  * own size against it before `push()` ever runs, so one oversized chunk
  * cannot cross the cap on its first delivery, before the queue holds
- * anything to compare it against. */
-export const DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES = HTTP2_BRIDGE_MAX_SESSION_MEMORY * 1024 * 1024;
+ * anything to compare it against. This is a fixed share of the fixed
+ * per-route byte budget the host bounds every duplex retention site
+ * against; it no longer derives from {@link HTTP2_BRIDGE_MAX_SESSION_MEMORY},
+ * which bounds the underlying `Http2Session`'s own memory, not this
+ * read-side queue. */
+export const DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES = 524_288;
 /** The default bound, in milliseconds, on how long the read-side queue
  * {@link wrapDuplexChannelAsNodeDuplex} holds can stay non-empty with no
  * chunk draining from it. The byte cap above bounds how much memory a stuck
@@ -505,6 +530,14 @@ export interface Http2BridgeForwardRequest {
   query: string;
   headers: Record<string, string>;
   body: Buffer;
+  /**
+   * The abort signal for this one HTTP/2 stream. `handleStream` aborts it
+   * when the stream closes, aborts, or errors, so a caller that passes it
+   * through to its own outbound call (a `fetch`, for example) ends that call
+   * at once instead of leaving it to run until its own timeout. The signal
+   * never fires for any other stream or for the session.
+   */
+  signal: AbortSignal;
 }
 
 export type Http2BridgeForwardHandler = (
@@ -759,71 +792,94 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
     stream: http2.ServerHttp2Stream,
     headers: http2.IncomingHttpHeaders,
   ): Promise<void> {
-    // Accepted security fix 4: the constant-time bridge-token compare runs
-    // before route processing and before header processing. This host check
-    // is independent of the gateway's own token check on the sandbox side.
-    if (!compareBridgeTokensConstantTime(options.bridgeToken, readBridgeTokenHeader(headers))) {
-      denyRequest(stream, 401, { error: "Invalid bridge token." }, bodyBounds);
-      return;
-    }
-
-    // Accepted security fix 3: parse `:path` exactly one time; both the route
-    // allowlist and the forward request below read this one result.
-    const parsedPath = parseCanonicalBridgeRequestPath(headers);
-    if (!parsedPath.ok) {
-      denyRequest(stream, 400, { error: `Invalid request path: ${parsedPath.reason}` }, bodyBounds);
-      return;
-    }
-    const method = normalizeStreamMethod(headers[":method"]);
-
-    const denialReason = authorizeSandboxCallbackBridgeRequestWithRoutes(
-      { method, path: parsedPath.value.pathname },
-      routes,
-    );
-    if (denialReason) {
-      denyRequest(stream, 403, { error: denialReason }, bodyBounds);
-      return;
-    }
-
-    const sanitizedHeaders = sanitizeSandboxCallbackBridgeHeaders(
-      toOutboundHeaderRecord(headers),
-      headerAllowlist,
-    );
-
-    let body: Buffer;
+    // One `AbortController` for this one stream. `forwardRequest` below
+    // receives its signal, so a stream that closes, aborts, or errors ends
+    // its own forward at once instead of leaving the forward to run until its
+    // own timeout. The abort stays local to this one stream: it never
+    // touches the session or any other stream's controller.
+    const controller = new AbortController();
+    const abortForThisStream = (): void => {
+      if (!controller.signal.aborted) controller.abort();
+    };
+    stream.once("close", abortForThisStream);
+    stream.once("aborted", abortForThisStream);
+    stream.once("error", abortForThisStream);
     try {
-      body = await readHttp2StreamBody(stream, bodyBounds);
-    } catch (error) {
-      respondJson(stream, 413, { error: error instanceof Error ? error.message : String(error) });
-      return;
-    }
+      // Accepted security fix 4: the constant-time bridge-token compare runs
+      // before route processing and before header processing. This host check
+      // is independent of the gateway's own token check on the sandbox side.
+      if (!compareBridgeTokensConstantTime(options.bridgeToken, readBridgeTokenHeader(headers))) {
+        denyRequest(stream, 401, { error: "Invalid bridge token." }, bodyBounds);
+        return;
+      }
 
-    let result: Http2BridgeForwardResult;
-    try {
-      result = await options.forwardRequest({
-        method,
-        pathname: parsedPath.value.pathname,
-        query: parsedPath.value.query,
-        headers: sanitizedHeaders,
-        body,
-      });
-    } catch (error) {
-      respondJson(stream, 502, { error: error instanceof Error ? error.message : String(error) });
-      return;
-    }
+      // Accepted security fix 3: parse `:path` exactly one time; both the route
+      // allowlist and the forward request below read this one result.
+      const parsedPath = parseCanonicalBridgeRequestPath(headers);
+      if (!parsedPath.ok) {
+        denyRequest(stream, 400, { error: `Invalid request path: ${parsedPath.reason}` }, bodyBounds);
+        return;
+      }
+      const method = normalizeStreamMethod(headers[":method"]);
 
-    if (stream.destroyed || stream.closed) return;
-    const responseHeaders: http2.OutgoingHttpHeaders = { ":status": result.status };
-    for (const [key, value] of Object.entries(result.headers ?? {})) {
-      if (key.toLowerCase() === "content-length") continue;
-      responseHeaders[key] = value;
-    }
-    try {
-      stream.respond(responseHeaders);
-      stream.end(result.body);
-    } catch {
-      // The peer reset the stream (RST_STREAM) between dispatch and response.
-      // One stream's write fault stays local to that stream.
+      const denialReason = authorizeSandboxCallbackBridgeRequestWithRoutes(
+        { method, path: parsedPath.value.pathname },
+        routes,
+      );
+      if (denialReason) {
+        denyRequest(stream, 403, { error: denialReason }, bodyBounds);
+        return;
+      }
+
+      const sanitizedHeaders = sanitizeSandboxCallbackBridgeHeaders(
+        toOutboundHeaderRecord(headers),
+        headerAllowlist,
+      );
+
+      let body: Buffer;
+      try {
+        body = await readHttp2StreamBody(stream, bodyBounds);
+      } catch (error) {
+        respondJson(stream, 413, { error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+
+      let result: Http2BridgeForwardResult;
+      try {
+        result = await options.forwardRequest({
+          method,
+          pathname: parsedPath.value.pathname,
+          query: parsedPath.value.query,
+          headers: sanitizedHeaders,
+          body,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        respondJson(stream, 502, { error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+
+      if (stream.destroyed || stream.closed) return;
+      const responseHeaders: http2.OutgoingHttpHeaders = { ":status": result.status };
+      for (const [key, value] of Object.entries(result.headers ?? {})) {
+        if (key.toLowerCase() === "content-length") continue;
+        responseHeaders[key] = value;
+      }
+      try {
+        stream.respond(responseHeaders);
+        stream.end(result.body);
+      } catch {
+        // The peer reset the stream (RST_STREAM) between dispatch and response.
+        // One stream's write fault stays local to that stream.
+      }
+    } finally {
+      // Every path above reaches this exactly once: a deny, a body-read
+      // fault, a forward fault, or a completed response. A completed stream
+      // must leak no listener; the session, not this one stream, outlives
+      // the handler.
+      stream.removeListener("close", abortForThisStream);
+      stream.removeListener("aborted", abortForThisStream);
+      stream.removeListener("error", abortForThisStream);
     }
   }
 

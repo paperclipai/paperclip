@@ -373,8 +373,12 @@ jobs:
           target: cloud
           # Space-separated sandbox-provider directory names to build into
           # the variant; add here when managed deployments need another.
+          # CLOUD_BUNDLED_SERVER_DEPS names the optional peer packages the
+          # variant installs from server/package.json's declared version;
+          # add another name there when a managed tenant needs it.
           build-args: |
             CLOUD_BUNDLED_PLUGINS=daytona
+            CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
@@ -391,3 +395,31 @@ jobs:
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud,mode=max
           tags: ${{ steps.meta-cloud.outputs.tags }}
           labels: ${{ steps.meta-cloud.outputs.labels }}
+
+      # The cloud target installs @sentry/node at the version
+      # server/package.json declares, into a directory the server's own
+      # module resolution walks. Verify the image this job just pushed, not
+      # a local build, so a build-cache or layer-ordering regression is
+      # caught before any tenant runs the image.
+      - name: Verify the pushed image resolves the declared Sentry version
+        env:
+          IMAGE_TAGS: ${{ steps.meta-cloud.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
+          test -n "$image"
+
+          expected="$(node -e "process.stdout.write(require('./server/package.json').peerDependencies['@sentry/node'])")"
+          test -n "$expected"
+
+          installed="$(docker run --rm --pull always \
+            -v "$PWD/scripts/assert-cloud-image-sentry.mjs:/app/server/.ci-sentry-probe.mjs:ro" \
+            --entrypoint node "$image" /app/server/.ci-sentry-probe.mjs)"
+
+          echo "Declared optional peer version: $expected"
+          echo "Installed in the pushed image: $installed"
+          if [ "$installed" != "$expected" ]; then
+            echo "ERROR: the pushed image resolves @sentry/node@$installed, expected @sentry/node@$expected" >&2
+            exit 1
+          fi
+          echo "The pushed image resolves the declared @sentry/node version."

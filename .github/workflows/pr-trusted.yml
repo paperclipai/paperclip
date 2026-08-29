@@ -1,0 +1,739 @@
+name: Trusted PR CI
+
+# Rollout is intentionally two-step: merge this reusable workflow first, then
+# replace pr.yml with an immutable-SHA caller so the active CI definition cannot
+# drift from this file.
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Select trusted runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.route.outputs.runner }}
+
+    steps:
+      - name: Validate PR identity and select runner
+        id: route
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_CI_ENABLED: ${{ vars.AWS_CI_ENABLED }}
+          TRUSTED_USER_IDS: ${{ vars.AWS_CI_TRUSTED_USER_IDS }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.repository }}
+          EVENT_REPOSITORY_ID: ${{ github.repository_id }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          EVENT_SENDER_ID: ${{ github.event.sender.id }}
+          EVENT_BASE_REPOSITORY_ID: ${{ github.event.pull_request.base.repo.id }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_MERGE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -u
+
+          github_runner='ubuntu-latest'
+          aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
+
+          fail_closed() {
+            echo "runner=$github_runner" >> "$GITHUB_OUTPUT"
+            echo "::notice title=AWS CI routing::Using GitHub-hosted runner: $1"
+            exit 0
+          }
+
+          is_positive_integer() {
+            [[ "$1" =~ ^[1-9][0-9]*$ ]]
+          }
+
+          is_commit_sha() {
+            [[ "$1" =~ ^[0-9a-f]{40}$ ]]
+          }
+
+          is_allowed() {
+            local user_id="$1"
+            jq -e --argjson user_id "$user_id" 'index($user_id) != null' \
+              <<< "$TRUSTED_USER_IDS" >/dev/null
+          }
+
+          [[ "$AWS_CI_ENABLED" == 'true' ]] || fail_closed 'AWS_CI_ENABLED is not true'
+          # Reusable workflows retain the caller's github context and event
+          # payload, so a pull_request caller must still report pull_request.
+          [[ "$EVENT_NAME" == 'pull_request' ]] || fail_closed 'event is not pull_request'
+          [[ "$EVENT_REPOSITORY" == 'paperclipai/paperclip' ]] || fail_closed 'unexpected repository'
+          [[ "$EVENT_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected repository ID'
+          [[ "$EVENT_BASE_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected base repository ID'
+          [[ -n "$EVENT_BASE_REF" ]] || fail_closed 'missing base branch'
+          [[ "$EVENT_ACTION" =~ ^(opened|reopened|synchronize)$ ]] || fail_closed 'unsupported pull_request action'
+
+          jq -e '
+            type == "array" and
+            length > 0 and
+            all(.[]; type == "number" and . > 0 and floor == .)
+          ' <<< "$TRUSTED_USER_IDS" >/dev/null 2>&1 || fail_closed 'trusted user ID list is malformed'
+
+          for user_id in "$EVENT_PR_AUTHOR_ID" "$EVENT_SENDER_ID"; do
+            is_positive_integer "$user_id" || fail_closed 'event contains a malformed user ID'
+            is_allowed "$user_id" || fail_closed "GitHub user ID $user_id is not allowlisted"
+          done
+
+          for commit_sha in "$EVENT_BASE_SHA" "$EVENT_HEAD_SHA" "$EVENT_MERGE_SHA"; do
+            is_commit_sha "$commit_sha" || fail_closed 'event contains a malformed commit SHA'
+          done
+
+          pr_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/pulls/$EVENT_PR_NUMBER" 2>/dev/null)" \
+            || fail_closed 'could not refresh pull request state'
+
+          jq -e \
+            --argjson repository_id 1170821064 \
+            --argjson author_id "$EVENT_PR_AUTHOR_ID" \
+            --arg base_ref "$EVENT_BASE_REF" \
+            --arg head_sha "$EVENT_HEAD_SHA" \
+            '
+              .state == "open" and
+              .user.id == $author_id and
+              .base.repo.id == $repository_id and
+              .base.ref == $base_ref and
+              .head.sha == $head_sha
+            ' <<< "$pr_json" >/dev/null 2>&1 \
+            || fail_closed 'current pull request state does not match the triggering event'
+
+          live_merge_sha="$(jq -r '.merge_commit_sha // empty' <<< "$pr_json")"
+          is_commit_sha "$live_merge_sha" || fail_closed 'current pull request has no valid merge SHA'
+
+          base_ref_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/git/ref/heads/$EVENT_BASE_REF" 2>/dev/null)" \
+            || fail_closed 'could not inspect the current base branch'
+          live_base_ref_sha="$(jq -r '.object.sha // empty' <<< "$base_ref_json")"
+          is_commit_sha "$live_base_ref_sha" || fail_closed 'current base branch has no valid commit SHA'
+
+          base_comparison="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/compare/$EVENT_BASE_SHA...$live_base_ref_sha" 2>/dev/null)" \
+            || fail_closed 'could not compare the triggering and current base branches'
+          jq -e \
+            --arg event_base_sha "$EVENT_BASE_SHA" '
+              .merge_base_commit.sha == $event_base_sha and
+              (.status == "ahead" or .status == "identical")
+            ' <<< "$base_comparison" >/dev/null 2>&1 \
+            || fail_closed 'current base branch does not descend from the triggering base snapshot'
+
+          event_merge_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/git/commits/$EVENT_MERGE_SHA" 2>/dev/null)" \
+            || fail_closed 'could not inspect the event merge commit'
+
+          live_merge_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/git/commits/$live_merge_sha" 2>/dev/null)" \
+            || fail_closed 'could not inspect the current merge commit'
+
+          validate_merge_commit() {
+            local merge_json="$1"
+            local expected_sha="$2"
+            jq -e \
+              --arg expected_sha "$expected_sha" \
+              --arg head_sha "$EVENT_HEAD_SHA" '
+                .sha == $expected_sha and
+                (.parents | length) == 2 and
+                .parents[1].sha == $head_sha and
+                (.parents[0].sha | test("^[0-9a-f]{40}$")) and
+                (.tree.sha | test("^[0-9a-f]{40}$"))
+              ' <<< "$merge_json" >/dev/null 2>&1
+          }
+
+          validate_merge_commit "$event_merge_json" "$EVENT_MERGE_SHA" \
+            || fail_closed 'event merge commit does not match the current base and head'
+          validate_merge_commit "$live_merge_json" "$live_merge_sha" \
+            || fail_closed 'current merge commit does not match the triggering base and head'
+
+          event_merge_parent="$(jq -r '.parents[0].sha' <<< "$event_merge_json")"
+          live_merge_parent="$(jq -r '.parents[0].sha' <<< "$live_merge_json")"
+          [[ "$event_merge_parent" == "$live_merge_parent" ]] \
+            || fail_closed 'current merge commit uses a different base merge parent'
+
+          if [[ "$event_merge_parent" != "$live_base_ref_sha" ]]; then
+            base_merge_json="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "/repos/paperclipai/paperclip/git/commits/$event_merge_parent" 2>/dev/null)" \
+              || fail_closed 'could not inspect the stacked base merge commit'
+            jq -e \
+              --arg expected_sha "$event_merge_parent" \
+              --arg live_base_ref_sha "$live_base_ref_sha" '
+                .sha == $expected_sha and
+                (.parents | length) == 2 and
+                any(.parents[]; .sha == $live_base_ref_sha) and
+                (.tree.sha | test("^[0-9a-f]{40}$"))
+              ' <<< "$base_merge_json" >/dev/null 2>&1 \
+              || fail_closed 'stacked base merge commit does not contain the current base branch'
+          fi
+
+          event_merge_tree="$(jq -r '.tree.sha' <<< "$event_merge_json")"
+          live_merge_tree="$(jq -r '.tree.sha' <<< "$live_merge_json")"
+          [[ "$event_merge_tree" == "$live_merge_tree" ]] \
+            || fail_closed 'current merge tree differs from the triggering merge tree'
+
+          run_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/paperclipai/paperclip/actions/runs/$RUN_ID" 2>/dev/null)" \
+            || fail_closed 'could not refresh workflow run state'
+
+          triggering_actor_id="$(jq -r '.triggering_actor.id // empty' <<< "$run_json")"
+          is_positive_integer "$triggering_actor_id" || fail_closed 'workflow run has no valid triggering actor ID'
+          is_allowed "$triggering_actor_id" || fail_closed "triggering GitHub user ID $triggering_actor_id is not allowlisted"
+
+          jq -e \
+            --argjson repository_id 1170821064 \
+            --arg event_name "$EVENT_NAME" '
+              .repository.id == $repository_id and
+              .event == $event_name
+            ' <<< "$run_json" >/dev/null 2>&1 \
+            || fail_closed 'current workflow run does not match the expected repository event'
+
+          echo "runner=$aws_runner" >> "$GITHUB_OUTPUT"
+          echo '::notice title=AWS CI routing::Using an ephemeral RunsOn Fleet runner'
+
+  policy:
+    needs: [gate]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 10
+    outputs:
+      lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Block manual lockfile edits
+        if: >-
+          github.head_ref != 'chore/refresh-lockfile' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
+        run: |
+          # Diff the PR branch against its merge base so recent base-branch commits
+          # do not masquerade as changes made by the PR itself.
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
+            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
+            exit 1
+          fi
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Validate migration ordering against target branch
+        run: >-
+          node .github/scripts/check-pr-migration-order.mjs
+          "${{ github.event.pull_request.base.sha }}"
+          "${{ github.event.pull_request.head.sha }}"
+
+      - name: Validate Dockerfile deps stage
+        run: node ./scripts/check-docker-deps-stage.mjs
+
+      - name: Validate Node version policy
+        run: pnpm check:node-version
+
+      - name: Reject git push in adapter/runtime code
+        run: node ./scripts/check-no-git-push.mjs
+
+      - name: Test no-git-push check
+        run: node --test ./scripts/check-no-git-push.test.mjs
+      - name: Test PR quality-gate scripts
+        run: node --test '.github/scripts/tests/*.test.mjs'
+
+      - name: Test general-server shard partition
+        run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
+
+      - name: Test e2e shard partition
+        run: node --test ./scripts/__tests__/e2e-shard.test.mjs
+
+      - name: Test release verify workflow wiring
+        run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs
+
+      - name: Test standalone package build concurrency
+        run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
+
+      - name: Validate release package manifest
+        run: node ./scripts/release-package-map.mjs check
+
+      - name: Verify release package bootstrap for changed manifests
+        run: |
+          mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
+          PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+            node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
+
+      - name: Validate dependency resolution and regenerate stale lockfile
+        id: regen_lockfile
+        run: |
+          cp pnpm-lock.yaml "$RUNNER_TEMP/pnpm-lock.before.yaml"
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          if cmp -s "$RUNNER_TEMP/pnpm-lock.before.yaml" pnpm-lock.yaml; then
+            echo "regenerated=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "regenerated=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Manifest-only and stacked PRs keep pnpm-lock.yaml at the default branch.
+      # Upload a regenerated copy whenever the checked-out merge tree needs one.
+      # Every downstream job then consumes the same hash without recomputing.
+      - name: Upload regenerated lockfile for downstream jobs
+        if: steps.regen_lockfile.outputs.regenerated == '1'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+          if-no-files-found: error
+
+  typecheck_release_registry:
+    name: Typecheck + Release Registry
+    needs: [gate, policy]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck workspaces whose build scripts skip TypeScript
+        run: pnpm run typecheck:build-gaps
+
+      - name: Verify release registry test coverage
+        run: pnpm run test:release-registry
+
+  general_tests:
+    name: General tests (${{ matrix.group_label }})
+    needs: [gate, policy]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The server suite is pinned to maxWorkers=1 (server/vitest.config.ts),
+          # so it can only be parallelized across runners. Shard it to keep this
+          # lane off the PR critical path. Five shards because the suite has
+          # grown to ~946s of serial vitest wall time (run 30930345729,
+          # 2026-08-04): at four shards the worst shard ran 311s and was the
+          # slowest check in the whole PR run; five brings each shard to ~196s
+          # of suite time (~240s job), level with the other ~250-300s lanes.
+          - group: general-server
+            group_label: server (1/5)
+            shard_index: 0
+            shard_count: 5
+          - group: general-server
+            group_label: server (2/5)
+            shard_index: 1
+            shard_count: 5
+          - group: general-server
+            group_label: server (3/5)
+            shard_index: 2
+            shard_count: 5
+          - group: general-server
+            group_label: server (4/5)
+            shard_index: 3
+            shard_count: 5
+          - group: general-server
+            group_label: server (5/5)
+            shard_index: 4
+            shard_count: 5
+          # workspaces-a was the slowest check in the fully-green PR run
+          # 31371439296 (2026-08-10) at 319s, with the ui project's single
+          # vitest invocation accounting for ~224s and the paperclipai CLI
+          # ~37s. Two shards use Vitest's native --shard on each project's
+          # file list (ui: 439 files, cli: 54), bringing each job to roughly
+          # half the suite time (~130s + setup) without a duration manifest.
+          - group: general-workspaces-a
+            group_label: workspaces-a (1/2)
+            shard_index: 0
+            shard_count: 2
+          - group: general-workspaces-a
+            group_label: workspaces-a (2/2)
+            shard_index: 1
+            shard_count: 2
+          - group: general-workspaces-b
+            group_label: workspaces-b
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run grouped general test suites
+        run: |
+          if [ -n "${{ matrix.shard_count }}" ]; then
+            pnpm test:run:general -- --group '${{ matrix.group }}' \
+              --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+          else
+            pnpm test:run:general -- --group '${{ matrix.group }}'
+          fi
+
+  verify:
+    # Preserve the legacy required-check name while the underlying work runs in parallel.
+    name: verify
+    if: ${{ always() }}
+    needs: [gate, typecheck_release_registry, general_tests, build]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if any split verify lane failed
+        env:
+          TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
+          GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
+          test "$GENERAL_TESTS_RESULT" = "success"
+          test "$BUILD_RESULT" = "success"
+
+  build:
+    name: Build
+    needs: [gate, policy]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Paperclip Runner
+        run: pnpm --filter @paperclipai/paperclip-runner check:all
+
+      - name: Build
+        run: pnpm build
+
+  verify_serialized_server:
+    name: Verify serialized server suites (${{ matrix.shard_label }})
+    needs: [gate, policy]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A successful PR run on 2026-08-17 (32012408876) spent 291s in
+          # serialized shard 1/5 while its siblings ran 170-201s: round-robin
+          # clustered the heavy suites on one runner. Shards are now balanced
+          # by recorded duration (scripts/serialized-shard-durations.json),
+          # which levels the measured 968s suite total to about 194s per
+          # runner before setup overhead.
+          - shard_index: 0
+            shard_count: 5
+            shard_label: 1/5
+          - shard_index: 1
+            shard_count: 5
+            shard_label: 2/5
+          - shard_index: 2
+            shard_count: 5
+            shard_label: 3/5
+          - shard_index: 3
+            shard_count: 5
+            shard_label: 4/5
+          - shard_index: 4
+            shard_count: 5
+            shard_label: 5/5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run serialized server test shard
+        run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+
+  canary_dry_run:
+    name: Canary Dry Run
+    needs: [gate, policy]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `release.sh` always executes its Step 2/7 workspace build, even when
+      # `--skip-verify` bypasses the initial verification gate. release.sh
+      # also requires a clean working tree, so any in-place lockfile churn
+      # from `pnpm install --frozen-lockfile` must be reverted first — unless
+      # the policy job uploaded a regenerated lockfile (manifest-changing
+      # PRs), in which case we stage the artifact-restored copy into an
+      # ephemeral local commit so release.sh sees a clean tree and its
+      # workspace build sees a lockfile that matches the manifest.
+      - name: Release canary dry run via release.sh internal build
+        env:
+          USED_ARTIFACT_LOCKFILE: ${{ needs.policy.outputs.lockfile_regenerated || '0' }}
+        run: |
+          git checkout -B master HEAD
+          if [ "$USED_ARTIFACT_LOCKFILE" = "1" ]; then
+            git add pnpm-lock.yaml
+            if ! git diff --cached --quiet; then
+              git -c user.email=ci@paperclip.local -c user.name=CI \
+                commit --no-verify -m "ci(canary): stage regenerated lockfile"
+            fi
+          else
+            git checkout -- pnpm-lock.yaml
+          fi
+          ./scripts/release.sh canary --skip-verify --dry-run
+
+  e2e_shards:
+    name: e2e shard (${{ matrix.shard_label }})
+    needs: [gate, policy]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Playwright lane is pinned to workers=1 (tests/e2e/playwright.config.ts)
+          # because every spec shares one throwaway server and some toggle
+          # instance-level flags, so it can only be parallelized across runners.
+          # Each shard boots its own server, which keeps that isolation intact.
+          # Three shards let the ~3min smoke-lab spec ride alone while the rest
+          # of the catalog splits evenly, pulling this lane off the PR critical
+          # path (it was the slowest check at ~8min20s with two shards).
+          - shard_index: 0
+            shard_count: 3
+            shard_label: 1/3
+          - shard_index: 1
+            shard_count: 3
+            shard_label: 2/3
+          - shard_index: 2
+            shard_count: 3
+            shard_label: 3/3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify runner Chrome
+        # GitHub's Ubuntu runner image already ships Google Chrome, so use that
+        # directly for the headless e2e lane instead of downloading Playwright
+        # browser bundles inside the 30 minute job budget.
+        run: google-chrome --version
+
+      - name: Generate Paperclip config
+        run: |
+          mkdir -p ~/.paperclip/instances/default
+          cat > ~/.paperclip/instances/default/config.json << 'CONF'
+          {
+            "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
+            "database": { "mode": "embedded-postgres" },
+            "logging": { "mode": "file" },
+            "server": { "deploymentMode": "local_trusted", "host": "127.0.0.1", "port": 3100 },
+            "auth": { "baseUrlMode": "auto" },
+            "storage": { "provider": "local_disk" },
+            "secrets": { "provider": "local_encrypted", "strictMode": false }
+          }
+          CONF
+
+      - name: Run e2e tests
+        env:
+          PAPERCLIP_E2E_SKIP_LLM: "true"
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
+        run: |
+          # Playwright's own --shard balances by test count, and one spec
+          # (smoke-lab) is ~40% of the lane's wall clock. Partition by recorded
+          # spec duration instead so both runners finish together.
+          specs="$(node ./scripts/e2e-shard.mjs \
+            --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }})"
+          echo "shard ${{ matrix.shard_label }} specs: $specs"
+          # specs is an intentional argument list.
+          # shellcheck disable=SC2086
+          pnpm run test:e2e $specs
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: playwright-report-${{ matrix.shard_index }}
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+          retention-days: 14
+
+  e2e:
+    # Preserve the legacy required-check name while the specs run sharded
+    # across the matrix above (same pattern as the `verify` aggregate).
+    name: e2e
+    if: ${{ always() }}
+    needs: [gate, e2e_shards]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if any e2e shard failed
+        env:
+          E2E_SHARDS_RESULT: ${{ needs.e2e_shards.result }}
+        run: test "$E2E_SHARDS_RESULT" = "success"

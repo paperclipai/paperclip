@@ -5,16 +5,19 @@ import { MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
   AgentRole,
+  ClaudeOAuthTokenStatusResponse,
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
-import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AdapterLoginPanel } from "./AgentConfigForm";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { ApiError } from "../api/client";
 import { companiesApi } from "../api/companies";
 import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
@@ -48,6 +51,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync, useAdapterRegistryLoaded } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import { restoreOnboardingState } from "../lib/onboarding-state";
@@ -117,6 +121,44 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   if (q3.trim()) parts.push(`Our biggest challenge is ${q3.trim().toLowerCase()}.`);
   if (q4.trim()) parts.push(`Success looks like ${q4.trim().toLowerCase()}.`);
   return parts.join(" ");
+}
+
+/**
+ * True when an adapter-test result blocks a hire. A `fail` status always
+ * blocks. A `warn` or a `pass` status blocks too when a check reports
+ * `ADAPTER_AUTH_MISSING_CHECK_CODE`. That check means the agent has no
+ * working authentication, so it cannot run. A `warn` with no such check
+ * still lets the hire proceed. The wizard widened the gate for missing
+ * authentication only, not for every other warning.
+ */
+function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
+  if (result.status === "fail") return true;
+  return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+}
+
+/** True when `value` is a plain object, so callers can spread it as env config. */
+function isEnvRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const ANTHROPIC_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY";
+
+/**
+ * True when the adapter configuration carries a non-empty ANTHROPIC_API_KEY.
+ * The server rejects that key together with the fixed Claude login binding
+ * (see `assertClaudeOAuthBindingInvariant` in `server/src/services/secrets.ts`).
+ * This checks the built configuration first, so onboarding never sends a
+ * hire the server would reject.
+ */
+function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boolean {
+  if (!isEnvRecord(config.env)) return false;
+  const binding = config.env[ANTHROPIC_API_KEY_ENV_KEY];
+  if (typeof binding === "string") return binding.trim().length > 0;
+  if (!isEnvRecord(binding)) return false;
+  if (binding.type === "plain") {
+    return typeof binding.value === "string" && binding.value.trim().length > 0;
+  }
+  return binding.type === "secret_ref" || binding.type === "user_secret_ref";
 }
 
 // Exported so tests write/read the exact key the component uses, instead of
@@ -445,6 +487,11 @@ function OnboardingWizardInner({
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  // The owner's stored Claude subscription login, read right before the hire
+  // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
+  // so nothing else reads this state yet.
+  const [claudeOAuthStatus, setClaudeOAuthStatus] =
+    useState<ClaudeOAuthTokenStatusResponse | null>(null);
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -483,6 +530,12 @@ function OnboardingWizardInner({
   // submissions could then both pass the fresh probe and both hire. `loading`
   // cannot stop the second caller for the same reason as above.
   const hiringAgentRef = useRef(false);
+  // True when the last `adapterEnvResult` came from a config that carried
+  // the fixed Claude login binding (see `hireAdapterConfig` in
+  // `handleGiveHeartbeat`). A cached result from a config that did not carry
+  // the binding cannot answer for a config that now does — see the reuse
+  // check in `handleGiveHeartbeat`.
+  const adapterEnvResultAppliedStoredLoginRef = useRef(false);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -705,6 +758,112 @@ function OnboardingWizardInner({
   });
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
+
+  // Resolve the login environment at render time, so the wizard can decide
+  // whether to show the login panel before any adapter test runs. This
+  // mirrors the agent configuration form's own resolution, including the
+  // managed-sandbox-only redirect (see AgentConfigForm.tsx:618-640). A render
+  // must not throw, so a resolver error yields no login environment rather
+  // than an error boundary.
+  const { data: loginEnvironmentList = [] } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.environments.list(createdCompanyId)
+      : ["environments", "none"],
+    queryFn: () => environmentsApi.list(createdCompanyId!),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4,
+  });
+  const { data: instanceSettingsForLogin } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    enabled: effectiveOnboardingOpen && step === 4,
+  });
+  const { data: experimentalSettingsForLogin } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: effectiveOnboardingOpen && step === 4,
+  });
+  const resolvedLoginEnvironmentId = useMemo(() => {
+    try {
+      return resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: instanceSettingsForLogin?.defaultEnvironmentId ?? null,
+        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(loginEnvironmentList),
+        managedSandboxOnly: experimentalSettingsForLogin?.enableManagedSandboxOnly === true,
+        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(loginEnvironmentList),
+        visibleEnvironmentIds: loginEnvironmentList.map((environment) => environment.id),
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    instanceSettingsForLogin?.defaultEnvironmentId,
+    loginEnvironmentList,
+    experimentalSettingsForLogin?.enableManagedSandboxOnly,
+  ]);
+  const resolvedLoginEnvironment = useMemo(
+    () =>
+      loginEnvironmentList.find((environment) => environment.id === resolvedLoginEnvironmentId) ??
+      null,
+    [loginEnvironmentList, resolvedLoginEnvironmentId],
+  );
+  // Sandbox provider capabilities for the login pseudo-terminal gate, loaded
+  // only when the adapter declares a login capability — the same query the
+  // agent configuration form runs (AgentConfigForm.tsx:652-658).
+  const { data: loginEnvironmentCapabilities } = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.environments.capabilities(createdCompanyId)
+      : ["environment-capabilities", "none"],
+    queryFn: () => environmentsApi.capabilities(createdCompanyId!),
+    enabled:
+      Boolean(createdCompanyId) &&
+      adapterCaps.login != null &&
+      effectiveOnboardingOpen &&
+      step === 4,
+  });
+  const loginEnvironmentProvider =
+    typeof resolvedLoginEnvironment?.config?.provider === "string"
+      ? resolvedLoginEnvironment.config.provider
+      : null;
+  const loginProviderSupportsPty =
+    loginEnvironmentProvider != null &&
+    loginEnvironmentCapabilities?.sandboxProviders?.[loginEnvironmentProvider]?.supportsLoginPty ===
+      true;
+  // The same capability gate the agent configuration form uses to show its
+  // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a
+  // full adapter test result. The cheap auth signal below stands in for that
+  // input here, so this gate alone only decides whether the login mechanism
+  // could ever apply to the current adapter and environment.
+  const canShowAdapterLogin = Boolean(
+    adapterCaps.login != null &&
+      resolvedLoginEnvironment?.driver === "sandbox" &&
+      resolvedLoginEnvironmentId &&
+      createdCompanyId &&
+      loginProviderSupportsPty,
+  );
+  // The cheap signal, re-read whenever the adapter type or the resolved login
+  // environment changes (both are part of the query key). It reports whether
+  // the host already holds a usable credential, with no adapter environment
+  // test. The route reads only host-local state, so a login baked into a
+  // sandbox image rather than held on the host reads as `absent` even though
+  // the owner could already sign in — the panel then shows for one extra step
+  // it did not strictly need, never the reverse.
+  const authSignalQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.authSignal(createdCompanyId, adapterType, resolvedLoginEnvironmentId)
+      : ["agents", "none", "auth-signal", adapterType, resolvedLoginEnvironmentId],
+    queryFn: () =>
+      agentsApi.getAdapterAuthSignal(
+        createdCompanyId!,
+        adapterType,
+        resolvedLoginEnvironmentId ?? undefined,
+      ),
+    enabled:
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+  });
+  const authSignalStatus = authSignalQuery.data?.status ?? null;
+  const showAdapterLoginPanel =
+    canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+
   const isLocalAdapterCaps =
     adapterCaps.supportsInstructionsBundle ||
     adapterCaps.supportsSkills ||
@@ -786,6 +945,7 @@ function OnboardingWizardInner({
   useEffect(() => {
     if (step !== 4) return;
     setAdapterEnvResult(null);
+    adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url]);
 
@@ -864,10 +1024,12 @@ function OnboardingWizardInner({
     setArgs("");
     setUrl("");
     setAdapterEnvResult(null);
+    adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
+    setClaudeOAuthStatus(null);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
@@ -1021,7 +1183,8 @@ function OnboardingWizardInner({
   }
 
   async function runAdapterEnvironmentTest(
-    adapterConfigOverride?: Record<string, unknown>
+    adapterConfigOverride?: Record<string, unknown>,
+    appliedStoredClaudeLoginBinding = false
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
@@ -1090,6 +1253,7 @@ function OnboardingWizardInner({
         }
       );
       setAdapterEnvResult(result);
+      adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
       return result;
     } catch (err) {
       setAdapterEnvError(
@@ -1315,20 +1479,73 @@ function OnboardingWizardInner({
         }
       }
 
+      // Onboarding applies a stored Claude subscription login automatically,
+      // with no extra control. A new user who signs in, leaves, and returns
+      // should not sign in a second time — that is the board's direction.
+      // The binding is a reference to the owner's stored value, never the
+      // value itself (see buildFixedClaudeOAuthBinding). The server rejects
+      // that binding together with a configured ANTHROPIC_API_KEY, so this
+      // checks the built configuration first and asks the status route only
+      // when there is no such conflict.
+      //
+      // Read the stored-login status before the environment test below, and
+      // fold it into one adapter configuration. The test must probe the same
+      // configuration the hire sends — a config without the binding can
+      // report missing authentication for a user the binding would have
+      // covered.
+      const baseAdapterConfig = buildAdapterConfig();
+      let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
+      if (
+        adapterType === "claude_local" &&
+        !adapterConfigHasAnthropicApiKey(baseAdapterConfig)
+      ) {
+        try {
+          storedClaudeLogin = await agentsApi.getClaudeOAuthTokenStatus(createdCompanyId);
+        } catch (err) {
+          // A fixed 404 means the owner has no stored value. It is not a
+          // failure.
+          if (!(err instanceof ApiError) || err.status !== 404) throw err;
+          storedClaudeLogin = null;
+        }
+        if (stillTheSameCompany(createdCompanyId)) setClaudeOAuthStatus(storedClaudeLogin);
+      }
+      const shouldApplyStoredClaudeLogin = storedClaudeLogin !== null;
+      const hireAdapterConfig = shouldApplyStoredClaudeLogin
+        ? {
+            ...baseAdapterConfig,
+            env: {
+              ...(isEnvRecord(baseAdapterConfig.env) ? baseAdapterConfig.env : {}),
+              ...buildFixedClaudeOAuthBinding(),
+            },
+          }
+        : baseAdapterConfig;
+
       if (isLocalAdapter) {
-        // A cached pass or warn is still good; a cached fail is retried. With
-        // the "Test now" card gone, this button is the only way to re-probe,
-        // and reusing a stale fail would lock a customer out of a machine
-        // they have since fixed.
+        // A cached result is reusable only when it tested the same
+        // configuration the hire below sends, and only when it does not
+        // block the hire — see blocksAgentCreate. With the "Test now" card
+        // gone, this button is the only way to re-probe. Reusing a stale
+        // blocking result, or a result from a config that did not carry the
+        // stored login, would lock out a customer who has since fixed the
+        // problem or signed in.
         const cachedUsable =
-          adapterEnvResult && adapterEnvResult.status !== "fail" ? adapterEnvResult : null;
-        const result = cachedUsable ?? (await runAdapterEnvironmentTest());
+          adapterEnvResult &&
+          adapterEnvResultAppliedStoredLoginRef.current === shouldApplyStoredClaudeLogin &&
+          !blocksAgentCreate(adapterEnvResult)
+            ? adapterEnvResult
+            : null;
+        const result =
+          cachedUsable ??
+          (await runAdapterEnvironmentTest(hireAdapterConfig, shouldApplyStoredClaudeLogin));
         if (!result) return;
-        // Block the hire on a failed environment test. A pass or a warn may
-        // proceed; a fail means the agent cannot run as configured.
-        if (result.status === "fail") {
+        // Block the hire on a failed environment test. Also block it on a
+        // pass or a warn result that reports missing authentication — the
+        // agent cannot run without one of those.
+        if (blocksAgentCreate(result)) {
           setError(
-            "The environment test failed. Fix the reported checks before you hire this agent.",
+            result.status === "fail"
+              ? "The environment test failed. Fix the reported checks before you hire this agent."
+              : "No working authentication was found. Fix the reported checks before you hire this agent.",
           );
           return;
         }
@@ -1338,13 +1555,15 @@ function OnboardingWizardInner({
       // type narrowing rather than a gate — but it stays, because a future
       // path that clears the role must not reach a hire that silently no-ops.
       if (!agentRole) return;
+
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
         name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
         role: agentRole,
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig: hireAdapterConfig,
+        ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -2121,6 +2340,30 @@ function OnboardingWizardInner({
                       </div>
                     )}
                   </div>
+
+                  {/* Shows as soon as the cheap auth signal reports no ready
+                      credential, well before any adapter environment test
+                      runs. Reuses the same panel the agent configuration form
+                      shows after a test — see AdapterLoginPanel in
+                      AgentConfigForm.tsx. No "Use saved login" control: the
+                      hire step already applies a stored login on its own. */}
+                  {showAdapterLoginPanel && createdCompanyId && resolvedLoginEnvironmentId && (
+                    <AdapterLoginPanel
+                      key={`${adapterType}:${resolvedLoginEnvironmentId}`}
+                      companyId={createdCompanyId}
+                      adapterType={adapterType}
+                      environmentId={resolvedLoginEnvironmentId}
+                      onStored={() => {
+                        queryClient.invalidateQueries({
+                          queryKey: queryKeys.agents.authSignal(
+                            createdCompanyId,
+                            adapterType,
+                            resolvedLoginEnvironmentId,
+                          ),
+                        });
+                      }}
+                    />
+                  )}
 
                   {/* Conditional adapter fields */}
                   {/* No model picker. Every adapter this step offers resolves

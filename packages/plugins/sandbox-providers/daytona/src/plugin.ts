@@ -2739,11 +2739,11 @@ const plugin = definePlugin({
   },
 
   // Open one live login pseudo-terminal. Resolve the cached sandbox by the
-  // provider lease id, revalidate the host launch descriptor and the session
-  // home, create and validate the session home, run the fixed login command on a
-  // real pseudo-terminal, and register the session under the host route id. Stream
-  // the raw output and the exit through `ctx.loginPty`, bound to the returned
-  // worker session id. Fail closed when no cached sandbox matches the lease.
+  // provider lease id, revalidate the host launch descriptor, create the session
+  // home with one `mkdir -p` command, run the fixed login command on a real
+  // pseudo-terminal, and register the session under the host route id. Stream the
+  // raw output and the exit through `ctx.loginPty`, bound to the returned worker
+  // session id. Fail closed when no cached sandbox matches the lease.
   async onLoginPtyOpen(params) {
     const sandbox = await sandboxHandleCache.findByProviderLeaseId(params.providerLeaseId);
     if (!sandbox) {
@@ -2751,9 +2751,7 @@ const plugin = definePlugin({
         "Daytona login pseudo-terminal: no cached sandbox resolves the provider lease.",
       );
     }
-    const homeFs = createDaytonaLoginHomeFs(
-      sandbox.process as unknown as DaytonaSandboxExec,
-    );
+    const homeFs = createDaytonaLoginHomeFs(sandbox.process as unknown as DaytonaSandboxExec);
     const session = await openLoginPtySession(
       sandbox.process as unknown as DaytonaPtyProcess,
       homeFs,

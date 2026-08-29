@@ -1,7 +1,6 @@
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
-  InstanceSchedulerHeartbeatAgent,
   WorkspaceOperation,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -134,6 +133,4 @@ export const heartbeatsApi = {
     const qs = searchParams.toString();
     return api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`);
   },
-  listInstanceSchedulerAgents: () =>
-    api.get<InstanceSchedulerHeartbeatAgent[]>("/instance/scheduler-heartbeats"),
 };

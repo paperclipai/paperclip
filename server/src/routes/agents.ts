@@ -32,6 +32,7 @@ import {
   startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
+  type AgentAdapterType,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -80,6 +81,8 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
+import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -144,14 +147,19 @@ import {
   promoteDeviceLoginCredential,
 } from "@paperclipai/adapter-codex-local/server";
 import {
+  checkStagedGrokCredentialReadiness,
+  promoteGrokDeviceLoginCredential,
+} from "@paperclipai/adapter-grok-local/server";
+import {
   AdapterAuthSessionConflictError,
-  createCodexDeviceLoginService,
-  createCodexWorkerBoundLoginPtyOpener,
+  createDeviceLoginService,
+  createWorkerBoundLoginPtyOpener,
   createDbAdapterAuthSessionStore,
   createProductionLoginSessionRuntime,
-  CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
-  CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
-} from "../services/codex-device-login-service.js";
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+  type CredentialPromotion,
+} from "../services/device-login-service.js";
 import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -494,7 +502,7 @@ export function agentRoutes(
   // process owns one instance, so the in-memory prompt and the cancellation
   // controllers persist across requests.
   const adapterLoginStore = createDbAdapterAuthSessionStore(db);
-  const adapterLoginService = createCodexDeviceLoginService({
+  const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
     runtime: createProductionLoginSessionRuntime({
       db,
@@ -512,73 +520,119 @@ export function agentRoutes(
       // opens. When no worker manager is bound, the runtime keeps its fail-closed
       // opener and the login fails closed.
       openLivePtySession: options.pluginWorkerManager
-        ? createCodexWorkerBoundLoginPtyOpener({
+        ? createWorkerBoundLoginPtyOpener({
             workerManager: options.pluginWorkerManager,
             log: (line) => logger.info(line),
           })
         : undefined,
     }),
-    // The mandatory credential promotion. A successful login authenticates only
-    // after this promotion validates the exact staged credential, runs an
-    // independent readiness check, confirms the session still holds the sole
-    // active claim, and writes the credential into the company scope. A rejected
-    // or unready credential fails the session and writes nothing.
-    promotion: {
-      async promote(authBytes, context) {
-        // Hold the promotion critical-section lock across the ownership check and
-        // the credential write. The reaper takes the same lock before it reclaims
-        // a stale `promoting` row. So a reclaim never interleaves with a live
-        // write: the reaper either wins the lock first and the ownership check
-        // then reads a reclaimed row and writes nothing, or the write finishes
-        // first under the lock and the reaper reclaims only after it completes. A
-        // read-only fence is not enough, because the filesystem write can start
-        // after the fence; the lock spans the whole section.
-        const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
-          context.companyId,
-          context.startedByUserId,
-          context.adapterType,
-          () =>
-            promoteDeviceLoginCredential({
-              authBytes,
-              companyId: context.companyId,
-              userInitiated: true,
-              checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
-              isSoleActiveOwner: async () => {
-                // The partial unique index allows one active row per company and
-                // adapter. So a `promoting` row for this session is the sole
-                // active owner of the company credential slot. The read runs
-                // inside the lock, so it observes a reaper reclaim that committed
-                // before this section acquired the lock.
-                const row = await adapterLoginStore.get(context.sessionId);
-                return row?.status === "promoting" && row.companyId === context.companyId;
-              },
-              log: (line) => {
-                // The promotion lines carry no token bytes and no raw account id,
-                // so it is safe to log them with the session identifier.
-                logger.info({ sessionId: context.sessionId }, line);
-              },
-            }),
-        );
-        // A resolved promotion is not necessarily an accepted promotion. In
-        // particular, a reaper/expiry race can revoke this session's sole
-        // ownership between the service transition and Decision H. Fail closed:
-        // only a credential write or a deliberate safe keep can authenticate.
-        if (outcome === "kept_foreign_identity") {
-          // The login produced a different account than the one the company
-          // credential home already holds. The promotion never clobbers an
-          // occupied home, so this login installed nothing durable, and the
-          // identity-anchored vend can never select it: a later run keeps the
-          // existing account. Fail the session, so the operator never sees a
-          // false `authenticated` for an account the system will not use.
-          throw new Error(
-            "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+    // The mandatory credential promotion, keyed by adapter type. A successful
+    // login authenticates only after the promotion for its own adapter type
+    // validates the exact staged credential, runs an independent readiness
+    // check, confirms the session still holds the sole active claim, and
+    // writes the credential into the company scope. A rejected or unready
+    // credential fails the session and writes nothing. Keying by adapter type
+    // keeps a `grok_local` login from ever running the Codex promotion (and
+    // vice versa): each entry closes over its own readiness check and its own
+    // promotion function.
+    promotionByAdapterType: {
+      codex_local: {
+        async promote(authBytes, context) {
+          // Hold the promotion critical-section lock across the ownership check and
+          // the credential write. The reaper takes the same lock before it reclaims
+          // a stale `promoting` row. So a reclaim never interleaves with a live
+          // write: the reaper either wins the lock first and the ownership check
+          // then reads a reclaimed row and writes nothing, or the write finishes
+          // first under the lock and the reaper reclaims only after it completes. A
+          // read-only fence is not enough, because the filesystem write can start
+          // after the fence; the lock spans the whole section.
+          const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+            context.companyId,
+            context.startedByUserId,
+            context.adapterType,
+            () =>
+              promoteDeviceLoginCredential({
+                authBytes,
+                companyId: context.companyId,
+                userInitiated: true,
+                checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
+                isSoleActiveOwner: async () => {
+                  // The partial unique index allows one active row per company and
+                  // adapter. So a `promoting` row for this session is the sole
+                  // active owner of the company credential slot. The read runs
+                  // inside the lock, so it observes a reaper reclaim that committed
+                  // before this section acquired the lock.
+                  const row = await adapterLoginStore.get(context.sessionId);
+                  return row?.status === "promoting" && row.companyId === context.companyId;
+                },
+                log: (line) => {
+                  // The promotion lines carry no token bytes and no raw account id,
+                  // so it is safe to log them with the session identifier.
+                  logger.info({ sessionId: context.sessionId }, line);
+                },
+              }),
           );
-        }
-        if (outcome !== "promoted" && outcome !== "kept") {
-          throw new Error(`device-login credential promotion rejected: ${outcome}`);
-        }
+          // A resolved promotion is not necessarily an accepted promotion. In
+          // particular, a reaper/expiry race can revoke this session's sole
+          // ownership between the service transition and Decision H. Fail closed:
+          // only a credential write or a deliberate safe keep can authenticate.
+          if (outcome === "kept_foreign_identity") {
+            // The login produced a different account than the one the company
+            // credential home already holds. The promotion never clobbers an
+            // occupied home, so this login installed nothing durable, and the
+            // identity-anchored vend can never select it: a later run keeps the
+            // existing account. Fail the session, so the operator never sees a
+            // false `authenticated` for an account the system will not use.
+            throw new Error(
+              "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+            );
+          }
+          if (outcome !== "promoted" && outcome !== "kept") {
+            throw new Error(`device-login credential promotion rejected: ${outcome}`);
+          }
+        },
       },
-    },
+      grok_local: {
+        async promote(authBytes, context) {
+          // The same promotion critical-section lock as the Codex entry above,
+          // keyed by the same `(companyId, startedByUserId, adapterType)` tuple,
+          // so a Grok reclaim and a Grok write never interleave.
+          const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+            context.companyId,
+            context.startedByUserId,
+            context.adapterType,
+            () =>
+              promoteGrokDeviceLoginCredential({
+                authBytes,
+                companyId: context.companyId,
+                userInitiated: true,
+                checkReadiness: (bytes) => checkStagedGrokCredentialReadiness(bytes),
+                isSoleActiveOwner: async () => {
+                  const row = await adapterLoginStore.get(context.sessionId);
+                  return row?.status === "promoting" && row.companyId === context.companyId;
+                },
+                log: (line) => {
+                  // The promotion lines carry no token bytes and no personal
+                  // field, so it is safe to log them with the session identifier.
+                  logger.info({ sessionId: context.sessionId }, line);
+                },
+              }),
+          );
+          if (outcome === "kept_foreign_identity") {
+            // The login produced a different account than the one the company
+            // credential home already holds. Fail the session, so the operator
+            // never sees a false `authenticated` for an account the system will
+            // not use.
+            throw new Error(
+              "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+            );
+          }
+          if (outcome !== "promoted") {
+            throw new Error(`device-login credential promotion rejected: ${outcome}`);
+          }
+        },
+      },
+    } satisfies Partial<Record<AgentAdapterType, CredentialPromotion>>,
     recordActivity: (event) => {
       // The event carries no URL, no code, no credential, no account identifier,
       // and no lease identifier, so it is safe to log.
@@ -1355,8 +1409,8 @@ export function agentRoutes(
    */
   async function assertCodexLoginProviderCapability(environmentId: string): Promise<void> {
     if (!(await resolveProviderSupportsLoginPty(environmentId))) {
-      throw unprocessable(CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
-        code: CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+      throw unprocessable(DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
+        code: DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
       });
     }
   }
@@ -2693,6 +2747,126 @@ export function agentRoutes(
       } finally {
         await release(releaseStatus);
       }
+    },
+  );
+
+  // The claude_local branch of the auth-signal read. It checks two host-local
+  // sources for a usable Claude Code OAuth token: the resolved envVars of the
+  // caller's selected environment, and the caller's own stored Claude login. It
+  // returns "present" the moment either source holds a non-empty token, so it
+  // never resolves more than the one env key it needs.
+  async function evaluateClaudeAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      const environmentEnv = Object.fromEntries(
+        Object.entries(parseObject(environment?.envVars)).filter(
+          ([key]) => !isForbiddenConfigEnvKey(key),
+        ),
+      );
+      const tokenBinding = environmentEnv.CLAUDE_CODE_OAUTH_TOKEN;
+      if (tokenBinding !== undefined) {
+        const resolution = await secretsSvc.resolveEnvBindings(
+          companyId,
+          { CLAUDE_CODE_OAUTH_TOKEN: tokenBinding },
+          buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+        );
+        if (asNonEmptyString(resolution.env.CLAUDE_CODE_OAUTH_TOKEN)) {
+          return "present";
+        }
+      }
+    }
+    const ownerUserId = req.actor.userId;
+    if (ownerUserId) {
+      const stored = await secretsSvc.readClaudeOAuthUserSecretStatus(companyId, ownerUserId);
+      if (stored) return "present";
+    }
+    return "absent";
+  }
+
+  // The codex_local branch of the auth-signal read. The host filesystem check
+  // (`evaluateCodexCredentialReadiness` against `process.env`) describes only
+  // the Paperclip host, so it is authoritative for the null-environment and
+  // "local" driver cases, where the host is the execution target. For a
+  // non-local environment (a sandbox), the host's own credential state says
+  // nothing about that sandbox, so the route checks the environment's own
+  // OPENAI_API_KEY binding instead and otherwise reports "unknown" -- never
+  // "present" from a host login the sandbox does not share.
+  async function evaluateCodexAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (environment && environment.driver !== "local") {
+        const environmentEnv = Object.fromEntries(
+          Object.entries(parseObject(environment.envVars)).filter(
+            ([key]) => !isForbiddenConfigEnvKey(key),
+          ),
+        );
+        const apiKeyBinding = environmentEnv.OPENAI_API_KEY;
+        if (apiKeyBinding !== undefined) {
+          const resolution = await secretsSvc.resolveEnvBindings(
+            companyId,
+            { OPENAI_API_KEY: apiKeyBinding },
+            buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+          );
+          if (asNonEmptyString(resolution.env.OPENAI_API_KEY)) {
+            return "present";
+          }
+        }
+        return "unknown";
+      }
+    }
+
+    const readiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId,
+      configuredCodexHome: null,
+      configuredApiKey: null,
+    });
+    return readiness.ready ? "present" : "absent";
+  }
+
+  // The cheap host-local authentication signal for one adapter type. The route
+  // reads host-local state only: a stored Claude login, a resolved environment
+  // env var, or the local Codex credential readiness check. It leases no
+  // sandbox, starts no shell command, and starts no model request. The two
+  // access gates below run before any read, so a caller who cannot create
+  // agents for the company and a foreign environment both fail closed before
+  // the route touches a credential source.
+  router.get(
+    "/companies/:companyId/adapters/:type/auth-signal",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const type = req.params.type as string;
+      await assertCanCreateAgentsForCompany(req, companyId);
+      const environmentId = asNonEmptyString(req.query.environmentId);
+      if (environmentId) {
+        await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
+      }
+      res.setHeader("Cache-Control", "no-store");
+
+      let status: AdapterAuthSignal = "unknown";
+      try {
+        if (type === "claude_local") {
+          status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
+        } else if (type === "codex_local") {
+          status = await evaluateCodexAuthSignal(req, companyId, environmentId);
+        }
+      } catch {
+        // A failed read is never a claim that the credential is absent. Report
+        // the neutral "unknown" signal instead, so the wizard falls back to
+        // showing the login panel.
+        status = "unknown";
+      }
+
+      const body: AdapterAuthSignalResponse = { status };
+      res.json(body);
     },
   );
 

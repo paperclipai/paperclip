@@ -423,6 +423,58 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("ends the route when the pending host-to-worker write bytes pass the route bound", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPendingWriteBytes: 10 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({ mode: "no-write-reply", workerSessionId: "ws-A" }),
+      );
+      const waitResult = session.wait();
+      // The worker never replies to a write, so each write's bytes stay charged
+      // against the route. The second write brings the cumulative bytes past
+      // the 10-byte bound and ends the route.
+      session.write(new TextEncoder().encode("aaaaa")); // 5 bytes → 5, under the bound
+      session.write(new TextEncoder().encode("bbbbbb")); // 6 bytes → 11 > 10, ends the route
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("returns the pending write bytes to the route bound after a failed write", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPendingWriteBytes: 10, openTimeoutMs: 100 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({ mode: "no-write-reply", workerSessionId: "ws-A" }),
+      );
+      let routeEnded = false;
+      session.wait().then(() => {
+        routeEnded = true;
+      });
+      // The worker never replies, so each write's own request times out and
+      // rejects. The rejection must release this write's charged bytes, the
+      // same as a reply would. Wait past the first write's timeout before the
+      // second write sends.
+      session.write(new TextEncoder().encode("12345678")); // 8 bytes, under the 10-byte bound
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // If the first write's bytes had not released on its timeout, this
+      // second 8-byte write would bring the route to 16 bytes, past the
+      // 10-byte bound, and end the route at once, synchronously, in this call.
+      session.write(new TextEncoder().encode("87654321"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(routeEnded).toBe(false);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("ends the route when one host-to-worker write passes the size bound", async () => {
     const handle = makeDuplexHandle({
       duplexChannelLimits: { maxWriteChars: 8 },
@@ -696,6 +748,36 @@ describe("plugin worker manager duplex channel route", () => {
         }),
       );
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("ends the route when the pre-bind hold bytes pass the route input bound", async () => {
+    const handle = makeDuplexHandle({
+      duplexChannelLimits: { maxPreBindBufferedChars: 10 },
+    });
+    try {
+      await handle.start();
+      // The worker batches the three data frames with the open reply, so all
+      // three frames arrive before the route binds and land in the pre-bind
+      // hold, not the post-bind buffered queue. The frame-count bound stays
+      // far above three frames, so only the byte bound can end the route
+      // here: this proves the hold itself counts bytes, not only frames. The
+      // hold ends the route before the bind completes, so the open call
+      // itself fails, the same way a malformed open reply fails it.
+      await expect(
+        handle.openDuplexChannel(
+          duplexOpenInput({
+            batchWithOpenReply: true,
+            data: [
+              { chunk: "aaaaa" }, // total 5 → held
+              { chunk: "bbbbb" }, // total 10 → held
+              { chunk: "ccccc" }, // total 15 > 10 → end the route in the hold
+            ],
+          }),
+        ),
+      ).rejects.toThrow("DUPLEX_CHANNEL_OPEN_FAILED");
     } finally {
       await handle.stop().catch(() => undefined);
     }

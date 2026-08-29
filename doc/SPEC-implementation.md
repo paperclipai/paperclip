@@ -139,10 +139,8 @@ Human auth tables (`users`, `sessions`, and provider-specific auth artifacts) ar
 - `issue_counter` int not null
 - `budget_monthly_cents` int not null default 0
 - `spent_monthly_cents` int not null default 0
-- `attachment_max_bytes` int not null
 - `require_board_approval_for_new_agents` boolean not null default false
 - feedback sharing consent fields
-- branding fields such as `brand_color`
 
 Invariant: every business record belongs to exactly one company.
 

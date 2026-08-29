@@ -77,6 +77,7 @@ export function ClaudeLocalAdvancedFields({
   config,
   eff,
   mark,
+  managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
   const rawEngine = isCreate
     ? values!.claudeEngine ?? "auto"
@@ -86,7 +87,13 @@ export function ClaudeLocalAdvancedFields({
 
   return (
     <>
-      <Field label="Execution engine" hint="Auto uses ACP when prerequisites pass and falls back to Claude CLI with diagnostics.">
+      {/*
+        The execution engine picks which binary runs on the execution host, and
+        the ACP sub-fields below name host paths. The platform-managed
+        environment owns both, so the managed-sandbox-only policy hides them,
+        the same way `runnerManaged` hides them for the Paperclip Runner.
+      */}
+      {!managedSandboxOnly && <Field label="Execution engine" hint="Auto uses ACP when prerequisites pass and falls back to Claude CLI with diagnostics.">
         <select
           className={inputClass}
           value={engine}
@@ -101,29 +108,31 @@ export function ClaudeLocalAdvancedFields({
           <option value="cli">Claude CLI</option>
           <option value="acp">ACP</option>
         </select>
-      </Field>
+      </Field>}
       {acpSelected && (
         <>
-          <Field
-            label="ACP server command"
-            hint="Optional override for the Claude ACP server command. Defaults to the package-local claude-agent-acp binary."
-          >
-            <DraftInput
-              value={
-                isCreate
-                  ? values!.claudeAcpAgentCommand ?? ""
-                  : eff("adapterConfig", "agentCommand", String(config.agentCommand ?? ""))
-              }
-              onCommit={(v) =>
-                isCreate
-                  ? set!({ claudeAcpAgentCommand: v })
-                  : mark("adapterConfig", "agentCommand", v || undefined)
-              }
-              immediate
-              className={inputClass}
-              placeholder="claude-agent-acp"
-            />
-          </Field>
+          {!managedSandboxOnly && (
+            <Field
+              label="ACP server command"
+              hint="Optional override for the Claude ACP server command. Defaults to the package-local claude-agent-acp binary."
+            >
+              <DraftInput
+                value={
+                  isCreate
+                    ? values!.claudeAcpAgentCommand ?? ""
+                    : eff("adapterConfig", "agentCommand", String(config.agentCommand ?? ""))
+                }
+                onCommit={(v) =>
+                  isCreate
+                    ? set!({ claudeAcpAgentCommand: v })
+                    : mark("adapterConfig", "agentCommand", v || undefined)
+                }
+                immediate
+                className={inputClass}
+                placeholder="claude-agent-acp"
+              />
+            </Field>
+          )}
           <Field label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
             <select
               className={inputClass}
@@ -165,29 +174,31 @@ export function ClaudeLocalAdvancedFields({
               <option value="fail">Fail</option>
             </select>
           </Field>
-          <Field
-            label="ACP state directory"
-            hint="Optional ACP session state directory. Defaults to Paperclip-managed organization/agent scoped storage."
-          >
-            <div className="flex items-center gap-2">
-              <DraftInput
-                value={
-                  isCreate
-                    ? values!.claudeAcpStateDir ?? ""
-                    : eff("adapterConfig", "stateDir", String(config.stateDir ?? ""))
-                }
-                onCommit={(v) =>
-                  isCreate
-                    ? set!({ claudeAcpStateDir: v })
-                    : mark("adapterConfig", "stateDir", v || undefined)
-                }
-                immediate
-                className={inputClass}
-                placeholder="/path/to/acp-state"
-              />
-              <ChoosePathButton />
-            </div>
-          </Field>
+          {!managedSandboxOnly && (
+            <Field
+              label="ACP state directory"
+              hint="Optional ACP session state directory. Defaults to Paperclip-managed organization/agent scoped storage."
+            >
+              <div className="flex items-center gap-2">
+                <DraftInput
+                  value={
+                    isCreate
+                      ? values!.claudeAcpStateDir ?? ""
+                      : eff("adapterConfig", "stateDir", String(config.stateDir ?? ""))
+                  }
+                  onCommit={(v) =>
+                    isCreate
+                      ? set!({ claudeAcpStateDir: v })
+                      : mark("adapterConfig", "stateDir", v || undefined)
+                  }
+                  immediate
+                  className={inputClass}
+                  placeholder="/path/to/acp-state"
+                />
+                <ChoosePathButton />
+              </div>
+            </Field>
+          )}
           <Field
             label="ACP warm process idle ms"
             hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."

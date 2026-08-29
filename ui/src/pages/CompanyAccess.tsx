@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
+  hidesCompanyPage,
   type Agent,
 } from "@paperclipai/shared";
 import { Shield, ShieldCheck, Trash2 } from "lucide-react";
@@ -23,9 +24,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
-import { Link, Navigate } from "@/lib/router";
+import { Link, Navigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots } from "@/plugins/slots";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { PageTabBar } from "@/components/PageTabBar";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+import { InvitesSection } from "@/components/access/InvitesSection";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -35,6 +40,27 @@ export function CompanyAccess() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Invites render as a tab of this page; `company.invites` hides just that
+  // tab while `company.members` (the route gate) hides the whole page.
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const hideInvitesTab = hidesCompanyPage(hiddenSettings, "company.invites");
+  const requestedTab = searchParams.get("tab") === "invites" ? "invites" : "members";
+  const activeTab = hideInvitesTab ? "members" : requestedTab;
+  const handleTabChange = (value: string) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value === "invites") {
+          next.set("tab", "invites");
+        } else {
+          next.delete("tab");
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
@@ -240,6 +266,20 @@ export function CompanyAccess() {
         <ShieldCheck className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Organization Members</h1>
       </div>
+
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex flex-col gap-4">
+        {!hideInvitesTab && (
+          <PageTabBar
+            items={[
+              { value: "members", label: "Members" },
+              { value: "invites", label: "Invites" },
+            ]}
+            align="start"
+            value={activeTab}
+            onValueChange={handleTabChange}
+          />
+        )}
+        <TabsContent value="members" className="space-y-8">
 
       {access && !access.currentUserRole && (
         <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
@@ -519,6 +559,13 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+        </TabsContent>
+        {!hideInvitesTab && (
+          <TabsContent value="invites">
+            <InvitesSection />
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   );
 }
@@ -575,7 +622,7 @@ export function CompanyAccessLegacyRoute() {
             <Link to="/company/settings/members">Open Members</Link>
           </Button>
           <Button asChild variant="outline">
-            <Link to="/company/settings/invites">Open Invites</Link>
+            <Link to="/company/settings/members?tab=invites">Open Invites</Link>
           </Button>
         </div>
       </div>

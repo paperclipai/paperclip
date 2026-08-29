@@ -12,6 +12,14 @@ import {
   heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
+import {
+  MAX_ISSUE_PREFIX_ATTEMPTS,
+  deriveIssuePrefixBase,
+  isIssuePrefixConflict,
+  issuePrefixSuffixForAttempt,
+  pickAvailableIssuePrefix,
+  rekeyCompanyIssueIdentifiers,
+} from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -554,19 +562,7 @@ export async function resolveCloudTenantActor(
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  if (shouldSync) await db
-    .insert(companies)
-    .values({
-      id: companyId,
-      name: companyName,
-      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
-      status: "active",
-      issuePrefix: issuePrefixForCloudStack(stackId),
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: companies.id,
-    });
+  if (shouldSync) await insertCloudTenantCompany(db, { companyId, companyName, now });
 
   if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {
@@ -575,6 +571,13 @@ export async function resolveCloudTenantActor(
       paperclipCompanyName,
       now,
     });
+  }
+
+  // Runs after the name repair so the prefix derives from the repaired name.
+  // The helper self-gates on the legacy markers, so it is a no-op once the
+  // company has been repaired or was claimed by a current build.
+  if (shouldSync) {
+    await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
   }
 
   effectiveMembership = shouldSync ? await db
@@ -786,9 +789,151 @@ async function repairCloudTenantCompanyName(
   }
 }
 
-function issuePrefixForCloudStack(stackId: string): string {
+/**
+ * Claims the tenant company row for this stack.
+ *
+ * The prefix derives from the company name, exactly as it does for a
+ * self-hosted company. Each attempt is a standalone INSERT, so a failed
+ * attempt is its own implicit transaction and cannot poison a surrounding
+ * one. `onConflictDoNothing` only absorbs the `companies.id` conflict — a
+ * prefix that another company already holds still raises `23505`, so the loop
+ * moves on to the next suffix.
+ */
+async function insertCloudTenantCompany(
+  db: Db,
+  input: { companyId: string; companyName: string; now: Date },
+): Promise<void> {
+  const base = deriveIssuePrefixBase(input.companyName);
+  for (let attempt = 1; attempt <= MAX_ISSUE_PREFIX_ATTEMPTS; attempt += 1) {
+    try {
+      await db
+        .insert(companies)
+        .values({
+          id: input.companyId,
+          name: input.companyName,
+          description: null,
+          status: "active",
+          issuePrefix: `${base}${issuePrefixSuffixForAttempt(attempt)}`,
+          updatedAt: input.now,
+        })
+        .onConflictDoNothing({
+          target: companies.id,
+        });
+      return;
+    } catch (error) {
+      if (!isIssuePrefixConflict(error)) throw error;
+    }
+  }
+  throw new Error("Unable to allocate a unique issue prefix for the tenant company");
+}
+
+/**
+ * The issue prefix that pre-name-derivation builds gave a tenant company.
+ *
+ * This derivation survives only as the detector for the one-time repair
+ * below. Nothing mints a prefix this way any more.
+ */
+function legacyProvisionedIssuePrefix(stackId: string): string {
   const hash = createHash("sha256").update(stackId).digest("hex").slice(0, 4).toUpperCase();
   return `PC${hash}`;
+}
+
+/** The placeholder description that pre-name-derivation builds wrote. */
+const LEGACY_PROVISIONED_DESCRIPTION_PREFIX = "Provisioned by Paperclip Cloud for stack ";
+
+/**
+ * One-time repair for companies claimed by a pre-name-derivation build.
+ *
+ * Those companies carry an opaque hash prefix and a placeholder description
+ * that the operator never chose. Re-derive the prefix from the company's
+ * current name, re-key the stored issue and case identifiers onto it, and drop
+ * the placeholder. Both guards stop matching once the repair lands, so a later
+ * pass is a no-op.
+ */
+async function repairCloudTenantCompanyProvisionDefaults(
+  db: Db,
+  input: { companyId: string; stackId: string; now: Date },
+): Promise<void> {
+  try {
+    const existing = await db
+      .select({
+        name: companies.name,
+        issuePrefix: companies.issuePrefix,
+        description: companies.description,
+      })
+      .from(companies)
+      .where(eq(companies.id, input.companyId))
+      .then((rows) => rows[0]);
+    if (!existing) return;
+
+    const legacyPrefix = legacyProvisionedIssuePrefix(input.stackId);
+    const legacyDescription = existing.description?.startsWith(LEGACY_PROVISIONED_DESCRIPTION_PREFIX)
+      ? existing.description
+      : null;
+    if (existing.issuePrefix !== legacyPrefix) {
+      if (!legacyDescription) return;
+      // The prefix was already re-derived, so only the placeholder is left.
+      await db
+        .update(companies)
+        .set({ description: null, updatedAt: input.now })
+        .where(and(
+          eq(companies.id, input.companyId),
+          eq(companies.description, legacyDescription),
+        ));
+      return;
+    }
+
+    await db.transaction(async (tx) => {
+      const candidate = await pickAvailableIssuePrefix(tx, deriveIssuePrefixBase(existing.name));
+      if (!candidate || candidate === legacyPrefix) return;
+
+      const [updated] = await tx
+        .update(companies)
+        .set({
+          issuePrefix: candidate,
+          ...(legacyDescription ? { description: null } : {}),
+          updatedAt: input.now,
+        })
+        .where(and(
+          eq(companies.id, input.companyId),
+          // A user may rename the company between the read above and this
+          // repair. Match the exact observed legacy prefix so that concurrent
+          // genuine renames always win.
+          eq(companies.issuePrefix, legacyPrefix),
+        ))
+        .returning({ id: companies.id });
+      if (!updated) return;
+
+      const rekeyed = await rekeyCompanyIssueIdentifiers(tx, {
+        companyId: input.companyId,
+        fromPrefix: legacyPrefix,
+        toPrefix: candidate,
+      });
+
+      await tx.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        entityId: input.companyId,
+        details: {
+          source: "cloud_tenant_auth",
+          reason: "legacy_provision_defaults_repair",
+          previousIssuePrefix: legacyPrefix,
+          issuePrefix: candidate,
+          descriptionCleared: legacyDescription !== null,
+          issuesRekeyed: rekeyed.issues,
+          casesRekeyed: rekeyed.cases,
+        },
+      });
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId },
+      "Failed to repair legacy tenant company provisioning defaults",
+    );
+  }
 }
 
 export function requireBoard(req: Express.Request) {

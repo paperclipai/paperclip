@@ -71,21 +71,18 @@ vi.mock("@/context/CompanyContext", () => ({
         id: "company-1",
         issuePrefix: "PAP",
         name: "Acme Labs",
-        brandColor: "#3366ff",
         status: "active",
       },
       {
         id: "company-2",
         issuePrefix: "STR",
         name: "Strata",
-        brandColor: "#36a269",
         status: "active",
       },
       {
         id: "company-3",
         issuePrefix: "ANA",
         name: "Anachronist Wiki",
-        brandColor: "#a36a21",
         status: "active",
       },
     ],
@@ -93,7 +90,6 @@ vi.mock("@/context/CompanyContext", () => ({
       id: "company-1",
       issuePrefix: "PAP",
       name: "Acme Labs",
-      brandColor: "#3366ff",
       logoUrl: "/api/assets/logo-asset-1/content",
       status: "active",
     },
@@ -316,6 +312,9 @@ describe("SidebarCompanyMenu", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    // The invite shortcut waits for the health response before it shows, so
+    // resolve it here the way CloudAccessGate does in the app.
+    queryClient.setQueryData(queryKeys.health, { status: "ok" });
 
     act(() => {
       root.render(
@@ -360,6 +359,57 @@ describe("SidebarCompanyMenu", () => {
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
     expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
     expect(document.body.textContent).not.toContain("Switch organization");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the invite shortcut out of the menu until hidden settings resolve", async () => {
+    // No health data in the cache: the hidden-settings set is unknown, so the
+    // shortcut must not flash in and then disappear once the response lands.
+    const { root } = renderMenu();
+    await flushReact();
+    await flushReact();
+
+    await openMenu("Open Acme Labs organization switcher");
+
+    expect(document.body.textContent).toContain("Switch organization");
+    expect(document.body.textContent).not.toContain("Invite people");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the invite shortcut when the operator hides the invites surface", async () => {
+    const { root } = renderMenu({
+      health: { status: "ok", hiddenSettings: ["company.invites"] },
+    });
+    await flushReact();
+    await flushReact();
+
+    await openMenu("Open Acme Labs organization switcher");
+
+    expect(document.body.textContent).toContain("Switch organization");
+    expect(document.body.textContent).not.toContain("Invite people");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the invite shortcut when the operator hides the members page", async () => {
+    const { root } = renderMenu({
+      health: { status: "ok", hiddenSettings: ["company.members"] },
+    });
+    await flushReact();
+    await flushReact();
+
+    await openMenu("Open Acme Labs organization switcher");
+
+    expect(document.body.textContent).toContain("Switch organization");
+    expect(document.body.textContent).not.toContain("Invite people");
 
     act(() => {
       root.unmount();
