@@ -12929,6 +12929,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  // Fallback for when the atomic release above itself fails (a genuine write
+  // error, not a normal no-op). executeRun's caller removes this run's
+  // promise from activeRunExecutionPromises as soon as executeRun settles,
+  // whether it resolves or rejects — so task-drain quiescence is about to
+  // read "no active runs" regardless of what happens here. If the run,
+  // wakeup, and issue lock stayed at "running"/"claimed"/locked, that read
+  // would be false: the database would still hold a claim nothing is
+  // tracking anymore. Fail the run outright instead, so the database
+  // reaches the same "not active" conclusion active tracking already
+  // reached. This does not retry the "queued" release: a run that could not
+  // even release cleanly is treated as failed, not requeued.
+  async function failRunClaimedJustBeforeSuppression(runId: string, cause: unknown) {
+    const now = new Date();
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    const failed = await setRunStatus(runId, "failed", {
+      finishedAt: now,
+      error: `Failed to release the run claim before task-drain suppression: ${causeMessage}`,
+      errorCode: "claim_release_failed",
+    });
+    if (!failed) return;
+
+    await setWakeupStatus(failed.wakeupRequestId, "failed", {
+      finishedAt: now,
+      error: "Run claim release failed before task-drain suppression",
+    });
+
+    const context = parseObject(failed.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    if (issueId) {
+      await db
+        .update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+        .where(and(
+          eq(issues.id, issueId),
+          eq(issues.companyId, failed.companyId),
+          eq(issues.executionRunId, failed.id),
+        ));
+    }
+  }
+
   async function cancelQueuedRunForBlockedDependencies(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
@@ -14267,7 +14307,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function executeRun(runId: string) {
     if ((await getSchedulingSuppression()).suppressed) {
-      await releaseRunClaimedJustBeforeSuppression(runId);
+      try {
+        await releaseRunClaimedJustBeforeSuppression(runId);
+      } catch (err) {
+        logger.error(
+          { err, runId },
+          "failed to release run claimed just before task-drain suppression; failing the run instead",
+        );
+        await failRunClaimedJustBeforeSuppression(runId, err);
+      }
       return;
     }
 

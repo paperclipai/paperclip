@@ -252,7 +252,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     ["the wakeup-request update", agentWakeupRequests],
     ["the issue-lock update", issues],
   ] as const) {
-    it(`keeps the run claimed instead of partially releasing it when ${label} fails`, async () => {
+    it(`fails the run instead of leaving it claimed when ${label} fails`, async () => {
       const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
       const failingDb = withFailingTransactionalUpdate(db, failingTable);
       const heartbeat = heartbeatService(failingDb);
@@ -271,31 +271,40 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         unsubscribe();
       }
 
-      // The transaction rolled back, so the run must still read exactly as
-      // claimQueuedRun left it: "running" with its claim fields set. A
-      // non-atomic release would show "queued" here instead — the bug this
-      // test guards against.
+      // The atomic release transaction rolled back (a non-atomic release
+      // would show a partial mix of "queued" and "claimed" instead), so
+      // executeRun's fallback takes over and fails the run outright. A
+      // stuck "running" run here would keep the wakeup claimed and the
+      // issue locked forever while active tracking already reports zero
+      // active runs — the false-quiescence bug this test guards against.
       const run = await db
-        .select({ status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      expect(run?.status).toBe("running");
-      expect(run?.startedAt).not.toBeNull();
+      expect(run?.status).toBe("failed");
+      expect(run?.errorCode).toBe("claim_release_failed");
 
       const wakeup = await db
         .select({ status: agentWakeupRequests.status })
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId))
         .then((rows) => rows[0] ?? null);
-      expect(wakeup?.status).toBe("claimed");
+      expect(wakeup?.status).toBe("failed");
 
       const issue = await db
         .select({ executionRunId: issues.executionRunId })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
-      expect(issue?.executionRunId).toBe(runId);
+      expect(issue?.executionRunId).toBeNull();
+
+      // The database converged to the same "not active" conclusion active
+      // tracking already reached, so quiescence now reads true because it
+      // is genuinely true, not because the database was never checked.
+      const status = getTaskDrainStatus();
+      expect(status.activeRuns).toBe(0);
+      expect(status.quiescent).toBe(true);
     }, 20_000);
   }
 });
