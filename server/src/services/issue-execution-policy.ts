@@ -421,6 +421,10 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+export function hasIssueExecutionPolicyState(input: unknown): boolean {
+  return parseIssueExecutionState(input) !== null;
+}
+
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };

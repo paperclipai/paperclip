@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
+import { hasIssueExecutionPolicyState } from "../issue-execution-policy.js";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 import {
   agentLinkRow,
@@ -472,7 +473,7 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
-  if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  if (hasIssueExecutionPolicyState(issue.executionState)) return { kind: "skip", reason: "issue has execution policy state" };
   if (isPluginManagedIssueLifecycle(issue)) {
     return { kind: "skip", reason: "issue lifecycle is owned by a plugin" };
   }

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -309,6 +309,28 @@ function normalizeWebhookTimestampMs(rawTimestamp: string) {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type RoutineCoalescingMetadata = {
+  lastCoalescedAt: string;
+  coalescedCount: number;
+  lastCoalescedStatus: string | null;
+};
+
+function readRoutineCoalescingMetadata(value: unknown): RoutineCoalescingMetadata | null {
+  if (!isPlainRecord(value)) return null;
+  const count = value.coalescedCount;
+  const status = value.lastCoalescedStatus;
+  if (typeof value.lastCoalescedAt !== "string" || typeof count !== "number" ||
+      !Number.isInteger(count) || count < 0 ||
+      (status !== null && typeof status !== "string")) {
+    return null;
+  }
+  return {
+    lastCoalescedAt: value.lastCoalescedAt,
+    coalescedCount: count,
+    lastCoalescedStatus: status,
+  };
 }
 
 function parseBooleanVariableValue(name: string, raw: unknown) {
@@ -1482,61 +1504,16 @@ export function routineService(
     return run;
   }
 
-  function routineExecutionFingerprintCondition(dispatchFingerprint?: string | null) {
-    if (!dispatchFingerprint) return null;
-    // The "default" arm preserves coalescing against pre-migration open issues.
-    // It becomes inert once those legacy routine execution issues drain out.
-    return or(
-      eq(issues.originFingerprint, dispatchFingerprint),
-      eq(issues.originFingerprint, "default"),
-    );
-  }
-
-  async function findLiveExecutionIssue(
+  async function findOpenExecutionIssue(
     routine: typeof routines.$inferSelect,
     executor: Db = db,
-    dispatchFingerprint?: string | null,
     origin?: { kind: string; id: string | null },
   ) {
-    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
     const originKind = origin?.kind ?? "routine_execution";
     const originId = origin?.id ?? routine.id;
-    const executionBoundIssue = await executor
-      .select()
-      .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.id, issues.executionRunId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-        ),
-      )
-      .where(
-        and(
-          eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, originKind),
-          eq(issues.originId, originId),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          visibleIssueCondition(),
-          ...(fingerprintCondition ? [fingerprintCondition] : []),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
-      .limit(1)
-      .then((rows) => rows[0]?.issues ?? null);
-    if (executionBoundIssue) return executionBoundIssue;
-
     return executor
       .select()
       .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.companyId, issues.companyId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
-        ),
-      )
       .where(
         and(
           eq(issues.companyId, routine.companyId),
@@ -1544,7 +1521,6 @@ export function routineService(
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           visibleIssueCondition(),
-          ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
@@ -1690,6 +1666,75 @@ export function routineService(
       );
   }
 
+  async function recordRoutineCoalescing(input: {
+    executor: Db;
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect | null;
+    source: "schedule" | "manual" | "api" | "webhook";
+    runId: string;
+    issue: typeof issues.$inferSelect;
+    status: "coalesced" | "skipped";
+    triggeredAt: Date;
+  }) {
+    // Reuse the existing issue JSON state: the metadata-only marker is intentionally
+    // ignored by parseIssueExecutionState, so coalescing never becomes policy state.
+    const existingState = isPlainRecord(input.issue.executionState) ? input.issue.executionState : {};
+    const previous = readRoutineCoalescingMetadata(existingState.routineCoalescing);
+    const metadata: RoutineCoalescingMetadata = {
+      lastCoalescedAt: input.triggeredAt.toISOString(),
+      coalescedCount: (previous?.coalescedCount ?? 0) + 1,
+      lastCoalescedStatus: input.issue.status,
+    };
+    await input.executor
+      .update(issues)
+      .set({
+        executionState: { ...existingState, routineCoalescing: metadata },
+        updatedAt: input.triggeredAt,
+      })
+      .where(eq(issues.id, input.issue.id));
+
+    const actorId = input.source === "schedule"
+      ? "routine-scheduler"
+      : input.source === "webhook"
+        ? "routine-webhook"
+        : "routine-runner";
+    try {
+      await logActivity(input.executor, {
+        companyId: input.routine.companyId,
+        actorType: "system",
+        actorId,
+        action: "routine.run_coalesced",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          source: input.source,
+          status: input.status,
+          routineRunId: input.runId,
+          coalescedCount: metadata.coalescedCount,
+          lastCoalescedAt: metadata.lastCoalescedAt,
+        },
+      });
+    } catch (err) {
+      logger.warn({ err, routineId: input.routine.id, runId: input.runId, issueId: input.issue.id }, "failed to log routine coalescing");
+    }
+
+    if (input.issue.status === "blocked" && previous?.lastCoalescedStatus !== "blocked") {
+      try {
+        await issueSvc.addComment(
+          input.issue.id,
+          "Routine dispatch coalesced onto this blocked execution issue. The routine remains quiet until this issue is cleared.",
+          {},
+          { authorType: "system", createdAt: input.triggeredAt },
+          input.executor,
+        );
+      } catch (err) {
+        logger.warn({ err, routineId: input.routine.id, runId: input.runId, issueId: input.issue.id }, "failed to add blocked routine coalescing notice");
+      }
+    }
+  }
+
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
@@ -1753,6 +1798,9 @@ export function routineService(
       : "routine_execution";
     const issueOriginId = managedIssueTemplate?.originId ?? input.routine.id;
     const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
+    // Retain the fingerprint for the unique-index backstop and routine-run telemetry,
+    // not for coalescing identity. routineRevisionId is an input, so a content-free
+    // revision changes the backstop key; the routine row lock is the primary guard.
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
@@ -1843,12 +1891,24 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        const activeIssue = await findOpenExecutionIssue(input.routine, txDb, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          if (status === "coalesced") {
+            await recordRoutineCoalescing({
+              executor: txDb,
+              routine: input.routine,
+              trigger: input.trigger,
+              source: input.source,
+              runId: createdRun.id,
+              issue: activeIssue,
+              status,
+              triggeredAt,
+            });
+          }
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,
@@ -1910,12 +1970,24 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          const existingIssue = await findOpenExecutionIssue(input.routine, txDb, {
             kind: issueOriginKind,
             id: issueOriginId,
           });
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          if (status === "coalesced") {
+            await recordRoutineCoalescing({
+              executor: txDb,
+              routine: input.routine,
+              trigger: input.trigger,
+              source: input.source,
+              runId: createdRun.id,
+              issue: existingIssue,
+              status,
+              triggeredAt,
+            });
+          }
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,

@@ -23,6 +23,7 @@ import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
+import { hasIssueExecutionPolicyState } from "./issue-execution-policy.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
@@ -746,7 +747,7 @@ function isWatchdogReviewDisposition(issue: Pick<
 >, hasPendingReviewPath: boolean) {
   if (issue.status === "done" || issue.status === "blocked") return true;
   if (issue.status !== "in_review") return false;
-  return Boolean(issue.assigneeUserId || issue.executionState || issue.monitorNextCheckAt || hasPendingReviewPath);
+  return Boolean(issue.assigneeUserId || hasIssueExecutionPolicyState(issue.executionState) || issue.monitorNextCheckAt || hasPendingReviewPath);
 }
 
 function isUniqueConstraintConflict(error: unknown, constraintName: string) {

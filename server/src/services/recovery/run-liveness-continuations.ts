@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { RunLivenessState } from "@paperclipai/shared";
+import { hasIssueExecutionPolicyState } from "../issue-execution-policy.js";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 import { RECOVERY_REASON_KINDS } from "./origins.js";
 
@@ -119,7 +120,7 @@ export function decideRunLivenessContinuation(input: {
   if (!CONTINUATION_ACTIVE_ISSUE_STATUSES.has(issue.status)) {
     return { kind: "skip", reason: `issue status ${issue.status} is not continuable` };
   }
-  if (issue.executionState) {
+  if (hasIssueExecutionPolicyState(issue.executionState)) {
     return { kind: "skip", reason: "issue is blocked by execution policy state" };
   }
   if (!CONTINUATION_AGENT_STATUSES.has(agent.status)) {
