@@ -10902,6 +10902,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
+          | "issue_waiting_on_review"
           | "issue_paused"
           | "issue_dependencies_blocked"
           | "issue_disposition_repair_superseded";
@@ -10909,6 +10910,56 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         details: Record<string, unknown>;
       };
   type BlockedScheduledRetryGate = Extract<ScheduledRetryGate, { allowed: false }>;
+
+  function describeReviewWaitGate(input: {
+    issueId: string;
+    issueStatus: string | null;
+    assigneeUserId: string | null;
+    executionState: unknown;
+    runAgentId: string;
+    mode: "queued_run" | "scheduled_retry";
+  }): {
+    errorCode: "issue_review_participant_changed" | "issue_waiting_on_review";
+    reason: string;
+    details: Record<string, unknown>;
+  } | null {
+    if (input.issueStatus !== "in_review") return null;
+
+    const executionState = parseIssueExecutionState(input.executionState);
+    const currentParticipant = executionState?.currentParticipant ?? null;
+    if (currentParticipant?.type === "agent" && currentParticipant.agentId === input.runAgentId) {
+      return null;
+    }
+
+    if (currentParticipant) {
+      return {
+        errorCode: "issue_review_participant_changed",
+        reason:
+          input.mode === "scheduled_retry"
+            ? "Scheduled retry suppressed because the issue is waiting on another review participant"
+            : "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
+        details: {
+          issueId: input.issueId,
+          currentStageType: executionState?.currentStageType ?? null,
+          currentParticipant,
+        },
+      };
+    }
+
+    return {
+      errorCode: "issue_waiting_on_review",
+      reason:
+        input.mode === "scheduled_retry"
+          ? "Scheduled retry suppressed because the issue is parked in review without an active agent participant"
+          : "Cancelled because the issue is parked in review without an active agent participant",
+      details: {
+        issueId: input.issueId,
+        currentStageType: executionState?.currentStageType ?? null,
+        currentParticipant: null,
+        assigneeUserId: input.assigneeUserId,
+      },
+    };
+  }
 
   async function evaluateScheduledRetryGate(input: {
     run: typeof heartbeatRuns.$inferSelect;
@@ -11075,26 +11126,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "in_review") {
-      const executionState = parseIssueExecutionState(issue.executionState);
-      const currentParticipant = executionState?.currentParticipant ?? null;
-      if (currentParticipant) {
-        const participantMatches =
-          currentParticipant.type === "agent" && currentParticipant.agentId === run.agentId;
-        if (!participantMatches) {
-          return {
-            allowed: false,
-            reason: "Scheduled retry suppressed because the issue is waiting on another review participant",
-            errorCode: "issue_review_participant_changed",
-            issueId,
-            details: {
-              issueId,
-              currentStageType: executionState?.currentStageType ?? null,
-              currentParticipant,
-            },
-          };
-        }
-      }
+    const reviewWaitGate = describeReviewWaitGate({
+      issueId,
+      issueStatus: issue.status,
+      assigneeUserId: issue.assigneeUserId,
+      executionState: issue.executionState,
+      runAgentId: run.agentId,
+      mode: "scheduled_retry",
+    });
+    if (reviewWaitGate) {
+      return {
+        allowed: false,
+        issueId,
+        ...reviewWaitGate,
+      };
     }
 
     const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
@@ -12862,6 +12907,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
+          | "issue_waiting_on_review"
           | "issue_continuation_waiting_on_review";
         details: Record<string, unknown>;
       };
@@ -12876,6 +12922,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         id: issues.id,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
       })
@@ -13007,24 +13054,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "in_review") {
-      const currentParticipant = reviewExecutionState?.currentParticipant ?? null;
-      if (currentParticipant) {
-        const participantMatches =
-          currentParticipant.type === "agent" && currentParticipant.agentId === run.agentId;
-        if (!participantMatches && !wakeCommentId) {
-          return {
-            stale: true,
-            errorCode: "issue_review_participant_changed",
-            reason:
-              "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
-            details: {
-              issueId,
-              currentStageType: reviewExecutionState?.currentStageType ?? null,
-              currentParticipant,
-            },
-          };
-        }
+    if (issue.status === "in_review" && !wakeCommentId) {
+      const reviewWaitGate = describeReviewWaitGate({
+        issueId,
+        issueStatus: issue.status,
+        assigneeUserId: issue.assigneeUserId,
+        executionState: issue.executionState,
+        runAgentId: run.agentId,
+        mode: "queued_run",
+      });
+      if (reviewWaitGate) {
+        return {
+          stale: true,
+          ...reviewWaitGate,
+        };
       }
     }
 

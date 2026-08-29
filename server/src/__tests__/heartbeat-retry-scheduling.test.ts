@@ -1902,6 +1902,111 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   });
 
+  it("does not promote a provider-quota retry after the issue is parked in manual review", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date("2026-04-20T14:45:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QuotaLimitedCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      error: "You've hit your usage limit for GPT-5. Try again at 4:00 PM (UTC).",
+      errorCode: "provider_quota",
+      resultJson: {
+        errorFamily: "provider_quota",
+        providerQuotaRetryNotBefore: "2026-04-20T16:00:00.000Z",
+      },
+      finishedAt: now,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Manual review handoff",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: sourceRunId,
+      executionAgentNameKey: "quotalimitedcoder",
+      executionLockedAt: now,
+      issueNumber: 31,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-31`,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    await db.update(issues).set({
+      status: "in_review",
+      updatedAt: now,
+    }).where(eq(issues.id, issueId));
+
+    const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+    expect(promotion).toEqual({ promoted: 0, runIds: [] });
+
+    const retryRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toEqual({
+      status: "cancelled",
+      errorCode: "issue_waiting_on_review",
+    });
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
   it("does not promote a scheduled retry after the issue is cancelled", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

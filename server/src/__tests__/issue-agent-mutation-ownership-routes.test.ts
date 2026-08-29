@@ -849,50 +849,40 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("keeps visible peer comments agent-class even when authorType tries to smuggle user wake privilege", async () => {
+  it("rejects unmentioned peer comments on another agent-owned issue even when authorType tries to smuggle user wake privilege", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:read" || input.action === "issue:comment",
+      allowed: input.action === "issue:read",
       action: input.action,
-      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_explicit_grant",
-      explanation: "Allowed by the shared visible-issue write rule.",
+      reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "issue:read" ? "Allowed by test boundary default." : "Missing permission.",
     }));
 
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "I was not mentioned.", authorType: "user" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockIssueService.addComment).toHaveBeenCalledWith(
-      issueId,
-      "I was not mentioned.",
-      expect.any(Object),
-      expect.any(Object),
-    );
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ownerAgentId,
-      expect.objectContaining({
-        reason: "issue_commented",
-        requestedByActorType: "agent",
-        requestedByActorId: peerAgentId,
-      }),
-    ));
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details.code).toBe("issue_write_not_visible");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("keeps default-open peer comments on closed issues inert", async () => {
+  it("rejects default-open peer comments on closed agent-owned issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:comment" || input.action === "issue:read",
+      allowed: input.action === "issue:read",
       action: input.action,
-      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_company_agent",
-      explanation: "Allowed by the shared visible-issue write rule.",
+      reason: input.action === "issue:read" ? "allow_company_agent" : "deny_missing_grant",
+      explanation: input.action === "issue:read" ? "Allowed by standard visibility." : "Missing permission.",
     }));
 
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "Closed issue context only." });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details.code).toBe("issue_write_not_visible");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 

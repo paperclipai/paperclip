@@ -2168,7 +2168,14 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
-      if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
+      return deny({
+        action: input.action,
+        reason: "deny_missing_grant",
+        explanation:
+          input.action === "issue:comment"
+            ? "Agent cannot comment on another agent-owned issue without being the assignee, an explicitly mentioned addressee, or another route-specific collaboration grant."
+            : "Agent cannot mutate another agent-owned issue without owning the issue or reaching it through a route-specific governed handoff.",
+      });
     }
     if (
       input.action === "agent_config:update" &&

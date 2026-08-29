@@ -556,8 +556,8 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("shared default-open");
   });
 
-  it("allows standard-trust agents to comment on and update visible peer-owned issues", async () => {
-    const company = await createCompany(db, "DefaultOpenPeerWrites");
+  it("denies standard-trust agents from commenting on or mutating peer-owned issues without an explicit collaboration path", async () => {
+    const company = await createCompany(db, "PeerOwnedIssueWritesDenied");
     const actorAgent = await createAgent(db, company.id);
     const ownerAgent = await createAgent(db, company.id);
     const issue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
@@ -578,18 +578,24 @@ describeEmbeddedPostgres("authorization service", () => {
 
     for (const action of ["issue:comment", "issue:mutate"] as const) {
       await expect(authorization.decide({ actor, action, resource })).resolves.toMatchObject({
-        allowed: true,
-        reason: "allow_visible_issue_write",
+        allowed: false,
+        reason: "deny_missing_grant",
       });
     }
   });
 
-  it("keeps the responsible-user ceiling on every default-open peer write", async () => {
-    const company = await createCompany(db, "DefaultOpenPeerWriteCeiling");
+  it("keeps the responsible-user ceiling on mention-granted peer comments", async () => {
+    const company = await createCompany(db, "MentionGrantedPeerWriteCeiling");
     const actorAgent = await createAgent(db, company.id);
     const ownerAgent = await createAgent(db, company.id);
     const issue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
     const unavailableUserId = await createUser(db);
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: ownerAgent.id,
+      body: `[@Mentioned](agent://${actorAgent.id}) please respond here`,
+    });
     const actor = {
       type: "agent" as const,
       agentId: actorAgent.id,
@@ -606,13 +612,11 @@ describeEmbeddedPostgres("authorization service", () => {
     };
     const authorization = authorizationService(db);
 
-    for (const action of ["issue:comment", "issue:mutate"] as const) {
-      await expect(authorization.decide({ actor, action, resource })).resolves.toMatchObject({
-        allowed: false,
-        code: "RESPONSIBLE_USER_UNAVAILABLE",
-        reason: "deny_missing_membership",
-      });
-    }
+    await expect(authorization.decide({ actor, action: "issue:comment", resource })).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+      reason: "deny_missing_membership",
+    });
   });
 
   it("structurally keeps default-open comments inside issue visibility", async () => {
@@ -666,8 +670,8 @@ describeEmbeddedPostgres("authorization service", () => {
     }
   });
 
-  it("does not let default-open non-assignee comments mint mention grants", async () => {
-    const company = await createCompany(db, "DefaultOpenMentionNonTransitive");
+  it("does not let unauthorized non-assignee comments mint mention grants", async () => {
+    const company = await createCompany(db, "MentionNonTransitive");
     const ownerAgent = await createAgent(db, company.id);
     const commentingAgent = await createAgent(db, company.id);
     const mentionedAgent = await createAgent(db, company.id);
@@ -695,8 +699,8 @@ describeEmbeddedPostgres("authorization service", () => {
         status: issue.status,
       },
     })).resolves.toMatchObject({
-      allowed: true,
-      reason: "allow_visible_issue_write",
+      allowed: false,
+      reason: "deny_missing_grant",
     });
   });
 
