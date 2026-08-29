@@ -26,7 +26,10 @@ import {
   bootingResponse,
   bootstrapGateMode,
   buildPaperclipEnv,
+  decodeCookieValue,
+  exceedsRequestSizeLimit,
   getCookie,
+  isOriginAllowed,
   setupRequiredPage,
   isMountAlreadyInUse,
   isPaperclipRunning,
@@ -68,6 +71,12 @@ interface Env {
    * protects everything from then on.
    */
   DISABLE_BOOTSTRAP_GATE?: string;
+  /**
+   * Comma-separated extra origins permitted to send cross-origin requests.
+   * Unset means same-origin only. Requests with no Origin header (CLI, agents,
+   * health checks) are always allowed — see isOriginAllowed.
+   */
+  ALLOWED_ORIGINS?: string;
 }
 
 /**
@@ -135,7 +144,8 @@ async function enforceBootstrapGate(request: Request, env: Env, url: URL): Promi
   }
 
   const cookie = getCookie(request.headers.get("Cookie"), BOOTSTRAP_COOKIE);
-  if (cookie !== undefined && (await tokensMatch(decodeURIComponent(cookie), env.BOOTSTRAP_TOKEN!))) {
+  const decoded = cookie === undefined ? undefined : decodeCookieValue(cookie);
+  if (decoded !== undefined && (await tokensMatch(decoded, env.BOOTSTRAP_TOKEN!))) {
     return null;
   }
 
@@ -189,6 +199,15 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const sandbox = getSandbox(env.Sandbox, SANDBOX_ID);
     const url = new URL(request.url);
+
+    // Cheap rejections first, before the gate does any crypto or the sandbox
+    // is touched at all.
+    if (exceedsRequestSizeLimit(request.headers)) {
+      return new Response("Request body too large", { status: 413 });
+    }
+    if (!isOriginAllowed(request.headers.get("Origin"), url.origin, env.ALLOWED_ORIGINS)) {
+      return new Response("Origin not allowed", { status: 403 });
+    }
 
     const denied = await enforceBootstrapGate(request, env, url);
     if (denied) return denied;

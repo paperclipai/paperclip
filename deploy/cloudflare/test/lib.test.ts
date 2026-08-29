@@ -6,8 +6,12 @@ import {
   START_COMMAND,
   STORAGE_MOUNT_PATH,
   accessDeniedPage,
+  MAX_REQUEST_BYTES,
   bootstrapGateMode,
+  decodeCookieValue,
+  exceedsRequestSizeLimit,
   getCookie,
+  isOriginAllowed,
   setupRequiredPage,
   bootingPage,
   bootingResponse,
@@ -160,6 +164,39 @@ describe("bootstrap gate helpers", () => {
     expect(getCookie(null, "paperclip_bootstrap")).toBeUndefined();
     expect(getCookie("other=1", "paperclip_bootstrap")).toBeUndefined();
     expect(getCookie("xpaperclip_bootstrap=evil", "paperclip_bootstrap")).toBeUndefined();
+  });
+
+  it("treats an undecodable cookie as absent rather than throwing", () => {
+    // decodeURIComponent("%ZZ") throws URIError, and the gate runs before the
+    // Worker's try/catch — so a raw decode turned one malformed client cookie
+    // into an unhandled exception on every subsequent request from that client.
+    expect(() => decodeCookieValue("%ZZ")).not.toThrow();
+    expect(decodeCookieValue("%ZZ")).toBeUndefined();
+    expect(decodeCookieValue("%E0%A4%A")).toBeUndefined();
+    expect(decodeCookieValue("plain")).toBe("plain");
+    expect(decodeCookieValue("a%20b")).toBe("a b");
+  });
+
+  it("rejects only bodies declaring more than the cap", () => {
+    const h = (v?: string) => new Headers(v === undefined ? {} : { "Content-Length": v });
+    expect(exceedsRequestSizeLimit(h())).toBe(false);
+    expect(exceedsRequestSizeLimit(h(String(MAX_REQUEST_BYTES)))).toBe(false);
+    expect(exceedsRequestSizeLimit(h(String(MAX_REQUEST_BYTES + 1)))).toBe(true);
+    // A non-numeric Content-Length is not evidence of an oversized body.
+    expect(exceedsRequestSizeLimit(h("not-a-number"))).toBe(false);
+  });
+
+  it("allows same-origin and header-less callers, blocks other origins", () => {
+    const self = "https://paperclip.example.workers.dev";
+    // CLI, agents and health checks send no Origin at all.
+    expect(isOriginAllowed(null, self)).toBe(true);
+    expect(isOriginAllowed(self, self)).toBe(true);
+    expect(isOriginAllowed("https://evil.example", self)).toBe(false);
+    expect(isOriginAllowed("https://ok.example", self, "https://ok.example")).toBe(true);
+    expect(isOriginAllowed("https://ok.example", self, " https://a.test , https://ok.example ")).toBe(
+      true,
+    );
+    expect(isOriginAllowed("https://evil.example", self, "https://ok.example")).toBe(false);
   });
 
   it("access-denied page names the param and secret", () => {

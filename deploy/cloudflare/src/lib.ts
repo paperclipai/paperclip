@@ -91,6 +91,67 @@ export function getCookie(cookieHeader: string | null, name: string): string | u
 }
 
 /**
+ * decodeURIComponent throws URIError on a malformed escape ("%ZZ"), and the
+ * cookie is fully client-controlled. Raw `decodeURIComponent` in the gate meant
+ * one bad cookie produced an unhandled Worker exception on every request from
+ * that client until they cleared it. A cookie that cannot be decoded simply is
+ * not a valid token, so treat it as absent.
+ */
+export function decodeCookieValue(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Largest request body proxied into the sandbox, in bytes. Attachments go
+ * through this Worker, so the cap is generous — it exists to stop a single
+ * request exhausting container memory, not to police normal uploads.
+ */
+export const MAX_REQUEST_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Reject an oversized body before it reaches the container. Only Content-Length
+ * is checked: a chunked upload without one is passed through, because buffering
+ * it here to measure it would itself be the resource exhaustion this prevents.
+ */
+export function exceedsRequestSizeLimit(
+  headers: Headers,
+  limit: number = MAX_REQUEST_BYTES,
+): boolean {
+  const raw = headers.get("Content-Length");
+  if (raw === null) return false;
+  const length = Number(raw);
+  return Number.isFinite(length) && length > limit;
+}
+
+/**
+ * Origin allowlist for state-changing cross-origin requests. Empty or unset
+ * means same-origin-only, which is the safe default; the deployment is a single
+ * origin, so no browser client legitimately posts from anywhere else.
+ *
+ * Requests with no Origin header are allowed: non-browser clients (the CLI,
+ * agents, health checks) never send one, and the bootstrap gate plus
+ * Paperclip's own auth are what actually authenticate them.
+ */
+export function isOriginAllowed(
+  origin: string | null,
+  selfOrigin: string,
+  allowlist?: string,
+): boolean {
+  if (origin === null) return true;
+  if (origin === selfOrigin) return true;
+  if (!allowlist) return false;
+  return allowlist
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .includes(origin);
+}
+
+/**
  * Access-gate decision, fail-closed by default:
  * - "open"  — operator explicitly disabled the gate (post-claim state)
  * - "setup" — no usable token configured; serve the setup page, proxy nothing
@@ -118,7 +179,7 @@ export function setupRequiredPage(): string {
   :root{color-scheme:light dark}
   body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
        font-family:ui-sans-serif,system-ui,sans-serif;background:#0d1017;color:#e6e6e6}
-  main{max-width:36rem;padding:2rem}
+  main{width:min(100%,60ch);padding:clamp(1rem,4vw,2rem)}
   h1{font-size:1.1rem;font-weight:600;margin:0 0 .5rem}
   p{margin:.35rem 0;color:#9aa4bf;font-size:.9rem}
   code{color:#7dd3fc}
@@ -152,7 +213,7 @@ export function accessDeniedPage(): string {
   :root{color-scheme:light dark}
   body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
        font-family:ui-sans-serif,system-ui,sans-serif;background:#0d1017;color:#e6e6e6}
-  main{max-width:34rem;padding:2rem}
+  main{width:min(100%,60ch);padding:clamp(1rem,4vw,2rem)}
   h1{font-size:1.1rem;font-weight:600;margin:0 0 .5rem}
   p{margin:.35rem 0;color:#9aa4bf;font-size:.9rem}
   code{color:#7dd3fc}
