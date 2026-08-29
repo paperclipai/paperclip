@@ -275,6 +275,23 @@ fn settlement_preserves_call_ids_for_the_durable_run() {
         .unwrap();
     bridge.settle_turn().unwrap();
 
+    let replay = ToolResult {
+        call_id: "call-1".into(),
+        operation_id: "get_task_context".into(),
+        result: json!({"ok": true}),
+        is_error: false,
+    };
+    assert_eq!(
+        bridge.apply_result(replay.clone()).unwrap(),
+        json!({"ok": true})
+    );
+    assert!(bridge
+        .apply_result(ToolResult {
+            result: json!({"ok": false}),
+            ..replay
+        })
+        .is_err());
+
     assert!(bridge
         .begin_call("call-1".into(), "get_task_context".into(), json!({}))
         .is_err());
@@ -285,9 +302,158 @@ fn settlement_preserves_call_ids_for_the_durable_run() {
     let encoded = serde_json::to_string(&bridge).unwrap();
     let mut recovered: ProviderToolBridge = serde_json::from_str(&encoded).unwrap();
     recovered.attach_existing_run().unwrap();
+    assert_eq!(
+        recovered
+            .apply_result(ToolResult {
+                call_id: "call-1".into(),
+                operation_id: "get_task_context".into(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap(),
+        json!({"ok": true})
+    );
     assert!(recovered
         .begin_call("call-1".into(), "get_task_context".into(), json!({}))
         .is_err());
+}
+
+#[test]
+fn reserves_identity_capacity_before_accepting_a_call() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+
+    let mut encoded = serde_json::to_value(&bridge).unwrap();
+    encoded["settledCallIds"] = serde_json::Value::Array(
+        (0..65_535)
+            .map(|index| serde_json::Value::String(format!("settled-{index}")))
+            .collect(),
+    );
+    let mut bridge: ProviderToolBridge = serde_json::from_value(encoded).unwrap();
+    bridge.attach_existing_run().unwrap();
+
+    bridge
+        .begin_call("last-call".into(), "get_task_context".into(), json!({}))
+        .unwrap();
+    bridge
+        .apply_result(ToolResult {
+            call_id: "last-call".into(),
+            operation_id: "get_task_context".into(),
+            result: json!({"ok": true}),
+            is_error: false,
+        })
+        .unwrap();
+    bridge.settle_turn().unwrap();
+
+    assert!(bridge
+        .begin_call("overflow".into(), "get_task_context".into(), json!({}))
+        .is_err());
+    assert!(bridge.settle_turn().is_ok());
+}
+
+#[test]
+fn reserves_settled_result_bytes_before_accepting_a_call() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    let large_result = json!({"value": "x".repeat(900 * 1024)});
+    let mut completed = 0;
+
+    for index in 0..20 {
+        let call_id = format!("large-call-{index}");
+        if bridge
+            .begin_call(call_id.clone(), "get_task_context".into(), json!({}))
+            .is_err()
+        {
+            break;
+        }
+        bridge
+            .apply_result(ToolResult {
+                call_id,
+                operation_id: "get_task_context".into(),
+                result: large_result.clone(),
+                is_error: false,
+            })
+            .expect("an admitted call has reserved its maximum durable result");
+        completed += 1;
+    }
+
+    assert!((2..20).contains(&completed));
+    assert!(bridge
+        .begin_call(
+            "over-byte-limit".into(),
+            "get_task_context".into(),
+            json!({})
+        )
+        .is_err());
+    bridge
+        .settle_turn()
+        .expect("settlement cannot strand results whose bytes were reserved at admission");
+    assert_eq!(
+        bridge
+            .apply_result(ToolResult {
+                call_id: "large-call-0".into(),
+                operation_id: "get_task_context".into(),
+                result: large_result,
+                is_error: false,
+            })
+            .unwrap(),
+        json!({"value": "x".repeat(900 * 1024)})
+    );
+}
+
+#[test]
+fn recovery_rejects_an_oversized_settled_result_envelope() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    let mut encoded = serde_json::to_value(&bridge).unwrap();
+    let settled = encoded["settledResults"].as_object_mut().unwrap();
+    for index in 0..10 {
+        let call_id = format!("recovered-large-{index}");
+        settled.insert(
+            call_id.clone(),
+            json!({
+                "callId": call_id,
+                "operationId": "get_task_context",
+                "result": {"value": "x".repeat(900 * 1024)},
+                "isError": false
+            }),
+        );
+    }
+
+    let error = serde_json::from_value::<ProviderToolBridge>(encoded)
+        .expect_err("decoding must stop a settled result envelope above 8 MiB");
+    assert!(error.to_string().contains("durable byte limit"));
+}
+
+#[test]
+fn recovery_rejects_state_without_room_for_a_pending_result() {
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tools("computed")).unwrap();
+    let mut encoded = serde_json::to_value(&bridge).unwrap();
+    let settled = encoded["settledResults"].as_object_mut().unwrap();
+    for index in 0..8 {
+        let call_id = format!("recovered-large-{index}");
+        settled.insert(
+            call_id.clone(),
+            json!({
+                "callId": call_id,
+                "operationId": "get_task_context",
+                "result": {"value": "x".repeat(900 * 1024)},
+                "isError": false
+            }),
+        );
+    }
+    encoded["pending"]["pending-call"] = json!({
+        "callId": "pending-call",
+        "operationId": "get_task_context",
+        "input": {}
+    });
+
+    let mut recovered: ProviderToolBridge = serde_json::from_value(encoded).unwrap();
+    let error = recovered
+        .attach_existing_run()
+        .expect_err("recovery must reserve a maximum result for every pending call");
+    assert!(error.to_string().contains("durable byte limit"));
 }
 
 #[test]

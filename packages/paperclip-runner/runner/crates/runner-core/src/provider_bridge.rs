@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -14,6 +15,13 @@ const MAX_DESCRIPTION_BYTES: usize = 16 * 1024;
 const MAX_SCHEMA_BYTES: usize = 1024 * 1024;
 const MAX_TOOL_SET_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOOL_VALUE_BYTES: usize = 1024 * 1024;
+// Settled results are authoritative replay receipts and live for the durable
+// run. Bound their complete encoded map, while reserving enough room for every
+// active call to later produce a maximum-sized result. The 1 KiB allowance
+// covers the map key, bounded call/operation identities, JSON field names, and
+// escaping around a 1 MiB result value.
+const MAX_SETTLED_RESULT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SETTLED_RESULT_ENTRY_BYTES: usize = MAX_TOOL_VALUE_BYTES + 1024;
 const MAX_RETAINED_CALLS: usize = 4_096;
 const MAX_SETTLED_CALL_IDS: usize = 65_536;
 
@@ -60,7 +68,18 @@ pub struct ProviderToolBridge {
     authorized: BTreeMap<String, AuthorizedTool>,
     catalog_digest: Option<String>,
     pending: BTreeMap<String, PendingToolCall>,
+    #[serde(deserialize_with = "deserialize_retained_results")]
     completed: BTreeMap<String, ToolResult>,
+    #[serde(default, deserialize_with = "deserialize_retained_results")]
+    settled_results: BTreeMap<String, ToolResult>,
+    // Derived from completed + settled results. It is intentionally omitted
+    // from durable JSON and recomputed by attach_existing_run so old state and
+    // tampered counters cannot bypass the byte envelope.
+    #[serde(skip)]
+    retained_result_bytes: usize,
+    // Compatibility tombstones for state written before settled results were
+    // retained. They still fail closed on call-id reuse, but cannot replay a
+    // value that the older state format discarded.
     #[serde(default)]
     settled_call_ids: BTreeSet<String>,
 }
@@ -95,6 +114,8 @@ impl ProviderToolBridge {
         }
         self.prepare_internal(tool_set, true)?;
         self.completed.clear();
+        self.settled_results.clear();
+        self.retained_result_bytes = 0;
         self.settled_call_ids.clear();
         Ok(())
     }
@@ -104,19 +125,55 @@ impl ProviderToolBridge {
         // preserve them so an interrupted dispatcher can resume or replay the
         // authoritative result. `attach_run` remains the boundary that rejects
         // carrying pending calls into a different run.
-        if self.settled_call_ids.len() > MAX_SETTLED_CALL_IDS
+        if self
+            .settled_call_ids
+            .len()
+            .checked_add(self.settled_results.len())
+            .and_then(|total| total.checked_add(self.pending.len()))
+            .and_then(|total| total.checked_add(self.completed.len()))
+            .is_none_or(|total| total > MAX_SETTLED_CALL_IDS)
+            || self.pending.len().saturating_add(self.completed.len()) > MAX_RETAINED_CALLS
             || self
                 .settled_call_ids
                 .iter()
                 .any(|call_id| !is_stable_call_id(call_id))
+            || self.settled_results.iter().any(|(call_id, result)| {
+                !is_stable_call_id(call_id)
+                    || call_id != &result.call_id
+                    || self.settled_call_ids.contains(call_id)
+                    || validate_retained_result(result).is_err()
+            })
             || self.settled_call_ids.iter().any(|call_id| {
                 self.pending.contains_key(call_id) || self.completed.contains_key(call_id)
+            })
+            || self.settled_results.keys().any(|call_id| {
+                self.pending.contains_key(call_id) || self.completed.contains_key(call_id)
+            })
+            || self.pending.iter().any(|(call_id, call)| {
+                !is_stable_call_id(call_id)
+                    || call_id != &call.call_id
+                    || self.completed.contains_key(call_id)
+                    || self.settled_call_ids.contains(call_id)
+                    || self.settled_results.contains_key(call_id)
+            })
+            || self.completed.iter().any(|(call_id, result)| {
+                !is_stable_call_id(call_id)
+                    || call_id != &result.call_id
+                    || self.pending.contains_key(call_id)
+                    || validate_retained_result(result).is_err()
             })
         {
             return Err(ProviderBridgeError::invalid(
                 "recovered settled provider tool call identities are invalid",
             ));
         }
+        self.retained_result_bytes =
+            retained_result_bytes(self.settled_results.iter().chain(self.completed.iter()))?;
+        self.ensure_settled_result_capacity(0).map_err(|_| {
+            ProviderBridgeError::invalid(
+                "recovered provider tool results exceed the durable byte limit",
+            )
+        })?;
         Ok(())
     }
 
@@ -262,7 +319,10 @@ impl ProviderToolBridge {
                 ))
             };
         }
-        if self.completed.contains_key(&call_id) || self.settled_call_ids.contains(&call_id) {
+        if self.completed.contains_key(&call_id)
+            || self.settled_results.contains_key(&call_id)
+            || self.settled_call_ids.contains(&call_id)
+        {
             return Err(ProviderBridgeError::invalid(
                 "provider reused a completed tool call id",
             ));
@@ -272,6 +332,26 @@ impl ProviderToolBridge {
                 "provider tool receipt limit reached for the active turn",
             ));
         }
+        // Reserve durable identity space before accepting work. Settlement can
+        // then never fail merely because earlier turns filled the ledger and
+        // leave completed receipts stranded in the active-turn budget.
+        if self
+            .settled_call_ids
+            .len()
+            .saturating_add(self.settled_results.len())
+            .saturating_add(self.pending.len())
+            .saturating_add(self.completed.len())
+            >= MAX_SETTLED_CALL_IDS
+        {
+            return Err(ProviderBridgeError::invalid(
+                "durable provider tool call identity limit reached",
+            ));
+        }
+        // Reserve the worst-case encoded result before accepting the call.
+        // This makes apply_result and settlement infallible with respect to
+        // durable result capacity: accepted work can always retain its exact
+        // authoritative replay value.
+        self.ensure_settled_result_capacity(1)?;
         self.pending.insert(call_id, call.clone());
         Ok(call)
     }
@@ -295,6 +375,20 @@ impl ProviderToolBridge {
                     "conflicting duplicate tool result",
                 ))
             };
+        }
+        if let Some(existing) = self.settled_results.get(&result.call_id) {
+            return if existing == &result {
+                Ok(existing.result.clone())
+            } else {
+                Err(ProviderBridgeError::invalid(
+                    "conflicting duplicate settled tool result",
+                ))
+            };
+        }
+        if self.settled_call_ids.contains(&result.call_id) {
+            return Err(ProviderBridgeError::invalid(
+                "legacy settled tool result cannot be replayed",
+            ));
         }
         let pending = self.pending.get(&result.call_id).ok_or_else(|| {
             ProviderBridgeError::invalid("tool result does not match a pending provider call")
@@ -328,7 +422,27 @@ impl ProviderToolBridge {
                 }
             }
         }
+        let result_bytes = retained_result_entry_bytes(&result.call_id, &result)?;
+        let next_retained_bytes = self
+            .retained_result_bytes
+            .checked_add(result_bytes)
+            .ok_or_else(|| ProviderBridgeError::invalid("durable provider result size overflow"))?;
+        let remaining_pending_reserve = self
+            .pending
+            .len()
+            .saturating_sub(1)
+            .checked_mul(MAX_SETTLED_RESULT_ENTRY_BYTES)
+            .ok_or_else(|| ProviderBridgeError::invalid("durable provider result size overflow"))?;
+        if next_retained_bytes
+            .checked_add(remaining_pending_reserve)
+            .is_none_or(|bytes| bytes > MAX_SETTLED_RESULT_BYTES)
+        {
+            return Err(ProviderBridgeError::invalid(
+                "durable provider tool result byte limit reached",
+            ));
+        }
         self.pending.remove(&result.call_id);
+        self.retained_result_bytes = next_retained_bytes;
         self.completed
             .insert(result.call_id.clone(), result.clone());
         Ok(result.result)
@@ -340,27 +454,148 @@ impl ProviderToolBridge {
                 "cannot settle provider tool receipts while calls are pending",
             ));
         }
-        if self
-            .settled_call_ids
-            .len()
-            .checked_add(self.completed.len())
-            .is_none_or(|total| total > MAX_SETTLED_CALL_IDS)
-        {
-            return Err(ProviderBridgeError::invalid(
-                "durable provider tool call identity limit reached",
-            ));
-        }
-        // Exact results are turn-scoped, but their IDs remain durable for the
-        // lifetime of the run so a provider retry cannot dispatch the same
-        // semantic action again after a turn boundary or recovery.
-        self.settled_call_ids.extend(self.completed.keys().cloned());
-        self.completed.clear();
+        self.retained_result_bytes =
+            retained_result_bytes(self.settled_results.iter().chain(self.completed.iter()))?;
+        self.ensure_settled_result_capacity(0)?;
+        // The identity capacity was reserved in `begin_call`, so moving the
+        // authoritative receipts cannot fail a valid admitted turn. The check
+        // above rejects only recovered state that bypassed attach validation.
+        self.settled_results.append(&mut self.completed);
         Ok(())
     }
 
     pub fn pending_calls(&self) -> impl Iterator<Item = &PendingToolCall> {
         self.pending.values()
     }
+
+    fn ensure_settled_result_capacity(
+        &self,
+        additional_pending: usize,
+    ) -> Result<(), ProviderBridgeError> {
+        let pending_count = self
+            .pending
+            .len()
+            .checked_add(additional_pending)
+            .ok_or_else(|| {
+                ProviderBridgeError::invalid("durable provider result count overflow")
+            })?;
+        let pending_reserve = pending_count
+            .checked_mul(MAX_SETTLED_RESULT_ENTRY_BYTES)
+            .ok_or_else(|| ProviderBridgeError::invalid("durable provider result size overflow"))?;
+        if self
+            .retained_result_bytes
+            .checked_add(pending_reserve)
+            .is_none_or(|bytes| bytes > MAX_SETTLED_RESULT_BYTES)
+        {
+            return Err(ProviderBridgeError::invalid(
+                "durable provider tool result byte limit reached",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_retained_result(result: &ToolResult) -> Result<(), ProviderBridgeError> {
+    if !is_stable_call_id(&result.call_id) {
+        return Err(ProviderBridgeError::invalid(
+            "retained tool result call id is invalid",
+        ));
+    }
+    validate_operation_id(&result.operation_id)?;
+    bounded_json(
+        &result.result,
+        MAX_TOOL_VALUE_BYTES,
+        "retained provider tool result",
+    )
+}
+
+fn retained_result_entry_bytes(
+    call_id: &str,
+    result: &ToolResult,
+) -> Result<usize, ProviderBridgeError> {
+    // A two-item tuple has the same delimiter cost as a one-entry JSON map.
+    // Summing tuples therefore equals one entry exactly and conservatively
+    // overcounts a multi-entry map by one byte per additional receipt.
+    encoded_json_bytes(&(call_id, result), "retained provider tool result")
+}
+
+fn retained_result_bytes<'a>(
+    results: impl IntoIterator<Item = (&'a String, &'a ToolResult)>,
+) -> Result<usize, ProviderBridgeError> {
+    results
+        .into_iter()
+        .try_fold(0usize, |total, (call_id, result)| {
+            total
+                .checked_add(retained_result_entry_bytes(call_id, result)?)
+                .ok_or_else(|| {
+                    ProviderBridgeError::invalid("durable provider result size overflow")
+                })
+        })
+}
+
+fn deserialize_retained_results<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, ToolResult>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct RetainedResultsVisitor;
+
+    impl<'de> Visitor<'de> for RetainedResultsVisitor {
+        type Value = BTreeMap<String, ToolResult>;
+
+        fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a bounded map of retained provider tool results")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            if map
+                .size_hint()
+                .is_some_and(|entries| entries > MAX_SETTLED_CALL_IDS)
+            {
+                return Err(de::Error::custom(
+                    "retained provider tool result count exceeds the durable limit",
+                ));
+            }
+            let mut results = BTreeMap::new();
+            let mut retained_bytes = 0usize;
+            while let Some((call_id, result)) = map.next_entry::<String, ToolResult>()? {
+                if results.len() >= MAX_SETTLED_CALL_IDS {
+                    return Err(de::Error::custom(
+                        "retained provider tool result count exceeds the durable limit",
+                    ));
+                }
+                validate_retained_result(&result).map_err(de::Error::custom)?;
+                if call_id != result.call_id {
+                    return Err(de::Error::custom(
+                        "retained provider tool result identity is inconsistent",
+                    ));
+                }
+                retained_bytes = retained_bytes
+                    .checked_add(
+                        retained_result_entry_bytes(&call_id, &result)
+                            .map_err(de::Error::custom)?,
+                    )
+                    .ok_or_else(|| de::Error::custom("durable provider result size overflow"))?;
+                if retained_bytes > MAX_SETTLED_RESULT_BYTES {
+                    return Err(de::Error::custom(
+                        "retained provider tool results exceed the durable byte limit",
+                    ));
+                }
+                if results.insert(call_id, result).is_some() {
+                    return Err(de::Error::custom(
+                        "retained provider tool result identities must be unique",
+                    ));
+                }
+            }
+            Ok(results)
+        }
+    }
+
+    deserializer.deserialize_map(RetainedResultsVisitor)
 }
 
 fn is_stable_call_id(value: &str) -> bool {
@@ -473,12 +708,42 @@ fn bounded_json(
     max_bytes: usize,
     label: &str,
 ) -> Result<(), ProviderBridgeError> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|_| ProviderBridgeError::invalid(format!("{label} is not serializable")))?;
-    if bytes.len() > max_bytes {
+    let bytes = encoded_json_bytes(value, label)?;
+    if bytes > max_bytes {
         return Err(ProviderBridgeError::invalid(format!(
             "{label} exceeds the {max_bytes} byte limit"
         )));
     }
     Ok(())
+}
+
+fn encoded_json_bytes(value: &impl Serialize, label: &str) -> Result<usize, ProviderBridgeError> {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|_| ProviderBridgeError::invalid(format!("{label} is not serializable")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worst_case_result_identity_overhead_fits_the_admission_reserve() {
+        let call_id = "\\".repeat(160);
+        let result = ToolResult {
+            call_id: call_id.clone(),
+            operation_id: "x".repeat(160),
+            result: Value::String("x".repeat(MAX_TOOL_VALUE_BYTES - 2)),
+            is_error: false,
+        };
+
+        assert_eq!(
+            encoded_json_bytes(&result.result, "test result").unwrap(),
+            MAX_TOOL_VALUE_BYTES
+        );
+        assert!(
+            retained_result_entry_bytes(&call_id, &result).unwrap()
+                <= MAX_SETTLED_RESULT_ENTRY_BYTES
+        );
+    }
 }
