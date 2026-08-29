@@ -8,7 +8,9 @@ afterEach(() => {
 
 describe("http adapter execute", () => {
   it("delivers the complete runtime connection descriptor and shared guidance", async () => {
+    const onDispatch = vi.fn();
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(onDispatch).toHaveBeenCalledOnce();
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(body.paperclipRuntimeTools).toEqual({
         version: 1,
@@ -56,9 +58,11 @@ describe("http adapter execute", () => {
         tools: ["connections_search", "connection_request"],
       },
       onLog: async () => {},
+      onDispatch,
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
+    expect(onDispatch).toHaveBeenCalledOnce();
   });
 
   it("reports configured request timeout as timed_out", async () => {

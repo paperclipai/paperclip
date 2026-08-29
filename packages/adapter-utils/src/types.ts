@@ -205,6 +205,13 @@ export interface AdapterExecutionContext {
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
+  /**
+   * Reports that execution has crossed the adapter's dispatch boundary.
+   * Process-backed adapters normally report this through `onSpawn`; adapters
+   * without a local process should call this immediately before starting the
+   * remote operation.
+   */
+  onDispatch?: () => void;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
   /**

@@ -611,7 +611,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     },
   );
 
-  it("holds the final continuation gate through asynchronous adapter preparation", async () => {
+  it("releases the final continuation gate at non-process adapter dispatch", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -662,7 +662,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         ordering.push("parked");
       });
       // Give the concurrent update a chance to reach the row lock. It must
-      // remain blocked until the adapter reports an actual process spawn.
+      // remain blocked until the adapter reports actual remote dispatch.
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(ordering).toEqual(["validated"]);
     };
@@ -672,11 +672,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(ordering).toEqual(["validated", "preparing"]);
       ordering.push("dispatched");
-      await context.onSpawn?.({
-        pid: 12345,
-        processGroupId: 12345,
-        startedAt: new Date().toISOString(),
-      });
+      context.onDispatch?.();
+      await waitForCondition(async () => ordering.includes("parked"));
+      expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked"]);
+      ordering.push("settled");
       return {
         exitCode: 0,
         signal: null,
@@ -705,7 +704,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("backlog");
-    expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked"]);
+    expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked", "settled"]);
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 

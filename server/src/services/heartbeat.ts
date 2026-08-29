@@ -16897,6 +16897,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             onRuntimeProgress: async (progress) => {
               await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
             },
+            onDispatch: markDispatchStarted,
             onSpawn: async (meta) => {
               markDispatchStarted();
               await onSpawn(meta);
