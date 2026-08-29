@@ -551,6 +551,113 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(await db.select().from(toolActionRequests)).toHaveLength(2);
   });
 
+  it("does not let a stale legacy consumer overwrite the winning approved execution", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+
+    let observeLegacyClaim!: () => void;
+    const legacyClaimObserved = new Promise<void>((resolve) => {
+      observeLegacyClaim = resolve;
+    });
+    let releaseLegacyClaim!: () => void;
+    const legacyClaimBlocked = new Promise<void>((resolve) => {
+      releaseLegacyClaim = resolve;
+    });
+    const gateway = createTestToolGatewayService(db, {
+      beforeLegacyApprovedActionClaim: async () => {
+        observeLegacyClaim();
+        await legacyClaimBlocked;
+      },
+    });
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const parameters = { noteId: "n1", body: "legacy race" };
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const [invocation] = await db.select().from(toolInvocations);
+    const currentSignature = actionRequest.signedArguments!;
+    const legacySignature = signToolArguments({
+      invocationId: invocation.id,
+      toolName: invocation.toolName,
+      canonicalArguments: canonicalToolArguments(parameters),
+      signingSecret: testToolActionSigningSecret,
+    });
+    await db
+      .update(toolActionRequests)
+      .set({ signedArguments: legacySignature })
+      .where(eq(toolActionRequests.id, actionRequest.id));
+    await gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    });
+
+    const staleAttempt = gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      approvedActionRequestId: actionRequest.id,
+      parameters,
+    }).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    await legacyClaimObserved;
+
+    // Simulate a concurrent repair that restores the current signed envelope
+    // after the stale consumer has read the legacy envelope but before it owns
+    // the approved -> executing claim.
+    await db
+      .update(toolActionRequests)
+      .set({ signedArguments: currentSignature, updatedAt: new Date() })
+      .where(and(
+        eq(toolActionRequests.id, actionRequest.id),
+        eq(toolActionRequests.status, "approved"),
+      ));
+    const winner = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      approvedActionRequestId: actionRequest.id,
+      parameters,
+    });
+    expect(winner.status).toBe("completed");
+
+    releaseLegacyClaim();
+    const stale = await staleAttempt;
+    expect(stale).toMatchObject({
+      status: "rejected",
+      error: { reasonCode: "action_already_consumed" },
+    });
+
+    const [settledRequest] = await db
+      .select()
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.id, actionRequest.id));
+    const [settledInvocation] = await db
+      .select()
+      .from(toolInvocations)
+      .where(eq(toolInvocations.id, invocation.id));
+    expect(settledRequest.status).toBe("executed");
+    expect(settledInvocation).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+      errorMessage: null,
+    });
+    expect(settledInvocation.idempotencyKey).not.toBeNull();
+  });
+
   it("does not leave unsigned action requests pending when signing is unavailable", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "");
     const { company, agent, run } = await createRunFixture(db);
