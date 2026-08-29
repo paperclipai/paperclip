@@ -1,0 +1,136 @@
+diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
+index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..2ed4b0ba1bd6d3abf8bbafe0a3cd5ea1f093f90b 100644
+--- a/dist/live-checkpoint-BSIrfgVo.js
++++ b/dist/live-checkpoint-BSIrfgVo.js
+@@ -3135,8 +3135,8 @@ function promotePrefixedAuthEnvironment(env) {
+ 	}
+ 	return protectedKeys;
+ }
+-function buildAgentEnvironment(authCredentials, sessionEnv) {
+-	const env = { ...process.env };
++function buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment) {
++	const env = spawnEnvironment ? { ...spawnEnvironment } : { ...process.env };
+ 	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
+ 	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
+ 		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
+@@ -3178,10 +3178,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+ 	const configCredentials = authCredentials ?? {};
+ 	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
+ }
+-function buildAgentSpawnOptions(cwd, authCredentials, sessionEnv) {
++function buildAgentSpawnOptions(cwd, authCredentials, sessionEnv, spawnEnvironment) {
+ 	return {
+ 		cwd,
+-		env: buildAgentEnvironment(authCredentials, sessionEnv),
++		env: buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment),
+ 		stdio: [
+ 			"pipe",
+ 			"pipe",
+@@ -4253,7 +4253,12 @@ var AcpClient = class {
+ 			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
+ 			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
+ 			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
+-			spawnOptions: buildAgentSpawnOptions(this.options.cwd, this.options.authCredentials, this.options.sessionOptions?.env)
++			spawnOptions: buildAgentSpawnOptions(
++				this.options.spawnCwd ?? this.options.cwd,
++				this.options.authCredentials,
++				this.options.sessionOptions?.env,
++				this.options.spawnEnvironment?.()
++			)
+ 		};
+ 	}
+ 	logAgentLaunch(plan) {
+@@ -4280,10 +4285,17 @@ var AcpClient = class {
+ 	}
+ 	async spawnAgentProcess(plan) {
+ 		const spawnCommand = buildAgentSpawnCommand(plan.spawnCommand, plan.args, process.platform, plan.spawnOptions.env);
+-		const spawnedChild = spawn(spawnCommand.command, spawnCommand.args, {
++		const options = {
+ 			...plan.spawnOptions,
+ 			windowsVerbatimArguments: spawnCommand.windowsVerbatimArguments
+-		});
++		};
++		const spawnedChild = this.options.spawnAgent
++			? this.options.spawnAgent({
++				command: spawnCommand.command,
++				args: spawnCommand.args,
++				options
++			})
++			: spawn(spawnCommand.command, spawnCommand.args, options);
+ 		try {
+ 			await waitForSpawn$1(spawnedChild);
+ 		} catch (error) {
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index e8102acb03c4c38830ad5ec22f356125eb0423b7..ac835a64ed36edfedf47f10757b11258fe77de51 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -1,5 +1,6 @@
+ import { _ as SessionRecord, a as AcpElicitationHandler, c as AcpElicitationResponse, f as McpServer$1, h as PermissionPolicy, i as AcpElicitationContext, l as AcpPermissionDecision, m as PermissionMode, n as SystemPromptOption, o as AcpElicitationMode, p as NonInteractivePermissionPolicy, s as AcpElicitationRequest, t as SessionAgentOptions, u as AcpPermissionRequest } from "./session-options-DwRDODlr.js";
+ import { a as RequestedModelUnsupportedErrorCode, i as RequestedModelUnsupportedError, n as REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, o as RequestedModelUnsupportedReason, r as REQUESTED_MODEL_UNSUPPORTED_REASONS, s as isRequestedModelUnsupportedError, t as AcpClient } from "./client-CxNllqui.js";
++import { ChildProcess, SpawnOptionsWithoutStdio } from "node:child_process";
+ import fs from "node:fs";
+ import { ToolCallContent, ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk";
+ //#region src/agent-registry.d.ts
+@@ -313,6 +314,16 @@ type AcpRuntimeOptions = {
+   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
+     signal: AbortSignal;
+   }) => Promise<AcpPermissionDecision | undefined>;
++  /** Ephemeral allowlisted environment evaluated immediately before child spawn. */
++  spawnEnvironment?: () => Record<string, string>;
++  /** Host-only spawn cwd; does not change the cwd advertised in session/new. */
++  spawnCwd?: string;
++  /** Host-owned verified executable launch. */
++  spawnAgent?: (input: {
++    command: string;
++    args: readonly string[];
++    options: SpawnOptionsWithoutStdio;
++  }) => ChildProcess;
+ };
+ type AcpFileSessionStoreOptions = {
+   stateDir: string;
+diff --git a/dist/runtime.js b/dist/runtime.js
+index a1f4a70a003792c6eacf68b6b038f37bfec1db53..c11bf5c877779d8489371b5dcac69b4f64bd0069 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -812,7 +812,13 @@ var AcpRuntimeManager = class {
+ 		this.deps = deps;
+ 	}
+ 	createClient(options) {
+-		return this.deps.clientFactory?.(options) ?? new AcpClient(options);
++		const patchedOptions = {
++			...options,
++			spawnCwd: this.options.spawnCwd,
++			spawnEnvironment: this.options.spawnEnvironment,
++			spawnAgent: this.options.spawnAgent
++		};
++		return this.deps.clientFactory?.(patchedOptions) ?? new AcpClient(patchedOptions);
+ 	}
+ 	createSessionOwner(input) {
+ 		const owner = {
+diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
+index c3da1645235bbea22de3f8484149051cd7dca56b..77f883542e7055370026884e6ce3cf80ba8d5767 100644
+--- a/dist/session-options-DwRDODlr.d.ts
++++ b/dist/session-options-DwRDODlr.d.ts
+@@ -1,4 +1,5 @@
+ import { AgentCapabilities, AnyMessage, ContentBlock, CreateElicitationRequest, ElicitationContentValue, JsonRpcId, McpServer, McpServer as McpServer$1, RequestPermissionRequest, SessionConfigOption, SessionNotification, SetSessionConfigOptionResponse, ToolKind } from "@agentclientprotocol/sdk";
++import { ChildProcess, SpawnOptionsWithoutStdio } from "node:child_process";
+ //#region src/prompt-content.d.ts
+ type PromptInput = ContentBlock[];
+ //#endregion
+@@ -116,6 +117,16 @@ type AcpClientOptions = {
+     };
+     env?: Record<string, string>;
+   };
++  /** Ephemeral child environment factory; its return value is never persisted. */
++  spawnEnvironment?: () => Record<string, string>;
++  /** Host-only child cwd, separate from the cwd advertised to ACP. */
++  spawnCwd?: string;
++  /** Host-owned verified executable launch. */
++  spawnAgent?: (input: {
++    command: string;
++    args: readonly string[];
++    options: SpawnOptionsWithoutStdio;
++  }) => ChildProcess;
+   onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
+   onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
+   onSessionUpdate?: (notification: SessionNotification) => void;

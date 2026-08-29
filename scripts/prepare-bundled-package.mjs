@@ -48,18 +48,76 @@ export function createBundledInstallManifest(publishManifest, bundledDependencie
 
 function patchedDependencyPackageName(specifier) {
   const versionSeparator = specifier.lastIndexOf("@");
-  return versionSeparator > 0 ? specifier.slice(0, versionSeparator) : specifier;
+  const packageNameEnd = specifier.startsWith("@") ? specifier.indexOf("/") : 0;
+  if (packageNameEnd < 0) return specifier;
+  return versionSeparator > packageNameEnd ? specifier.slice(0, versionSeparator) : specifier;
+}
+
+export function selectBundledDependencyPatches(
+  destinationDir,
+  bundledDependencies,
+  patchedDependencies,
+) {
+  const patchesByPackageName = new Map();
+  for (const [specifier, patchPath] of Object.entries(patchedDependencies)) {
+    const packageName = patchedDependencyPackageName(specifier);
+    const packagePatches = patchesByPackageName.get(packageName) ?? new Map();
+    packagePatches.set(specifier, patchPath);
+    patchesByPackageName.set(packageName, packagePatches);
+  }
+
+  const selectedPatches = [];
+  for (const packageName of new Set(bundledDependencies)) {
+    const packagePatches = patchesByPackageName.get(packageName);
+    if (!packagePatches) continue;
+
+    const installedManifestPath = resolve(
+      destinationDir,
+      "node_modules",
+      packageName,
+      "package.json",
+    );
+    let installedManifest;
+    try {
+      installedManifest = JSON.parse(readFileSync(installedManifestPath, "utf8"));
+    } catch (cause) {
+      throw new Error(
+        `Cannot select a patch for bundled dependency ${packageName}: failed to read ${installedManifestPath}`,
+        { cause },
+      );
+    }
+
+    if (
+      installedManifest.name !== packageName ||
+      typeof installedManifest.version !== "string" ||
+      installedManifest.version.length === 0
+    ) {
+      throw new Error(
+        `Cannot select a patch for bundled dependency ${packageName}: installed package manifest must declare the expected name and a version`,
+      );
+    }
+
+    const installedSpecifier = `${packageName}@${installedManifest.version}`;
+    const patchPath = packagePatches.get(installedSpecifier);
+    if (patchPath === undefined) continue;
+    if (typeof patchPath !== "string" || patchPath.length === 0) {
+      throw new Error(`Patch path for ${installedSpecifier} must be a non-empty string`);
+    }
+    selectedPatches.push({ packageName, specifier: installedSpecifier, patchPath });
+  }
+
+  return selectedPatches;
 }
 
 export function applyBundledDependencyPatches(destinationDir, bundledDependencies) {
   const rootPackage = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
   const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
-  const bundledDependencyNames = new Set(bundledDependencies);
 
-  for (const [specifier, patchPath] of Object.entries(patchedDependencies)) {
-    const packageName = patchedDependencyPackageName(specifier);
-    if (!bundledDependencyNames.has(packageName)) continue;
-
+  for (const { packageName, patchPath } of selectBundledDependencyPatches(
+    destinationDir,
+    bundledDependencies,
+    patchedDependencies,
+  )) {
     execFileSync(
       "patch",
       ["-p1", "--forward", "-d", resolve(destinationDir, "node_modules", packageName)],

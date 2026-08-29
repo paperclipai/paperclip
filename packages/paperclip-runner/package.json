@@ -32,7 +32,7 @@
     "typecheck:typescript": "node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs && node --check scripts/generate-protocol-schema-module.mjs && node --check scripts/generate-acpx-sidecar-contract.mjs && node --check scripts/generate-replay-goldens.mjs && node --check scripts/generate-semantic-action-catalog.mjs && pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
     "typecheck:rust": "cargo fmt --manifest-path runner/Cargo.toml --all -- --check && cargo check --manifest-path runner/Cargo.toml --locked --workspace",
     "test": "pnpm run test:typescript && pnpm run test:rust",
-    "test:typescript": "node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs && vitest run",
+    "test:typescript": "node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs && vitest run",
     "test:rust": "cargo test --release --manifest-path runner/Cargo.toml --locked --workspace",
     "test:codex": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --test codex_provider",
     "test:durable": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core durable::",
@@ -52,6 +52,8 @@
     "trace:conformance:rust": "cargo run --quiet --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin conformance-tracer"
   },
   "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.6.2",
+    "acpx": "0.13.1",
     "ajv": "^8.20.0",
     "json-schema-to-ts": "^3.1.1"
   },
