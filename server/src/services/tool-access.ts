@@ -8367,7 +8367,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
      * treats as "every organization member". Replacement is delete-then-insert
      * inside one transaction so a partially-applied audience can never widen or
      * narrow access, and every member id is checked against active company
-     * membership first so an audience cannot name an outsider.
+     * membership first so an audience cannot name an outsider. Existing audience
+     * members are locked too: membership cleanup deliberately retains a sole
+     * inactive audience row, and a concurrent empty replacement must not erase
+     * that fail-closed marker after cleanup wins. Once cleanup has retained that
+     * marker, callers must restore the member or replace it with an active named
+     * audience before widening access to the whole company.
      */
     replaceConnectionGrantMembers: async (
       idOrUid: string,
@@ -8388,28 +8393,61 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const requested = [...new Set(memberUserIds.map((id) => id.trim()).filter(Boolean))];
       const binding = actorBinding(actor);
       const members = await db.transaction(async (tx) => {
-        if (requested.length > 0) {
-          // Membership removal takes the same row lock before sweeping grant
-          // audiences. Keeping validation and replacement in this transaction
-          // means removal either deletes our committed row or we observe the
-          // inactive membership and refuse to recreate it.
+        // Serialize replacements before taking the current audience snapshot.
+        // Otherwise a second replacement could read the old rows, wait behind
+        // an in-flight replacement, and then miss locking a newly-added member.
+        await tx
+          .select({ id: connectionGrants.id })
+          .from(connectionGrants)
+          .where(and(
+            eq(connectionGrants.id, grant.id),
+            eq(connectionGrants.companyId, connection.companyId),
+            eq(connectionGrants.connectionId, connection.id),
+          ))
+          .for("update");
+        const existingAudience = await tx
+          .select({ subjectId: connectionGrantMembers.subjectId })
+          .from(connectionGrantMembers)
+          .where(and(
+            eq(connectionGrantMembers.companyId, connection.companyId),
+            eq(connectionGrantMembers.grantId, grant.id),
+            eq(connectionGrantMembers.subjectType, "user"),
+          ));
+        const existingUserIds = [...new Set(existingAudience.map((row) => row.subjectId))];
+        const membershipUserIds = [...new Set([...existingUserIds, ...requested])];
+        if (membershipUserIds.length > 0) {
+          // Membership suspension/archive/removal takes the same row lock before
+          // sweeping grant audiences. Lock both the old and new audience so an
+          // empty replacement also serializes with cleanup of its existing sole
+          // member. Whichever transaction wins is then authoritative.
           const memberships = await tx
-            .select({ principalId: companyMemberships.principalId })
+            .select({
+              principalId: companyMemberships.principalId,
+              status: companyMemberships.status,
+            })
             .from(companyMemberships)
             .where(and(
               eq(companyMemberships.companyId, connection.companyId),
               eq(companyMemberships.principalType, "user"),
-              eq(companyMemberships.status, "active"),
-              inArray(companyMemberships.principalId, requested),
+              inArray(companyMemberships.principalId, membershipUserIds),
             ))
             .orderBy(asc(companyMemberships.id))
             .for("update");
-          const active = new Set(memberships.map((row) => row.principalId));
+          const active = new Set(
+            memberships.filter((row) => row.status === "active").map((row) => row.principalId),
+          );
           const unknown = requested.filter((id) => !active.has(id));
           if (unknown.length > 0) {
             throw unprocessable("Every audience member must be an active member of this company", {
               code: "audience_member_not_in_company",
               unknownUserIds: unknown,
+            });
+          }
+          const inactiveExisting = existingUserIds.filter((id) => !active.has(id));
+          if (requested.length === 0 && inactiveExisting.length > 0) {
+            throw conflict("Replace inactive audience members before widening access to the whole company", {
+              code: "audience_widening_blocked",
+              inactiveUserIds: inactiveExisting,
             });
           }
         }

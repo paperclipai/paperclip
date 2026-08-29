@@ -45,6 +45,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { classifyRisk, normalizeConnectionMethodConfig, toolAccessService } from "../services/tool-access.js";
+import { accessService } from "../services/access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
@@ -1160,6 +1161,142 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(denied.body).toMatchObject({ code: "grant_audience_denied", grantId: grant!.id });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["suspend", "archive", "remove"] as const)(
+    "keeps an organization audience fail-closed when empty replacement races with member %s",
+    async (cleanupKind) => {
+      const company = await createCompany(db);
+      await grantBoardUser(db, company.id, "owner", [], "owner");
+      await grantBoardUser(db, company.id, "previous-user", [], "member");
+      await grantBoardUser(db, company.id, "departing-user", [], "member");
+      const departingMembership = await db.select().from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, company.id),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, "departing-user"),
+      )).then((rows) => rows[0]!);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const { connection } = await createBrokerConnection(db, company.id);
+      await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+      const grant = await db.insert(connectionGrants).values({
+        companyId: company.id,
+        connectionId: connection.id,
+        kind: "organization",
+        credentialSecretRefs: connection.credentialSecretRefs,
+        status: "active",
+        isDefault: true,
+      }).returning().then((rows) => rows[0]!);
+      await db.insert(connectionGrantMembers).values({
+        companyId: company.id,
+        grantId: grant.id,
+        subjectType: "user",
+        subjectId: "previous-user",
+      });
+
+      const firstReplacementDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+      const replacementDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+      const cleanupDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+      const replacementService = createTestToolAccessService(replacementDb);
+      let releaseFirstReplacement!: () => void;
+      const firstReplacementMayCommit = new Promise<void>((resolve) => {
+        releaseFirstReplacement = resolve;
+      });
+      let firstReplacementStaged!: () => void;
+      const firstReplacementIsStaged = new Promise<void>((resolve) => {
+        firstReplacementStaged = resolve;
+      });
+      let releaseCleanup!: () => void;
+      const cleanupMayFinish = new Promise<void>((resolve) => {
+        releaseCleanup = resolve;
+      });
+      let membershipLocked!: () => void;
+      const membershipIsLocked = new Promise<void>((resolve) => {
+        membershipLocked = resolve;
+      });
+
+      const firstReplacement = firstReplacementDb.transaction(async (tx) => {
+        const service = createTestToolAccessService(tx as unknown as ReturnType<typeof createDb>);
+        await service.replaceConnectionGrantMembers(connection.id, grant.id, ["departing-user"]);
+        firstReplacementStaged();
+        await firstReplacementMayCommit;
+      });
+      await firstReplacementIsStaged;
+
+      const cleanup = cleanupDb.transaction(async (tx) => {
+        await tx.select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(eq(companyMemberships.id, departingMembership.id))
+          .for("update");
+        membershipLocked();
+        await cleanupMayFinish;
+
+        const access = accessService(tx as unknown as ReturnType<typeof createDb>);
+        if (cleanupKind === "suspend") {
+          await access.updateMemberAndPermissions(
+            company.id,
+            departingMembership.id,
+            { status: "suspended", grants: [] },
+            "owner",
+          );
+        } else if (cleanupKind === "archive") {
+          await access.archiveMember(company.id, departingMembership.id);
+        } else {
+          await access.setUserCompanyAccess("departing-user", []);
+        }
+      });
+
+      // The first replacement still owns the departing member lock, so this
+      // gives cleanup time to queue for that lock before the empty replacement
+      // queues for the grant lock.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      let replacementSettled = false;
+      const replacement = replacementService
+        .replaceConnectionGrantMembers(connection.id, grant.id, [])
+        .then(
+          (value) => ({ value, error: null }),
+          (error: unknown) => ({ value: null, error }),
+        )
+        .finally(() => {
+          replacementSettled = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(replacementSettled).toBe(false);
+
+      releaseFirstReplacement();
+      await firstReplacement;
+      await membershipIsLocked;
+      expect(replacementSettled).toBe(false);
+      releaseCleanup();
+      await cleanup;
+      const replacementResult = await replacement;
+      expect(replacementResult.value).toBeNull();
+      expect(replacementResult.error).toEqual(expect.objectContaining({
+        message: "Replace inactive audience members before widening access to the whole company",
+        status: 409,
+        details: {
+          code: "audience_widening_blocked",
+          inactiveUserIds: ["departing-user"],
+        },
+      }));
+      expect(await db.select().from(connectionGrantMembers).where(eq(
+        connectionGrantMembers.grantId,
+        grant.id,
+      ))).toEqual([
+        expect.objectContaining({ subjectType: "user", subjectId: "departing-user" }),
+      ]);
+
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        mcpHttpResponse({ token: "unexpected-company-wide-token" }),
+      );
+      const denied = await request(createRouteApp(
+        db,
+        agentJwtActor(company.id, agent.id, run.id),
+      )).post(`/api/agents/me/connections/${connection.id}/token`).send({});
+      expect(denied.status).toBe(403);
+      expect(denied.body).toMatchObject({ code: "grant_audience_denied", grantId: grant.id });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns daily connection usage buckets", async () => {
     const company = await createCompany(db);
