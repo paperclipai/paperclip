@@ -6969,6 +6969,11 @@ export interface HeartbeatServiceOptions {
     runId: string;
     issueId: string;
   }) => Promise<void>;
+  /** Test seam for racing an issue mutation after validation while its row lock is held. */
+  afterResolvedInteractionContinuationDispatchCheck?: (input: {
+    runId: string;
+    issueId: string;
+  }) => Promise<void>;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -13272,8 +13277,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     context: Record<string, unknown>,
+    dbOrTx: Db = db,
   ): Promise<QueuedRunStaleness> {
-    const issue = await db
+    const issue = await dbOrTx
       .select({
         id: issues.id,
         status: issues.status,
@@ -13338,7 +13344,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         readNonEmptyString(parseObject(queuedWake.continuationSummary).body);
       const currentContinuationSummary = queuedContinuationSummary
         ? null
-        : await getIssueContinuationSummaryDocument(db, issueId);
+        : await getIssueContinuationSummaryDocument(dbOrTx, issueId);
       const continuationSummaryBody = queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
       if (continuationSummaryParksExecutor(continuationSummaryBody)) {
         return {
@@ -13365,7 +13371,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
     const authorizedSourceScopedRecovery = wakeReason === "source_scoped_recovery_action" && recoveryActionId
-      ? await db
+      ? await dbOrTx
         .select({ id: issueRecoveryActions.id })
         .from(issueRecoveryActions)
         .where(and(
@@ -16479,13 +16485,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTarget,
       });
       const adapter = getServerAdapter(agent.adapterType);
-      const cancelStaleResolvedInteractionContinuationBeforeDispatch = async () => {
-        if (!issueId || !isResolvedInteractionContinuationWakeContext(context)) return false;
+      const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
+        dispatch: () => Promise<T>,
+      ): Promise<
+        | { dispatched: true; resultPromise: Promise<T> }
+        | { dispatched: false }
+      > => {
+        if (!issueId || !isResolvedInteractionContinuationWakeContext(context)) {
+          return { dispatched: true, resultPromise: dispatch() };
+        }
         await options.beforeResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
-        const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
-        if (!staleness.stale) return false;
-        await cancelRunForStaleIssue(run, issueId, staleness);
-        return true;
+
+        const gate = await db.transaction(async (tx) => {
+          const lockedIssue = await tx
+            .select({ executionRunId: issues.executionRunId })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          const staleness = await evaluateQueuedRunStaleness(
+            run,
+            issueId,
+            context,
+            tx as unknown as Db,
+          );
+          if (staleness.stale) {
+            return { dispatched: false as const, staleness };
+          }
+          if (lockedIssue?.executionRunId !== run.id) {
+            return {
+              dispatched: false as const,
+              staleness: {
+                stale: true as const,
+                errorCode: "issue_execution_lock_changed" as const,
+                reason:
+                  "Cancelled because resolved-interaction continuation no longer owns the issue execution lock before adapter dispatch",
+                details: {
+                  issueId,
+                  expectedExecutionRunId: run.id,
+                  currentExecutionRunId: lockedIssue?.executionRunId ?? null,
+                },
+              },
+            };
+          }
+
+          await options.afterResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
+          // Invoke the adapter while the issue row lock is still held. Every
+          // status/assignee update takes this same lock, so an operator change
+          // either lands before validation (and cancels this run) or after the
+          // adapter has begun dispatch; it cannot slip between the two.
+          return { dispatched: true as const, resultPromise: dispatch() };
+        });
+
+        if (gate.dispatched) return gate;
+        await cancelRunForStaleIssue(run, issueId, gate.staleness);
+        return { dispatched: false };
       };
       const localAgentJwtScope =
         issueRef?.workMode === "skill_test"
@@ -16729,8 +16783,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             promptMetrics: { promptChars: prompt.length },
             context: { provider: "codex", protocolVersion: 1 },
           });
-          if (await cancelStaleResolvedInteractionContinuationBeforeDispatch()) return;
-          adapterResult = await executeNativeCodexRunner({
+          const guardedDispatch = await dispatchResolvedInteractionContinuationWithAtomicGate(() =>
+            executeNativeCodexRunner({
             db,
             companyId: agent.companyId,
             issueId: issueRef.id,
@@ -16750,7 +16804,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             environment,
             onLog,
             onSpawn,
-          });
+            }),
+          );
+          if (!guardedDispatch.dispatched) return;
+          adapterResult = await guardedDispatch.resultPromise;
         } else {
           const adapterContext = { ...context };
           const runtimeTools = createAdapterRuntimeToolAccess({
@@ -16798,8 +16855,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (managedMcpConfig) {
             adapterContext.paperclipManagedMcp = managedMcpConfig;
           }
-          if (await cancelStaleResolvedInteractionContinuationBeforeDispatch()) return;
-          adapterResult = await adapter.execute({
+          const guardedDispatch = await dispatchResolvedInteractionContinuationWithAtomicGate(() =>
+            adapter.execute({
             runId: run.id,
             agent,
             runtime: runtimeForAdapter,
@@ -16825,7 +16882,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             },
             onSpawn,
             authToken: authToken ?? undefined,
-          });
+            }),
+          );
+          if (!guardedDispatch.dispatched) return;
+          adapterResult = await guardedDispatch.resultPromise;
         }
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize

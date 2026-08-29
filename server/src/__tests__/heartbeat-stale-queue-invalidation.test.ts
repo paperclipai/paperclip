@@ -141,6 +141,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   let beforeContinuationDispatchCheck:
     | ((input: { runId: string; issueId: string }) => Promise<void>)
     | null = null;
+  let afterContinuationDispatchCheck:
+    | ((input: { runId: string; issueId: string }) => Promise<void>)
+    | null = null;
 
   const countExecuteCallsForRun = (runId: string) =>
     mockAdapterExecute.mock.calls.filter(([context]) => context?.runId === runId).length;
@@ -152,12 +155,16 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       beforeResolvedInteractionContinuationDispatchCheck: async (input) => {
         await beforeContinuationDispatchCheck?.(input);
       },
+      afterResolvedInteractionContinuationDispatchCheck: async (input) => {
+        await afterContinuationDispatchCheck?.(input);
+      },
     });
     await ensureIssueRelationsTable(db);
   }, 20_000);
 
   afterEach(async () => {
     beforeContinuationDispatchCheck = null;
+    afterContinuationDispatchCheck = null;
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -603,6 +610,95 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(countExecuteCallsForRun(runId)).toBe(0);
     },
   );
+
+  it("starts adapter dispatch before a concurrent park can cross the final continuation gate", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Connection intent parked at the atomic dispatch gate",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        interactionId: randomUUID(),
+        interactionKind: "connection_intent",
+        interactionStatus: "accepted",
+        interactionResolvedAt: "2026-08-28T13:30:00.000Z",
+        mutation: "interaction",
+        source: "connection_intent.resolved",
+      },
+    });
+
+    const ordering: string[] = [];
+    let parkPromise: Promise<unknown> | null = null;
+    afterContinuationDispatchCheck = async ({ runId: guardedRunId, issueId: guardedIssueId }) => {
+      expect(guardedRunId).toBe(runId);
+      expect(guardedIssueId).toBe(issueId);
+      ordering.push("validated");
+      parkPromise = Promise.resolve(
+        db
+          .update(issues)
+          .set({
+            status: "backlog",
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId))
+          .returning({ id: issues.id }),
+      ).then((rows) => {
+        expect(rows).toHaveLength(1);
+        ordering.push("parked");
+      });
+      // Give the concurrent update a chance to reach the row lock. It must
+      // remain blocked until the gate invokes the adapter and commits.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(ordering).toEqual(["validated"]);
+    };
+    mockAdapterExecute.mockImplementation(async () => {
+      ordering.push("dispatched");
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Atomic continuation dispatch test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+    await parkPromise;
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("backlog");
+    expect(ordering).toEqual(["validated", "dispatched", "parked"]);
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
 
   it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {
     const { agentId } = await seedCompanyAndAgent({
