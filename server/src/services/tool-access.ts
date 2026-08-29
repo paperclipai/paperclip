@@ -8551,9 +8551,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       eq(companyMemberships.principalType, "user"),
       eq(companyMemberships.principalId, stateRow.subjectUserId),
       eq(companyMemberships.status, "active"),
+      ne(companyMemberships.membershipRole, "viewer"),
     )).limit(1);
     if (!membership) {
-      throw forbidden("Your company membership is no longer active. Restore access before you connect Gmail again.");
+      throw forbidden("Your company membership no longer permits connection changes. Restore non-viewer access before you connect Gmail again.");
     }
     const [existingUserGrant] = await db.select().from(connectionGrants).where(and(
       eq(connectionGrants.companyId, connection.companyId),
@@ -8733,9 +8734,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(companyMemberships.principalType, "user"),
           eq(companyMemberships.principalId, stateRow.subjectUserId!),
           eq(companyMemberships.status, "active"),
+          ne(companyMemberships.membershipRole, "viewer"),
         )).limit(1).for("update");
         if (!membership) {
-          throw forbidden("Your company membership is no longer active. Ask a company owner to restore access before you authorize this connection again.");
+          throw forbidden("Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.");
         }
 
         const [existingUserGrant] = await tx.select().from(connectionGrants).where(and(

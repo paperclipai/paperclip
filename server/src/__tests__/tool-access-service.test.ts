@@ -4403,7 +4403,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const [resolved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
     expect(resolved).toMatchObject({ status: "accepted", result: { version: 1, outcome: "accepted" } });
 
-    const versionCountBeforeSuspension = (await db.select().from(companySecretVersions).where(
+    const versionCountBeforeAccessRevocation = (await db.select().from(companySecretVersions).where(
       inArray(companySecretVersions.secretId, grant.credentialSecretRefs.map((ref) => ref.secretId)),
     )).length;
     await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(
@@ -4432,7 +4432,7 @@ describeEmbeddedPostgres("tool access service", () => {
       scopes: ["channels:read"],
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
     });
-    await db.update(companyMemberships).set({ status: "suspended" }).where(and(
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(
       eq(companyMemberships.companyId, company.id),
       eq(companyMemberships.principalId, "user-for-run"),
     ));
@@ -4444,7 +4444,34 @@ describeEmbeddedPostgres("tool access service", () => {
     })).rejects.toMatchObject({ status: 403 });
     expect((await db.select().from(companySecretVersions).where(
       inArray(companySecretVersions.secretId, grant.credentialSecretRefs.map((ref) => ref.secretId)),
-    )).length).toBe(versionCountBeforeSuspension);
+    )).length).toBe(versionCountBeforeAccessRevocation);
+
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
+    const suspendedRetry = await service.startAuthorizationForAgent({
+      companyId: company.id,
+      connectionId: connected.connectionId,
+      agentId: agent.id,
+      runId: run.id,
+      subjectUserId: "user-for-run",
+      scopes: ["channels:read"],
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+    });
+    await db.update(companyMemberships).set({ status: "suspended" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalId, "user-for-run"),
+    ));
+    await expect(service.completeOAuthCallback({
+      state: new URL(suspendedRetry.authorizationUrl).searchParams.get("state")!,
+      code: "user-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "user-for-run" },
+    })).rejects.toMatchObject({ status: 403 });
+    expect((await db.select().from(companySecretVersions).where(
+      inArray(companySecretVersions.secretId, grant.credentialSecretRefs.map((ref) => ref.secretId)),
+    )).length).toBe(versionCountBeforeAccessRevocation);
   });
 
   it("activates and discovers actions for a fresh personal OAuth callback before access is finalized", async () => {
