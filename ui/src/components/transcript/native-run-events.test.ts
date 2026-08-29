@@ -173,7 +173,7 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("does not claim zero or accumulate session totals when run deltas are unavailable", () => {
+  it("uses the latest explicitly session-scoped total when run deltas are unavailable", () => {
     const transcript = nativeRunEventsToTranscript([
       event(1, "usage.reported", {
         runDeltaAvailable: false,
@@ -187,7 +187,16 @@ describe("nativeRunEventsToTranscript", () => {
       }),
     ]);
 
-    expect(transcript).toEqual([]);
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "result",
+        subtype: "paperclip_runner_session_usage",
+        inputTokens: 20,
+        outputTokens: 5,
+        costUsd: 0.02,
+        text: expect.stringContaining("session-cumulative"),
+      }),
+    ]);
   });
 
   it("uses the structured run summary when no agent message was emitted", () => {

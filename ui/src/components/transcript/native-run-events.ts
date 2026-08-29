@@ -58,6 +58,13 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     cachedTokens: number;
     costUsd: number;
   } | null = null;
+  let cumulativeUsageSummary: {
+    ts: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    costUsd: number;
+  } | null = null;
   const orderedEvents = [...events].sort((a, b) => a.seq - b.seq);
   const completedAgentMessageIds = new Set<string>();
   for (const event of orderedEvents) {
@@ -132,11 +139,22 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "usage.reported") {
-      // A provider may report only session-cumulative usage. In that case the
-      // zero-valued runDelta is a schema placeholder, not a claim that this run
-      // consumed nothing. Omit the run result until an attributable delta is
-      // available rather than displaying zero or leaking prior-run usage.
-      if (payload.runDeltaAvailable === false) continue;
+      // A provider may report only session-cumulative usage. Preserve the
+      // latest snapshot as explicitly session-scoped usage instead of either
+      // summing cumulative values or relabelling them as a per-run delta.
+      if (payload.runDeltaAvailable === false) {
+        const cumulative = record(payload.cumulative);
+        if (cumulative) {
+          cumulativeUsageSummary = {
+            ts,
+            inputTokens: finiteNumber(cumulative.inputTokens),
+            outputTokens: finiteNumber(cumulative.outputTokens),
+            cachedTokens: finiteNumber(cumulative.cacheReadTokens),
+            costUsd: finiteNumber(cumulative.providerCostUsd),
+          };
+        }
+        continue;
+      }
       const measurement = record(payload.runDelta);
       if (!measurement) continue;
       const next = {
@@ -181,6 +199,15 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       ...usageSummary,
       text: "",
       subtype: "paperclip_runner_usage",
+      isError: false,
+      errors: [],
+    });
+  } else if (cumulativeUsageSummary) {
+    entries.push({
+      kind: "result",
+      ...cumulativeUsageSummary,
+      text: "Provider-reported session-cumulative usage; a per-run delta was unavailable.",
+      subtype: "paperclip_runner_session_usage",
       isError: false,
       errors: [],
     });
