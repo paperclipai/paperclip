@@ -859,6 +859,30 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+// executeRun's task-drain suppression branch can fail to release a run's
+// claim two ways in a row: the atomic release transaction fails, then its
+// fallback transaction (which marks the run "failed" instead) also fails.
+// When that happens the run, wakeup, and issue lock are left in an unknown
+// durable state. The dispatch site still removes this run's execution
+// promise from activeRunExecutionPromises once executeRun settles —
+// drainActiveRunExecutions loops on that set's size, so an entry that never
+// clears would hang it forever — so a promise-based set cannot carry this
+// signal. Track the runId here instead. getTaskDrainStatus() folds this set
+// into its active-run count, so it keeps reporting a non-quiescent instance
+// for this run. There is no in-process retry for a fallback that already
+// failed once, so an entry here clears only when the process restarts.
+const stuckClaimReleaseRunIds = new Set<string>();
+// Thrown by executeRun's task-drain suppression branch when both the atomic
+// claim release and its fallback fail a durable write for the same run. The
+// dispatch site catches this to add the run to stuckClaimReleaseRunIds
+// instead of treating it as an ordinary execution failure.
+class RunClaimReleaseUnresolvedFailure extends Error {
+  constructor(runId: string, cause: unknown) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    super(`Run claim release failed durably for run ${runId}: ${causeMessage}`);
+    this.name = "RunClaimReleaseUnresolvedFailure";
+  }
+}
 // Task drain: an operator-controlled hold on new run admission, so a caller
 // can wait for active work to finish before it stops the process. The state
 // lives in process memory only — a process restart clears it — and it sits at
@@ -929,7 +953,10 @@ export function getTaskDrainStatus(): {
   quiescent: boolean;
 } {
   const state = readTaskDrain(new Date());
-  const activeRuns = activeRunExecutionPromises.size;
+  // Fold in stuckClaimReleaseRunIds so a run whose claim release failed
+  // durably (see the set's own comment) keeps this read non-quiescent, even
+  // though its execution promise already left activeRunExecutionPromises.
+  const activeRuns = activeRunExecutionPromises.size + stuckClaimReleaseRunIds.size;
   const pendingWakes = activeWakeupPromises.size;
   return {
     draining: state !== null,
@@ -14290,6 +14317,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       for (const claimedRun of claimedRuns) {
         const execution = executeRun(claimedRun.id).catch((err) => {
+          if (err instanceof RunClaimReleaseUnresolvedFailure) {
+            // The run's claim release failed durably (both the atomic release
+            // and its fallback failed a write), already logged inside
+            // executeRun. Track the runId so getTaskDrainStatus() keeps
+            // reporting this run as active — see stuckClaimReleaseRunIds.
+            stuckClaimReleaseRunIds.add(claimedRun.id);
+            return;
+          }
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
         });
         // Register the in-flight execution so drainActiveRunExecutions() can await
@@ -14298,6 +14333,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // have landed before a caller (e.g. a test's afterEach) mutates the DB.
         activeRunExecutionPromises.add(execution);
         void execution.finally(() => {
+          // Always remove the settled execution promise itself — drainActiveRunExecutions
+          // loops on activeRunExecutionPromises.size, so an entry that never
+          // clears here would hang it forever. A run added to
+          // stuckClaimReleaseRunIds above stays reported as active through
+          // that separate set instead.
           activeRunExecutionPromises.delete(execution);
         });
       }
@@ -14351,7 +14391,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { err, runId },
           "failed to release run claimed just before task-drain suppression; failing the run instead",
         );
-        await failRunClaimedJustBeforeSuppression(runId, err);
+        try {
+          await failRunClaimedJustBeforeSuppression(runId, err);
+        } catch (fallbackErr) {
+          logger.error(
+            { err: fallbackErr, runId },
+            "failed to fail the run after its claim release also failed; the run, wakeup, and issue lock are in an unknown state, so task-drain will keep reporting this run as active until the process restarts",
+          );
+          throw new RunClaimReleaseUnresolvedFailure(runId, fallbackErr);
+        }
       }
       return;
     }

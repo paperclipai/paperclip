@@ -377,6 +377,16 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       expect(issue?.executionRunId).toBe(runId);
+
+      // The database still holds the claim, so task-drain must not report
+      // quiescent for it. Before the fix, executeRun's rejection here was
+      // caught by the dispatch site's generic handler, which removed this
+      // run's execution promise from active tracking regardless — reporting
+      // quiescent while the run, wakeup, and issue lock were all still
+      // durably claimed.
+      const status = getTaskDrainStatus();
+      expect(status.activeRuns).toBeGreaterThanOrEqual(1);
+      expect(status.quiescent).toBe(false);
     }, 20_000);
   }
 });
