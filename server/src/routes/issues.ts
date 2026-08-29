@@ -4256,9 +4256,11 @@ export function issueRoutes(
     if (req.actor.type !== "agent") return true;
     if (isCommentOnlyMutation(req)) return true;
     if (isHumanAssignedIssueInteractionBootstrap(req)) return true;
-    const isTitleMarkedHumanGate = issue.assigneeUserId === null
+    const expectedGateUserId = humanGateAssigneeUserId();
+    const isAssignedToGateUser = issue.assigneeUserId != null && issue.assigneeUserId === expectedGateUserId;
+    const isTitleMarkedHumanGate = issue.assigneeUserId == null
       && await isHumanGateIssueForMutationGuard(issue);
-    if (issue.assigneeUserId === null && !isTitleMarkedHumanGate) return true;
+    if (!isAssignedToGateUser && !isTitleMarkedHumanGate) return true;
     const humanOwnerUserId = issue.assigneeUserId
       ?? (isTitleMarkedHumanGate ? issue.responsibleUserId ?? null : null);
     if (humanOwnerUserId === null) {
@@ -9131,7 +9133,7 @@ export function issueRoutes(
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
     if (!isTaskBridgeKeyActor(req) && !(await assertIssueWriteInfluenceAllowed(req, res, parent))) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, parent))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, parent, { allowVisibleIssueWrite: true }))) return;
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
