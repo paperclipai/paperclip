@@ -180,6 +180,32 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("reports unresolved blockers for a non-blocked parent without changing attention state semantics", async () => {
+    const { companyId } = await createCompany("PBN");
+    const parentId = await insertIssue({ companyId, identifier: "PBN-1", title: "Open parent", status: "in_progress" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBN-2",
+      title: "Open child blocker",
+      status: "todo",
+      parentId,
+    });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "none",
+      reason: null,
+      unresolvedBlockerCount: 1,
+      unresolvedBlockerIssueIds: [childId],
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      blockingTreeLive: false,
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });

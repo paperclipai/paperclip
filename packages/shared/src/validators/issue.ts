@@ -514,7 +514,7 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().guid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
-});
+}).strict();
 
 function requireBlockedStatusForUnblockDescriptor(
   value: { status?: string; unblockDescriptor?: unknown },

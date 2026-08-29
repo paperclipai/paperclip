@@ -411,6 +411,7 @@ export interface IssueBlockerAttention {
   state: IssueBlockerAttentionState;
   reason: IssueBlockerAttentionReason;
   unresolvedBlockerCount: number;
+  unresolvedBlockerIssueIds: string[];
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;

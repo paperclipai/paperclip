@@ -190,6 +190,7 @@ describe("assigned backlog creation contract", () => {
         id: String(data.id),
         title: String(data.title),
         status: String(data.status),
+        parentId: data.parentId as string | null | undefined,
         assigneeAgentId: data.assigneeAgentId as string | null | undefined,
       }));
     mockIssueService.createChild.mockImplementation(async (_parentId: string, data: Record<string, unknown>) => ({
@@ -252,6 +253,54 @@ describe("assigned backlog creation contract", () => {
           statusDefaultReason: "assigned_omitted_status",
           assignmentWakeSkipped: false,
         }),
+      }),
+    );
+  });
+
+  it("rejects unknown fields on issue create and update", async () => {
+    const create = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Unsupported create field", totallyMadeUpField: 123 });
+    const update = await request(await createApp())
+      .patch("/api/issues/parent-1")
+      .send({ totallyMadeUpField: 123 });
+
+    expect(create.status).toBe(400);
+    expect(update.status).toBe(400);
+    expect(create.body.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "unrecognized_keys", keys: ["totallyMadeUpField"] }),
+    ]));
+    expect(update.body.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "unrecognized_keys", keys: ["totallyMadeUpField"] }),
+    ]));
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("passes the parent blocker flag through plain issue create", async () => {
+    const parentId = "11111111-1111-4111-8111-111111111111";
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Plain-create child blocker",
+        parentId,
+        blockParentUntilDone: true,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Plain-create child blocker",
+        parentId,
+        blockParentUntilDone: true,
+      }),
+    );
+    expect(res.body).toEqual(expect.objectContaining({ parentId }));
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.created",
+        details: expect.objectContaining({ parentBlockerAdded: true }),
       }),
     );
   });

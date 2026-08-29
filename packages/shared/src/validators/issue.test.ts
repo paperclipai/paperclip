@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  createChildIssueSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -46,6 +47,39 @@ describe("issue validators", () => {
       .toBeUndefined();
     expect(updateIssueSchema.parse({ comment: undefined }).comment)
       .toBeUndefined();
+  });
+
+  it("rejects unknown fields on issue create and update", () => {
+    const create = createIssueSchema.safeParse({
+      title: "Reject unsupported create field",
+      totallyMadeUpField: 123,
+    });
+    const update = updateIssueSchema.safeParse({
+      totallyMadeUpField: 123,
+    });
+    const child = createChildIssueSchema.safeParse({
+      title: "Reject unsupported child field",
+      totallyMadeUpField: 123,
+    });
+
+    expect(create.success).toBe(false);
+    expect(update.success).toBe(false);
+    expect(child.success).toBe(false);
+    if (!create.success) {
+      expect(create.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "unrecognized_keys", keys: ["totallyMadeUpField"] }),
+      ]));
+    }
+    if (!update.success) {
+      expect(update.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "unrecognized_keys", keys: ["totallyMadeUpField"] }),
+      ]));
+    }
+    if (!child.success) {
+      expect(child.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "unrecognized_keys", keys: ["totallyMadeUpField"] }),
+      ]));
+    }
   });
 
   it("accepts review policies on create and update while rejecting unknown values", () => {
@@ -155,7 +189,7 @@ describe("issue validators", () => {
       createdByUserId: "spoofed-creator",
       responsibleUserId: "spoofed-responsible",
     });
-    const updated = updateIssueSchema.parse({
+    const updated = updateIssueSchema.safeParse({
       title: "Do not update attribution",
       createdByUserId: "spoofed-creator",
       responsibleUserId: "spoofed-responsible",
@@ -163,8 +197,15 @@ describe("issue validators", () => {
 
     expect(created.createdByUserId).toBe("spoofed-creator");
     expect(created.responsibleUserId).toBe("spoofed-responsible");
-    expect(updated).not.toHaveProperty("createdByUserId");
-    expect(updated).not.toHaveProperty("responsibleUserId");
+    expect(updated.success).toBe(false);
+    if (!updated.success) {
+      expect(updated.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: "unrecognized_keys",
+          keys: ["createdByUserId", "responsibleUserId"],
+        }),
+      ]));
+    }
   });
 
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {

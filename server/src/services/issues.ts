@@ -2089,6 +2089,7 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     state: input.state ?? "none",
     reason: input.reason ?? null,
     unresolvedBlockerCount: input.unresolvedBlockerCount ?? 0,
+    unresolvedBlockerIssueIds: input.unresolvedBlockerIssueIds ?? [],
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
@@ -2337,13 +2338,8 @@ async function listIssueBlockerAttentionMap(
   companyId: string,
   issueRows: IssueBlockerAttentionInputNode[],
 ): Promise<Map<string, IssueBlockerAttention>> {
-  const roots = issueRows.filter((row) => row.companyId === companyId && row.status === "blocked");
+  const roots = issueRows.filter((row) => row.companyId === companyId);
   const attentionMap = new Map<string, IssueBlockerAttention>();
-  for (const row of issueRows) {
-    if (row.status !== "blocked") {
-      attentionMap.set(row.id, createIssueBlockerAttention());
-    }
-  }
   if (roots.length === 0) return attentionMap;
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
@@ -2783,6 +2779,14 @@ async function listIssueBlockerAttentionMap(
       const blocker = nodesById.get(edge.blockerIssueId);
       return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
     });
+    const unresolvedBlockerIssueIds = [...new Set(topLevelEdges.map((edge) => edge.blockerIssueId))];
+    if (root.status !== "blocked") {
+      attentionMap.set(root.id, createIssueBlockerAttention({
+        unresolvedBlockerCount: unresolvedBlockerIssueIds.length,
+        unresolvedBlockerIssueIds,
+      }));
+      continue;
+    }
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
@@ -2836,7 +2840,8 @@ async function listIssueBlockerAttentionMap(
     attentionMap.set(root.id, createIssueBlockerAttention({
       state,
       reason,
-      unresolvedBlockerCount: topLevelEdges.length,
+      unresolvedBlockerCount: unresolvedBlockerIssueIds.length,
+      unresolvedBlockerIssueIds,
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
