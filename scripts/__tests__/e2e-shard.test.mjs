@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -37,6 +38,58 @@ function readPinnedTrustedPrWorkflow() {
   });
   assert.equal(result.status, 0, `cannot read the pinned trusted workflow: ${result.stderr}`);
   return result.stdout;
+}
+
+function readWorkflowJobs(workflow) {
+  const jobs = new Map();
+  let current = null;
+  for (const line of workflow.split("\n")) {
+    const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (header) {
+      current = header[1];
+      jobs.set(current, []);
+      continue;
+    }
+    if (current && /^\S/.test(line)) current = null;
+    if (current) jobs.get(current).push(line);
+  }
+  for (const [id, lines] of jobs) jobs.set(id, lines.join("\n"));
+  return jobs;
+}
+
+function runStackScope(stack, prBaseRef) {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const match = workflow.match(
+    /      - name: Select stacked PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\n\n  policy:/,
+  );
+  assert.ok(match, "trusted workflow must define the stacked PR scope script");
+  const script = match[1]
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+  const scratch = mkdtempSync(path.join(tmpdir(), "paperclip-stack-scope-"));
+  const output = path.join(scratch, "github-output");
+
+  try {
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: output,
+        PR_BASE_REF: prBaseRef,
+        STACK_JSON: JSON.stringify(stack),
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return Object.fromEntries(
+      readFileSync(output, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=")),
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 test("the e2e shards form a complete, non-overlapping partition", () => {
@@ -115,19 +168,7 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
   const workflow = readPinnedTrustedPrWorkflow();
-  const jobs = new Map();
-  let current = null;
-  for (const line of workflow.split("\n")) {
-    const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    if (header) {
-      current = header[1];
-      jobs.set(current, []);
-      continue;
-    }
-    if (current && /^\S/.test(line)) current = null;
-    if (current) jobs.get(current).push(line);
-  }
-  for (const [id, lines] of jobs) jobs.set(id, lines.join("\n"));
+  const jobs = readWorkflowJobs(workflow);
 
   const aggregate = jobs.get("e2e");
   assert.ok(aggregate, "pr-trusted.yml must define an `e2e` job to satisfy branch protection");
@@ -135,8 +176,8 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   assert.match(aggregate, /^ {4}if: \$\{\{ always\(\) \}\}$/m, "the aggregate must run even when a shard fails");
   assert.match(
     aggregate,
-    /^ {4}needs: \[gate, e2e_shards\]$/m,
-    "the aggregate must depend on the runner gate and shard matrix",
+    /^ {4}needs: \[gate, (?:policy, )?e2e_shards\]$/m,
+    "the aggregate must depend on the runner gate, optional policy gate, and shard matrix",
   );
   assert.match(
     aggregate,
@@ -166,6 +207,70 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
     assert.equal(entry.shardCount, SHARD_COUNT, "each shard matrix entry must use the same SHARD_COUNT");
     assert.equal(entry.shardLabel, `${entry.shardIndex + 1}/${SHARD_COUNT}`, "each shard label must match its index");
   }
+});
+
+test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const jobs = readWorkflowJobs(workflow);
+  const gate = jobs.get("gate");
+
+  assert.match(gate, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
+  assert.match(gate, /STACK_JSON: \$\{\{ toJSON\(github\.event\.pull_request\.stack\) \}\}/);
+  assert.match(gate, /stack_position == stack_size/);
+  assert.match(gate, /"\$stack_base_ref" == "\$PR_BASE_REF"/);
+
+  for (const jobId of [
+    "typecheck_release_registry",
+    "general_tests",
+    "build",
+    "verify_serialized_server",
+    "canary_dry_run",
+    "e2e_shards",
+  ]) {
+    assert.match(
+      jobs.get(jobId),
+      /^ {4}if: \$\{\{ needs\.gate\.outputs\.full_ci == 'true' \}\}$/m,
+      `${jobId} must run only when the gate selects full CI`,
+    );
+  }
+
+  assert.doesNotMatch(
+    jobs.get("policy"),
+    /needs\.gate\.outputs\.full_ci/,
+    "the policy job must run on every PR layer",
+  );
+
+  const verify = jobs.get("verify");
+  assert.match(verify, /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build\]$/m);
+  assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
+  assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
+  assert.match(verify, /test "\$GENERAL_TESTS_RESULT" = "skipped"/);
+  assert.match(verify, /test "\$BUILD_RESULT" = "skipped"/);
+
+  const e2e = jobs.get("e2e");
+  assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);
+  assert.match(e2e, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
+  assert.match(e2e, /false\) test "\$E2E_SHARDS_RESULT" = "skipped"/);
+});
+
+test("the stacked PR scope selector runs full CI only where intended", () => {
+  assert.equal(runStackScope(null, "master").full_ci, "true");
+  assert.equal(
+    runStackScope({ position: 11, size: 11, base: { ref: "master" } }, "stack-10").full_ci,
+    "true",
+  );
+  assert.equal(
+    runStackScope({ position: 1, size: 11, base: { ref: "master" } }, "master").full_ci,
+    "true",
+  );
+  assert.equal(
+    runStackScope({ position: 6, size: 11, base: { ref: "master" } }, "stack-5").full_ci,
+    "false",
+  );
+  assert.equal(
+    runStackScope({ position: "invalid", size: 11, base: { ref: "master" } }, "stack-5").full_ci,
+    "true",
+  );
 });
 
 test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
