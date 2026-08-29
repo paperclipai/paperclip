@@ -5426,7 +5426,19 @@ export function createToolGatewayService(
         toolName: invocation.toolName,
         signingSecret: options.toolActionSigningSecret,
       });
-      if (signedPayload?.executionOnApprove !== true) return null;
+      if (signedPayload?.executionOnApprove !== true) {
+        const error = new ToolGatewayHttpError(
+          409,
+          "This approval predates execute-on-approve and must remain inert",
+          "legacy_approved_action_inert",
+        );
+        await markApprovedActionFailed({
+          actionRequestId: actionRequest.id,
+          invocationId: invocation.id,
+          error,
+        });
+        throw error;
+      }
       const result = await executeApprovedAgentInvocation({ actionRequest, invocation });
       return { matched: true as const, result, invocationId: invocation.id };
     }

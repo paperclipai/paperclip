@@ -528,7 +528,6 @@ describeEmbeddedPostgres("tool gateway service", () => {
       sessionToken: session.token,
       tool: "mcp-remote-fixture:update_note",
       parameters,
-      approvedActionRequestId: actionRequest.id,
     })).rejects.toMatchObject({ reasonCode: "legacy_approved_action_inert" });
 
     const [settledRequest] = await db
