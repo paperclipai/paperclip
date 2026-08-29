@@ -1244,10 +1244,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
 
-      // A gateway invocation has no local process spawn. Opening the remote
-      // websocket is its dispatch boundary, and must release any server-side
-      // continuation lock before the remote run (or retry loop) can wait.
-      reportDispatch();
       const hello = await client.connect((nonce) => {
         const signedAtMs = Date.now();
         const connectParams: Record<string, unknown> = {
@@ -1301,6 +1297,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
+      // Keep any server-side continuation lock through retryable websocket
+      // setup and backoff. The first agent request is the remote-work boundary:
+      // once it is sent, retrying would be unsafe because the gateway may have
+      // accepted work even if the response is lost.
+      reportDispatch();
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
       });
@@ -1470,7 +1471,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           lower.includes("socket hang up") ||
           (timedOut && !lower.includes("agent.wait")));
 
-      if (isTransient && retryCount < MAX_RETRIES) {
+      if (isTransient && !dispatchReported && retryCount < MAX_RETRIES) {
         retryCount++;
         const backoffMs = retryCount * 2000;
         await ctx.onLog(
