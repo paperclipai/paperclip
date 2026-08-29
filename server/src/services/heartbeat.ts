@@ -10918,6 +10918,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     executionState: unknown;
     runAgentId: string;
     mode: "queued_run" | "scheduled_retry";
+    allowResolvedInteractionContinuation?: boolean;
   }): {
     errorCode: "issue_review_participant_changed" | "issue_waiting_on_review";
     reason: string;
@@ -10928,6 +10929,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const executionState = parseIssueExecutionState(input.executionState);
     const currentParticipant = executionState?.currentParticipant ?? null;
     if (currentParticipant?.type === "agent" && currentParticipant.agentId === input.runAgentId) {
+      return null;
+    }
+    if (!currentParticipant && input.allowResolvedInteractionContinuation) {
       return null;
     }
 
@@ -11126,6 +11130,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
+    const allowResolvedInteractionContinuation = isResolvedInteractionContinuationWakeContext({
+      ...contextSnapshot,
+      ...(retryReason && readNonEmptyString(contextSnapshot.retryReason) !== retryReason
+        ? { retryReason }
+        : {}),
+    });
     const reviewWaitGate = describeReviewWaitGate({
       issueId,
       issueStatus: issue.status,
@@ -11133,6 +11143,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       executionState: issue.executionState,
       runAgentId: run.agentId,
       mode: "scheduled_retry",
+      allowResolvedInteractionContinuation,
     });
     if (reviewWaitGate) {
       return {
@@ -13055,6 +13066,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "in_review" && !wakeCommentId) {
+      const allowResolvedInteractionContinuation = isResolvedInteractionContinuationWakeContext({
+        ...context,
+        ...(retryReason && readNonEmptyString(context.retryReason) !== retryReason
+          ? { retryReason }
+          : {}),
+      });
       const reviewWaitGate = describeReviewWaitGate({
         issueId,
         issueStatus: issue.status,
@@ -13062,6 +13079,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionState: issue.executionState,
         runAgentId: run.agentId,
         mode: "queued_run",
+        allowResolvedInteractionContinuation,
       });
       if (reviewWaitGate) {
         return {
