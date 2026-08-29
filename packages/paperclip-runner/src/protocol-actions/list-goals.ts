@@ -1,18 +1,18 @@
-/** Canonical definition and documentation for `inspect_operation_result`. */
-export const inspectOperationResultAction = {
-  "id": "inspect_operation_result",
+/** Canonical definition and documentation for `list_goals`. */
+export const listGoalsAction = {
+  "id": "list_goals",
   "canonical": {
-    "operationId": "inspect_operation_result",
+    "operationId": "list_goals",
     "surfaces": [
       "scenario"
     ],
-    "placement": "always_agent_tool",
-    "optionalGroup": null,
-    "requiredClaims": [],
+    "placement": "optional_agent_tool",
+    "optionalGroup": "discovery",
+    "requiredClaims": [
+      "discovery:goals:read"
+    ],
     "taskModes": [
       "standard",
-      "ask",
-      "planning",
       "skill_test"
     ],
     "sideEffectClass": "read",
@@ -23,27 +23,25 @@ export const inspectOperationResultAction = {
     "prpEvidence": "read projection surfaced via a tool-result item event; no control-plane state diff",
     "prpBindingStatus": "audit_pending",
     "legacyAliases": [],
-    "note": "Scenario/eval-only re-read of a prior operation result; the live dispatcher returns results inline."
+    "note": "Scenario/eval-only discovery via mock extension; no live dispatcher binding yet."
   },
   "documentation": {
-    "title": "Inspect operation result",
-    "description": "Read a prior semantic operation result from this run.",
-    "note": "Scenario/eval-only re-read of a prior operation result; the live dispatcher returns results inline."
+    "title": "List Goals",
+    "description": "List Goals through the Capability discovery capability set.",
+    "note": "Scenario/eval-only discovery via mock extension; no live dispatcher binding yet."
   },
   "examples": {
     "call": {
-      "operationId": "inspect_operation_result",
-      "input": {
-        "operationResultId": "example"
-      }
+      "operationId": "list_goals",
+      "input": {}
     },
     "success": {
       "ok": true,
-      "operationId": "inspect_operation_result",
+      "operationId": "list_goals",
       "result": {
         "schema": "paperclip.capability.tool-result.v1",
         "ok": true,
-        "operationId": "inspect_operation_result",
+        "operationId": "list_goals",
         "operationResultId": "example",
         "value": "example",
         "commandResult": "example",
@@ -53,32 +51,16 @@ export const inspectOperationResultAction = {
   },
   "live": null,
   "scenario": {
-    "order": 13,
-    "successExample": {
-      "schema": "paperclip.capability.tool-result.v1",
-      "ok": true,
-      "operationId": "inspect_operation_result",
-      "operationResultId": "example",
-      "value": "example",
-      "commandResult": "example",
-      "authorization": "example"
-    },
+    "order": 17,
     "descriptor": {
-      "operationId": "inspect_operation_result",
+      "operationId": "list_goals",
       "version": 1,
-      "title": "Inspect operation result",
-      "description": "Read a prior semantic operation result from this run.",
+      "title": "List Goals",
+      "description": "List Goals through the Capability discovery capability set.",
       "inputSchema": {
         "type": "object",
-        "properties": {
-          "operationResultId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "operationResultId"
-        ],
+        "properties": {},
+        "required": [],
         "additionalProperties": false
       },
       "outputSchema": {
@@ -94,7 +76,7 @@ export const inspectOperationResultAction = {
             "type": "boolean"
           },
           "operationId": {
-            "const": "inspect_operation_result"
+            "const": "list_goals"
           },
           "operationResultId": {
             "type": "string",
@@ -115,20 +97,21 @@ export const inspectOperationResultAction = {
         ],
         "additionalProperties": false
       },
-      "disposition": "always_agent_tool",
-      "optionalGroup": null,
-      "requiredClaims": [],
+      "disposition": "optional_agent_tool",
+      "optionalGroup": "discovery",
+      "requiredClaims": [
+        "discovery:goals:read"
+      ],
       "taskModes": [
         "standard",
-        "ask",
-        "planning",
         "skill_test"
       ],
       "sideEffectClass": "read",
       "idempotency": "none",
       "redaction": [],
       "mockCommandMapping": {
-        "kind": "operation_result"
+        "kind": "mock_extension",
+        "extension": "discovery.goals"
       }
     }
   }
