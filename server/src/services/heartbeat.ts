@@ -858,6 +858,57 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+// Task drain: an operator-controlled hold on new run admission, so a caller
+// can wait for active work to finish before it stops the process. The state
+// lives in process memory only — a process restart clears it — and it sits at
+// module scope like activeRunExecutions above, so both the pure
+// resolveHeartbeatSchedulingSuppression() check and every heartbeatService()
+// instance see the same drain.
+const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
+let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
+
+function readTaskDrain(now: Date): { startedAt: Date; expiresAt: Date | null } | null {
+  if (taskDrainState && taskDrainState.expiresAt !== null && taskDrainState.expiresAt.getTime() <= now.getTime()) {
+    taskDrainState = null;
+  }
+  return taskDrainState;
+}
+
+export function startTaskDrain(opts: { ttlMs?: number | null } = {}): { startedAt: Date; expiresAt: Date | null } {
+  const startedAt = new Date();
+  const ttlMs = opts.ttlMs ?? null;
+  const expiresAt = ttlMs === null ? null : new Date(startedAt.getTime() + Math.min(ttlMs, MAX_TASK_DRAIN_TTL_MS));
+  taskDrainState = { startedAt, expiresAt };
+  return taskDrainState;
+}
+
+export function stopTaskDrain(): { wasActive: boolean } {
+  const wasActive = readTaskDrain(new Date()) !== null;
+  taskDrainState = null;
+  return { wasActive };
+}
+
+export function getTaskDrainStatus(): {
+  draining: boolean;
+  startedAt: Date | null;
+  expiresAt: Date | null;
+  activeRuns: number;
+  pendingWakes: number;
+  quiescent: boolean;
+} {
+  const state = readTaskDrain(new Date());
+  const activeRuns = activeRunExecutionPromises.size;
+  const pendingWakes = activeWakeupPromises.size;
+  return {
+    draining: state !== null,
+    startedAt: state?.startedAt ?? null,
+    expiresAt: state?.expiresAt ?? null,
+    activeRuns,
+    pendingWakes,
+    quiescent: activeRuns === 0 && pendingWakes === 0,
+  };
+}
+
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -6750,7 +6801,7 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
-): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | null } {
+): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "task_drain" | null } {
   if (isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) && !overrides.allowWorktreeRunExecution) {
     return { suppressed: true, reason: "worktree_instance" };
   }
@@ -6759,6 +6810,9 @@ export function resolveHeartbeatSchedulingSuppression(
     isTruthyRuntimeEnvValue(env.PAPERCLIP_RESTORE_IN_PROGRESS)
   ) {
     return { suppressed: true, reason: "database_restore_in_progress" };
+  }
+  if (readTaskDrain(new Date()) !== null) {
+    return { suppressed: true, reason: "task_drain" };
   }
   return { suppressed: false, reason: null };
 }
@@ -19695,6 +19749,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
     drainActiveRunExecutions,
+    startTaskDrain,
+    stopTaskDrain,
+    getTaskDrainStatus,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
