@@ -33,6 +33,7 @@ import {
   type CapabilityOpenFixtureRunInput,
   type CapabilityRunContext,
   type CapabilitySemanticCommand,
+  type CapabilitySemanticToolRuntimeSnapshot,
   type CapabilityWakeContext,
 } from "./capability-control-plane-types.js";
 
@@ -48,6 +49,21 @@ export class CapabilityMockControlPlaneError extends Error {
     this.name = "CapabilityMockControlPlaneError";
   }
 }
+
+export interface CapabilitySemanticToolRuntimeStore {
+  load(runId: string): CapabilitySemanticToolRuntimeSnapshot | null;
+  save(runId: string, snapshot: CapabilitySemanticToolRuntimeSnapshot): void;
+  compareAndSwap(
+    runId: string,
+    expected: CapabilitySemanticToolRuntimeSnapshot | null,
+    snapshot: CapabilitySemanticToolRuntimeSnapshot,
+  ): boolean;
+}
+
+export interface CapabilityMockControlPlaneAdapterOptions {
+  /** Optional process-independent owner for durable semantic-tool receipts. */
+  semanticToolRuntimeStore?: CapabilitySemanticToolRuntimeStore;
+}
 /**
  * Deterministic, serializable control-plane authority for Capability scenarios.
  *
@@ -56,17 +72,39 @@ export class CapabilityMockControlPlaneError extends Error {
  */
 export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlPlanePort {
   #state: CapabilityFixtureState;
+  readonly #semanticToolRuntimeStore:
+    | CapabilitySemanticToolRuntimeStore
+    | undefined;
 
-  constructor(seed: CapabilityFixtureSeed | CapabilityFixtureState = {}) {
+  constructor(
+    seed: CapabilityFixtureSeed | CapabilityFixtureState = {},
+    options: CapabilityMockControlPlaneAdapterOptions = {},
+  ) {
+    this.#semanticToolRuntimeStore = options.semanticToolRuntimeStore;
     this.#state = isFixtureState(seed)
       ? clone(seed)
       : createCapabilityFixtureState(seed);
     // Serialized v1 fixtures from before company-scope sentinels remain valid.
     this.#state.outOfScopeTaskIds ??= [];
+    this.#state.semanticToolRuntimes ??= {};
     this.#validateState();
+    if (
+      this.#semanticToolRuntimeStore === undefined &&
+      Object.values(this.#state.semanticToolRuntimes).some((snapshot) =>
+        snapshot.extensions.some((extension) => extension.status === "pending"),
+      )
+    ) {
+      throw new CapabilityMockControlPlaneError(
+        "fixture_state_invalid",
+        "restoring pending semantic extensions requires a process-independent runtime store",
+      );
+    }
   }
 
-  static restore(serialized: string): CapabilityMockControlPlaneAdapter {
+  static restore(
+    serialized: string,
+    options: CapabilityMockControlPlaneAdapterOptions = {},
+  ): CapabilityMockControlPlaneAdapter {
     let parsed: unknown;
     try {
       parsed = JSON.parse(serialized);
@@ -82,7 +120,7 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
         "fixture state schema must be paperclip.capability.mock-state.v1",
       );
     }
-    return new CapabilityMockControlPlaneAdapter(parsed);
+    return new CapabilityMockControlPlaneAdapter(parsed, options);
   }
 
   async start(): Promise<void> {
@@ -581,6 +619,70 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
 
   snapshot(): Readonly<CapabilityFixtureState> {
     return deepFreeze(clone(this.#state));
+  }
+
+  loadSemanticToolRuntime(
+    runId: string,
+  ): CapabilitySemanticToolRuntimeSnapshot | null {
+    this.#run(runId);
+    const durable = this.#semanticToolRuntimeStore?.load(runId) ?? null;
+    if (durable !== null) {
+      if (!isSemanticToolRuntimeSnapshot(durable)) {
+        throw new CapabilityMockControlPlaneError(
+          "fixture_state_invalid",
+          "durable semantic tool runtime snapshot is invalid",
+        );
+      }
+      return clone(durable);
+    }
+    const snapshot = this.#state.semanticToolRuntimes?.[runId];
+    return snapshot === undefined ? null : clone(snapshot);
+  }
+
+  saveSemanticToolRuntime(
+    runId: string,
+    snapshot: CapabilitySemanticToolRuntimeSnapshot,
+  ): void {
+    this.#run(runId);
+    if (!isSemanticToolRuntimeSnapshot(snapshot)) {
+      throw new CapabilityMockControlPlaneError(
+        "fixture_state_invalid",
+        "semantic tool runtime snapshot is invalid",
+      );
+    }
+    const durableSnapshot = clone(snapshot);
+    this.#semanticToolRuntimeStore?.save(runId, durableSnapshot);
+    this.#state.semanticToolRuntimes![runId] = clone(durableSnapshot);
+  }
+
+  compareAndSwapSemanticToolRuntime(
+    runId: string,
+    expected: CapabilitySemanticToolRuntimeSnapshot | null,
+    snapshot: CapabilitySemanticToolRuntimeSnapshot,
+  ): boolean {
+    this.#run(runId);
+    if (
+      (expected !== null && !isSemanticToolRuntimeSnapshot(expected)) ||
+      !isSemanticToolRuntimeSnapshot(snapshot)
+    ) {
+      throw new CapabilityMockControlPlaneError(
+        "fixture_state_invalid",
+        "semantic tool runtime compare-and-swap snapshot is invalid",
+      );
+    }
+    const replacement = clone(snapshot);
+    const swapped = this.#semanticToolRuntimeStore === undefined
+      ? canonicalJson(this.#state.semanticToolRuntimes![runId] ?? null) ===
+        canonicalJson(expected)
+      : this.#semanticToolRuntimeStore.compareAndSwap(
+          runId,
+          expected === null ? null : clone(expected),
+          replacement,
+        );
+    if (swapped) {
+      this.#state.semanticToolRuntimes![runId] = clone(replacement);
+    }
+    return swapped;
   }
 
   decisionRecords(): readonly CapabilityDecisionRecord[] {
@@ -1708,7 +1810,189 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
         );
       }
     }
+    for (const [runId, snapshot] of Object.entries(this.#state.semanticToolRuntimes ?? {})) {
+      if (
+        !this.#state.runs.some((run) => run.id === runId) ||
+        !isSemanticToolRuntimeSnapshot(snapshot)
+      ) {
+        throw new CapabilityMockControlPlaneError(
+          "fixture_state_invalid",
+          `semantic tool runtime for ${runId} is invalid`,
+        );
+      }
+    }
   }
+}
+
+function isSemanticToolRuntimeSnapshot(
+  value: unknown,
+): value is CapabilitySemanticToolRuntimeSnapshot {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const snapshot = value as Record<string, unknown>;
+  if (
+    snapshot.schema !== "paperclip.capability.semantic-tool-runtime.v1" ||
+    !Number.isSafeInteger(snapshot.resultSequence) ||
+    Number(snapshot.resultSequence) < 0 ||
+    typeof snapshot.operationResults !== "object" ||
+    snapshot.operationResults === null ||
+    Array.isArray(snapshot.operationResults) ||
+    !Array.isArray(snapshot.extensions)
+  ) {
+    return false;
+  }
+  const operationResults = snapshot.operationResults as Record<
+    string,
+    unknown
+  >;
+  if (!Object.values(operationResults).every(isCapabilityJsonValue)) {
+    return false;
+  }
+  const keys = new Set<string>();
+  const validExtensions = snapshot.extensions.every((candidate) => {
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+      return false;
+    }
+    const extension = candidate as Record<string, unknown>;
+    if (
+      typeof extension.key !== "string" ||
+      extension.key.length === 0 ||
+      keys.has(extension.key) ||
+      typeof extension.input !== "string"
+    ) {
+      return false;
+    }
+    if (extension.status === "pending") {
+      if ("resultId" in extension || "execution" in extension) return false;
+      if (
+        (extension.ownerId !== undefined &&
+          (typeof extension.ownerId !== "string" || extension.ownerId.length === 0)) ||
+        (extension.leaseExpiresAtMs !== undefined &&
+          (!Number.isSafeInteger(extension.leaseExpiresAtMs) ||
+            Number(extension.leaseExpiresAtMs) < 0)) ||
+        (extension.phase !== undefined &&
+          extension.phase !== "reserved" &&
+          extension.phase !== "executing")
+      ) {
+        return false;
+      }
+      if (extension.preparedExecution !== undefined) {
+        if (
+          extension.phase !== "executing" ||
+          typeof extension.preparedExecution !== "object" ||
+          extension.preparedExecution === null ||
+          Array.isArray(extension.preparedExecution)
+        ) {
+          return false;
+        }
+        const prepared = extension.preparedExecution as Record<string, unknown>;
+        if (
+          !isCapabilityJsonValue(prepared.value) ||
+          (prepared.commandResult !== null &&
+            !isCapabilityCommandResult(prepared.commandResult)) ||
+          !Array.isArray(prepared.entityRefs) ||
+          prepared.entityRefs.some((ref) => typeof ref !== "string")
+        ) {
+          return false;
+        }
+      }
+      keys.add(extension.key);
+      return true;
+    }
+    if (
+      (extension.status !== undefined && extension.status !== "completed") ||
+      typeof extension.resultId !== "string" ||
+      extension.resultId.length === 0 ||
+      !Object.prototype.hasOwnProperty.call(
+        operationResults,
+        extension.resultId,
+      ) ||
+      typeof extension.execution !== "object" ||
+      extension.execution === null ||
+      Array.isArray(extension.execution)
+    ) {
+      return false;
+    }
+    const execution = extension.execution as Record<string, unknown>;
+    if (
+      !("value" in execution) ||
+      !isCapabilityJsonValue(execution.value) ||
+      !("commandResult" in execution) ||
+      (execution.commandResult !== null &&
+        !isCapabilityCommandResult(execution.commandResult)) ||
+      !Array.isArray(execution.entityRefs) ||
+      execution.entityRefs.some((ref) => typeof ref !== "string")
+    ) {
+      return false;
+    }
+    if (
+      canonicalJson(operationResults[extension.resultId]) !==
+      canonicalJson(execution.value)
+    ) {
+      return false;
+    }
+    keys.add(extension.key);
+    return true;
+  });
+  if (!validExtensions) return false;
+  const generatedResultIds = [
+    ...Object.keys(operationResults),
+    ...snapshot.extensions.flatMap((candidate) =>
+      candidate.status === "pending" ? [] : [candidate.resultId],
+    ),
+  ];
+  return generatedResultIds.every((resultId) => {
+    const match = /^tool-result-(\d+)$/.exec(resultId);
+    if (match === null) return true;
+    const sequence = Number(match[1]);
+    return (
+      Number.isSafeInteger(sequence) &&
+      sequence > 0 &&
+      sequence <= Number(snapshot.resultSequence)
+    );
+  });
+}
+
+function isCapabilityJsonValue(value: unknown): value is CapabilityJsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isCapabilityJsonValue);
+  if (typeof value !== "object") return false;
+  return Object.values(value as Record<string, unknown>).every(
+    isCapabilityJsonValue,
+  );
+}
+
+function isCapabilityCommandResult(
+  value: unknown,
+): value is CapabilityCommandResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const result = value as Record<string, unknown>;
+  return (
+    typeof result.commandId === "string" &&
+    result.commandId.length > 0 &&
+    typeof result.commandKind === "string" &&
+    Object.prototype.hasOwnProperty.call(
+      CAPABILITY_COMMAND_REQUIRED_CLAIMS,
+      result.commandKind,
+    ) &&
+    (result.disposition === "applied" || result.disposition === "duplicate") &&
+    Number.isSafeInteger(result.stateRevision) &&
+    Number(result.stateRevision) >= 0 &&
+    Array.isArray(result.entityRefs) &&
+    result.entityRefs.every((ref) => typeof ref === "string") &&
+    Array.isArray(result.scheduledWakeIds) &&
+    result.scheduledWakeIds.every((id) => typeof id === "string")
+  );
 }
 
 function isFixtureState(value: unknown): value is CapabilityFixtureState {
