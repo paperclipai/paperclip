@@ -340,6 +340,7 @@ export function toolAccessRoutes(
     req: Request,
     connection: { companyId: string; createdByUserId?: string | null },
   ) {
+    activeToolMembership(req, connection.companyId);
     if (await isToolConnectionManager(req, connection.companyId)) return;
     if (req.actor.userId && connection.createdByUserId === req.actor.userId) return;
     throw forbidden(
