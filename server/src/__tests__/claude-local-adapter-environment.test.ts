@@ -298,7 +298,7 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "claude_cwd_invalid")).toBe(false);
   });
 
-  it("uses --allowedTools instead of --dangerously-skip-permissions for sandbox hello probes", async () => {
+  it("disables tools for sandbox hello probes", async () => {
     const executeCalls: Array<{ command: string; args?: string[] }> = [];
 
     const result = await testEnvironment({
@@ -353,10 +353,14 @@ describe("claude_local environment diagnostics", () => {
     const probeCall = executeCalls.find((call) => call.command === "claude");
     expect(probeCall?.args).not.toContain("--dangerously-skip-permissions");
     expect(probeCall?.args).not.toContain("--permission-mode");
-    // Sandbox probes pass `--allowedTools` so any tool invocation triggered
-    // by the probe prompt cannot stall waiting for an interactive permission
-    // approval that no human is present to answer.
-    expect(probeCall?.args).toContain("--allowedTools");
+    // The fixed hello probe must not be able to invoke a tool or mutate the
+    // target, even when the execution lane normally uses an allowed-tools
+    // permission policy.
+    const toolsIndex = probeCall?.args?.indexOf("--tools") ?? -1;
+    expect(toolsIndex).toBeGreaterThanOrEqual(0);
+    expect(probeCall?.args?.[toolsIndex + 1]).toBe("");
+    expect(probeCall?.args).not.toContain("--allowedTools");
+    expect(probeCall?.args).not.toContain("--allowed-tools");
   });
 
   it("uses the managed Claude config seed for sandbox hello probes", async () => {
