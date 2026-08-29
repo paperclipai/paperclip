@@ -40,6 +40,15 @@ export const setDependenciesAction = {
         ]
       }
     },
+    "scenarioCall": {
+      "operationId": "set_dependencies",
+      "idempotencyKey": "example",
+      "input": {
+        "blockedByTaskIds": [
+          "example"
+        ]
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "set_dependencies",

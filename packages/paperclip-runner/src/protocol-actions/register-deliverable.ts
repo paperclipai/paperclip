@@ -42,6 +42,18 @@ export const registerDeliverableAction = {
         "title": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "register_deliverable",
+      "idempotencyKey": "example",
+      "input": {
+        "filename": "example",
+        "contentType": "example",
+        "byteSize": 1,
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "contentRef": "example",
+        "title": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "register_deliverable",

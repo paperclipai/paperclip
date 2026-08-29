@@ -36,6 +36,13 @@ export const requestReviewAction = {
         "summary": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "request_review",
+      "idempotencyKey": "example",
+      "input": {
+        "summary": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "request_review",

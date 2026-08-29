@@ -45,6 +45,15 @@ export const decideApprovalAction = {
         "note": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "decide_approval",
+      "idempotencyKey": "example",
+      "input": {
+        "approvalId": "example",
+        "decision": "approved",
+        "note": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "decide_approval",

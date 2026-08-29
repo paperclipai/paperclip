@@ -38,6 +38,13 @@ export const answerStatusQuestionAction = {
         "body": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "answer_status_question",
+      "idempotencyKey": "example",
+      "input": {
+        "body": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "answer_status_question",

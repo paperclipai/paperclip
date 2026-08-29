@@ -40,6 +40,13 @@ export const reportProgressAction = {
         "body": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "report_progress",
+      "idempotencyKey": "example",
+      "input": {
+        "body": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "report_progress",

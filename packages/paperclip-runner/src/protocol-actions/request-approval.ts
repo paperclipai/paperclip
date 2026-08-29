@@ -39,6 +39,14 @@ export const requestApprovalAction = {
         "payload": {}
       }
     },
+    "scenarioCall": {
+      "operationId": "request_approval",
+      "idempotencyKey": "example",
+      "input": {
+        "approvalType": "example",
+        "payload": {}
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "request_approval",

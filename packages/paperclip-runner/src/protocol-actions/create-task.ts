@@ -40,6 +40,13 @@ export const createTaskAction = {
         "title": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "create_task",
+      "idempotencyKey": "example",
+      "input": {
+        "title": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "create_task",

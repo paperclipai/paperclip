@@ -40,6 +40,16 @@ export const writeDocumentAction = {
         "baseRevisionId": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "write_document",
+      "idempotencyKey": "example",
+      "input": {
+        "key": "example",
+        "title": "example",
+        "body": "example",
+        "baseRevisionId": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "write_document",

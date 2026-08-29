@@ -1,51 +1,55 @@
-/** Canonical definition and documentation for `block_task`. */
-export const blockTaskAction = {
-  "id": "block_task",
+/** Canonical definition and documentation for `control_workspace_service`. */
+export const controlWorkspaceServiceAction = {
+  "id": "control_workspace_service",
   "canonical": {
-    "operationId": "block_task",
+    "operationId": "control_workspace_service",
     "surfaces": [
       "scenario",
       "live"
     ],
-    "placement": "always_agent_tool",
-    "optionalGroup": null,
-    "requiredClaims": [],
+    "placement": "optional_agent_tool",
+    "optionalGroup": "workspace_runtime",
+    "requiredClaims": [
+      "workspace:control"
+    ],
     "taskModes": [
       "standard",
       "skill_test"
     ],
-    "sideEffectClass": "task_write",
+    "sideEffectClass": "workspace_control",
     "idempotency": "required",
     "disabledByDefault": false,
     "realBindingStatus": "live_codex",
     "realServiceBinding": "unbound",
-    "prpEvidence": "semantic-operation item event plus active-task state diff, work-assessment, and issue-status-decision events",
+    "prpEvidence": "workspace service lifecycle event",
     "prpBindingStatus": "audit_pending",
     "legacyAliases": []
   },
   "documentation": {
-    "title": "Block active task",
-    "description": "Block the active mock task with a durable reason and optional first-class dependencies.",
+    "title": "Control workspace service",
+    "description": "Start, stop, or fault one active-task mock workspace service.",
     "note": null
   },
   "examples": {
     "call": {
-      "operationId": "block_task",
+      "operationId": "control_workspace_service",
       "input": {
         "idempotencyKey": "example",
-        "reason": "example"
+        "serviceId": "example",
+        "action": "start"
       }
     },
     "scenarioCall": {
-      "operationId": "block_task",
+      "operationId": "control_workspace_service",
       "idempotencyKey": "example",
       "input": {
-        "reason": "example"
+        "serviceId": "example",
+        "action": "start"
       }
     },
     "success": {
       "ok": true,
-      "operationId": "block_task",
+      "operationId": "control_workspace_service",
       "result": {
         "commandId": "example",
         "disposition": "applied",
@@ -60,15 +64,17 @@ export const blockTaskAction = {
     }
   },
   "live": {
-    "order": 11,
+    "order": 20,
     "descriptor": {
       "schema": "paperclip.semantic-tool.v1",
-      "operationId": "block_task",
+      "operationId": "control_workspace_service",
       "version": 1,
-      "title": "Block active task",
-      "description": "Block the active mock task with a durable reason and optional first-class dependencies.",
-      "exposure": "always",
-      "requiredClaims": [],
+      "title": "Control workspace service",
+      "description": "Start, stop, or fault one active-task mock workspace service.",
+      "exposure": "optional",
+      "requiredClaims": [
+        "workspace:control"
+      ],
       "allowedModes": [
         "standard",
         "skill_test"
@@ -82,26 +88,32 @@ export const blockTaskAction = {
             "minLength": 1,
             "maxLength": 240
           },
-          "reason": {
+          "serviceId": {
             "type": "string",
-            "description": "Block reason.",
+            "description": "Mock workspace service id.",
             "minLength": 1,
-            "maxLength": 20000
+            "maxLength": 200
           },
-          "blockedByTaskIds": {
-            "type": "array",
-            "description": "Internal mock task ids that block this task.",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            },
-            "maxItems": 200,
-            "uniqueItems": true
+          "action": {
+            "enum": [
+              "start",
+              "stop",
+              "fail"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional mock service URL.",
+            "maxLength": 20000
           }
         },
         "required": [
           "idempotencyKey",
-          "reason"
+          "serviceId",
+          "action"
         ],
         "additionalProperties": false
       },
@@ -157,44 +169,34 @@ export const blockTaskAction = {
     }
   },
   "scenario": {
-    "order": 8,
-    "successExample": {
-      "schema": "paperclip.capability.tool-result.v1",
-      "ok": true,
-      "operationId": "block_task",
-      "operationResultId": "example-result",
-      "value": {
-        "commandId": "example",
-        "disposition": "applied",
-        "stateRevision": 1,
-        "entityRefs": ["example"],
-        "scheduledWakeIds": ["example"]
-      },
-      "commandResult": null,
-      "authorization": {}
-    },
+    "order": 27,
     "descriptor": {
-      "operationId": "block_task",
+      "operationId": "control_workspace_service",
       "version": 1,
-      "title": "Block task",
-      "description": "Block the active task with a reason and optional first-class dependencies.",
+      "title": "Control Workspace Service",
+      "description": "Control Workspace Service through the Capability workspace runtime capability set.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "reason": {
+          "serviceId": {
             "type": "string",
             "minLength": 1
           },
-          "blockedByTaskIds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop",
+              "fail"
+            ]
+          },
+          "url": {
+            "type": "string"
           }
         },
         "required": [
-          "reason"
+          "serviceId",
+          "action"
         ],
         "additionalProperties": false
       },
@@ -233,19 +235,21 @@ export const blockTaskAction = {
         ],
         "additionalProperties": false
       },
-      "disposition": "always_agent_tool",
-      "optionalGroup": null,
-      "requiredClaims": [],
+      "disposition": "optional_agent_tool",
+      "optionalGroup": "workspace_runtime",
+      "requiredClaims": [
+        "workspace:control"
+      ],
       "taskModes": [
         "standard",
         "skill_test"
       ],
-      "sideEffectClass": "task_write",
+      "sideEffectClass": "workspace_control",
       "idempotency": "required",
       "redaction": [],
       "mockCommandMapping": {
         "kind": "semantic_command",
-        "commandKind": "block_task"
+        "commandKind": "control_workspace_service"
       }
     }
   }

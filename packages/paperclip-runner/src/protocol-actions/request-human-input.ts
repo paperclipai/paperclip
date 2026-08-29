@@ -41,6 +41,16 @@ export const requestHumanInputAction = {
         "continuationPolicy": "none"
       }
     },
+    "scenarioCall": {
+      "operationId": "request_human_input",
+      "idempotencyKey": "example",
+      "input": {
+        "interactionKind": "confirmation",
+        "title": "example",
+        "prompt": "example",
+        "continuationPolicy": "none"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "request_human_input",

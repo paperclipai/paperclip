@@ -36,6 +36,13 @@ export const finishTaskAction = {
         "summary": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "finish_task",
+      "idempotencyKey": "example",
+      "input": {
+        "summary": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "finish_task",

@@ -41,6 +41,14 @@ export const commentOnApprovalAction = {
         "body": "example"
       }
     },
+    "scenarioCall": {
+      "operationId": "comment_on_approval",
+      "idempotencyKey": "example",
+      "input": {
+        "approvalId": "example",
+        "body": "example"
+      }
+    },
     "success": {
       "ok": true,
       "operationId": "comment_on_approval",
