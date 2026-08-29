@@ -159,6 +159,16 @@ describe("shared Claude hello probe no-tool boundary", () => {
     expect(checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
     const call = runAdapterExecutionTargetProcess.mock.calls.at(-1) as unknown as unknown[];
     const spawnedArgs = call[3] as string[];
+    const options = call[4] as {
+      timeoutSec: number;
+      graceSec: number;
+      stdin: string;
+      onLog: unknown;
+    };
+    expect(options.timeoutSec).toBe(45);
+    expect(options.graceSec).toBe(5);
+    expect(options.stdin).toBe("Respond with hello.");
+    expect(options.onLog).toEqual(expect.any(Function));
     const toolsIndex = spawnedArgs.indexOf("--tools");
     expect(toolsIndex).toBeGreaterThanOrEqual(0);
     expect(spawnedArgs[toolsIndex + 1]).toBe("");
@@ -606,6 +616,28 @@ describe("claude sandbox hello probe diagnostics", () => {
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.detail).toBeUndefined();
     expect(JSON.stringify(result.checks)).not.toContain('"subtype":"init"');
+  });
+});
+
+describe("claude CLI hello probe skip disposition", () => {
+  it("reports a warning when a custom command prevents the provider probe", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "custom-claude-wrapper" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const skipped = result.checks.find(
+      (check) => check.code === "claude_hello_probe_skipped_custom_command",
+    );
+    expect(skipped).toMatchObject({
+      level: "warn",
+      message: "Skipped hello probe because command is not `claude`.",
+    });
+    expect(result.status).toBe("warn");
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(false);
   });
 });
 

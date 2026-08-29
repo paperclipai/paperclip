@@ -333,6 +333,25 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(JSON.stringify(spawnedArgs)).not.toContain("Write");
   });
 
+  it("uses the fixed hello input, grace period, and sandbox timeout", async () => {
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
+
+    await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const options = call[4] as {
+      timeoutSec: number;
+      graceSec: number;
+      stdin: string;
+    };
+    expect(options.timeoutSec).toBe(90);
+    expect(options.graceSec).toBe(5);
+    expect(options.stdin).toBe("Respond with hello.");
+  });
+
   it("emits a distinct warn check, not a silent pass, when the probe cannot run", async () => {
     probeResult.throwError = new Error("claude command not found");
 

@@ -210,7 +210,7 @@ export async function testEnvironment(
     if (!claudeCommandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
-        level: "info",
+        level: "warn",
         message: "Skipped hello probe because command is not `claude`.",
         detail: command,
         hint: "Use the `claude` CLI command to run the automatic login and installation probe.",

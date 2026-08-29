@@ -346,7 +346,6 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         code: "claude_managed_config_dir",
         level: "info",
         message: "The environment probe is using Paperclip-managed Claude config materialization.",
-        detail: remoteClaudeConfigDir,
       });
     } catch (err) {
       // Keep the raw error out of the Test-result check and the server log. Log

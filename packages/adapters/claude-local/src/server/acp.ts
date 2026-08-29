@@ -14,6 +14,7 @@ import {
   parseLocalProcessNetworkScope,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
+  ensureAdapterExecutionTargetDirectory,
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -554,7 +555,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
     }
     command = built.command;
     env = built.env;
-    cwd = asString(config.cwd, process.cwd());
+    cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   }
 
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
@@ -618,20 +619,25 @@ export async function testClaudeAcpEnvironment(
     });
   }
 
-  const cwd = asString(config.cwd, process.cwd());
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
-    await fs.mkdir(cwd, { recursive: true });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "claude_acp_cwd_valid",
       level: "info",
       message: `Working directory is valid: ${cwd}`,
     });
-  } catch (err) {
+  } catch {
     checks.push({
       code: "claude_acp_cwd_invalid",
       level: "error",
-      message: err instanceof Error ? err.message : "Invalid working directory",
-      detail: cwd,
+      message: "The Claude ACP working directory is not available on the selected target.",
+      hint: "Choose a valid working directory on the selected execution target, then retry the Test.",
     });
   }
 
@@ -762,7 +768,6 @@ export async function testClaudeAcpEnvironment(
     if (isNonEmpty(hostConfigDir) && !isNonEmpty(probeEnv.CLAUDE_CONFIG_DIR)) {
       probeEnv.CLAUDE_CONFIG_DIR = hostConfigDir.trim();
     }
-    const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     checks.push(
       ...(await prepareSandboxClaudeProbeRuntime({
         runId,
