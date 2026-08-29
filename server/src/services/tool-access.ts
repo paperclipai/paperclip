@@ -8898,95 +8898,117 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       };
     }
 
-    const subjectCredentialSecretRefs = connection.credentialSecretRefs;
-    const accessRef = await createOrRotateOAuthSecret({
-      companyId: connection.companyId,
-      connection,
-      configPath: "oauth.access_token",
-      label: "OAuth access token",
-      value: token.accessToken,
-      actor: input.actor,
-    });
-    const nextCredentialSecretRefs = [
-      ...subjectCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
-      accessRef,
-    ];
-    if (token.refreshToken) {
-      nextCredentialSecretRefs.push(await createOrRotateOAuthSecret({
+    const organizationActorUserId = stateRow.createdByActorType === "user"
+      ? stateRow.createdByActorId
+      : null;
+    if (!organizationActorUserId) {
+      throw forbidden("Organization OAuth completion requires the user who started sign-in");
+    }
+    await db.transaction(async (tx) => {
+      // Keep callback persistence serialized with membership suspension, role
+      // downgrade, and removal. Once this row is locked, authority cannot be
+      // revoked between the live check and the shared credential/grant writes.
+      const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, connection.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, organizationActorUserId),
+        eq(companyMemberships.status, "active"),
+        ne(companyMemberships.membershipRole, "viewer"),
+      )).limit(1).for("update");
+      if (!membership) {
+        throw forbidden("Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.");
+      }
+
+      const subjectCredentialSecretRefs = connection.credentialSecretRefs;
+      const accessRef = await createOrRotateOAuthSecret({
         companyId: connection.companyId,
         connection,
-        configPath: "oauth.refresh_token",
-        label: "OAuth refresh token",
-        value: token.refreshToken,
+        configPath: "oauth.access_token",
+        label: "OAuth access token",
+        value: token.accessToken,
         actor: input.actor,
-      }));
-    } else {
-      const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
-      if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
-    }
-    const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
-    const nextConfig = {
-      ...connection.config,
-      oauth: {
-        ...withoutOAuthRefreshLease(oauthConfig(connection)),
-        provider: endpoints.provider,
-        authorizationUrl: endpoints.authorizationUrl,
-        tokenUrl: endpoints.tokenUrl,
-        metadataUrl: endpoints.metadataUrl ?? null,
-        scopes: galleryEntry ? normalizeOauthScopes(stateRow.requestedScopes) : endpoints.scopes,
-        clientIdEnv: client.clientIdEnv,
-        clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
-        credentialScope: credentialScope(connection, input.actor),
-        // Keep the issuer and resource this grant was minted against so refresh,
-        // reconnect, revoke and diagnostics resolve the same authorization server
-        // instead of re-discovering one from a possibly-changed endpoint.
-        issuer: endpoints.issuer ?? oauthConfig(connection).issuer ?? null,
-        resource: endpoints.resource ?? oauthConfig(connection).resource ?? null,
-        expiresAt,
-        scope: token.scope,
-        tokenType: token.tokenType,
-        connectedAt: new Date().toISOString(),
-      },
-      providerMetadata: {
-        ...asRecord(connection.config.providerMetadata),
-        oauth: { expiresAt, scope: token.scope, tokenType: token.tokenType },
-      },
-    };
-    const [updatedConnection] = await db
-      .update(toolConnections)
-      .set({
-        status: "active",
-        enabled: true,
-        authKind: "oauth",
-        config: nextConfig,
-        transportConfig: nextConfig,
-        credentialSecretRefs: nextCredentialSecretRefs,
-        credentialRefs: [
-          ...connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token"),
-          {
-            name: "oauth.access_token",
-            secretId: accessRef.secretId,
-            version: "latest" as const,
-            placement: "header" as const,
-            key: "Authorization",
-            prefix: "Bearer ",
-          },
-        ],
-        updatedAt: new Date(),
-      })
-      .where(eq(toolConnections.id, connection.id))
-      .returning();
-    connection = updatedConnection;
-    await db
-      .update(toolApplications)
-      .set({ status: "active", updatedAt: new Date() })
-      .where(eq(toolApplications.id, connection.applicationId));
-    // The organization grant is created before OAuth has any secrets to attach.
-    // Synchronize it after every successful callback/rotation so all real tool
-    // execution paths receive the credentials that setup and catalog discovery
-    // just proved.
-    await ensureDefaultOrganizationGrant(connection);
-    await syncCredentialBindings(connection);
+      });
+      const nextCredentialSecretRefs = [
+        ...subjectCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
+        accessRef,
+      ];
+      if (token.refreshToken) {
+        nextCredentialSecretRefs.push(await createOrRotateOAuthSecret({
+          companyId: connection.companyId,
+          connection,
+          configPath: "oauth.refresh_token",
+          label: "OAuth refresh token",
+          value: token.refreshToken,
+          actor: input.actor,
+        }));
+      } else {
+        const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+        if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
+      }
+      const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
+      const nextConfig = {
+        ...connection.config,
+        oauth: {
+          ...withoutOAuthRefreshLease(oauthConfig(connection)),
+          provider: endpoints.provider,
+          authorizationUrl: endpoints.authorizationUrl,
+          tokenUrl: endpoints.tokenUrl,
+          metadataUrl: endpoints.metadataUrl ?? null,
+          scopes: galleryEntry ? normalizeOauthScopes(stateRow.requestedScopes) : endpoints.scopes,
+          clientIdEnv: client.clientIdEnv,
+          clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
+          credentialScope: credentialScope(connection, input.actor),
+          // Keep the issuer and resource this grant was minted against so refresh,
+          // reconnect, revoke and diagnostics resolve the same authorization server
+          // instead of re-discovering one from a possibly-changed endpoint.
+          issuer: endpoints.issuer ?? oauthConfig(connection).issuer ?? null,
+          resource: endpoints.resource ?? oauthConfig(connection).resource ?? null,
+          expiresAt,
+          scope: token.scope,
+          tokenType: token.tokenType,
+          connectedAt: new Date().toISOString(),
+        },
+        providerMetadata: {
+          ...asRecord(connection.config.providerMetadata),
+          oauth: { expiresAt, scope: token.scope, tokenType: token.tokenType },
+        },
+      };
+      const [updatedConnection] = await tx
+        .update(toolConnections)
+        .set({
+          status: "active",
+          enabled: true,
+          authKind: "oauth",
+          config: nextConfig,
+          transportConfig: nextConfig,
+          credentialSecretRefs: nextCredentialSecretRefs,
+          credentialRefs: [
+            ...connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token"),
+            {
+              name: "oauth.access_token",
+              secretId: accessRef.secretId,
+              version: "latest" as const,
+              placement: "header" as const,
+              key: "Authorization",
+              prefix: "Bearer ",
+            },
+          ],
+          updatedAt: new Date(),
+        })
+        .where(eq(toolConnections.id, connection.id))
+        .returning();
+      connection = updatedConnection;
+      await tx
+        .update(toolApplications)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(eq(toolApplications.id, connection.applicationId));
+      // The organization grant is created before OAuth has any secrets to attach.
+      // Synchronize it after every successful callback/rotation so all real tool
+      // execution paths receive the credentials that setup and catalog discovery
+      // just proved.
+      await ensureDefaultOrganizationGrant(connection);
+      await syncCredentialBindings(connection);
+    });
 
     await checkConnectionHealth(connection.id, input.actor);
     const refresh = await refreshCatalog(connection.id, input.actor, { enableAllByDefault: true });

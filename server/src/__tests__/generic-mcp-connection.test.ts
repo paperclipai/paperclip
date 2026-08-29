@@ -272,7 +272,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
 }
 
 async function createCompany(db: ReturnType<typeof createDb>) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Generic MCP ${randomUUID()}`,
@@ -280,6 +280,14 @@ async function createCompany(db: ReturnType<typeof createDb>) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: "board-user",
+    status: "active",
+    membershipRole: "admin",
+  });
+  return company;
 }
 
 function createRouteApp(
@@ -752,6 +760,47 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(connection!.config)).not.toContain("fixture-access-");
     expect(connection!.credentialSecretRefs.map((ref) => ref.configPath).sort())
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
+  });
+
+  it("rejects organization OAuth completion after the initiating user loses write access", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+
+    const connected = await service.connectGalleryApp(company.id, {
+      link: MCP_URL,
+      name: "Fixture revoked organization OAuth",
+    });
+    const start = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor,
+    });
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "viewer" })
+      .where(eq(companyMemberships.companyId, company.id));
+
+    const authorizationUrl = new URL(start.authorizationUrl);
+    const code = fixture.issueAuthorizationCode(start.authorizationUrl);
+    await expect(service.completeOAuthCallback({
+      state: authorizationUrl.searchParams.get("state")!,
+      code,
+      iss: ISSUER,
+      redirectUri: REDIRECT_URI,
+      actor,
+    })).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("membership no longer permits connection changes"),
+    });
+
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(connection).toMatchObject({ status: "draft" });
+    expect(connection!.credentialSecretRefs.some((ref) => ref.configPath === "oauth.access_token")).toBe(false);
+    expect(connection!.credentialSecretRefs.some((ref) => ref.configPath === "oauth.refresh_token")).toBe(false);
   });
 
   it("discovers a pathful issuer through the OIDC suffix form too", async () => {
