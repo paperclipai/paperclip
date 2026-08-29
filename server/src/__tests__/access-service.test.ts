@@ -479,6 +479,96 @@ describeEmbeddedPostgres("access service", () => {
       .toEqual([expect.objectContaining({ status: "active", enabled: true, credentialSecretRefs })]);
   });
 
+  it("keeps a mixed connection active when an unaffected organization credential survives", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const departing = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: `departing-mixed-${randomUUID()}`,
+      status: "active",
+      membershipRole: "member",
+    }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `mixed-${randomUUID()}`,
+      name: "Mixed credential app",
+      type: "mcp",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const definition = await db.insert(userSecretDefinitions).values({
+      companyId: company.id,
+      key: `mixed-personal-${randomUUID()}`,
+      name: "Mixed personal token",
+    }).returning().then((rows) => rows[0]!);
+    const personalSecret = await db.insert(companySecrets).values({
+      companyId: company.id,
+      scope: "user",
+      ownerUserId: departing.principalId,
+      userSecretDefinitionId: definition.id,
+      key: `mixed-personal-${randomUUID()}`,
+      name: "Mixed personal token",
+    }).returning().then((rows) => rows[0]!);
+    const organizationSecret = await db.insert(companySecrets).values({
+      companyId: company.id,
+      scope: "company",
+      key: `mixed-organization-${randomUUID()}`,
+      name: "Mixed organization token",
+    }).returning().then((rows) => rows[0]!);
+    const personalRef = { secretId: personalSecret.id, configPath: "credentials.personal" };
+    const organizationRef = { secretId: organizationSecret.id, configPath: "credentials.organization" };
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Mixed credential connection",
+      uid: `mixed-${randomUUID()}`,
+      connectionKind: "managed",
+      ownership: "customer",
+      transport: "mcp_remote",
+      authKind: "api_key",
+      credentialPolicy: "per_user_with_fallback",
+      status: "active",
+      enabled: true,
+      healthStatus: "healthy",
+      credentialSecretRefs: [personalRef, organizationRef],
+    }).returning().then((rows) => rows[0]!);
+    const personalGrant = await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      kind: "user",
+      subjectUserId: departing.principalId,
+      credentialSecretRefs: [personalRef],
+    }).returning().then((rows) => rows[0]!);
+    const organizationGrant = await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      kind: "organization",
+      status: "active",
+      isDefault: true,
+      credentialSecretRefs: [organizationRef],
+    }).returning().then((rows) => rows[0]!);
+
+    await accessService(db).archiveMember(company.id, departing.id, {
+      reassignment: { assigneeUserId: owner.principalId },
+    });
+
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, personalSecret.id)))
+      .toHaveLength(0);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, organizationSecret.id)))
+      .toHaveLength(1);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, personalGrant.id)))
+      .toEqual([expect.objectContaining({ status: "revoked", credentialSecretRefs: [] })]);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, organizationGrant.id)))
+      .toEqual([expect.objectContaining({ status: "active", credentialSecretRefs: [organizationRef] })]);
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))
+      .toEqual([expect.objectContaining({
+        status: "active",
+        enabled: true,
+        healthStatus: "healthy",
+        lastError: null,
+        credentialSecretRefs: [organizationRef],
+      })]);
+  });
+
   it("keeps a sole organization audience dormant until its member is reactivated", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const departing = await db.insert(companyMemberships).values({

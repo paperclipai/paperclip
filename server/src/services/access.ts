@@ -283,14 +283,23 @@ export function accessService(db: Db) {
           credentialRefs.length !== connection.credentialRefs.length ||
           credentialSecretRefs.length !== connection.credentialSecretRefs.length
         ) {
+          const hasUnaffectedActiveGrant = grantRefs.some((grant) =>
+            grant.connectionId === connection.id
+            && !ownedGrantIds.has(grant.id)
+            && grant.status === "active"
+            && grant.credentialSecretRefs.length > 0
+            && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
+          );
           await tx.update(toolConnections).set({
             credentialRefs,
             credentialSecretRefs,
-            status: "draft",
-            enabled: false,
-            healthStatus: "missing_secret",
-            healthMessage: "Personal credential owner no longer has company access. Reauthorize this connection.",
-            lastError: "oauth_reauthorization_required",
+            ...(!hasUnaffectedActiveGrant ? {
+              status: "draft" as const,
+              enabled: false,
+              healthStatus: "missing_secret" as const,
+              healthMessage: "Personal credential owner no longer has company access. Reauthorize this connection.",
+              lastError: "oauth_reauthorization_required",
+            } : {}),
             updatedAt: now,
           })
             .where(eq(toolConnections.id, connection.id));
