@@ -14,6 +14,9 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   buildIssueGraphLivenessAutoRecoveryPreview: vi.fn(),
   reconcileIssueGraphLiveness: vi.fn(),
+  startTaskDrain: vi.fn(),
+  stopTaskDrain: vi.fn(),
+  getTaskDrainStatus: vi.fn(),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -77,6 +80,9 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
     mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
+    mockHeartbeatService.startTaskDrain.mockReset();
+    mockHeartbeatService.stopTaskDrain.mockReset();
+    mockHeartbeatService.getTaskDrainStatus.mockReset();
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
@@ -922,6 +928,123 @@ describe("instance settings routes", () => {
         .patch("/api/instance/settings/experimental")
         .send({ enableEnvironments: true });
       expect(experimental.status).toBe(200);
+    });
+  });
+
+  describe("task drain", () => {
+    const adminActor = {
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+    };
+    const nonAdminActor = {
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    };
+    const idleStatus = {
+      draining: false,
+      startedAt: null,
+      expiresAt: null,
+      activeRuns: 0,
+      pendingWakes: 0,
+      quiescent: true,
+    };
+
+    afterEach(() => {
+      // A drain the mock left active must not carry over into an unrelated
+      // test, so every test starts from the idle status again.
+      mockHeartbeatService.getTaskDrainStatus.mockReset();
+      mockHeartbeatService.startTaskDrain.mockReset();
+      mockHeartbeatService.stopTaskDrain.mockReset();
+    });
+
+    it("returns the idle status", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const app = await createApp(nonAdminActor);
+
+      const res = await request(app).get("/api/instance/task-drain");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(idleStatus);
+    });
+
+    it("starts a drain and writes an activity record", async () => {
+      const startedAt = "2026-08-29T00:00:00.000Z";
+      const expiresAt = "2026-08-29T06:00:00.000Z";
+      mockHeartbeatService.startTaskDrain.mockReturnValue({ startedAt, expiresAt });
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .post("/api/instance/task-drain")
+        .send({ ttlMs: 21_600_000 });
+
+      expect(res.status).toBe(200);
+      expect(mockHeartbeatService.startTaskDrain).toHaveBeenCalledWith({ ttlMs: 21_600_000 });
+      expect(mockLogActivity).toHaveBeenCalledTimes(2);
+      for (const call of mockLogActivity.mock.calls) {
+        expect(call[1]).toMatchObject({ action: "instance.task_drain.started" });
+      }
+    });
+
+    it("starts an indefinite drain when the caller sends no ttlMs", async () => {
+      mockHeartbeatService.startTaskDrain.mockReturnValue({ startedAt: "2026-08-29T00:00:00.000Z", expiresAt: null });
+      const app = await createApp(adminActor);
+
+      const res = await request(app).post("/api/instance/task-drain").send({});
+
+      expect(res.status).toBe(200);
+      expect(mockHeartbeatService.startTaskDrain).toHaveBeenCalledWith({ ttlMs: null });
+    });
+
+    it("ends the drain and writes an activity record", async () => {
+      mockHeartbeatService.stopTaskDrain.mockReturnValue({ wasActive: true });
+      const app = await createApp(adminActor);
+
+      const res = await request(app).delete("/api/instance/task-drain");
+
+      expect(res.status).toBe(200);
+      expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledWith();
+      expect(mockLogActivity).toHaveBeenCalledTimes(2);
+      for (const call of mockLogActivity.mock.calls) {
+        expect(call[1]).toMatchObject({ action: "instance.task_drain.stopped" });
+      }
+    });
+
+    it("rejects a board actor without instance admin rights", async () => {
+      const app = await createApp(nonAdminActor);
+
+      const res = await request(app).post("/api/instance/task-drain").send({});
+
+      expect(res.status).toBe(403);
+      expect(mockHeartbeatService.startTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("rejects a ttl above the maximum", async () => {
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .post("/api/instance/task-drain")
+        .send({ ttlMs: 24 * 60 * 60 * 1000 + 1 });
+
+      expect(res.status).toBe(400);
+      expect(mockHeartbeatService.startTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("rejects a zero or negative ttl", async () => {
+      const app = await createApp(adminActor);
+
+      const zeroRes = await request(app).post("/api/instance/task-drain").send({ ttlMs: 0 });
+      expect(zeroRes.status).toBe(400);
+
+      const negativeRes = await request(app).post("/api/instance/task-drain").send({ ttlMs: -1 });
+      expect(negativeRes.status).toBe(400);
+
+      expect(mockHeartbeatService.startTaskDrain).not.toHaveBeenCalled();
     });
   });
 });

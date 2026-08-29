@@ -1641,6 +1641,12 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  MAX_TASK_DRAIN_TTL_MS,
+  startTaskDrainRequestSchema,
+  type StartTaskDrainRequest,
+} from "./validators/instance.js";
+
+export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,

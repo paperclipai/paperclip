@@ -5,6 +5,7 @@ import {
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -290,6 +291,68 @@ export function instanceSettingsRoutes(db: Db) {
       res.json(result);
     },
   );
+
+  router.get("/instance/task-drain", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(heartbeat.getTaskDrainStatus());
+  });
+
+  router.post(
+    "/instance/task-drain",
+    validate(startTaskDrainRequestSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      const drain = heartbeat.startTaskDrain({ ttlMs: req.body.ttlMs ?? null });
+      const actor = getActorInfo(req);
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "instance.task_drain.started",
+            entityType: "instance_settings",
+            entityId: "default",
+            details: {
+              startedAt: drain.startedAt,
+              expiresAt: drain.expiresAt,
+            },
+          }),
+        ),
+      );
+      res.json(drain);
+    },
+  );
+
+  router.delete("/instance/task-drain", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const result = heartbeat.stopTaskDrain();
+    const actor = getActorInfo(req);
+    const companyIds = await svc.listCompanyIds();
+    await Promise.all(
+      companyIds.map((companyId) =>
+        logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "instance.task_drain.stopped",
+          entityType: "instance_settings",
+          entityId: "default",
+          details: {
+            wasActive: result.wasActive,
+          },
+        }),
+      ),
+    );
+    res.json(result);
+  });
 
   return router;
 }
