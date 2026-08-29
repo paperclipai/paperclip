@@ -7840,6 +7840,9 @@ export function issueRoutes(
       lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
     });
     const doc = result.document;
+    // Signal that the protected mutation committed so the human-gate grant restore does not
+    // undo the claim if a subsequent post-write operation returns 4xx.
+    res.locals.humanGateMutationCommitted = true;
     const redirectedFromLockedDocument =
       "redirectedFromLockedDocument" in result ? result.redirectedFromLockedDocument : null;
     await issueReferencesSvc.syncDocument(doc.id);
@@ -8570,6 +8573,9 @@ export function issueRoutes(
       res.status(404).json({ error: "Work product not found" });
       return;
     }
+    // Signal that the protected mutation committed so the human-gate grant restore does not
+    // undo the claim if a subsequent post-write operation returns 4xx.
+    res.locals.humanGateMutationCommitted = true;
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
@@ -9291,6 +9297,9 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
     });
+    // Signal that the protected mutation committed so the human-gate grant restore does not
+    // undo the claim if a subsequent post-write operation returns 4xx.
+    res.locals.humanGateMutationCommitted = true;
     await externalObjectsSvc.syncIssueSafely(issue.id);
 
     await logActivity(db, {
@@ -10426,6 +10435,10 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    // Signal that the protected mutation committed so the human-gate grant restore
+    // in assertHumanAssignedIssueMutationAllowed does not undo the claim on any
+    // subsequent 4xx response (e.g. a post-mutation notification failure).
+    res.locals.humanGateMutationCommitted = true;
     for (const publication of postCommitActivityPublications) publishActivity(publication);
 
     if (enteringBlocked) {
