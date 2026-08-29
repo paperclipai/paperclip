@@ -8,6 +8,7 @@ import {
 import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
+  cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
@@ -16,6 +17,15 @@ import {
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
+  it("requires a strict, non-empty cancellation reason", () => {
+    expect(cancelIssueThreadInteractionSchema.parse({ reason: "  Superseded  " })).toEqual({
+      reason: "Superseded",
+    });
+    expect(cancelIssueThreadInteractionSchema.safeParse({}).success).toBe(false);
+    expect(cancelIssueThreadInteractionSchema.safeParse({ reason: "   " }).success).toBe(false);
+    expect(cancelIssueThreadInteractionSchema.safeParse({ cancellationReason: "Superseded" }).success).toBe(false);
+  });
+
   it("defines canonical resolver policies and normalizes compatibility aliases", () => {
     expect(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES).toEqual([
       "anyone",

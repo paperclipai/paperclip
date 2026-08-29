@@ -1481,8 +1481,8 @@ export const rejectIssueThreadInteractionSchema = z.object({
 export type RejectIssueThreadInteraction = z.infer<typeof rejectIssueThreadInteractionSchema>;
 
 export const cancelIssueThreadInteractionSchema = z.object({
-  reason: z.string().trim().max(4000).optional(),
-});
+  reason: z.string().trim().min(1).max(4000),
+}).strict();
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 
 export const withdrawIssueThreadInteractionSchema = z.object({

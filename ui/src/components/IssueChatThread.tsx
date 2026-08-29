@@ -233,6 +233,7 @@ interface IssueChatMessageContext {
   ) => Promise<void> | void;
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
+    reason: string,
   ) => Promise<void> | void;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
@@ -561,6 +562,7 @@ interface IssueChatThreadProps {
   ) => Promise<void> | void;
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
+    reason: string,
   ) => Promise<void> | void;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,

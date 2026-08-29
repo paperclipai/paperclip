@@ -392,7 +392,7 @@ npx paperclipai issue interaction:create <issue-id> --payload-json '{"kind":"req
 npx paperclipai issue interaction:accept <issue-id> <interaction-id> [--selected-client-keys key1,key2]
 npx paperclipai issue interaction:reject <issue-id> <interaction-id> [--reason "..."]
 npx paperclipai issue interaction:respond <issue-id> <interaction-id> --answers-json '[{"questionId":"q1","optionIds":["yes"]}]'
-npx paperclipai issue interaction:cancel <issue-id> <interaction-id> [--reason "..."]
+npx paperclipai issue interaction:cancel <issue-id> <interaction-id> --reason "..."
 ```
 
 ```sh

@@ -762,29 +762,43 @@ export function registerIssueCommands(program: Command): void {
       }),
   );
 
-  for (const [name, action, schema, description] of [
-    ["interaction:reject", "reject", rejectIssueThreadInteractionSchema, "Reject an issue thread interaction"],
-    ["interaction:cancel", "cancel", cancelIssueThreadInteractionSchema, "Cancel an issue thread interaction"],
-  ] as const) {
-    addCommonClientOptions(
-      issue
-        .command(name)
-        .description(description)
-        .argument("<issueId>", "Issue ID")
-        .argument("<interactionId>", "Interaction ID")
-        .option("--reason <text>", "Reason")
-        .action(async (issueId: string, interactionId: string, opts: InteractionReasonOptions) => {
-          try {
-            const ctx = resolveCommandContext(opts);
-            const payload = schema.parse({ reason: opts.reason });
-            const interaction = await ctx.api.post(`${apiPath`/api/issues/${issueId}/interactions/${interactionId}`}/${action}`, payload);
-            printOutput(interaction, { json: ctx.json });
-          } catch (err) {
-            handleCommandError(err);
-          }
-        }),
-    );
-  }
+  addCommonClientOptions(
+    issue
+      .command("interaction:reject")
+      .description("Reject an issue thread interaction")
+      .argument("<issueId>", "Issue ID")
+      .argument("<interactionId>", "Interaction ID")
+      .option("--reason <text>", "Reason")
+      .action(async (issueId: string, interactionId: string, opts: InteractionReasonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = rejectIssueThreadInteractionSchema.parse({ reason: opts.reason });
+          const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/reject`, payload);
+          printOutput(interaction, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("interaction:cancel")
+      .description("Cancel an issue thread interaction")
+      .argument("<issueId>", "Issue ID")
+      .argument("<interactionId>", "Interaction ID")
+      .requiredOption("--reason <text>", "Cancellation reason")
+      .action(async (issueId: string, interactionId: string, opts: InteractionReasonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = cancelIssueThreadInteractionSchema.parse({ reason: opts.reason });
+          const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/cancel`, payload);
+          printOutput(interaction, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 
   addCommonClientOptions(
     issue

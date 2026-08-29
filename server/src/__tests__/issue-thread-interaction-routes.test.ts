@@ -513,7 +513,7 @@ describe.sequential("issue thread interaction routes", () => {
         version: 1,
         answers: [],
         cancelled: true,
-        cancellationReason: null,
+        cancellationReason: "No longer needed",
         summaryMarkdown: null,
       },
       createdAt: "2026-04-20T12:00:00.000Z",
@@ -939,14 +939,14 @@ describe.sequential("issue thread interaction routes", () => {
 
     const res = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
-      .send({});
+      .send({ reason: "No longer needed" });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("cancelled");
     expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
       expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
       "interaction-2",
-      {},
+      { reason: "No longer needed" },
       expect.objectContaining({ userId: "local-board" }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -966,7 +966,65 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.thread_interaction_cancelled",
+        details: expect.objectContaining({ cancellationReason: "No longer needed" }),
       }),
+    );
+  });
+
+  it.each([
+    ["a missing reason", {}],
+    ["the result-only cancellationReason field", { cancellationReason: "No longer needed" }],
+    ["a blank reason", { reason: "   " }],
+  ])("rejects cancellation with %s", async (_label, body) => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockInteractionService.cancelQuestions).not.toHaveBeenCalled();
+  });
+
+  it("returns winner attribution when cancellation loses an exact-once race", async () => {
+    // `beforeEach` resets the module graph, so import HttpError in the same graph
+    // that createApp (and therefore errorHandler) will use for this request.
+    const { HttpError } = await import("../errors.js");
+    mockInteractionService.cancelQuestions.mockRejectedValueOnce(new HttpError(
+      409,
+      "Interaction has already been resolved",
+      {
+        code: "interaction_already_resolved",
+        interactionStatus: "cancelled",
+        resolvedAt: "2026-04-20T12:01:00.000Z",
+        resolvedByAgentId: null,
+        resolvedByRunId: null,
+        resolvedByUserId: "winning-board-user",
+      },
+    ));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({ reason: "Losing cancellation" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Interaction has already been resolved",
+      code: "interaction_already_resolved",
+      details: {
+        code: "interaction_already_resolved",
+        interactionStatus: "cancelled",
+        resolvedAt: "2026-04-20T12:01:00.000Z",
+        resolvedByAgentId: null,
+        resolvedByRunId: null,
+        resolvedByUserId: "winning-board-user",
+      },
+    });
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.thread_interaction_cancelled" }),
     );
   });
 

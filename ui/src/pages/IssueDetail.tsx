@@ -1040,7 +1040,7 @@ type IssueDetailChatTabProps = {
     interaction: IssueThreadInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void>;
-  onCancelInteraction: (interaction: AskUserQuestionsInteraction) => Promise<void>;
+  onCancelInteraction: (interaction: AskUserQuestionsInteraction, reason: string) => Promise<void>;
   onSubmitInteractionVerdicts: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -2964,8 +2964,8 @@ export function IssueDetail() {
   });
 
   const cancelInteraction = useMutation({
-    mutationFn: ({ interaction }: { interaction: AskUserQuestionsInteraction }) =>
-      issuesApi.cancelInteraction(issueId!, interaction.id),
+    mutationFn: ({ interaction, reason }: { interaction: AskUserQuestionsInteraction; reason: string }) =>
+      issuesApi.cancelInteraction(issueId!, interaction.id, reason),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
       invalidateIssueDetail();
@@ -4056,8 +4056,8 @@ export function IssueDetail() {
   ) => {
     await answerInteraction.mutateAsync({ interaction, answers });
   }, [answerInteraction]);
-  const handleCancelInteraction = useCallback(async (interaction: AskUserQuestionsInteraction) => {
-    await cancelInteraction.mutateAsync({ interaction });
+  const handleCancelInteraction = useCallback(async (interaction: AskUserQuestionsInteraction, reason: string) => {
+    await cancelInteraction.mutateAsync({ interaction, reason });
   }, [cancelInteraction]);
   const handleSubmitInteractionVerdicts = useCallback(async (
     interaction: RequestItemVerdictsInteraction,

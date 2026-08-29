@@ -113,6 +113,7 @@ interface IssueThreadInteractionCardProps {
   ) => Promise<void> | void;
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
+    reason: string,
   ) => Promise<void> | void;
   /** Render confirmation CTAs with the primary action rightmost (task-chat grammar). */
   primaryActionOnRight?: boolean;
@@ -1076,6 +1077,7 @@ function AskUserQuestionsCard({
   ) => Promise<void> | void;
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
+    reason: string,
   ) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
@@ -1103,6 +1105,8 @@ function AskUserQuestionsCard({
   );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [showCancelReason, setShowCancelReason] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
 
@@ -1203,11 +1207,12 @@ function AskUserQuestionsCard({
   }
 
   async function handleCancel() {
-    if (!onCancelInteraction) return;
+    const reason = cancelReason.trim();
+    if (!onCancelInteraction || !reason) return;
     setCancelling(true);
     setActionError(null);
     try {
-      await onCancelInteraction(interaction);
+      await onCancelInteraction(interaction, reason);
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
     } finally {
@@ -1347,16 +1352,46 @@ function AskUserQuestionsCard({
             );
           })}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/75 p-4">
-            <div className="text-sm text-muted-foreground">
-              Submit once after you finish the full form.
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {onCancelInteraction ? (
+          {showCancelReason && onCancelInteraction ? (
+            <div className="space-y-3 rounded-2xl border border-border/70 bg-background/75 p-4">
+              <div>
+                <label
+                  htmlFor={`${interaction.id}-cancellation-reason`}
+                  className="text-sm font-semibold text-foreground"
+                >
+                  Cancellation reason
+                </label>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  This reason is retained with the interaction for the audit trail.
+                </p>
+              </div>
+              <Textarea
+                id={`${interaction.id}-cancellation-reason`}
+                aria-label="Cancellation reason"
+                value={cancelReason}
+                onChange={(event) => setCancelReason(event.target.value)}
+                placeholder="Explain why this question is no longer needed"
+                className="min-h-24 bg-background text-sm"
+                maxLength={4000}
+                autoFocus
+              />
+              <div className="flex flex-wrap justify-end gap-2">
                 <Button
                   size="sm"
-                  variant="outline"
-                  disabled={working || cancelling}
+                  variant="ghost"
+                  disabled={cancelling}
+                  onClick={() => {
+                    setShowCancelReason(false);
+                    setCancelReason("");
+                    setActionError(null);
+                  }}
+                >
+                  Keep question
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={!cancelReason.trim() || cancelling}
                   onClick={() => void handleCancel()}
                 >
                   {cancelling ? (
@@ -1365,13 +1400,34 @@ function AskUserQuestionsCard({
                       Cancelling...
                     </>
                   ) : (
-                    "Cancel question"
+                    "Confirm cancellation"
                   )}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/75 p-4">
+            <div className="text-sm text-muted-foreground">
+              Submit once after you finish the full form.
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {onCancelInteraction && !showCancelReason ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={working || cancelling}
+                  onClick={() => {
+                    setActionError(null);
+                    setShowCancelReason(true);
+                  }}
+                >
+                  Cancel question
                   </Button>
                 ) : null}
               <Button
                 size="sm"
-                disabled={!onSubmitInteractionAnswers || !canSubmit || working || cancelling}
+                disabled={!onSubmitInteractionAnswers || !canSubmit || working || cancelling || showCancelReason}
                 onClick={() => void handleSubmit()}
               >
                 {working ? (
