@@ -758,6 +758,8 @@ export function createToolGatewayService(
     trustedLocalStdioRuntimeHost?: string | null;
     runtimeSupervisor?: ToolRuntimeSupervisorOptions;
     toolActionSigningSecret?: string;
+    /** Test seam for deterministic remote MCP protocol fixtures. */
+    remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
       gatewayRequests: Partial<McpGatewayRateLimitConfig>;
@@ -3091,7 +3093,7 @@ export function createToolGatewayService(
       // address it approved, so an operator-supplied hostname cannot be rebound
       // onto a loopback or metadata address between validation and dispatch
       // (PAP-17098).
-      const response = await guardedRemoteHttpFetch(endpoint, {
+      const requestInit: RequestInit = {
         method: "POST",
         redirect: "manual",
         // MCP Streamable HTTP requires the Accept header advertising both a JSON
@@ -3107,13 +3109,16 @@ export function createToolGatewayService(
             arguments: parameters ?? {},
           },
         }),
-      }, {
-        ...remoteHttpFetchOptions(),
-        // This call site owns a caller-set budget that can exceed the
-        // transport's default response deadline, so hand it down rather than
-        // letting the tighter default cut a legitimately slow tool short.
-        responseTimeoutMs: ms,
-      });
+      };
+      const response = options.remoteHttpRequest
+        ? await options.remoteHttpRequest(endpoint, requestInit)
+        : await guardedRemoteHttpFetch(endpoint, requestInit, {
+            ...remoteHttpFetchOptions(),
+            // This call site owns a caller-set budget that can exceed the
+            // transport's default response deadline, so hand it down rather than
+            // letting the tighter default cut a legitimately slow tool short.
+            responseTimeoutMs: ms,
+          });
       const body = await readBoundedRemoteResponse(response);
       execution.response = {
         httpStatus: response.status,

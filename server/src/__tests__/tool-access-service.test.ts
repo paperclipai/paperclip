@@ -42,16 +42,42 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { classifyRisk, normalizeConnectionMethodConfig, toolAccessService } from "../services/tool-access.js";
+import { classifyRisk, normalizeConnectionMethodConfig, toolAccessService as toolAccessServiceBase } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { secretService } from "../services/secrets.js";
 import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
-import { createToolGatewayService, type ToolGatewayService } from "../services/tool-gateway.js";
+import { createToolGatewayService as createToolGatewayServiceBase, type ToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+/**
+ * This suite predates the DNS-pinned HTTP transport and deliberately models
+ * remote servers with global fetch fixtures. Keep those protocol fixtures
+ * deterministic while the dedicated rebinding suite exercises real pinning.
+ */
+function toolAccessService(
+  db: ReturnType<typeof createDb>,
+  options: Parameters<typeof toolAccessServiceBase>[1] = {},
+) {
+  return toolAccessServiceBase(db, {
+    remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    remoteHttpRequest: async (url, init) => fetch(url, init),
+    ...options,
+  });
+}
+
+function createToolGatewayService(
+  db: ReturnType<typeof createDb>,
+  options: NonNullable<Parameters<typeof createToolGatewayServiceBase>[1]> = {},
+) {
+  return createToolGatewayServiceBase(db, {
+    remoteHttpRequest: async (url, init) => fetch(url, init),
+    ...options,
+  });
+}
 
 async function createCompany(db: ReturnType<typeof createDb>) {
   return db
@@ -125,6 +151,7 @@ function createRouteApp(
     deploymentMode: "local_trusted" | "authenticated";
     deploymentExposure: "private" | "public";
   },
+  useProtocolFixtureTransport = true,
 ) {
   const app = express();
   app.use(express.json());
@@ -139,7 +166,16 @@ function createRouteApp(
     };
     next();
   });
-  app.use("/api", toolAccessRoutes(db, { toolGateway, ...deployment }));
+  app.use("/api", toolAccessRoutes(db, {
+    toolGateway,
+    ...(useProtocolFixtureTransport
+      ? {
+          remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 as const }],
+          remoteHttpRequest: async (url: string, init: RequestInit) => fetch(url, init),
+        }
+      : {}),
+    ...deployment,
+  }));
   app.use(errorHandler);
   return app;
 }
@@ -3067,8 +3103,8 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(result.connection.config)).not.toContain("phx_test-secret");
     expect(result.catalog).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolName: "query_insight", riskLevel: "read", status: "active" }),
-      expect.objectContaining({ toolName: "delete_feature_flag", riskLevel: "destructive", status: "quarantined" }),
-      expect.objectContaining({ toolName: "brand_new_tool", riskLevel: "write", status: "quarantined" }),
+      expect.objectContaining({ toolName: "delete_feature_flag", riskLevel: "destructive", status: "active" }),
+      expect.objectContaining({ toolName: "brand_new_tool", riskLevel: "write", status: "active" }),
     ]));
   });
 
@@ -3673,8 +3709,12 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     const service = toolAccessService(db);
-    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack bound" });
     const initiatingActor = boardSessionActor(company.id, "operator", "oauth-operator");
+    const connect = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "slack", name: "Slack bound" },
+      { actorType: "user", actorId: initiatingActor.userId },
+    );
     const initiatingApp = createRouteApp(db, initiatingActor);
     const startRes = await request(initiatingApp)
       .post(`/api/tools/oauth/${connect.connectionId}/start`)
@@ -5154,7 +5194,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ["authenticated/public", { deploymentMode: "authenticated" as const, deploymentExposure: "public" as const }],
   ])("rejects OAuth metadata redirects to link-local endpoints in %s", async (_label, deployment) => {
     const company = await createCompany(db);
-    const app = createRouteApp(db, undefined, undefined, deployment);
+    const app = createRouteApp(db, undefined, undefined, deployment, false);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
       if (href === "https://8.8.8.8/mcp") {

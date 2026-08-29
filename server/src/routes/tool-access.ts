@@ -112,6 +112,9 @@ export function toolAccessRoutes(
     authPublicBaseUrl?: string | null;
     trustedLocalStdioRuntimeHost?: string | null;
     toolGateway?: ToolGatewayService;
+    /** Test-only seams forwarded to the tool access service. */
+    remoteHttpEndpointLookup?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpEndpointLookup"];
+    remoteHttpRequest?: NonNullable<Parameters<typeof toolAccessService>[1]>["remoteHttpRequest"];
   } = {},
 ) {
   const router = Router();

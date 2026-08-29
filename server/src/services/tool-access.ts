@@ -472,6 +472,10 @@ type ToolAccessServiceOptions = {
   catalogCacheTtlMs?: number;
   /** Test seam for deciding whether an OAuth client metadata URL is publicly resolvable. */
   oauthClientMetadataLookup?: RemoteHttpEndpointLookup;
+  /** Test seam for deterministic remote endpoint resolution. Production uses DNS. */
+  remoteHttpEndpointLookup?: RemoteHttpEndpointLookup;
+  /** Test seam for protocol fixtures. Production uses the DNS-pinned transport. */
+  remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -1805,7 +1809,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const endpoint = parseRemoteHttpEndpoint(value, (message, code) => badRequest(message, { code }));
     await assertPublicRemoteHttpEndpoint(
       endpoint,
-      { allowPrivateNetwork: allowPrivateRemoteEndpoints() },
+      {
+        allowPrivateNetwork: allowPrivateRemoteEndpoints(),
+        lookup: options.remoteHttpEndpointLookup,
+      },
       (message, code) => badRequest(message, { code }),
     );
     return endpoint.toString();
@@ -1814,8 +1821,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   function remoteHttpFetchOptions(): GuardedRemoteHttpFetchOptions {
     return {
       allowPrivateNetwork: allowPrivateRemoteEndpoints(),
+      lookup: options.remoteHttpEndpointLookup,
       error: (message, code) => badRequest(message, { code }),
     };
+  }
+
+  async function requestRemoteHttpEndpoint(endpoint: URL, init: RequestInit): Promise<Response> {
+    return options.remoteHttpRequest
+      ? options.remoteHttpRequest(endpoint.toString(), { ...init, redirect: "manual" })
+      : guardedRemoteHttpFetch(endpoint, init, remoteHttpFetchOptions());
   }
 
   /**
@@ -1833,7 +1847,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const method = (init.method ?? "GET").toUpperCase();
     for (let redirectCount = 0; redirectCount <= MAX_REMOTE_HTTP_REDIRECTS; redirectCount += 1) {
       const endpoint = parseRemoteHttpEndpoint(currentUrl, (message, code) => badRequest(message, { code }));
-      const response = await guardedRemoteHttpFetch(endpoint, init, remoteHttpFetchOptions());
+      const response = await requestRemoteHttpEndpoint(endpoint, init);
       const location = REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)
         ? response.headers?.get?.("location") ?? null
         : null;
@@ -3942,7 +3956,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
     // PAP-17098 closed for the OAuth endpoints.
-    const response = await guardedRemoteHttpFetch(remoteEndpoint(connection.config), {
+    const response = await requestRemoteHttpEndpoint(new URL(remoteEndpoint(connection.config)), {
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
@@ -3953,7 +3967,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         method: "tools/list",
         params: {},
       }),
-    }, remoteHttpFetchOptions());
+    });
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";
       if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
