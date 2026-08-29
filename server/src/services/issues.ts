@@ -5226,6 +5226,12 @@ export function issueService(db: Db) {
     actor: { agentId?: string | null; userId?: string | null } = {},
     dbOrTx: DbWriter = db,
   ) {
+    await dbOrTx.execute(sql`
+      SELECT ${issues.id}
+      FROM ${issues}
+      WHERE ${and(eq(issues.companyId, companyId), eq(issues.id, parentId))}
+      FOR UPDATE
+    `);
     const existingBlockers = await dbOrTx
       .select({ blockerIssueId: issueRelations.issueId })
       .from(issueRelations)
@@ -7198,7 +7204,7 @@ export function issueService(db: Db) {
               .values({ companyId, idempotencyKey, issueId: existingIssue.id })
               .onConflictDoNothing();
           }
-          if (deduplicationReason === "recent_open_title" && blockParentUntilDone && existingIssue.parentId) {
+          if (blockParentUntilDone && existingIssue.parentId) {
             await ensureParentBlockedByChild(
               companyId,
               existingIssue.parentId,
