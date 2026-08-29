@@ -10021,6 +10021,20 @@ export function issueRoutes(
     }
     for (const publication of postCommitActivityPublications) publishActivity(publication);
 
+    if (existing.assigneeAgentId && nextAssigneeAgentId !== existing.assigneeAgentId) {
+      // The previous assignee may still have a queued run for this issue.
+      // Cancel it now instead of leaving it for the lazy staleness check in
+      // claimQueuedRun, which only runs once that run reaches the queue head
+      // — behind a busy queue that can take hours and leaves the issue's
+      // execution lock held by a run nobody will ever start.
+      await heartbeat.cancelStaleQueuedRunsForIssue(existing.companyId, existing.id).catch((err) => {
+        logger.warn(
+          { err, issueId: existing.id, previousAssigneeAgentId: existing.assigneeAgentId },
+          "failed to eager-cancel stale queued runs after issue reassignment",
+        );
+      });
+    }
+
     if (enteringBlocked) {
       const blockedIssue = issue;
       let ownerNotifiedAt: Date | null = null;
