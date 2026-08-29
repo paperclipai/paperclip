@@ -145,6 +145,11 @@ export function isConnectionGrantAudienceAllowed(
 // the full permitted headroom instead.
 const APPROVED_EXECUTION_TIMEOUT_MS = 60_000;
 const ACTION_REQUEST_EXECUTION_POLL_MS = 25;
+// Approval execution performs live target, signature, managed-argument, and
+// issue-state checks before provider dispatch. Give that preparation a
+// separate bounded window so it cannot consume the provider's execution
+// budget for concurrent consumers.
+const ACTION_REQUEST_PREPARATION_WAIT_MS = 2 * 60 * 1000;
 // Concurrent consumers must wait at least as long as the provider execution
 // they are joining. The extra grace lets the owner persist the terminal request
 // state after the provider timeout/result settles.
@@ -4944,6 +4949,8 @@ export function createToolGatewayService(
         currentDeadlineMs: deadline,
         invocationStatus: match.invocationStatus,
         invocationStartedAt: match.invocationStartedAt,
+        preparationStartedAt: row.updatedAt,
+        preparationWaitMs: ACTION_REQUEST_PREPARATION_WAIT_MS,
         executionWaitMs: ACTION_REQUEST_EXECUTION_WAIT_MS,
       });
       const remainingMs = deadline - Date.now();
@@ -4955,7 +4962,8 @@ export function createToolGatewayService(
     }
     throw new ToolGatewayHttpError(409, "Approved tool action is still executing", "action_execution_in_progress", {
       actionRequestId,
-      waitMs: ACTION_REQUEST_EXECUTION_WAIT_MS,
+      preparationWaitMs: ACTION_REQUEST_PREPARATION_WAIT_MS,
+      executionWaitMs: ACTION_REQUEST_EXECUTION_WAIT_MS,
     });
   }
 
