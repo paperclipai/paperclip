@@ -75,7 +75,7 @@
     {
       "path": "schemas/result.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/result.schema.json",
-      "sha256": "90f02c0a96e8ab9f75970fd788b61c18ccbd9abbd005bedfba280701729adce0"
+      "sha256": "86d3b3c4d0f79de34a3e2e37beb183ea08d3bc9f70437a9f6f2b98bdf8faf828"
     },
     {
       "path": "schemas/semantic-tool.schema.json",

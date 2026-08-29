@@ -3045,6 +3045,24 @@ export const resultSchema = {
         },
         "owner": {
           "type": "object",
+          "required": [
+            "kind",
+            "name"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "agent",
+                "user",
+                "system",
+                "external"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
           "additionalProperties": true
         },
         "unblockAction": {

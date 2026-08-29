@@ -69,6 +69,44 @@ describe("normalizePrpResultSignals", () => {
     });
   });
 
+  it("requires an identified owner for blocked results", () => {
+    const blockedResult = {
+      reportedWorkDisposition: "blocked",
+      summary: "External input is required.",
+      completionClaim: {
+        contractRevision: "1",
+        objectiveSatisfied: false,
+        criteria: [
+          { criterionId: "objective", status: "not_satisfied", evidenceRefs: [] },
+        ],
+        remainingWork: [
+          { description: "Wait for external input.", blocksCompletion: true },
+        ],
+      },
+      evidence: [],
+      verification: [],
+      blocker: {
+        reasonCode: "external_input_required",
+        owner: {},
+        unblockAction: "Provide the required input.",
+        scope: "current_track",
+      },
+    };
+
+    expect(validatePrpStructuredRunResult(blockedResult)).toMatchObject({
+      ok: false,
+    });
+    expect(
+      validatePrpStructuredRunResult({
+        ...blockedResult,
+        blocker: {
+          ...blockedResult.blocker,
+          owner: { kind: "external", name: "External input" },
+        },
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
   it("normalizes unambiguous completion aliases emitted by smaller tool callers", () => {
     const toolShaped = {
       schema: "paperclip_paperclip_finish",
