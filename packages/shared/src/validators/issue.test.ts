@@ -361,6 +361,16 @@ describe("issue validators", () => {
       assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     }).status).toBe("todo");
     expect(createIssueSchema.parse({ title: "Unassigned work" }).status).toBe("backlog");
+
+    expect(createIssueSchema.parse({
+      title: "Child with parent blocker",
+      parentId: "11111111-1111-4111-8111-111111111111",
+      blockParentUntilDone: true,
+    }).blockParentUntilDone).toBe(true);
+    expect(createIssueSchema.safeParse({
+      title: "Flag without parent",
+      blockParentUntilDone: true,
+    }).success).toBe(false);
     expect(createIssueSchema.parse({
       title: "Deliberately parked",
       assigneeAgentId: "22222222-2222-4222-8222-222222222222",

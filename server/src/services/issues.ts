@@ -708,13 +708,13 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
-};
-type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
-  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   actorAgentId?: string | null;
   actorUserId?: string | null;
+};
+type IssueChildCreateInput = IssueCreateInput & {
+  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
 };
 type AcceptedPlanDecompositionInput = {
   acceptedPlanRevisionId: string;
@@ -7099,8 +7099,19 @@ export function issueService(db: Db) {
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
+        acceptanceCriteria,
+        blockParentUntilDone,
+        actorAgentId,
+        actorUserId,
         ...issueData
       } = data;
+      if (blockParentUntilDone && !issueData.parentId) {
+        throw unprocessable("blockParentUntilDone requires parentId");
+      }
+      issueData.description = appendAcceptanceCriteriaToDescription(
+        issueData.description,
+        acceptanceCriteria,
+      );
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7412,6 +7423,26 @@ export function issueService(db: Db) {
             {
               agentId: issueData.createdByAgentId ?? null,
               userId: issueData.createdByUserId ?? null,
+            },
+            tx,
+          );
+        }
+        if (blockParentUntilDone && issueData.parentId) {
+          const existingBlockers = await tx
+            .select({ blockerIssueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(and(
+              eq(issueRelations.companyId, companyId),
+              eq(issueRelations.relatedIssueId, issueData.parentId),
+              eq(issueRelations.type, "blocks"),
+            ));
+          await syncBlockedByIssueIds(
+            issueData.parentId,
+            companyId,
+            [...new Set([...existingBlockers.map((row) => row.blockerIssueId), issue.id])],
+            {
+              agentId: actorAgentId ?? issueData.createdByAgentId ?? null,
+              userId: actorUserId ?? issueData.createdByUserId ?? null,
             },
             tx,
           );
