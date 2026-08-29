@@ -65,6 +65,7 @@ describe("nativeRunEventsToTranscript", () => {
         output: "all green",
       }),
       event(7, "usage.reported", {
+        runDeltaAvailable: true,
         runDelta: {
           inputTokens: 12,
           outputTokens: 3,
@@ -112,6 +113,7 @@ describe("nativeRunEventsToTranscript", () => {
   it("sums run deltas without leaking session-cumulative usage", () => {
     const transcript = nativeRunEventsToTranscript([
       event(1, "usage.reported", {
+        runDeltaAvailable: true,
         runDelta: {
           inputTokens: 12,
           outputTokens: 3,
@@ -126,6 +128,7 @@ describe("nativeRunEventsToTranscript", () => {
         },
       }),
       event(2, "usage.reported", {
+        runDeltaAvailable: true,
         runDelta: {
           inputTokens: 4,
           outputTokens: 2,
@@ -156,9 +159,11 @@ describe("nativeRunEventsToTranscript", () => {
   it("sums delta-only usage reports into one run summary", () => {
     const transcript = nativeRunEventsToTranscript([
       event(1, "usage.reported", {
+        runDeltaAvailable: true,
         runDelta: { inputTokens: 2, outputTokens: 1, providerCostUsd: 0.01 },
       }),
       event(2, "usage.reported", {
+        runDeltaAvailable: true,
         runDelta: { inputTokens: 3, outputTokens: 4, providerCostUsd: 0.02 },
       }),
     ]);
@@ -195,6 +200,28 @@ describe("nativeRunEventsToTranscript", () => {
         outputTokens: 5,
         costUsd: 0.02,
         text: expect.stringContaining("session-cumulative"),
+      }),
+    ]);
+  });
+
+  it("fails closed for legacy usage reports without run-delta provenance", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "usage.reported", {
+        runDelta: { inputTokens: 12, outputTokens: 3, providerCostUsd: 0.01 },
+        cumulative: { inputTokens: 112, outputTokens: 53, providerCostUsd: 1.01 },
+      }),
+      event(2, "usage.reported", {
+        runDelta: { inputTokens: 116, outputTokens: 55, providerCostUsd: 1.015 },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "result",
+        subtype: "paperclip_runner_session_usage",
+        inputTokens: 112,
+        outputTokens: 53,
+        costUsd: 1.01,
       }),
     ]);
   });

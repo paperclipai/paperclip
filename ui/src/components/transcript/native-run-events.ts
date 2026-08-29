@@ -142,7 +142,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       // A provider may report only session-cumulative usage. Preserve the
       // latest snapshot as explicitly session-scoped usage instead of either
       // summing cumulative values or relabelling them as a per-run delta.
-      if (payload.runDeltaAvailable === false) {
+      if (payload.runDeltaAvailable !== true) {
         const cumulative = record(payload.cumulative);
         if (cumulative) {
           cumulativeUsageSummary = {
