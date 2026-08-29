@@ -184,7 +184,7 @@ export function toolAccessRoutes(
   }
 
   function bypassCurrentMembershipCheck(req: Request) {
-    return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
+    return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
   }
 
   async function finishConnectionIntentOAuth(input: {

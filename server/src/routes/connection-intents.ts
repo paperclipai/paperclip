@@ -200,7 +200,7 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   const access = accessService(db);
 
   function bypassCurrentMembershipCheck(req: Request) {
-    return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
+    return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
   }
 
   async function canManageCompanyConnections(req: Request, companyId: string) {
