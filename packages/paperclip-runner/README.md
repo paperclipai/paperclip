@@ -117,6 +117,9 @@ terminates the local process.
 Already validated ACPX reducer events project into provider-neutral durable
 events only with an exact run, session, turn, and item binding. Raw sidecar
 envelopes and permission requests are not admitted at this boundary.
+A safely suspended session can be recorded as a bounded private checkpoint.
+The checkpoint binds the exact provider identity, run, catalog revision, and
+catalog digest and is replaced atomically before a later recovery attempt.
 
 Run the complete contract gate with:
 
