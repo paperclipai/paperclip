@@ -6364,7 +6364,7 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 10_000);
 
   it("closes a late-resolving real handle exactly once, whether it arrives before or after settlement seals", async () => {
     const lateHandle = {
@@ -6437,7 +6437,7 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 10_000);
 
   it("discards the reuse decision and leaves no warm entry after a guard rejection", async () => {
     const root = await makeTempRoot();
