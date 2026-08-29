@@ -132,6 +132,11 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     }
 
     if (event.eventType === "usage.reported") {
+      // A provider may report only session-cumulative usage. In that case the
+      // zero-valued runDelta is a schema placeholder, not a claim that this run
+      // consumed nothing. Omit the run result until an attributable delta is
+      // available rather than displaying zero or leaking prior-run usage.
+      if (payload.runDeltaAvailable === false) continue;
       const measurement = record(payload.runDelta);
       if (!measurement) continue;
       const next = {
