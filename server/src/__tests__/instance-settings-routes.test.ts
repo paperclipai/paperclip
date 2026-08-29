@@ -1136,6 +1136,29 @@ describe("instance settings routes", () => {
       expect(restoreArg.ttlMs).toBeLessThanOrEqual(60_000);
     });
 
+    it("keeps the drain started when publishing its committed audit record fails", async () => {
+      // The audit row already committed by the time publish runs, so a
+      // publish failure must not roll the in-memory drain back — that
+      // would desync it from the row a client can already read.
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockHeartbeatService.startTaskDrain.mockReturnValue({
+        startedAt: "2026-08-29T00:00:00.000Z",
+        expiresAt: null,
+      });
+      mockHeartbeatService.getTaskDrainGeneration.mockReturnValue(5);
+      mockPublishActivity.mockImplementation(() => {
+        throw new Error("live event bus unavailable");
+      });
+      const app = await createApp(adminActor);
+
+      const res = await request(app).post("/api/instance/task-drain").send({});
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+      expect(mockLogActivity).toHaveBeenCalledTimes(2);
+      expect(mockHeartbeatService.restoreTaskDrainIfCurrent).not.toHaveBeenCalled();
+    });
+
     it("does not stop the drain when the company list read fails", async () => {
       mockInstanceSettingsService.listCompanyIds.mockRejectedValue(new Error("db unavailable"));
       const app = await createApp(adminActor);
@@ -1172,6 +1195,31 @@ describe("instance settings routes", () => {
       expect(restoreArg.draining).toBe(true);
       expect(restoreArg.ttlMs).toBeGreaterThan(0);
       expect(restoreArg.ttlMs).toBeLessThanOrEqual(60_000);
+    });
+
+    it("keeps the drain stopped when publishing its committed audit record fails", async () => {
+      const expiresAt = new Date(Date.now() + 60_000);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
+        draining: true,
+        startedAt: new Date(),
+        expiresAt,
+        activeRuns: 0,
+        pendingWakes: 0,
+        quiescent: true,
+      });
+      mockHeartbeatService.stopTaskDrain.mockReturnValue({ wasActive: true });
+      mockHeartbeatService.getTaskDrainGeneration.mockReturnValue(7);
+      mockPublishActivity.mockImplementation(() => {
+        throw new Error("live event bus unavailable");
+      });
+      const app = await createApp(adminActor);
+
+      const res = await request(app).delete("/api/instance/task-drain");
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+      expect(mockLogActivity).toHaveBeenCalledTimes(2);
+      expect(mockHeartbeatService.restoreTaskDrainIfCurrent).not.toHaveBeenCalled();
     });
 
     it("rejects a board actor without instance admin rights", async () => {

@@ -323,12 +323,12 @@ export function instanceSettingsRoutes(db: Db) {
       // in between), so a later restore can tell whether a concurrent
       // request has already superseded it.
       const generation = heartbeat.getTaskDrainGeneration();
+      // One transaction for every company's audit row, so a write that
+      // succeeds for one company and fails for another never leaves a
+      // partial activity history behind — either every company gets the
+      // record, or none does.
+      const postCommitActivityPublications: ActivityPublication[] = [];
       try {
-        // One transaction for every company's audit row, so a write that
-        // succeeds for one company and fails for another never leaves a
-        // partial activity history behind — either every company gets the
-        // record, or none does.
-        const postCommitActivityPublications: ActivityPublication[] = [];
         await db.transaction((tx) =>
           Promise.all(
             companyIds.map((companyId) =>
@@ -350,7 +350,6 @@ export function instanceSettingsRoutes(db: Db) {
             ),
           ),
         );
-        for (const publication of postCommitActivityPublications) publishActivity(publication);
       } catch (err) {
         // The audit record did not commit, so undo the in-memory drain this
         // call started. If a drain was already active, this call replaced
@@ -369,6 +368,11 @@ export function instanceSettingsRoutes(db: Db) {
         });
         throw err;
       }
+      // The audit record already committed, so a failure to publish it here
+      // is not a reason to undo the drain: reverting the in-memory state at
+      // this point would desync it from the committed row. Publish outside
+      // the try above so this failure cannot reach the restore path.
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
       res.json(drain);
     },
   );
@@ -381,9 +385,9 @@ export function instanceSettingsRoutes(db: Db) {
     const result = heartbeat.stopTaskDrain();
     // See the POST handler above for why the generation is stamped here.
     const generation = heartbeat.getTaskDrainGeneration();
+    // See the POST handler above for why this is one transaction.
+    const postCommitActivityPublications: ActivityPublication[] = [];
     try {
-      // See the POST handler above for why this is one transaction.
-      const postCommitActivityPublications: ActivityPublication[] = [];
       await db.transaction((tx) =>
         Promise.all(
           companyIds.map((companyId) =>
@@ -404,7 +408,6 @@ export function instanceSettingsRoutes(db: Db) {
           ),
         ),
       );
-      for (const publication of postCommitActivityPublications) publishActivity(publication);
     } catch (err) {
       // Restore the drain this call ended (best-effort: the remaining TTL
       // carries over, but the original start time does not) so a failed
@@ -419,6 +422,10 @@ export function instanceSettingsRoutes(db: Db) {
       }
       throw err;
     }
+    // See the POST handler above for why publish runs outside the try:
+    // the audit record already committed, so a publish failure here must
+    // not undo a drain-stop that is already correct in the database.
+    for (const publication of postCommitActivityPublications) publishActivity(publication);
     res.json(result);
   });
 
