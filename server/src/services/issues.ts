@@ -385,9 +385,15 @@ type DerivedIssueCommentAttribution = {
 
 /**
  * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
- * missing/invalid ids so an unknown run id never 500s a comment insert.
+ * missing/invalid ids so an unknown or malformed run id never 500s an insert.
+ *
+ * Guards both failure modes of a client-supplied `X-Paperclip-Run-Id`:
+ *  - non-UUID header value -> Postgres `invalid input syntax for type uuid`
+ *  - well-formed UUID with no matching `heartbeat_runs` row -> FK violation
+ *
+ * Use at every insert that writes `created_by_run_id` from `actor.runId`.
  */
-async function resolveCommentCreatedByRunId(
+export async function resolveCreatedByRunId(
   dbOrTx: any,
   companyId: string,
   runId: string | null | undefined,
@@ -8830,7 +8836,7 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       // Invalid/stale run ids must not 500 the insert — null out unknowns.
-      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
+      const createdByRunId = await resolveCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
       if (actor.runId && !createdByRunId) {
         logger.warn(
           { issueId, companyId: issue.companyId, runId: actor.runId },
