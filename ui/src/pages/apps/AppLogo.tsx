@@ -63,7 +63,10 @@ export function AppLogo({
   const requestedDarkLogoUrl = localAssets?.dark ?? null;
   const darkLogoUrl = requestedDarkLogoUrl && !failedLogoUrls.has(requestedDarkLogoUrl)
     ? requestedDarkLogoUrl
-    : lightLogoUrl;
+    : null;
+  const hasDistinctThemeLogos = Boolean(
+    resolvedLogoUrl && requestedDarkLogoUrl && resolvedLogoUrl !== requestedDarkLogoUrl,
+  );
   const fallbackLogoUrl = lightLogoUrl ?? darkLogoUrl;
 
   useEffect(() => {
@@ -94,24 +97,48 @@ export function AppLogo({
         className={cn("inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted", className)}
         style={dimension}
       >
-        {lightLogoUrl && darkLogoUrl && lightLogoUrl !== darkLogoUrl ? (
+        {hasDistinctThemeLogos ? (
           <>
-            <img
-              src={lightLogoUrl}
-              alt=""
-              width={size}
-              height={size}
-              className="h-full w-full object-contain dark:hidden"
-              onError={() => markLogoFailed(lightLogoUrl)}
-            />
-            <img
-              src={darkLogoUrl}
-              alt=""
-              width={size}
-              height={size}
-              className="hidden h-full w-full object-contain dark:block"
-              onError={() => markLogoFailed(darkLogoUrl)}
-            />
+            {lightLogoUrl ? (
+              <img
+                src={lightLogoUrl}
+                alt=""
+                width={size}
+                height={size}
+                className="h-full w-full object-contain dark:hidden"
+                onError={() => markLogoFailed(lightLogoUrl)}
+              />
+            ) : (
+              <span
+                className={cn(
+                  "flex h-full w-full items-center justify-center font-bold text-white dark:hidden",
+                  colorFor(name),
+                )}
+                aria-hidden="true"
+              >
+                {letter}
+              </span>
+            )}
+            {darkLogoUrl ? (
+              <img
+                src={darkLogoUrl}
+                alt=""
+                width={size}
+                height={size}
+                className="hidden h-full w-full object-contain dark:block"
+                onError={() => markLogoFailed(darkLogoUrl)}
+              />
+            ) : (
+              <span
+                className={cn(
+                  "hidden h-full w-full items-center justify-center font-bold text-white dark:flex",
+                  colorFor(name),
+                )}
+                aria-hidden="true"
+              >
+                {letter}
+              </span>
+            )}
           </>
         ) : (
           <img

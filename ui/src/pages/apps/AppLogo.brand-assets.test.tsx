@@ -58,9 +58,14 @@ describe("AppLogo local brand assets", () => {
   });
 
   it.each([
-    { failedIndex: 0, survivingAsset: "/brands/apps/github-dark.svg" },
-    { failedIndex: 1, survivingAsset: "/brands/apps/github.svg" },
-  ])("keeps the valid theme asset when image $failedIndex fails", async ({ failedIndex, survivingAsset }) => {
+    { failedIndex: 0, survivingAsset: "/brands/apps/github-dark.svg", survivingClass: "dark:block", fallbackClass: "dark:hidden" },
+    { failedIndex: 1, survivingAsset: "/brands/apps/github.svg", survivingClass: "dark:hidden", fallbackClass: "dark:flex" },
+  ])("keeps the valid theme asset when image $failedIndex fails", async ({
+    failedIndex,
+    survivingAsset,
+    survivingClass,
+    fallbackClass,
+  }) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -90,8 +95,10 @@ describe("AppLogo local brand assets", () => {
     const remainingImages = Array.from(container.querySelectorAll("img"));
     expect(remainingImages).toHaveLength(1);
     expect(remainingImages[0]?.getAttribute("src")).toBe(survivingAsset);
-    expect(remainingImages[0]?.className).not.toContain("dark:hidden");
-    expect(remainingImages[0]?.className).not.toContain("dark:block");
+    expect(remainingImages[0]?.className).toContain(survivingClass);
+    const fallback = container.querySelector("span > span");
+    expect(fallback?.textContent).toBe("G");
+    expect(fallback?.className).toContain(fallbackClass);
   });
 
   it("does not request a remote logo while the local manifest lookup is pending", async () => {
