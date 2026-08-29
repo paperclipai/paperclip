@@ -102,6 +102,9 @@ function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = 
   app.get("/actor", (req, res) => {
     res.json(req.actor);
   });
+  app.post("/actor", (req, res) => {
+    res.json(req.actor);
+  });
   app.get("/companies/:companyId/protected", (req, res) => {
     assertCompanyAccess(req, req.params.companyId);
     res.json({ ok: true });
@@ -184,9 +187,23 @@ describe("agent auth middleware", () => {
     expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
   });
 
+  it("keeps header-less local writes as the implicit board actor", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .post("/actor")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "board", userId: "local-board", source: "local_implicit" });
+  });
+
   it.each([
     ["empty bearer token", "Bearer   ", "Empty bearer token"],
     ["unverified token", "Bearer not-a-token", "Agent token did not verify"],
+    ["Basic authorization", "Basic credentials", "Authorization header must use Bearer credentials"],
+    ["malformed Bearer-like authorization", "BearerXYZ", "Authorization header must use Bearer credentials"],
+    ["whitespace-only authorization", "   ", "Authorization header must use Bearer credentials"],
   ])("rejects %s instead of retaining the implicit local-board actor", async (_label, authorization, error) => {
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
     let commentWrites = 0;
@@ -201,6 +218,17 @@ describe("agent auth middleware", () => {
     expect(res.status).toBe(401);
     expect(res.body.error).toContain(error);
     expect(commentWrites).toBe(0);
+  });
+
+  it("rejects malformed authorization on a local read instead of retaining local-board", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("Authorization", "Basic credentials");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Authorization header must use Bearer credentials");
   });
 
   it.each([
@@ -430,6 +458,35 @@ describe("agent auth middleware", () => {
       onBehalfOfUserId: "user-key",
       source: "agent_key",
     });
+  });
+
+  it("uses valid explicit bearer authentication instead of the implicit local-board actor", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_local_trusted_agent_key";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+    });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    });
+    expect(res.body.userId).toBeUndefined();
   });
 
   it("rejects agent keys that lack a responsible user binding and audits the denial", async () => {

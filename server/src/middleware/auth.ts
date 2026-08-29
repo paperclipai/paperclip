@@ -231,6 +231,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
     if (!hasBearerCredentials) {
+      if (opts.deploymentMode === "local_trusted" && authHeader !== undefined) {
+        next(unauthorized("Authorization header must use Bearer credentials"));
+        return;
+      }
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
