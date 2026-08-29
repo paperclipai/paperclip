@@ -8,6 +8,7 @@ import {
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  parseClaudeStreamJson,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
@@ -343,5 +344,61 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+// TSMC-21459: error_max_turns terminates with a `result` event that carries
+// no usage/modelUsage of its own, which zeroed out every run's reported
+// usage even though real, tracked tokens were spent turn by turn.
+describe("parseClaudeStreamJson observedUsage accumulator (TSMC-21459)", () => {
+  function assistantEvent(messageId: string, inputTokens: number, outputTokens: number) {
+    return JSON.stringify({
+      type: "assistant",
+      session_id: "session-1",
+      message: {
+        id: messageId,
+        content: [{ type: "text", text: "..." }],
+        usage: {
+          input_tokens: inputTokens,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: outputTokens,
+        },
+      },
+    });
+  }
+
+  it("accumulates per-turn assistant usage even when the terminal result carries none", () => {
+    const stdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "session-1", model: "claude-sonnet-5" }),
+      assistantEvent("msg-1", 500, 20),
+      assistantEvent("msg-2", 500, 20),
+      JSON.stringify({
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: true,
+        session_id: "session-1",
+        result: "",
+      }),
+    ].join("\n");
+
+    const parsed = parseClaudeStreamJson(stdout);
+
+    expect(parsed.usage).toEqual({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
+    expect(parsed.observedUsage).toEqual({ inputTokens: 1000, cachedInputTokens: 0, outputTokens: 40 });
+  });
+
+  it("does not double-count a repeated assistant message id", () => {
+    const stdout = [
+      assistantEvent("msg-1", 500, 20),
+      assistantEvent("msg-1", 500, 20),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, session_id: "session-1", result: "ok" }),
+    ].join("\n");
+
+    expect(parseClaudeStreamJson(stdout).observedUsage).toEqual({
+      inputTokens: 500,
+      cachedInputTokens: 0,
+      outputTokens: 20,
+    });
   });
 });

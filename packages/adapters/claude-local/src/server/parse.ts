@@ -21,6 +21,14 @@ export function parseClaudeStreamJson(stdout: string) {
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+  // Accumulates per-turn usage from `assistant` stream events regardless of
+  // how the run terminates. A `result` event's own `usage` is zero-valued
+  // when the CLI stops on error_max_turns (it carries no usage/modelUsage of
+  // its own), which otherwise loses every token the run actually spent to
+  // cost accounting (TSMC-21459). Deduped by message id since the CLI can
+  // repeat the same assistant message across stream chunks.
+  const observedMessageIds = new Set<string>();
+  const observedUsage: Required<UsageSummary> = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -47,6 +55,17 @@ export function parseClaudeStreamJson(stdout: string) {
           if (text) assistantTexts.push(text);
         }
       }
+      const messageUsage = parseObject(message.usage);
+      if (Object.keys(messageUsage).length > 0) {
+        const messageId = asString(message.id, "") || asString(event.uuid, "") || asString(event.request_id, "");
+        if (!messageId || !observedMessageIds.has(messageId)) {
+          if (messageId) observedMessageIds.add(messageId);
+          observedUsage.inputTokens +=
+            asNumber(messageUsage.input_tokens, 0) + asNumber(messageUsage.cache_creation_input_tokens, 0);
+          observedUsage.cachedInputTokens += asNumber(messageUsage.cache_read_input_tokens, 0);
+          observedUsage.outputTokens += asNumber(messageUsage.output_tokens, 0);
+        }
+      }
       continue;
     }
 
@@ -62,6 +81,7 @@ export function parseClaudeStreamJson(stdout: string) {
       model,
       costUsd: null as number | null,
       usage: null as UsageSummary | null,
+      observedUsage,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
     };
@@ -82,6 +102,7 @@ export function parseClaudeStreamJson(stdout: string) {
     model,
     costUsd,
     usage,
+    observedUsage,
     summary,
     resultJson: finalResult,
   };

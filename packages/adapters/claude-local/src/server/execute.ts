@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult, UsageSummary } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -927,7 +927,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
+    // A terminal Claude result (including error_max_turns) always yields a
+    // truthy parsedStream.usage, even when every count is zero (a max-turns
+    // stop carries no usage/modelUsage of its own). That zero-valued object
+    // used to win outright, so max-turns runs reported no usage at all to
+    // the weighted token governor despite having consumed real, tracked
+    // tokens (TSMC-21459). Only trust parsedStream.usage when at least one
+    // count is positive; otherwise fall back to the turn-by-turn accumulator
+    // from parseClaudeStreamJson when it has anything.
+    const hasPositiveUsage = (u: UsageSummary | null | undefined): boolean =>
+      Boolean(u) && ((u!.inputTokens ?? 0) > 0 || (u!.cachedInputTokens ?? 0) > 0 || (u!.outputTokens ?? 0) > 0);
     const usage =
+      (hasPositiveUsage(parsedStream.usage) ? parsedStream.usage : null) ??
+      (hasPositiveUsage(parsedStream.observedUsage) ? parsedStream.observedUsage : null) ??
       parsedStream.usage ??
       (() => {
         const usageObj = parseObject(parsed.usage);
