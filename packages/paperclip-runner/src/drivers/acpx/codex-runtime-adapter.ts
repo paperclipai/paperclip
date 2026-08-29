@@ -585,6 +585,15 @@ function runtimePort(
           },
         }
       : {}),
+    startTurn(input) {
+      return runtime.startTurn({
+        handle,
+        text: input.text,
+        mode: "prompt",
+        requestId: input.requestId,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+    },
     async close(input) {
       const errors = await admissionCleanup.run(handle, input.reason);
       if (errors.length > 0) {

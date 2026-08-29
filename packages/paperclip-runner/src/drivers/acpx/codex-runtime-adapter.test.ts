@@ -248,6 +248,36 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
+  it("maps prompt turns to the admitted ACPX handle", async () => {
+    const runtime = fakeRuntime();
+    const turn = {
+      requestId: "turn-1",
+      promptStarted: Promise.resolve(),
+      events: { async *[Symbol.asyncIterator]() {} },
+      result: Promise.resolve({ status: "completed" as const }),
+      cancel: vi.fn(),
+      closeStream: vi.fn(),
+    };
+    vi.mocked(runtime.startTurn).mockReturnValue(turn);
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: () => runtime,
+    });
+    const signal = new AbortController().signal;
+
+    expect(
+      port.startTurn({ text: "Complete the task.", requestId: "turn-1", signal }),
+    ).toBe(turn);
+    expect(runtime.startTurn).toHaveBeenCalledWith({
+      handle: HANDLE,
+      text: "Complete the task.",
+      mode: "prompt",
+      requestId: "turn-1",
+      signal,
+    });
+  });
+
   it("fails closed and closes the session when ACPX omits recovery identity", async () => {
     const runtime = fakeRuntime({ ...HANDLE, agentSessionId: undefined });
     await expect(

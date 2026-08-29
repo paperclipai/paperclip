@@ -1,3 +1,5 @@
+import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "acpx/runtime";
+
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import {
   stageManagedCodexCredential,
@@ -31,10 +33,27 @@ import {
 } from "./runtime-sandbox.js";
 import type { AcpxExpectedSessionIdentity } from "./sidecar-protocol.js";
 
+const TURN_CANCELLATION_TIMEOUT_MS = 2_000;
+
 export interface AcpxRuntimePortIdentity {
   acpxRecordId: string;
   backendSessionId: string;
   agentSessionId: string;
+}
+
+export interface AcpxRuntimeTurnInput {
+  text: string;
+  requestId: string;
+  signal?: AbortSignal;
+}
+
+export interface AcpxRuntimeTurn {
+  readonly requestId: string;
+  readonly promptStarted: Promise<void>;
+  readonly events: AsyncIterable<AcpRuntimeEvent>;
+  readonly result: Promise<AcpRuntimeTurnResult>;
+  cancel(input?: { reason?: string }): Promise<void>;
+  closeStream(input?: { reason?: string }): Promise<void>;
 }
 
 /** Minimal third-party ACP runtime surface admitted by the host boundary. */
@@ -42,6 +61,7 @@ export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
   setModel?(model: string): Promise<void>;
+  startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn;
   close(input: { reason: string }): Promise<void>;
 }
 
@@ -105,6 +125,9 @@ export class AcpxRuntimeHost {
   readonly #sandbox: AcpxRuntimeSandbox;
   readonly #credential: ManagedCodexCredentialLease | null;
   readonly #command: VerifiedAcpxCommandLease;
+  #activeTurn: AcpxRuntimeTurn | null = null;
+  #closingStarted = false;
+  #closePromise: Promise<void> | null = null;
   #closed = false;
 
   private constructor(input: {
@@ -281,16 +304,79 @@ export class AcpxRuntimeHost {
     return Object.freeze({ ...this.#sandbox.persistedEnvironment });
   }
 
+  startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn {
+    if (this.#closed || this.#closingStarted) {
+      throw new Error("ACPX runtime host is closing");
+    }
+    if (this.#activeTurn) {
+      throw new Error("ACPX runtime host already has an active turn");
+    }
+    const requestId = boundedRequestId(input.requestId);
+    const text = boundedTurnText(input.text);
+    const turn = this.#runtime.startTurn({
+      text,
+      requestId,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    this.#activeTurn = turn;
+    void turn.result
+      .finally(() => {
+        // Once shutdown owns this turn, retain its cancellation handle until
+        // runtime cleanup succeeds. The result may settle while cleanup is
+        // failing, and a later close must still be able to retry cancellation.
+        if (this.#activeTurn === turn && !this.#closingStarted) {
+          this.#activeTurn = null;
+        }
+      })
+      .catch(() => undefined);
+    return turn;
+  }
+
   async close(input: { reason: string }): Promise<void> {
     if (this.#closed) return;
-    const error = await cleanupRuntimeResources(
+    if (this.#closePromise) return await this.#closePromise;
+    this.#closingStarted = true;
+    const closePromise = this.#close(boundedReason(input.reason));
+    this.#closePromise = closePromise;
+    try {
+      await closePromise;
+      this.#closed = true;
+    } finally {
+      if (this.#closePromise === closePromise) this.#closePromise = null;
+    }
+  }
+
+  async #close(reason: string): Promise<void> {
+    const errors: unknown[] = [];
+    const activeTurn = this.#activeTurn;
+    if (activeTurn) {
+      try {
+        const cancellationError = await boundedCancellation(
+          activeTurn.cancel({ reason }),
+        );
+        if (cancellationError) errors.push(cancellationError);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    const cleanupError = await cleanupRuntimeResources(
       this.#runtime,
       this.#credential,
       this.#command,
-      boundedReason(input.reason),
+      reason,
     );
-    if (error) throw error;
-    this.#closed = true;
+    if (cleanupError) errors.push(...cleanupError.errors);
+    if (!cleanupError) {
+      // Runtime, credential, and command ownership has been relinquished even
+      // when the provider never acknowledged turn cancellation. Preserve that
+      // cancellation error for this caller, but make later close calls
+      // idempotently observe the successfully closed host.
+      if (this.#activeTurn === activeTurn) this.#activeTurn = null;
+      this.#closed = true;
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "ACPX runtime cleanup failed");
+    }
   }
 }
 
@@ -405,25 +491,70 @@ function retainRuntimeHostCleanup(cleanup: Promise<unknown>): void {
     .catch(() => undefined);
 }
 
+async function boundedCancellation(
+  cancellation: Promise<void>,
+): Promise<unknown | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const outcome = await Promise.race([
+    cancellation.then(
+      () => ({ error: null }),
+      (error: unknown) => ({ error }),
+    ),
+    new Promise<{ error: unknown }>((resolve) => {
+      timer = setTimeout(
+        () =>
+          resolve({
+            error: new Error(
+              "ACPX turn cancellation exceeded its shutdown timeout",
+            ),
+          }),
+        TURN_CANCELLATION_TIMEOUT_MS,
+      );
+      timer.unref();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return outcome.error;
+}
+
 async function cleanupRuntimeResources(
   runtime: AcpxRuntimePort | null,
   credential: ManagedCodexCredentialLease | null,
   command: VerifiedAcpxCommandLease | null,
   reason: string,
 ): Promise<AggregateError | null> {
-  const errors: unknown[] = [];
-  for (const close of [
-    runtime ? () => runtime.close({ reason }) : null,
-    credential ? () => credential.close() : null,
-    command ? () => command.close() : null,
-  ]) {
-    if (!close) continue;
+  const settle = async (
+    close: () => Promise<void>,
+  ): Promise<unknown | null> => {
     try {
       await close();
+      return null;
     } catch (error) {
-      errors.push(error);
+      return error;
     }
-  }
+  };
+  // The command lease owns only the already-consumed verified launch
+  // snapshot, so it can be released as shutdown starts. The credential is
+  // different: a provider whose exact runtime close is pending or failed may
+  // still read or rewrite its home. Retain both the staged bytes and the
+  // exclusive home lease until that exact close succeeds.
+  const runtimeOutcome = runtime
+    ? settle(() => runtime.close({ reason }))
+    : Promise.resolve(null);
+  const commandOutcome = command
+    ? settle(() => command.close())
+    : Promise.resolve(null);
+  const credentialOutcome = (async (): Promise<unknown | null> => {
+    const runtimeError = await runtimeOutcome;
+    if (runtimeError !== null || credential === null) return null;
+    return await settle(() => credential.close());
+  })();
+  const outcomes = await Promise.all([
+    runtimeOutcome,
+    commandOutcome,
+    credentialOutcome,
+  ]);
+  const errors = outcomes.filter((error): error is unknown => error !== null);
   return errors.length > 0
     ? new AggregateError(errors, "ACPX runtime cleanup failed")
     : null;
@@ -440,4 +571,23 @@ function boundedInstructions(value: string | undefined): string {
 function boundedReason(value: string): string {
   const reason = value.trim().slice(0, 1_000);
   return reason || "ACPX runtime closed";
+}
+
+function boundedRequestId(value: string): string {
+  const requestId = value.trim();
+  if (
+    requestId.length === 0 ||
+    requestId !== value ||
+    Buffer.byteLength(requestId) > 1_024
+  ) {
+    throw new Error("ACPX turn request id is outside its bounded size");
+  }
+  return requestId;
+}
+
+function boundedTurnText(value: string): string {
+  if (Buffer.byteLength(value) > 1024 * 1024) {
+    throw new Error("ACPX turn text exceeds its bounded size");
+  }
+  return value;
 }
