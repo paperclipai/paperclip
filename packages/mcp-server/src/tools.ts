@@ -462,7 +462,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipCreateIssue",
-      "Create a new issue",
+      "Create a new issue. With parentId, optional blockParentUntilDone adds a parent blocker edge; acceptanceCriteria append to the description.",
       createIssueToolSchema,
       async ({ companyId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
