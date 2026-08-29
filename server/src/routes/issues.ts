@@ -4309,12 +4309,17 @@ export function issueRoutes(
       }
       throw err;
     }
-    // Consume-after-success: if the route handler returns a non-2xx status
-    // (e.g., a validation error fires after the guard), undo the claim so the
-    // agent can retry with the same approval. The undo runs asynchronously
-    // after the response is flushed — it does not affect what is sent.
+    // Restore-on-4xx: if the route handler returns a 4xx status (rejected before
+    // or during pre-mutation validation), undo the claim so the agent can retry
+    // with the same approval. Only 4xx responses are eligible — a 5xx response
+    // may mean the protected mutation already committed, so restoring the grant
+    // would allow the agent to re-run the same committed mutation. The undo is
+    // asynchronous: a concurrent retry arriving in the brief window between the
+    // 4xx response and the DELETE completion may still see the claimed row and
+    // receive 403; in that case the retry should pause briefly before re-attempting,
+    // or the human re-creates the card (the in-comment fallback applies either way).
     res.on("finish", () => {
-      if (res.statusCode < 200 || res.statusCode >= 300) {
+      if (res.statusCode >= 400 && res.statusCode < 500) {
         db.delete(activityLog)
           .where(eq(activityLog.id, claimedActivityId))
           .catch(() => { /* undo is best-effort; a missed undo means the human re-creates the card */ });
