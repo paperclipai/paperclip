@@ -626,7 +626,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     responsibleUserId: true,
     watchdog: true,
   }),
-).partial().extend({
+).strict().partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),

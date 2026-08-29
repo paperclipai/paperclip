@@ -273,6 +273,12 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   // A `.transform()` or `.pipe()` becomes a pipe. Read the input schema so the
   // published contract describes the value a client sends.
   if (def.type === "pipe") {
+    // `z.preprocess()` is represented as a pipe whose input is a transform and
+    // whose output is the object schema receiving the preprocessed value. The
+    // transform has no shape to publish; use the output contract instead.
+    if (zodTypeName(def.in as z.ZodTypeAny) === "transform") {
+      return unwrapSchema(def.out as z.ZodTypeAny);
+    }
     return unwrapSchema(def.in as z.ZodTypeAny);
   }
   return schema;
