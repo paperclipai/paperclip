@@ -23,6 +23,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
+import { cleanupTerminalIssueWorkspacesForIssue } from "./terminal-issue-workspace-cleanup.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -907,6 +908,13 @@ export function issueTreeControlService(db: Db) {
       }
       return rows;
     });
+
+    for (const issue of updated) {
+      await cleanupTerminalIssueWorkspacesForIssue(db, issue, {
+        actorType: "system",
+        actorId: "issue_tree_control",
+      });
+    }
 
     return {
       updatedIssueIds: updated.map((issue) => issue.id),

@@ -151,6 +151,7 @@ import {
   REVIEW_PATH_RECOVERY_INSTRUCTION,
 } from "../services/recovery/review-path-recovery.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
+import { cleanupTerminalIssueWorkspacesForIssue } from "../services/terminal-issue-workspace-cleanup.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -12492,6 +12493,17 @@ export function issueRoutes(
       for (const publication of postCommitActivityPublications) publishActivity(publication);
       comment = txResult.comment;
       currentIssue = txResult.issue;
+      if (
+        issueBeforeCommentDecision.status !== currentIssue.status &&
+        (currentIssue.status === "done" || currentIssue.status === "cancelled")
+      ) {
+        await cleanupTerminalIssueWorkspacesForIssue(db, currentIssue, {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+        });
+      }
       // Mirror the normal status-change audit trail: every other in_review -> done path
       // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
       if (issueBeforeCommentDecision.status !== currentIssue.status) {

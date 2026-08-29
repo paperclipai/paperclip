@@ -438,6 +438,28 @@ If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs f
 
 Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
 
+### Terminal issue workspace cleanup
+
+When an issue transitions to `done` or `cancelled`, Paperclip scans every agent
+workspace in that issue's company for directories conclusively attributable to
+the issue. Discovery covers top-level engineering, QA, PR, and merge workspace
+names plus worktrees nested under recognized `worktree`/`worktrees`
+containers. Matching uses the complete issue number with numeric boundaries, so
+closing issue `ABC-123` cannot select a workspace for `ABC-1234`.
+
+Registered linked worktrees are removed with `git worktree remove --force`.
+Directly-created scratch directories are removed only after basename, path
+containment, directory, and symlink guards pass. Primary checkouts with other
+linked worktrees are preserved as ambiguous. Repository-prefixed top-level
+names also require a same-agent stable sibling Git checkout with that repository
+basename. Recursive worktree-container discovery is limited to those same stable
+sibling checkouts, and repository-prefixed nested candidates must resolve to the
+same recognized family set. Ambiguous names such as `archive-LIV-321-old` and any
+nested contents beneath them are preserved. Each cleanup attempt writes a
+structured log and an `issue.terminal_workspace_cleanup` activity entry with
+matched, removed, skipped, and failed paths; failures are isolated per path so
+one stale workspace does not prevent the remaining matches from being handled.
+
 ## Config Freshness
 
 Agent, project, environment, secret, skill, and workspace config edits are sampled at the next run boundary. A heartbeat that is already running finishes with the config it started with.

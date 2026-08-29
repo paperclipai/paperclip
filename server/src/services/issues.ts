@@ -129,6 +129,7 @@ import {
   publishActivity,
   type ActivityPublication,
 } from "./activity-log.js";
+import { cleanupTerminalIssueWorkspacesForIssue } from "./terminal-issue-workspace-cleanup.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
@@ -8071,6 +8072,20 @@ export function issueService(db: Db) {
       const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
       if (dbOrTx === db && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications) publishActivity(publication);
+      }
+      const becameTerminal =
+        result &&
+        existing.status !== result.status &&
+        (result.status === "done" || result.status === "cancelled");
+      if (becameTerminal && dbOrTx === db) {
+        // Keep filesystem cleanup outside the issue transaction when this
+        // service owns it. The cleanup service contains per-candidate failure
+        // isolation, so a stale workspace cannot roll back the issue status.
+        await cleanupTerminalIssueWorkspacesForIssue(db, result, {
+          actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+          actorId: actorAgentId ?? actorUserId ?? "issue_service",
+          agentId: actorAgentId ?? null,
+        });
       }
       return result;
     },
