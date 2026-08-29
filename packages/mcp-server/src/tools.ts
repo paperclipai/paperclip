@@ -5,6 +5,7 @@ import {
   checkoutIssueSchema,
   createApprovalSchema,
   createIssueInputObjectSchema,
+  createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
@@ -464,8 +465,10 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipCreateIssue",
       "Create a new issue. With parentId, optional blockParentUntilDone adds a parent blocker edge; acceptanceCriteria append to the description.",
       createIssueToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      async ({ companyId, ...body }) => {
+        const validatedBody = createIssueInputSchema.parse(body);
+        return client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body: validatedBody });
+      },
     ),
     makeTool(
       "paperclipUpdateIssue",

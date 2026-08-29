@@ -4368,6 +4368,46 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("rejects a parent from another company before creating a parent blocker relation", async () => {
+    const childCompanyId = randomUUID();
+    const parentCompanyId = randomUUID();
+    const foreignParentId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: childCompanyId,
+        name: "Child company",
+        issuePrefix: `T${childCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: parentCompanyId,
+        name: "Parent company",
+        issuePrefix: `T${parentCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(issues).values({
+      id: foreignParentId,
+      companyId: parentCompanyId,
+      title: "Foreign parent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.create(childCompanyId, {
+      title: "Cross-company child",
+      status: "todo",
+      priority: "medium",
+      parentId: foreignParentId,
+      blockParentUntilDone: true,
+    })).rejects.toMatchObject({
+      status: 404,
+      message: "Parent issue not found",
+    });
+    expect(await svc.getById(foreignParentId)).toMatchObject({ id: foreignParentId });
+    expect((await db.select().from(issues).where(eq(issues.companyId, childCompanyId)))).toEqual([]);
+  });
+
   it("adds terminal blockers to immediate blocked-by summaries", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

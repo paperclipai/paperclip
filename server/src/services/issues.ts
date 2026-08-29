@@ -5254,12 +5254,12 @@ export function issueService(db: Db) {
     if (dbOrTx === db) {
       return db.transaction((tx) => ensureParentBlockedByChild(companyId, parentId, childId, actor, tx));
     }
-    await dbOrTx.execute(sql`
-      SELECT ${issues.id}
-      FROM ${issues}
-      WHERE ${and(eq(issues.companyId, companyId), eq(issues.id, parentId))}
-      FOR UPDATE
-    `);
+    const [parent] = await dbOrTx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, parentId)))
+      .for("update");
+    if (!parent) throw notFound("Parent issue not found");
     const existingBlockers = await dbOrTx
       .select({ blockerIssueId: issueRelations.issueId })
       .from(issueRelations)
