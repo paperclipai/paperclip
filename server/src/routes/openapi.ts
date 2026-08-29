@@ -172,6 +172,7 @@ import {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
+  startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -4158,6 +4159,31 @@ registry.registerPath({
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "Get the task-drain status",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "Start a task drain, so new run admission holds until active runs finish",
+  request: { body: jsonBody(startTaskDrainRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "End a task drain and restore run admission",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
