@@ -15,6 +15,7 @@ import {
   Sparkles,
   Terminal,
   Cpu,
+  Wrench,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 
@@ -67,6 +68,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     comingSoon: true,
     disabledLabel: "Use Claude Code or Codex with the ACP engine",
     hideFromVisualSelection: true,
+  },
+  aider_local: {
+    label: "Aider",
+    description: "Aider CLI harness",
+    icon: Wrench,
   },
   claude_local: {
     label: "Claude Code",

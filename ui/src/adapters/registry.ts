@@ -1,4 +1,5 @@
 import type { UIAdapterModule } from "./types";
+import { aiderLocalUIAdapter } from "./aider-local";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { paperclipRunnerUIAdapter } from "./paperclip-runner";
@@ -54,6 +55,7 @@ setDynamicParserResultNotifier(notifyAdapterChange);
 
 function registerBuiltInUIAdapters() {
   for (const adapter of [
+    aiderLocalUIAdapter,
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
     paperclipRunnerUIAdapter,

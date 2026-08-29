@@ -46,6 +46,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1115.0",
     "@opentelemetry/api": "^1.9.0",
+    "@paperclipai/adapter-aider-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",

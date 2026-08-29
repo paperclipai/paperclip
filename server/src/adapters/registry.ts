@@ -140,6 +140,7 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
+import { createServerAdapter as createAiderLocalServerAdapter } from "@paperclipai/adapter-aider-local/server";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -515,6 +516,10 @@ const kimiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: kimiAgentConfigurationDoc,
 };
 
+// The Aider package builds its own ServerAdapterModule so the built-in and the
+// external (plugin store) install paths resolve the exact same module.
+const aiderLocalAdapter: ServerAdapterModule = createAiderLocalServerAdapter();
+
 const hermesGatewayAdapter = createHermesGatewayServerAdapter();
 
 const hermesLocalAdapter = createHermesLocalServerAdapter();
@@ -583,6 +588,7 @@ const pausedOverrides = new Set<string>();
 function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
+    aiderLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
     paperclipRunnerAdapter,
