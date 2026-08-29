@@ -7204,17 +7204,24 @@ export function issueService(db: Db) {
               .values({ companyId, idempotencyKey, issueId: existingIssue.id })
               .onConflictDoNothing();
           }
-          if (blockParentUntilDone && existingIssue.parentId) {
-            await ensureParentBlockedByChild(
-              companyId,
-              existingIssue.parentId,
-              existingIssue.id,
-              {
-                agentId: actorAgentId ?? issueData.createdByAgentId ?? null,
-                userId: actorUserId ?? issueData.createdByUserId ?? null,
-              },
-              tx,
-            );
+          if (blockParentUntilDone) {
+            if (deduplicationReason === "idempotency_key" && existingIssue.parentId !== issueData.parentId) {
+              throw conflict("Idempotency replay cannot change parentId for blockParentUntilDone");
+            }
+            if (existingIssue.parentId) {
+              await ensureParentBlockedByChild(
+                companyId,
+                existingIssue.parentId,
+                existingIssue.id,
+                {
+                  agentId: actorAgentId ?? issueData.createdByAgentId ?? null,
+                  userId: actorUserId ?? issueData.createdByUserId ?? null,
+                },
+                tx,
+              );
+            } else if (deduplicationReason === "idempotency_key") {
+              throw conflict("Idempotency replay cannot add blockParentUntilDone to an issue without parentId");
+            }
           }
           if (deduplicationReason) onDeduplicated?.(deduplicationReason);
           const [enriched] = await withIssueLabels(tx, [existingIssue]);
@@ -7441,18 +7448,10 @@ export function issueService(db: Db) {
           );
         }
         if (blockParentUntilDone && issueData.parentId) {
-          const existingBlockers = await tx
-            .select({ blockerIssueId: issueRelations.issueId })
-            .from(issueRelations)
-            .where(and(
-              eq(issueRelations.companyId, companyId),
-              eq(issueRelations.relatedIssueId, issueData.parentId),
-              eq(issueRelations.type, "blocks"),
-            ));
-          await syncBlockedByIssueIds(
-            issueData.parentId,
+          await ensureParentBlockedByChild(
             companyId,
-            [...new Set([...existingBlockers.map((row) => row.blockerIssueId), issue.id])],
+            issueData.parentId,
+            issue.id,
             {
               agentId: actorAgentId ?? issueData.createdByAgentId ?? null,
               userId: actorUserId ?? issueData.createdByUserId ?? null,

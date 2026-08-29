@@ -4193,6 +4193,124 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
   });
 
+  it("rejects an idempotency replay that adds a parent blocker to a root issue", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Replay parent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const first = await svc.create(companyId, {
+      title: "Root idempotent issue",
+      status: "todo",
+      priority: "medium",
+      idempotencyKey: "root-idempotent-replay",
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Different replay payload",
+      status: "todo",
+      priority: "medium",
+      parentId,
+      idempotencyKey: "root-idempotent-replay",
+      blockParentUntilDone: true,
+    })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("cannot change parentId"),
+    });
+    expect((await svc.getRelationSummaries(parentId)).blockedBy).toEqual([]);
+    expect((await svc.getById(first.id))?.parentId).toBeNull();
+  });
+
+  it("rejects an idempotency replay that changes the parent blocker target", async () => {
+    const companyId = randomUUID();
+    const originalParentId = randomUUID();
+    const requestedParentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: originalParentId, companyId, title: "Original parent", status: "todo", priority: "medium" },
+      { id: requestedParentId, companyId, title: "Requested parent", status: "todo", priority: "medium" },
+    ]);
+
+    const first = await svc.create(companyId, {
+      title: "Parent-bound idempotent issue",
+      status: "todo",
+      priority: "medium",
+      parentId: originalParentId,
+      idempotencyKey: "parent-change-replay",
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Different replay payload",
+      status: "todo",
+      priority: "medium",
+      parentId: requestedParentId,
+      idempotencyKey: "parent-change-replay",
+      blockParentUntilDone: true,
+    })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("cannot change parentId"),
+    });
+    expect((await svc.getRelationSummaries(originalParentId)).blockedBy).toEqual([]);
+    expect((await svc.getRelationSummaries(requestedParentId)).blockedBy).toEqual([]);
+    expect((await svc.getById(first.id))?.parentId).toBe(originalParentId);
+  });
+
+  it("preserves parent blockers across concurrent plain creates", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Concurrent parent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [first, second] = await Promise.all([
+      svc.create(companyId, {
+        title: "Concurrent child one",
+        status: "todo",
+        priority: "medium",
+        parentId,
+        blockParentUntilDone: true,
+      }),
+      svc.create(companyId, {
+        title: "Concurrent child two",
+        status: "todo",
+        priority: "medium",
+        parentId,
+        blockParentUntilDone: true,
+      }),
+    ]);
+
+    expect((await svc.getRelationSummaries(parentId)).blockedBy.map((issue) => issue.id).sort()).toEqual([
+      first.id,
+      second.id,
+    ].sort());
+  });
+
   it("rejects blockParentUntilDone on create without parentId", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
