@@ -1136,15 +1136,15 @@ describe("instance settings routes", () => {
       expect(restoreArg.ttlMs).toBeLessThanOrEqual(60_000);
     });
 
-    it("keeps the drain started when publishing its committed audit record fails", async () => {
+    it("still reports the started drain when publishing its committed audit record fails", async () => {
       // The audit row already committed by the time publish runs, so a
       // publish failure must not roll the in-memory drain back — that
-      // would desync it from the row a client can already read.
+      // would desync it from the row a client can already read. It also
+      // must not turn the response into a false failure: the caller asked
+      // to start a drain, and the drain did start.
       mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
-      mockHeartbeatService.startTaskDrain.mockReturnValue({
-        startedAt: "2026-08-29T00:00:00.000Z",
-        expiresAt: null,
-      });
+      const drain = { startedAt: "2026-08-29T00:00:00.000Z", expiresAt: null };
+      mockHeartbeatService.startTaskDrain.mockReturnValue(drain);
       mockHeartbeatService.getTaskDrainGeneration.mockReturnValue(5);
       mockPublishActivity.mockImplementation(() => {
         throw new Error("live event bus unavailable");
@@ -1153,7 +1153,8 @@ describe("instance settings routes", () => {
 
       const res = await request(app).post("/api/instance/task-drain").send({});
 
-      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(drain);
       expect(mockDb.transaction).toHaveBeenCalledTimes(1);
       expect(mockLogActivity).toHaveBeenCalledTimes(2);
       expect(mockHeartbeatService.restoreTaskDrainIfCurrent).not.toHaveBeenCalled();
@@ -1197,7 +1198,7 @@ describe("instance settings routes", () => {
       expect(restoreArg.ttlMs).toBeLessThanOrEqual(60_000);
     });
 
-    it("keeps the drain stopped when publishing its committed audit record fails", async () => {
+    it("still reports the stopped drain when publishing its committed audit record fails", async () => {
       const expiresAt = new Date(Date.now() + 60_000);
       mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
         draining: true,
@@ -1216,10 +1217,34 @@ describe("instance settings routes", () => {
 
       const res = await request(app).delete("/api/instance/task-drain");
 
-      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ wasActive: true });
       expect(mockDb.transaction).toHaveBeenCalledTimes(1);
       expect(mockLogActivity).toHaveBeenCalledTimes(2);
       expect(mockHeartbeatService.restoreTaskDrainIfCurrent).not.toHaveBeenCalled();
+    });
+
+    it("still publishes the second company's record when the first company's publish fails", async () => {
+      // Each committed audit record publishes independently, so one
+      // company's publish failure must not stop the rest from publishing.
+      const drain = { startedAt: "2026-08-29T00:00:00.000Z", expiresAt: null };
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockHeartbeatService.startTaskDrain.mockReturnValue(drain);
+      mockHeartbeatService.getTaskDrainGeneration.mockReturnValue(5);
+      mockPublishActivity.mockImplementation((publication: { companyId: string }) => {
+        if (publication.companyId === "company-1") throw new Error("live event bus unavailable");
+      });
+      const app = await createApp(adminActor);
+
+      const res = await request(app).post("/api/instance/task-drain").send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(drain);
+      expect(mockPublishActivity).toHaveBeenCalledTimes(2);
+      expect(mockPublishActivity.mock.calls.map(([publication]: [{ companyId: string }]) => publication.companyId)).toEqual([
+        "company-1",
+        "company-2",
+      ]);
     });
 
     it("rejects a board actor without instance admin rights", async () => {

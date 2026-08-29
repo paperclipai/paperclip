@@ -11,6 +11,7 @@ import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
+import { logger } from "../middleware/logger.js";
 import {
   heartbeatService,
   instanceSettingsService,
@@ -58,6 +59,22 @@ async function assertNoHiddenSettingChanges(
     throw forbidden(`${key} is managed by the hosting operator on this instance`, {
       code: "settings_operator_managed",
     });
+  }
+}
+
+/**
+ * Publish activity events for an already-committed mutation. The audit row
+ * exists in the database no matter what happens here, so a publish failure
+ * must not turn into a route error: that would report the mutation as
+ * failed to the caller when it in fact succeeded. Log and swallow instead.
+ */
+function publishActivitiesBestEffort(publications: ActivityPublication[], action: string) {
+  for (const publication of publications) {
+    try {
+      publishActivity(publication);
+    } catch (err) {
+      logger.error({ err, action, companyId: publication.companyId }, "failed to publish activity event");
+    }
   }
 }
 
@@ -371,8 +388,10 @@ export function instanceSettingsRoutes(db: Db) {
       // The audit record already committed, so a failure to publish it here
       // is not a reason to undo the drain: reverting the in-memory state at
       // this point would desync it from the committed row. Publish outside
-      // the try above so this failure cannot reach the restore path.
-      for (const publication of postCommitActivityPublications) publishActivity(publication);
+      // the try above so this failure cannot reach the restore path, and
+      // swallow a publish failure so it cannot turn a committed mutation
+      // into a false 500 either.
+      publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.started");
       res.json(drain);
     },
   );
@@ -422,10 +441,12 @@ export function instanceSettingsRoutes(db: Db) {
       }
       throw err;
     }
-    // See the POST handler above for why publish runs outside the try:
+    // See the POST handler above for why publish runs outside the try, and
+    // why a publish failure here is swallowed instead of failing the route:
     // the audit record already committed, so a publish failure here must
-    // not undo a drain-stop that is already correct in the database.
-    for (const publication of postCommitActivityPublications) publishActivity(publication);
+    // not undo a drain-stop that is already correct in the database, and
+    // must not report the stop as failed when it succeeded.
+    publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
     res.json(result);
   });
 
