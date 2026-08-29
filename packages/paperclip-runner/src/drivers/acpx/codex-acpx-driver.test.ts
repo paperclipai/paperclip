@@ -14,6 +14,7 @@ import {
   type CodexAcpxDriverOptions,
 } from "./codex-acpx-driver.js";
 import type {
+  AcpxRuntimeTurnInput,
   AcpxRuntimeTurn,
   OpenAcpxRuntimeHostOptions,
 } from "./runtime-host.js";
@@ -140,7 +141,8 @@ describe("Codex ACPX harness driver", () => {
         resume: true,
         interruption: true,
         dynamicTools: true,
-        runtimeRequestResolution: false,
+        runtimeRequestResolution: true,
+        runtimeRequestHandoff: true,
       },
       runtimeContextCapabilities: {
         instructions: "native",
@@ -1298,6 +1300,258 @@ describe("Codex ACPX harness driver", () => {
     });
   });
 
+  it("round-trips a provider-neutral ACP form through the runtime request boundary", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-question",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const createdEvent = collectUntil(
+      session.events(),
+      "runtime_request.created",
+    );
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Choose a region." },
+    });
+    const onElicitation =
+      fixture.host.startTurn.mock.calls[0]![0].onElicitation!;
+    const controller = new AbortController();
+    const providerResponse = onElicitation(
+      {
+        mode: "form",
+        message: "Choose deployment settings.",
+        requestedSchema: {
+          type: "object",
+          title: "Deployment",
+          required: ["region"],
+          properties: {
+            region: {
+              type: "string",
+              title: "Region",
+              enum: ["us-east-1", "eu-west-1"],
+            },
+          },
+        },
+      },
+      { requestId: "rpc-question-1", signal: controller.signal },
+    );
+    const events = await createdEvent;
+    const request = session.pendingRuntimeRequests!()[0]!;
+
+    expect(events.at(-1)).toMatchObject({
+      eventType: "runtime_request.created",
+      turnId,
+      payload: {
+        request: {
+          schema: "paperclip.runtime_request.v2",
+          requestKind: "runtime",
+          type: "input",
+          status: "pending",
+          input: { schema: "paperclip.question_set.v1" },
+          origin: { adapter: "acpx-runtime", provider: "codex" },
+        },
+      },
+    });
+    const question = request.input!.questions[0]!;
+    const resolvedEvent = collectUntil(
+      session.events(),
+      "runtime_request.resolved",
+    );
+    await session.resolveRuntimeRequest!({
+      requestId: request.requestId,
+      turnId,
+      resolution: {
+        action: "submit",
+        response: {
+          schema: "paperclip.question_response.v1",
+          answers: {
+            [question.id]: {
+              selectedOptionIds: [question.options![1]!.id],
+            },
+          },
+        },
+      },
+    });
+
+    await expect(providerResponse).resolves.toEqual({
+      action: "accept",
+      content: { region: "eu-west-1" },
+    });
+    await expect(resolvedEvent).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: "runtime_request.resolved" }),
+      ]),
+    );
+    expect(session.pendingRuntimeRequests!()).toEqual([]);
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    await collectUntil(session.events(), "turn.completed");
+    await session.close({ reason: "question verified" });
+  });
+
+  it("cancels a pending ACP form when its owning provider request aborts", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-question-abort",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const createdEvent = collectUntil(
+      session.events(),
+      "runtime_request.created",
+    );
+    await session.startTurn({
+      message: { role: "user", text: "Ask and abort." },
+    });
+    const onElicitation =
+      fixture.host.startTurn.mock.calls[0]![0].onElicitation!;
+    const controller = new AbortController();
+    const providerResponse = onElicitation(
+      {
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: { value: { type: "string" } },
+        },
+      },
+      { requestId: "rpc-question-abort", signal: controller.signal },
+    );
+    await createdEvent;
+    const cancelledEvent = collectUntil(
+      session.events(),
+      "runtime_request.cancelled",
+    );
+
+    controller.abort();
+
+    await expect(providerResponse).resolves.toEqual({ action: "cancel" });
+    await expect(cancelledEvent).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: "runtime_request.cancelled" }),
+      ]),
+    );
+    expect(session.pendingRuntimeRequests!()).toEqual([]);
+    fixture.finishTurn({ status: "cancelled", stopReason: "aborted" });
+    await collectUntil(session.events(), "turn.interrupted");
+    await session.close({ reason: "abort verified" });
+  });
+
+  it("cancels a pending ACP form when the provider event stream fails", async () => {
+    const eventStreamFailure = deferred<void>();
+    const fixture = driverFixture(
+      {},
+      { eventStreamFailure: eventStreamFailure.promise },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-question-stream-failure",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const failedEvent = collectUntil(session.events(), "turn.failed");
+    await session.startTurn({
+      message: { role: "user", text: "Ask before the stream fails." },
+    });
+    const onElicitation =
+      fixture.host.startTurn.mock.calls[0]![0].onElicitation!;
+    const providerResponse = onElicitation(
+      {
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: { value: { type: "string" } },
+        },
+      },
+      {
+        requestId: "rpc-question-stream-failure",
+        signal: new AbortController().signal,
+      },
+    );
+    await vi.waitFor(() => {
+      expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    });
+
+    eventStreamFailure.resolve();
+
+    await expect(providerResponse).resolves.toEqual({ action: "cancel" });
+    await expect(failedEvent).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: "runtime_request.cancelled" }),
+        expect.objectContaining({ eventType: "turn.failed" }),
+      ]),
+    );
+    expect(session.pendingRuntimeRequests!()).toEqual([]);
+    await session.close({ reason: "stream failure verified" });
+  });
+
+  it("expires an ACP form before a durable wait without accepting late answers", async () => {
+    const fixture = driverFixture();
+    const session = await fixture.driver.openSession({
+      runId: "run-question-handoff",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const createdEvent = collectUntil(
+      session.events(),
+      "runtime_request.created",
+    );
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Ask for input." },
+    });
+    const onElicitation =
+      fixture.host.startTurn.mock.calls[0]![0].onElicitation!;
+    const providerResponse = onElicitation(
+      {
+        mode: "form",
+        requestedSchema: {
+          type: "object",
+          properties: { value: { type: "string" } },
+        },
+      },
+      {
+        requestId: "rpc-question-handoff",
+        signal: new AbortController().signal,
+      },
+    );
+    await createdEvent;
+    const [request] = session.pendingRuntimeRequests!();
+
+    const ownership = new AbortController();
+    ownership.abort();
+    const abortedHandoff = session.handoffRuntimeRequest!({
+      requestId: request!.requestId,
+      turnId,
+      reason: "durable_handoff",
+      signal: ownership.signal,
+    });
+    expect(abortedHandoff.result).toBe("already_settled");
+    await expect(abortedHandoff.cleanup).resolves.toBeUndefined();
+    expect(session.pendingRuntimeRequests!()).toHaveLength(1);
+    expect(fixture.host.interruptActiveTurn).not.toHaveBeenCalled();
+
+    const handoff = session.handoffRuntimeRequest!({
+      requestId: request!.requestId,
+      turnId,
+      reason: "durable_handoff",
+      signal: new AbortController().signal,
+    });
+    expect(handoff.result).toBe("handed_off");
+    await expect(handoff.cleanup).resolves.toBeUndefined();
+    await expect(providerResponse).resolves.toEqual({ action: "cancel" });
+    expect(fixture.host.interruptActiveTurn).toHaveBeenCalledWith(
+      "Paperclip parked the ACPX input on a durable wait.",
+    );
+    await expect(
+      session.resolveRuntimeRequest!({
+        requestId: request!.requestId,
+        turnId,
+        resolution: { action: "cancel" },
+      }),
+    ).rejects.toThrow("no longer pending");
+    fixture.finishTurn({ status: "cancelled", stopReason: "durable_wait" });
+    await collectUntil(session.events(), "turn.interrupted");
+    await session.close({ reason: "handoff verified" });
+  });
+
   it("recovers a settled session with the exact persisted identity", async () => {
     const fixture = driverFixture();
     const session = await fixture.driver.openSession({
@@ -2054,6 +2308,7 @@ function driverFixture(
     readRecoveryWorkspace?: NonNullable<
       CodexAcpxDriverDependencies["readRecoveryWorkspace"]
     >;
+    eventStreamFailure?: Promise<void>;
   } = {},
 ): {
   driver: CodexAcpxDriver;
@@ -2090,6 +2345,10 @@ function driverFixture(
           ];
           if (fixtureOptions.runtimeEventFailure) {
             await fixtureOptions.runtimeEventFailure;
+          }
+          if (fixtureOptions.eventStreamFailure) {
+            await fixtureOptions.eventStreamFailure;
+            throw new Error("provider event stream failed");
           }
         },
       },
@@ -2196,7 +2455,7 @@ function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
         availableModelIds: ["gpt-5.6-sol"],
       },
     })),
-    startTurn: vi.fn(createTurn),
+    startTurn: vi.fn((_input: AcpxRuntimeTurnInput) => createTurn()),
     interruptActiveTurn: vi.fn(async () => undefined),
     close: vi.fn(async () => {
       onClose();

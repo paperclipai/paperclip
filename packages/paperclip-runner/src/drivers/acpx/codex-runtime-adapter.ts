@@ -179,6 +179,7 @@ export async function openCodexAcpxRuntime(
       overrides: { codex: [VERIFIED_COMMAND_SENTINEL] },
     }),
     permissionMode: options.permissionMode,
+    elicitationModes: ["form"],
     nonInteractivePermissions: "fail",
     permissionPolicy: {
       ...options.permissionPolicy,
@@ -900,6 +901,9 @@ function runtimePort(
         mode: "prompt",
         requestId: input.requestId,
         ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onElicitation
+          ? { onElicitation: input.onElicitation }
+          : {}),
       });
     },
     close: closeRuntime,

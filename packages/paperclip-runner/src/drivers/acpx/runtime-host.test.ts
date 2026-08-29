@@ -633,6 +633,7 @@ describe("ACPX runtime host", () => {
     const fixture = await hostFixture();
     const turn = runtimeTurn();
     const startTurn = vi.fn(() => turn);
+    const onElicitation = vi.fn();
     const runtime = runtimePort({ startTurn });
     const host = await AcpxRuntimeHost.open(
       {
@@ -646,11 +647,16 @@ describe("ACPX runtime host", () => {
     );
 
     expect(
-      host.startTurn({ text: "Complete the task.", requestId: "turn-1" }),
+      host.startTurn({
+        text: "Complete the task.",
+        requestId: "turn-1",
+        onElicitation,
+      }),
     ).toBe(turn);
     expect(startTurn).toHaveBeenCalledWith({
       text: "Complete the task.",
       requestId: "turn-1",
+      onElicitation,
     });
     expect(() =>
       host.startTurn({ text: "Concurrent", requestId: "turn-2" }),

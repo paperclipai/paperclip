@@ -1,6 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import type { AcpRuntimeEvent } from "acpx/runtime";
+import type {
+  AcpElicitationContext,
+  AcpElicitationRequest,
+  AcpElicitationResponse,
+  AcpRuntimeEvent,
+} from "acpx/runtime";
 
 import {
   PRP_BLOCK_TOOL_NAME,
@@ -8,17 +13,25 @@ import {
 } from "../../contracts/completion-result.js";
 import {
   HarnessCapabilityUnavailableError,
+  HarnessRuntimeRequestResolutionError,
   HarnessStaleTurnError,
+  harnessRuntimeInputExpiredOutcome,
+  harnessRuntimeRequestOutcome,
+  parseHarnessRuntimeRequestResolution,
   type HarnessDriver,
   type HarnessDriverConfigValidation,
   type HarnessDriverDescriptor,
   type HarnessSession,
   type HarnessSessionRecoveryOptions,
   type HarnessSessionRecoveryResult,
+  type HarnessRuntimeRequest,
+  type HarnessRuntimeRequestHandoff,
+  type HarnessRuntimeRequestResolution,
   type HarnessTranscriptSnapshot,
   type OpenHarnessSessionInput,
   type PersistedHarnessSession,
 } from "../../contracts/harness-driver.js";
+import { PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2 } from "../../contracts/question-set.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
 import type {
@@ -38,6 +51,10 @@ import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
   openCodexAcpxRuntime,
 } from "./codex-runtime-adapter.js";
+import {
+  normalizeAcpFormElicitation,
+  type NormalizedAcpForm,
+} from "./acp-question-adapter.js";
 import {
   acpxDriverDescriptor,
   validateAcpxDriverConfig,
@@ -60,6 +77,7 @@ const MAX_TRANSCRIPT_EVENTS = 1_024;
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const MAX_RECOVERY_TERMINAL_TURNS = 4_096;
 const MAX_RECOVERY_TERMINAL_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING_RUNTIME_REQUESTS = 16;
 const CLOSE_TURN_SETTLEMENT_TIMEOUT_MS = 2_000;
 const MAX_AUTONOMOUS_HOST_CLOSE_RETRIES = 3;
 const MAX_QUARANTINED_HOST_CLOSE_RETRIES = 3;
@@ -82,6 +100,14 @@ const QUARANTINED_HOST_ADMISSION_GRACE_MS =
   (MAX_QUARANTINED_HOST_CLOSE_RETRIES - 1) *
     MAX_QUARANTINED_HOST_ATTEMPT_RETRY_DELAY_MS +
   1_000;
+
+interface PendingAcpxRuntimeRequest {
+  request: HarnessRuntimeRequest;
+  normalized: NormalizedAcpForm;
+  settle(response: AcpElicitationResponse): void;
+  cleanup(): void;
+  settling: boolean;
+}
 
 export interface CodexAcpxDynamicToolCall {
   tool: string;
@@ -201,15 +227,9 @@ export class CodexAcpxDriver implements HarnessDriver {
       capabilities: {
         ...descriptor.capabilities,
         resume: true,
-        runtimeRequestResolution: false,
-        runtimeRequestHandoff: false,
-        unsupported: [
-          "steering",
-          "runtimeRequestResolution",
-          "runtimeRequestHandoff",
-          "goals",
-          "threadLineage",
-        ],
+        runtimeRequestResolution: true,
+        runtimeRequestHandoff: true,
+        unsupported: ["steering", "goals", "threadLineage"],
       },
     };
   }
@@ -617,6 +637,10 @@ class CodexAcpxSession implements HarnessSession {
   readonly #quarantineCleanup: (host: CodexAcpxHost, reason: string) => void;
   readonly #transcript: Array<{ event: PrpEvent; bytes: number }> = [];
   readonly #terminalTurns = new Map<string, string>();
+  readonly #pendingRuntimeRequests = new Map<
+    string,
+    PendingAcpxRuntimeRequest
+  >();
   readonly #sourceInstanceId: string;
   readonly #providerRecoveryPolicy: NonNullable<
     PersistedHarnessSession["providerRecoveryPolicy"]
@@ -653,6 +677,7 @@ class CodexAcpxSession implements HarnessSession {
     eventType: "turn.completed" | "turn.failed" | "turn.interrupted";
     payload: Record<string, unknown>;
   } | null = null;
+  #runtimeRequestSequence = 0;
 
   constructor(input: {
     host: CodexAcpxHost;
@@ -750,6 +775,8 @@ class CodexAcpxSession implements HarnessSession {
       turn = this.#host.startTurn({
         text: input.message.text,
         requestId: `${safeId(this.#input.runId, "run")}:${turnId}`,
+        onElicitation: (request, context) =>
+          this.#handleElicitation(turnId, request, context),
       });
     } catch (error) {
       this.#publishTerminal(
@@ -788,6 +815,111 @@ class CodexAcpxSession implements HarnessSession {
       );
     }
     await this.#host.interruptActiveTurn(input.reason ?? "interrupted");
+  }
+
+  pendingRuntimeRequests(): HarnessRuntimeRequest[] {
+    return [...this.#pendingRuntimeRequests.values()].map(({ request }) =>
+      structuredClone(request),
+    );
+  }
+
+  async resolveRuntimeRequest(input: {
+    requestId: string;
+    turnId: string;
+    resolution: HarnessRuntimeRequestResolution;
+  }): Promise<void> {
+    this.#assertOpen();
+    const pending = this.#pendingRuntimeRequests.get(input.requestId);
+    if (!pending) {
+      throw new HarnessCapabilityUnavailableError(
+        "runtime request resolution",
+        `request ${input.requestId} is no longer pending`,
+      );
+    }
+    if (
+      pending.request.turnId !== input.turnId ||
+      this.#activeTurnId !== input.turnId
+    ) {
+      throw new HarnessStaleTurnError(input.turnId);
+    }
+    if (pending.settling) {
+      throw new HarnessCapabilityUnavailableError(
+        "runtime request resolution",
+        `request ${input.requestId} is already settling`,
+      );
+    }
+    pending.settling = true;
+    try {
+      const resolution = parseHarnessRuntimeRequestResolution(
+        pending.request.requestKind,
+        input.resolution,
+        pending.request.input,
+      );
+      const providerResponse = acpElicitationResponse(
+        pending.normalized,
+        resolution,
+      );
+      if (!this.#pendingRuntimeRequests.delete(input.requestId)) return;
+      pending.cleanup();
+      this.#emit(
+        "runtime_request.resolved",
+        harnessRuntimeRequestOutcome(pending.request, {
+          action: resolution.action,
+          ...(resolution.action === "submit" && "response" in resolution
+            ? { response: resolution.response }
+            : {}),
+        }),
+        { turnId: input.turnId, itemId: pending.request.itemId },
+      );
+      pending.settle(providerResponse);
+    } catch (error) {
+      pending.settling = false;
+      throw error;
+    }
+  }
+
+  handoffRuntimeRequest(input: {
+    requestId: string;
+    turnId: string;
+    reason: "durable_handoff";
+    signal: AbortSignal;
+  }): HarnessRuntimeRequestHandoff {
+    if (input.signal.aborted) {
+      return { result: "already_settled", cleanup: Promise.resolve() };
+    }
+    this.#assertOpen();
+    const pending = this.#pendingRuntimeRequests.get(input.requestId);
+    if (
+      !pending ||
+      pending.request.turnId !== input.turnId ||
+      this.#activeTurnId !== input.turnId ||
+      pending.settling
+    ) {
+      return { result: "already_settled", cleanup: Promise.resolve() };
+    }
+    if (!this.#pendingRuntimeRequests.delete(input.requestId)) {
+      return { result: "already_settled", cleanup: Promise.resolve() };
+    }
+    pending.cleanup();
+    this.#emit(
+      "runtime_request.expired",
+      harnessRuntimeInputExpiredOutcome(pending.request, input.reason),
+      { turnId: input.turnId, itemId: pending.request.itemId },
+    );
+    pending.settle({ action: "cancel" });
+    const cleanup = Promise.resolve()
+      .then(() => this.#host.interruptActiveTurn(
+        "Paperclip parked the ACPX input on a durable wait.",
+      ))
+      .catch((error: unknown) => {
+        if (
+          this.#activeTurnId === input.turnId &&
+          !this.#terminalTurns.has(input.turnId)
+        ) {
+          throw error;
+        }
+      });
+    return { result: "handed_off", cleanup };
   }
 
   async dispatchTool(call: RunnerToolCall): Promise<unknown> {
@@ -948,6 +1080,7 @@ class CodexAcpxSession implements HarnessSession {
           fingerprint,
         }),
       ),
+      pendingRuntimeRequests: this.pendingRuntimeRequests(),
     };
   }
 
@@ -971,6 +1104,7 @@ class CodexAcpxSession implements HarnessSession {
   async #finishClose(reason: string): Promise<void> {
     const closingTurnId = this.#activeTurnId;
     const pump = this.#activePump;
+    this.#cancelPendingRuntimeRequests(reason);
     const hostClose =
       this.#hostClosePromise ?? this.#startHostClose({ reason });
     let hostCloseError: unknown = null;
@@ -1099,6 +1233,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#mapRuntimeEvent(normalizeToolEvent(event), turnId, ++index);
       }
       const result = await turn.result;
+      this.#cancelPendingRuntimeRequests("provider turn settled", turnId);
       if (this.#terminalTurns.has(turnId)) return;
       if (result.status === "completed") {
         const completedSemanticFingerprint =
@@ -1183,6 +1318,7 @@ class CodexAcpxSession implements HarnessSession {
     } catch (error) {
       if (this.#terminalTurns.has(turnId)) return;
       if (error instanceof TerminalEventCapacityError) throw error;
+      this.#cancelPendingRuntimeRequests("provider turn failed", turnId);
       if (this.#closed || this.#closingStarted) {
         const reaffirmedSemanticResult =
           this.#pendingSemanticTransfer?.turnId === turnId
@@ -1312,6 +1448,152 @@ class CodexAcpxSession implements HarnessSession {
     }
   }
 
+  async #handleElicitation(
+    turnId: string,
+    request: AcpElicitationRequest,
+    context: AcpElicitationContext,
+  ): Promise<AcpElicitationResponse> {
+    if (
+      this.#closed ||
+      this.#activeTurnId !== turnId ||
+      context.signal.aborted
+    ) {
+      return { action: "cancel" };
+    }
+    if (this.#pendingRuntimeRequests.size >= MAX_PENDING_RUNTIME_REQUESTS) {
+      this.#emit(
+        "harness.diagnostic",
+        {
+          code: "runtime_input_limit_reached",
+          adapter: "acpx-runtime",
+          reason: "The active ACPX turn has too many pending input requests.",
+        },
+        { turnId },
+      );
+      return { action: "cancel" };
+    }
+    let normalized: NormalizedAcpForm | null;
+    try {
+      normalized = normalizeAcpFormElicitation(request);
+    } catch (error) {
+      this.#emit(
+        "harness.diagnostic",
+        {
+          code: "runtime_input_rejected",
+          adapter: "acpx-runtime",
+          reason: safeMessage(error),
+        },
+        { turnId },
+      );
+      return { action: "cancel" };
+    }
+    if (!normalized) {
+      this.#emit(
+        "harness.diagnostic",
+        {
+          code: "runtime_input_unsupported",
+          adapter: "acpx-runtime",
+          reason: "The ACPX provider requested an unsupported input mode.",
+        },
+        { turnId },
+      );
+      return { action: "cancel" };
+    }
+    if (
+      normalized.questionSet.questions.some(
+        (question) => question.textValidation?.pattern !== undefined,
+      )
+    ) {
+      this.#emit(
+        "harness.diagnostic",
+        {
+          code: "runtime_input_pattern_unsupported",
+          adapter: "acpx-runtime",
+          reason:
+            "ACPX form patterns require a bounded regular expression dialect.",
+        },
+        { turnId },
+      );
+      return { action: "cancel" };
+    }
+    const requestId = stableId(
+      "acpx-request",
+      `${turnId}:${++this.#runtimeRequestSequence}:${typeof context.requestId}:${String(context.requestId)}`,
+    );
+    const runtimeRequest: HarnessRuntimeRequest = {
+      requestId,
+      requestKind: "elicitation",
+      method: "elicitation/create",
+      turnId,
+      itemId: requestId,
+      status: "pending",
+      prompt: boundedText(
+        normalized.questionSet.title ??
+          normalized.questionSet.description ??
+          "Additional information is required.",
+        1_000,
+      ),
+      details: { mode: "form" },
+      input: structuredClone(normalized.questionSet),
+      origin: {
+        adapter: "acpx-runtime",
+        provider: "codex",
+        method: "elicitation/create",
+      },
+    };
+    this.#emit(
+      "runtime_request.created",
+      { request: runtimeInputProtocolPayload(runtimeRequest) },
+      { turnId, itemId: requestId },
+    );
+    return await new Promise<AcpElicitationResponse>((settle) => {
+      const cancel = () => {
+        const pending = this.#pendingRuntimeRequests.get(requestId);
+        if (!pending || pending.settling) return;
+        if (!this.#pendingRuntimeRequests.delete(requestId)) return;
+        pending.cleanup();
+        this.#emit(
+          "runtime_request.cancelled",
+          harnessRuntimeRequestOutcome(runtimeRequest, {
+            action: "cancel",
+            reason: "provider request aborted",
+          }),
+          { turnId, itemId: requestId },
+        );
+        settle({ action: "cancel" });
+      };
+      context.signal.addEventListener("abort", cancel, { once: true });
+      this.#pendingRuntimeRequests.set(requestId, {
+        request: runtimeRequest,
+        normalized,
+        settle,
+        cleanup: () => context.signal.removeEventListener("abort", cancel),
+        settling: false,
+      });
+      if (context.signal.aborted) cancel();
+    });
+  }
+
+  #cancelPendingRuntimeRequests(reason: string, turnId?: string): void {
+    for (const [requestId, pending] of this.#pendingRuntimeRequests) {
+      if (turnId && pending.request.turnId !== turnId) continue;
+      if (!this.#pendingRuntimeRequests.delete(requestId)) continue;
+      pending.cleanup();
+      this.#emit(
+        "runtime_request.cancelled",
+        harnessRuntimeRequestOutcome(pending.request, {
+          action: "cancel",
+          reason: boundedText(safeMessage(reason), 1_000),
+        }),
+        {
+          turnId: pending.request.turnId,
+          itemId: pending.request.itemId,
+        },
+      );
+      pending.settle({ action: "cancel" });
+    }
+  }
+
   #emit(
     eventType: PrpEvent["eventType"],
     payload: Record<string, unknown>,
@@ -1415,6 +1697,48 @@ function canonicalJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value) ?? "undefined";
+}
+
+function acpElicitationResponse(
+  normalized: NormalizedAcpForm,
+  resolution: HarnessRuntimeRequestResolution,
+): AcpElicitationResponse {
+  if (resolution.action === "submit") {
+    if (!("response" in resolution)) {
+      throw new HarnessRuntimeRequestResolutionError(
+        "elicitation",
+        "ACPX form submissions require a canonical question response",
+      );
+    }
+    return normalized.accept(resolution.response);
+  }
+  if (resolution.action === "accept_for_session") {
+    throw new HarnessRuntimeRequestResolutionError(
+      "elicitation",
+      "ACPX form input does not support session acceptance",
+    );
+  }
+  return { action: resolution.action };
+}
+
+function runtimeInputProtocolPayload(
+  request: HarnessRuntimeRequest,
+): Record<string, unknown> {
+  if (!request.input) {
+    throw new Error("ACPX runtime input request omitted its question set");
+  }
+  return {
+    schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
+    requestKind: "runtime",
+    requestId: request.requestId,
+    type: "input",
+    status: request.status,
+    prompt: request.prompt,
+    input: structuredClone(request.input),
+    origin: structuredClone(request.origin),
+    turnId: request.turnId,
+    itemId: request.itemId,
+  };
 }
 
 function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
