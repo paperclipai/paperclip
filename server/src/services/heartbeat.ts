@@ -858,38 +858,6 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
-// executeRun's task-drain suppression branch can fail to release a run's
-// claim two ways in a row: the atomic release transaction fails, then its
-// fallback transaction (which marks the run "failed" instead) also fails.
-// When that happens the run, wakeup, and issue lock are left in an unknown
-// durable state. The dispatch site still removes this run's execution
-// promise from activeRunExecutionPromises once executeRun settles —
-// drainActiveRunExecutions loops on that set's size, so an entry that never
-// clears would hang it forever — so a promise-based set cannot carry this
-// signal. Track the runId here instead. getTaskDrainStatus() folds this set
-// into its active-run count, so it keeps reporting a non-quiescent instance
-// for this run. There is no in-process retry for a fallback that already
-// failed once, so the run's row stays "running" until reapOrphanedRuns picks
-// it up as an orphan and finalizes it — that is also where this marker gets
-// removed, right after the reaper finishes the durable issue-lock cleanup
-// for the run (releaseIssueExecutionAndPromote, or handing the run's pending
-// work to a retry), and before any later, lock-unrelated cleanup runs. An
-// entry here only outlives that reap, and so only clears on a process
-// restart, if the reaper itself never runs again for this run, or if
-// classification, retry scheduling, or the lock release itself keeps
-// failing for it.
-const stuckClaimReleaseRunIds = new Set<string>();
-// Thrown by executeRun's task-drain suppression branch when both the atomic
-// claim release and its fallback fail a durable write for the same run. The
-// dispatch site catches this to add the run to stuckClaimReleaseRunIds
-// instead of treating it as an ordinary execution failure.
-class RunClaimReleaseUnresolvedFailure extends Error {
-  constructor(runId: string, cause: unknown) {
-    const causeMessage = cause instanceof Error ? cause.message : String(cause);
-    super(`Run claim release failed durably for run ${runId}: ${causeMessage}`);
-    this.name = "RunClaimReleaseUnresolvedFailure";
-  }
-}
 // Task drain: an operator-controlled hold on new run admission, so a caller
 // can wait for active work to finish before it stops the process. The state
 // lives in process memory only — a process restart clears it — and it sits at
@@ -930,6 +898,12 @@ export function stopTaskDrain(): { wasActive: boolean } {
   return { wasActive };
 }
 
+/**
+ * Report the task-drain state for this process only. `activeRuns` and
+ * `pendingWakes` count in-process work. A process restart clears both
+ * counters, even when the database still holds `running` rows for runs
+ * this process did not finish.
+ */
 export function getTaskDrainStatus(): {
   draining: boolean;
   startedAt: Date | null;
@@ -939,10 +913,7 @@ export function getTaskDrainStatus(): {
   quiescent: boolean;
 } {
   const state = readTaskDrain(new Date());
-  // Fold in stuckClaimReleaseRunIds so a run whose claim release failed
-  // durably (see the set's own comment) keeps this read non-quiescent, even
-  // though its execution promise already left activeRunExecutionPromises.
-  const activeRuns = activeRunExecutionPromises.size + stuckClaimReleaseRunIds.size;
+  const activeRuns = activeRunExecutionPromises.size;
   const pendingWakes = activeWakeupPromises.size;
   return {
     draining: state !== null,
@@ -12942,91 +12913,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
-  // Fallback for when the atomic release above itself fails (a genuine write
-  // error, not a normal no-op). executeRun's caller removes this run's
-  // promise from activeRunExecutionPromises as soon as executeRun settles,
-  // whether it resolves or rejects — so task-drain quiescence is about to
-  // read "no active runs" regardless of what happens here. If the run,
-  // wakeup, and issue lock stayed at "running"/"claimed"/locked, that read
-  // would be false: the database would still hold a claim nothing is
-  // tracking anymore. Fail the run outright instead, so the database
-  // reaches the same "not active" conclusion active tracking already
-  // reached. This does not retry the "queued" release: a run that could not
-  // even release cleanly is treated as failed, not requeued.
-  //
-  // The run row, the wakeup request, and the issue execution lock all guard
-  // the same claim, so — same as the atomic release above — one transaction
-  // commits all three writes together. A partial write here would leave the
-  // same false-quiescence gap this fallback exists to close. Live-event and
-  // plugin-event publishing run after the transaction commits, so a publish
-  // failure cannot roll back the durable claim writes.
-  //
-  // The update below carries the same status: "running" condition the atomic
-  // release above uses. While this fallback waits, a concurrent path (a
-  // cancellation, the orphan reaper) can move the run to a terminal status.
-  // Without the condition this update would match that row and overwrite its
-  // real outcome. With it, the update matches no row, so the function returns
-  // early below and leaves the terminal run, its wakeup request, and its
-  // issue lock untouched.
-  async function failRunClaimedJustBeforeSuppression(runId: string, cause: unknown) {
-    const now = new Date();
-    const causeMessage = cause instanceof Error ? cause.message : String(cause);
-
-    const failed = await db.transaction(async (tx) => {
-      const updated = await tx
-        .update(heartbeatRuns)
-        .set({
-          status: "failed",
-          finishedAt: now,
-          error: `Failed to release the run claim before task-drain suppression: ${causeMessage}`,
-          errorCode: "claim_release_failed",
-          updatedAt: now,
-        })
-        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!updated) return null;
-
-      if (updated.wakeupRequestId) {
-        await tx
-          .update(agentWakeupRequests)
-          .set({
-            status: "failed",
-            finishedAt: now,
-            error: "Run claim release failed before task-drain suppression",
-            updatedAt: now,
-          })
-          .where(eq(agentWakeupRequests.id, updated.wakeupRequestId));
-      }
-
-      const context = parseObject(updated.contextSnapshot);
-      const issueId = readNonEmptyString(context.issueId);
-      if (issueId) {
-        await tx
-          .update(issues)
-          .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
-          .where(and(
-            eq(issues.id, issueId),
-            eq(issues.companyId, updated.companyId),
-            eq(issues.executionRunId, updated.id),
-          ));
-      }
-
-      return updated;
-    });
-    if (!failed) return;
-
-    if (isHeartbeatRunTerminalStatus(failed.status)) {
-      clearHeartbeatRunRuntimeStatus(failed.id);
-    }
-    publishLiveEvent({
-      companyId: failed.companyId,
-      type: "heartbeat.run.status",
-      payload: buildHeartbeatRunStatusLiveEventPayload(failed),
-    });
-    publishRunLifecyclePluginEvent(failed);
-  }
-
   async function cancelQueuedRunForBlockedDependencies(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
@@ -14041,19 +13927,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!retriedRun) {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
-      // The run's row reached a terminal status above, and the block above
-      // just finished the durable issue-lock cleanup for it — either
-      // releaseIssueExecutionAndPromote cleared executionRunId/checkoutRunId,
-      // or the retry took over the run's pending work. Only now is it safe to
-      // drop this run's stuck claim-release marker (see stuckClaimReleaseRunIds
-      // above): a failure in classification, retry scheduling, or the release
-      // call above throws before this point, so the marker stays active and
-      // task-drain keeps reporting this instance non-quiescent while the
-      // issue may still be locked. Clearing it here, rather than after the
-      // unrelated cleanup below (event logging, agent-status finalization,
-      // queue promotion), keeps it from getting stuck on a failure in one of
-      // those instead.
-      stuckClaimReleaseRunIds.delete(run.id);
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
@@ -14324,14 +14197,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       for (const claimedRun of claimedRuns) {
         const execution = executeRun(claimedRun.id).catch((err) => {
-          if (err instanceof RunClaimReleaseUnresolvedFailure) {
-            // The run's claim release failed durably (both the atomic release
-            // and its fallback failed a write), already logged inside
-            // executeRun. Track the runId so getTaskDrainStatus() keeps
-            // reporting this run as active — see stuckClaimReleaseRunIds.
-            stuckClaimReleaseRunIds.add(claimedRun.id);
-            return;
-          }
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
         });
         // Register the in-flight execution so drainActiveRunExecutions() can await
@@ -14340,11 +14205,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // have landed before a caller (e.g. a test's afterEach) mutates the DB.
         activeRunExecutionPromises.add(execution);
         void execution.finally(() => {
-          // Always remove the settled execution promise itself — drainActiveRunExecutions
-          // loops on activeRunExecutionPromises.size, so an entry that never
-          // clears here would hang it forever. A run added to
-          // stuckClaimReleaseRunIds above stays reported as active through
-          // that separate set instead.
+          // drainActiveRunExecutions loops on activeRunExecutionPromises.size,
+          // so an entry that never clears here would hang it forever.
           activeRunExecutionPromises.delete(execution);
         });
       }
@@ -14396,17 +14258,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } catch (err) {
         logger.error(
           { err, runId },
-          "failed to release run claimed just before task-drain suppression; failing the run instead",
+          "failed to release run claimed just before task-drain suppression; the run row stays running, and the orphan reaper finalizes it and releases the issue lock on its next cycle",
         );
-        try {
-          await failRunClaimedJustBeforeSuppression(runId, err);
-        } catch (fallbackErr) {
-          logger.error(
-            { err: fallbackErr, runId },
-            "failed to fail the run after its claim release also failed; the run, wakeup, and issue lock are in an unknown state, so task-drain will keep reporting this run as active until the process restarts",
-          );
-          throw new RunClaimReleaseUnresolvedFailure(runId, fallbackErr);
-        }
       }
       return;
     }

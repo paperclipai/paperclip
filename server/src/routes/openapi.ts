@@ -4165,7 +4165,7 @@ registry.registerPath({
   method: "get",
   path: "/api/instance/task-drain",
   tags: ["instance"],
-  summary: "Get the task-drain status",
+  summary: "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
