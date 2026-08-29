@@ -302,9 +302,50 @@ export function instanceSettingsRoutes(db: Db) {
     validate(startTaskDrainRequestSchema),
     async (req, res) => {
       assertCanManageInstanceSettings(req);
-      const drain = heartbeat.startTaskDrain({ ttlMs: req.body.ttlMs ?? null });
       const actor = getActorInfo(req);
+      // Read the company list, an operation that can fail, before the
+      // process-local drain mutation below, so a failed read never leaves
+      // that mutation in place with no audit record of it.
       const companyIds = await svc.listCompanyIds();
+      const drain = heartbeat.startTaskDrain({ ttlMs: req.body.ttlMs ?? null });
+      try {
+        await Promise.all(
+          companyIds.map((companyId) =>
+            logActivity(db, {
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "instance.task_drain.started",
+              entityType: "instance_settings",
+              entityId: "default",
+              details: {
+                startedAt: drain.startedAt,
+                expiresAt: drain.expiresAt,
+              },
+            }),
+          ),
+        );
+      } catch (err) {
+        // The audit record did not commit, so undo the in-memory drain this
+        // call started. The route must not return an error while it leaves
+        // a mutation with no audit trail behind.
+        heartbeat.stopTaskDrain();
+        throw err;
+      }
+      res.json(drain);
+    },
+  );
+
+  router.delete("/instance/task-drain", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const actor = getActorInfo(req);
+    const companyIds = await svc.listCompanyIds();
+    const priorStatus = heartbeat.getTaskDrainStatus();
+    const result = heartbeat.stopTaskDrain();
+    try {
       await Promise.all(
         companyIds.map((companyId) =>
           logActivity(db, {
@@ -314,43 +355,28 @@ export function instanceSettingsRoutes(db: Db) {
             agentId: actor.agentId,
             runId: actor.runId,
             agentApiKeyId: actor.agentApiKeyId,
-            action: "instance.task_drain.started",
+            action: "instance.task_drain.stopped",
             entityType: "instance_settings",
             entityId: "default",
             details: {
-              startedAt: drain.startedAt,
-              expiresAt: drain.expiresAt,
+              wasActive: result.wasActive,
             },
           }),
         ),
       );
-      res.json(drain);
-    },
-  );
-
-  router.delete("/instance/task-drain", async (req, res) => {
-    assertCanManageInstanceSettings(req);
-    const result = heartbeat.stopTaskDrain();
-    const actor = getActorInfo(req);
-    const companyIds = await svc.listCompanyIds();
-    await Promise.all(
-      companyIds.map((companyId) =>
-        logActivity(db, {
-          companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "instance.task_drain.stopped",
-          entityType: "instance_settings",
-          entityId: "default",
-          details: {
-            wasActive: result.wasActive,
-          },
-        }),
-      ),
-    );
+    } catch (err) {
+      // Restore the drain this call ended (best-effort: the remaining TTL
+      // carries over, but the original start time does not) so a failed
+      // audit write does not silently end a drain the operator still relies
+      // on to hold new run admission.
+      if (priorStatus.draining) {
+        const remainingTtlMs = priorStatus.expiresAt
+          ? Math.max(0, priorStatus.expiresAt.getTime() - Date.now())
+          : null;
+        heartbeat.startTaskDrain({ ttlMs: remainingTtlMs });
+      }
+      throw err;
+    }
     res.json(result);
   });
 

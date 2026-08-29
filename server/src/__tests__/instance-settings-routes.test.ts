@@ -1015,6 +1015,65 @@ describe("instance settings routes", () => {
       }
     });
 
+    it("does not start a drain when the company list read fails", async () => {
+      mockInstanceSettingsService.listCompanyIds.mockRejectedValue(new Error("db unavailable"));
+      const app = await createApp(adminActor);
+
+      const res = await request(app).post("/api/instance/task-drain").send({});
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockHeartbeatService.startTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("reverts the drain when the activity log write fails", async () => {
+      mockHeartbeatService.startTaskDrain.mockReturnValue({
+        startedAt: "2026-08-29T00:00:00.000Z",
+        expiresAt: null,
+      });
+      mockLogActivity.mockRejectedValue(new Error("activity insert failed"));
+      const app = await createApp(adminActor);
+
+      const res = await request(app).post("/api/instance/task-drain").send({});
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockHeartbeatService.startTaskDrain).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledWith();
+    });
+
+    it("does not stop the drain when the company list read fails", async () => {
+      mockInstanceSettingsService.listCompanyIds.mockRejectedValue(new Error("db unavailable"));
+      const app = await createApp(adminActor);
+
+      const res = await request(app).delete("/api/instance/task-drain");
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("restores an active drain when the activity log write fails", async () => {
+      const expiresAt = new Date(Date.now() + 60_000);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
+        draining: true,
+        startedAt: new Date(),
+        expiresAt,
+        activeRuns: 0,
+        pendingWakes: 0,
+        quiescent: true,
+      });
+      mockHeartbeatService.stopTaskDrain.mockReturnValue({ wasActive: true });
+      mockLogActivity.mockRejectedValue(new Error("activity insert failed"));
+      const app = await createApp(adminActor);
+
+      const res = await request(app).delete("/api/instance/task-drain");
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.startTaskDrain).toHaveBeenCalledTimes(1);
+      const [{ ttlMs }] = mockHeartbeatService.startTaskDrain.mock.calls[0];
+      expect(ttlMs).toBeGreaterThan(0);
+      expect(ttlMs).toBeLessThanOrEqual(60_000);
+    });
+
     it("rejects a board actor without instance admin rights", async () => {
       const app = await createApp(nonAdminActor);
 
