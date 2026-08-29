@@ -9,7 +9,6 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-  MAX_TASK_DRAIN_TTL_MS,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
@@ -898,13 +897,6 @@ class RunClaimReleaseUnresolvedFailure extends Error {
 // resolveHeartbeatSchedulingSuppression() check and every heartbeatService()
 // instance see the same drain.
 let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
-// Bumped on every explicit task-drain mutation (a start or a stop), so a
-// caller can tell whether a later mutation has already superseded its own.
-// A route rollback reads this right after its own mutation, then passes it
-// to restoreTaskDrainIfCurrent() before it restores prior state on a failed
-// audit write — so the rollback never overwrites a newer concurrent
-// mutation with stale state.
-let taskDrainGeneration = 0;
 
 function readTaskDrain(now: Date): { startedAt: Date; expiresAt: Date | null } | null {
   if (taskDrainState && taskDrainState.expiresAt !== null && taskDrainState.expiresAt.getTime() <= now.getTime()) {
@@ -913,43 +905,29 @@ function readTaskDrain(now: Date): { startedAt: Date; expiresAt: Date | null } |
   return taskDrainState;
 }
 
-export function startTaskDrain(opts: { ttlMs?: number | null } = {}): { startedAt: Date; expiresAt: Date | null } {
+/** Compute the drain a start call would apply, without changing state. */
+export function computeTaskDrain(opts: { ttlMs?: number | null } = {}): { startedAt: Date; expiresAt: Date | null } {
   const startedAt = new Date();
   const ttlMs = opts.ttlMs ?? null;
-  const expiresAt = ttlMs === null ? null : new Date(startedAt.getTime() + Math.min(ttlMs, MAX_TASK_DRAIN_TTL_MS));
-  taskDrainState = { startedAt, expiresAt };
-  taskDrainGeneration += 1;
-  return taskDrainState;
+  const expiresAt = ttlMs === null ? null : new Date(startedAt.getTime() + ttlMs);
+  return { startedAt, expiresAt };
+}
+
+/** Assign the given drain as the current task-drain state. */
+export function applyTaskDrain(drain: { startedAt: Date; expiresAt: Date | null }): void {
+  taskDrainState = drain;
+}
+
+export function startTaskDrain(opts: { ttlMs?: number | null } = {}): { startedAt: Date; expiresAt: Date | null } {
+  const drain = computeTaskDrain(opts);
+  applyTaskDrain(drain);
+  return drain;
 }
 
 export function stopTaskDrain(): { wasActive: boolean } {
   const wasActive = readTaskDrain(new Date()) !== null;
   taskDrainState = null;
-  taskDrainGeneration += 1;
   return { wasActive };
-}
-
-/** The current task-drain mutation count. See taskDrainGeneration above. */
-export function getTaskDrainGeneration(): number {
-  return taskDrainGeneration;
-}
-
-/**
- * Restore a captured task-drain state, but only if no other mutation has
- * happened since expectedGeneration was read. Returns false, and leaves the
- * current state untouched, when a newer mutation has already superseded it.
- */
-export function restoreTaskDrainIfCurrent(
-  expectedGeneration: number,
-  restore: { draining: boolean; ttlMs: number | null },
-): boolean {
-  if (taskDrainGeneration !== expectedGeneration) return false;
-  if (restore.draining) {
-    startTaskDrain({ ttlMs: restore.ttlMs });
-  } else {
-    stopTaskDrain();
-  }
-  return true;
 }
 
 export function getTaskDrainStatus(): {
@@ -20000,8 +19978,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,
-    getTaskDrainGeneration,
-    restoreTaskDrainIfCurrent,
+    computeTaskDrain,
+    applyTaskDrain,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
