@@ -866,6 +866,13 @@ const activeWakeupPromises = new Set<Promise<unknown>>();
 // resolveHeartbeatSchedulingSuppression() check and every heartbeatService()
 // instance see the same drain.
 let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
+// Bumped on every explicit task-drain mutation (a start or a stop), so a
+// caller can tell whether a later mutation has already superseded its own.
+// A route rollback reads this right after its own mutation, then passes it
+// to restoreTaskDrainIfCurrent() before it restores prior state on a failed
+// audit write — so the rollback never overwrites a newer concurrent
+// mutation with stale state.
+let taskDrainGeneration = 0;
 
 function readTaskDrain(now: Date): { startedAt: Date; expiresAt: Date | null } | null {
   if (taskDrainState && taskDrainState.expiresAt !== null && taskDrainState.expiresAt.getTime() <= now.getTime()) {
@@ -879,13 +886,38 @@ export function startTaskDrain(opts: { ttlMs?: number | null } = {}): { startedA
   const ttlMs = opts.ttlMs ?? null;
   const expiresAt = ttlMs === null ? null : new Date(startedAt.getTime() + Math.min(ttlMs, MAX_TASK_DRAIN_TTL_MS));
   taskDrainState = { startedAt, expiresAt };
+  taskDrainGeneration += 1;
   return taskDrainState;
 }
 
 export function stopTaskDrain(): { wasActive: boolean } {
   const wasActive = readTaskDrain(new Date()) !== null;
   taskDrainState = null;
+  taskDrainGeneration += 1;
   return { wasActive };
+}
+
+/** The current task-drain mutation count. See taskDrainGeneration above. */
+export function getTaskDrainGeneration(): number {
+  return taskDrainGeneration;
+}
+
+/**
+ * Restore a captured task-drain state, but only if no other mutation has
+ * happened since expectedGeneration was read. Returns false, and leaves the
+ * current state untouched, when a newer mutation has already superseded it.
+ */
+export function restoreTaskDrainIfCurrent(
+  expectedGeneration: number,
+  restore: { draining: boolean; ttlMs: number | null },
+): boolean {
+  if (taskDrainGeneration !== expectedGeneration) return false;
+  if (restore.draining) {
+    startTaskDrain({ ttlMs: restore.ttlMs });
+  } else {
+    stopTaskDrain();
+  }
+  return true;
 }
 
 export function getTaskDrainStatus(): {
@@ -19791,6 +19823,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,
+    getTaskDrainGeneration,
+    restoreTaskDrainIfCurrent,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,

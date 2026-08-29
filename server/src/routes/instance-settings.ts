@@ -11,7 +11,13 @@ import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
-import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import {
+  heartbeatService,
+  instanceSettingsService,
+  logActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
@@ -312,42 +318,55 @@ export function instanceSettingsRoutes(db: Db) {
       // it instead of clearing task-drain state the operator still relies on.
       const priorStatus = heartbeat.getTaskDrainStatus();
       const drain = heartbeat.startTaskDrain({ ttlMs: req.body.ttlMs ?? null });
+      // Stamp the generation right after this call's own mutation (no
+      // await runs between the two, so nothing else can mutate the drain
+      // in between), so a later restore can tell whether a concurrent
+      // request has already superseded it.
+      const generation = heartbeat.getTaskDrainGeneration();
       try {
-        await Promise.all(
-          companyIds.map((companyId) =>
-            logActivity(db, {
-              companyId,
-              actorType: actor.actorType,
-              actorId: actor.actorId,
-              agentId: actor.agentId,
-              runId: actor.runId,
-              agentApiKeyId: actor.agentApiKeyId,
-              action: "instance.task_drain.started",
-              entityType: "instance_settings",
-              entityId: "default",
-              details: {
-                startedAt: drain.startedAt,
-                expiresAt: drain.expiresAt,
-              },
-            }),
+        // One transaction for every company's audit row, so a write that
+        // succeeds for one company and fails for another never leaves a
+        // partial activity history behind — either every company gets the
+        // record, or none does.
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        await db.transaction((tx) =>
+          Promise.all(
+            companyIds.map((companyId) =>
+              logActivity(tx as unknown as Db, {
+                companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                agentApiKeyId: actor.agentApiKeyId,
+                action: "instance.task_drain.started",
+                entityType: "instance_settings",
+                entityId: "default",
+                details: {
+                  startedAt: drain.startedAt,
+                  expiresAt: drain.expiresAt,
+                },
+              }, postCommitActivityPublications),
+            ),
           ),
         );
+        for (const publication of postCommitActivityPublications) publishActivity(publication);
       } catch (err) {
         // The audit record did not commit, so undo the in-memory drain this
         // call started. If a drain was already active, this call replaced
         // it — restore that prior drain (best-effort: the remaining TTL
         // carries over, but the original start time does not) instead of
-        // clearing task-drain state the operator still relies on. The route
-        // must not return an error while it leaves a mutation with no audit
-        // trail behind.
-        if (priorStatus.draining) {
-          const remainingTtlMs = priorStatus.expiresAt
-            ? Math.max(0, priorStatus.expiresAt.getTime() - Date.now())
-            : null;
-          heartbeat.startTaskDrain({ ttlMs: remainingTtlMs });
-        } else {
-          heartbeat.stopTaskDrain();
-        }
+        // clearing task-drain state the operator still relies on. Guard the
+        // restore with the generation stamped above: if a concurrent
+        // request has already mutated the drain again, this restore must
+        // not overwrite that newer state with the state captured here.
+        const remainingTtlMs = priorStatus.expiresAt
+          ? Math.max(0, priorStatus.expiresAt.getTime() - Date.now())
+          : null;
+        heartbeat.restoreTaskDrainIfCurrent(generation, {
+          draining: priorStatus.draining,
+          ttlMs: remainingTtlMs,
+        });
         throw err;
       }
       res.json(drain);
@@ -360,35 +379,43 @@ export function instanceSettingsRoutes(db: Db) {
     const companyIds = await svc.listCompanyIds();
     const priorStatus = heartbeat.getTaskDrainStatus();
     const result = heartbeat.stopTaskDrain();
+    // See the POST handler above for why the generation is stamped here.
+    const generation = heartbeat.getTaskDrainGeneration();
     try {
-      await Promise.all(
-        companyIds.map((companyId) =>
-          logActivity(db, {
-            companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "instance.task_drain.stopped",
-            entityType: "instance_settings",
-            entityId: "default",
-            details: {
-              wasActive: result.wasActive,
-            },
-          }),
+      // See the POST handler above for why this is one transaction.
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      await db.transaction((tx) =>
+        Promise.all(
+          companyIds.map((companyId) =>
+            logActivity(tx as unknown as Db, {
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "instance.task_drain.stopped",
+              entityType: "instance_settings",
+              entityId: "default",
+              details: {
+                wasActive: result.wasActive,
+              },
+            }, postCommitActivityPublications),
+          ),
         ),
       );
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
     } catch (err) {
       // Restore the drain this call ended (best-effort: the remaining TTL
       // carries over, but the original start time does not) so a failed
       // audit write does not silently end a drain the operator still relies
-      // on to hold new run admission.
+      // on to hold new run admission. See the POST handler above for why
+      // the restore is guarded by the generation stamped above.
       if (priorStatus.draining) {
         const remainingTtlMs = priorStatus.expiresAt
           ? Math.max(0, priorStatus.expiresAt.getTime() - Date.now())
           : null;
-        heartbeat.startTaskDrain({ ttlMs: remainingTtlMs });
+        heartbeat.restoreTaskDrainIfCurrent(generation, { draining: true, ttlMs: remainingTtlMs });
       }
       throw err;
     }
