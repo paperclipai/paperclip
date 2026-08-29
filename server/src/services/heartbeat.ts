@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  MAX_TASK_DRAIN_TTL_MS,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
@@ -864,7 +865,6 @@ const activeWakeupPromises = new Set<Promise<unknown>>();
 // module scope like activeRunExecutions above, so both the pure
 // resolveHeartbeatSchedulingSuppression() check and every heartbeatService()
 // instance see the same drain.
-const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
 let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
 
 function readTaskDrain(now: Date): { startedAt: Date; expiresAt: Date | null } | null {

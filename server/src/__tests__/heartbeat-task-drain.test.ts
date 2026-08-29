@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_TASK_DRAIN_TTL_MS } from "@paperclipai/shared";
 import {
   getTaskDrainStatus,
   resolveHeartbeatSchedulingSuppression,
   startTaskDrain,
   stopTaskDrain,
 } from "../services/heartbeat.ts";
-
-const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 describe("heartbeat task drain", () => {
   afterEach(() => {
