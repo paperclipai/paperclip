@@ -1244,6 +1244,40 @@ export function ConnectionSetupFlow({
     return <div className="p-6 text-sm text-muted-foreground">Select a company to connect apps.</div>;
   }
 
+  if (
+    (resumeConnectionId || reconnectConnectionId)
+    && (connectionsQuery.isError || applicationsQuery.isError)
+  ) {
+    return (
+      <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+        <h2 className="text-lg font-semibold text-foreground">Couldn’t load connection setup</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Paperclip couldn’t check the retained connection. The retained connection was not changed.
+        </p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            onClick={async () => {
+              const [connectionsResult, applicationsResult] = await Promise.all([
+                connectionsQuery.refetch(),
+                applicationsQuery.refetch(),
+              ]);
+              if (!connectionsResult.isError && !applicationsResult.isError) {
+                setOAuthError(null);
+                setOAuthPhase("entry");
+              }
+            }}
+          >
+            Try again
+          </Button>
+          <Button type="button" variant="outline" onClick={() => navigate("/apps")}>
+            Back to apps
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (resumeConnectionId && connectionsQuery.isFetchedAfterMount && !resumeConnection) {
     return (
       <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">

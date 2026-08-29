@@ -1230,6 +1230,60 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Couldn’t load connection setup");
   });
 
+  it.each(["connection", "application"] as const)(
+    "keeps an exact retained reconnect retryable when the %s lookup fails",
+    async (failedLookup) => {
+      mockSearch.value = "source=notion&applicationId=app-notion&new=1&reconnect=conn-archived&identity=organization";
+      listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+      const applications = {
+        applications: [{
+          id: "app-notion",
+          status: "archived",
+          metadata: { sourceTemplateKey: "notion" },
+        }],
+      };
+      const connections = {
+        connections: [{
+          id: "conn-archived",
+          applicationId: "app-notion",
+          authKind: "oauth",
+          credentialPolicy: "shared",
+          status: "archived",
+          config: { sourceTemplateKey: "notion" },
+          transportConfig: {},
+        }],
+      };
+      if (failedLookup === "connection") {
+        listConnectionsMock
+          .mockRejectedValueOnce(new Error("Connection lookup unavailable"))
+          .mockResolvedValueOnce(connections);
+        listApplicationsMock.mockResolvedValue(applications);
+      } else {
+        listApplicationsMock
+          .mockRejectedValueOnce(new Error("Application lookup unavailable"))
+          .mockResolvedValueOnce(applications);
+        listConnectionsMock.mockResolvedValue(connections);
+      }
+
+      await render();
+
+      expect(container.textContent).toContain("Couldn’t load connection setup");
+      expect(container.textContent).toContain("The retained connection was not changed");
+      expect(container.textContent).not.toContain("This connection can’t be reconnected");
+
+      await act(async () => {
+        buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(listConnectionsMock).toHaveBeenCalledTimes(2);
+      expect(listApplicationsMock).toHaveBeenCalledTimes(2);
+      expect(container.textContent).not.toContain("Couldn’t load connection setup");
+      expect(container.textContent).toContain("Connect Notion to Paperclip");
+    },
+  );
+
   it("creates a fresh Notion OAuth connection when the provider landing requests another", async () => {
     mockSearch.value = "source=notion&applicationId=app-notion&new=1";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
