@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { issueCommentMetadataSchema } from "@paperclipai/shared";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -436,6 +437,48 @@ describe("successful run handoff decision", () => {
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("completed")).toBe(true);
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("failed")).toBe(false);
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("cancelled")).toBe(false);
+  });
+
+  it("keeps long recovery link metadata within the validation bounds", () => {
+    const notice = buildSuccessfulRunHandoffRequiredNotice({
+      issue: {
+        id: "11111111-1111-4111-8111-111111111111",
+        identifier: "n".repeat(81),
+        title: "😀".repeat(120) + "x",
+        status: "in_progress",
+      } as any,
+      run: {
+        id: "22222222-2222-4222-8222-222222222222",
+        status: "r".repeat(161),
+        agentId: "33333333-3333-4333-8333-333333333333",
+      } as any,
+      agent: {
+        id: "33333333-3333-4333-8333-333333333333",
+        name: "a".repeat(161),
+      } as any,
+      detectedProgressSummary: "progress recorded",
+    });
+
+    issueCommentMetadataSchema.parse(notice.metadata);
+
+    const rows = notice.metadata.sections.flatMap((section) => section.rows);
+    const issueRow = rows.find((row) => row.type === "issue_link");
+    const runRow = rows.find((row) => row.type === "run_link");
+    const agentRow = rows.find((row) => row.type === "agent_link");
+
+    expect(issueRow).toMatchObject({ type: "issue_link", title: expect.any(String) });
+    expect(runRow).toMatchObject({ type: "run_link", title: expect.any(String) });
+    expect(agentRow).toMatchObject({ type: "agent_link", name: expect.any(String) });
+    if (issueRow?.type !== "issue_link" || runRow?.type !== "run_link" || agentRow?.type !== "agent_link") return;
+    expect(issueRow.identifier).toHaveLength(80);
+    expect(issueRow.identifier).toMatch(/\.\.\.$/);
+    expect(issueRow.title).toHaveLength(239);
+    expect(issueRow.title).toMatch(/\.\.\.$/);
+    expect(issueRow.title).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    expect(runRow.title).toHaveLength(160);
+    expect(runRow.title).toMatch(/\.\.\.$/);
+    expect(agentRow.name).toHaveLength(160);
+    expect(agentRow.name).toMatch(/\.\.\.$/);
   });
 
   it("builds the required system notice with hidden structured metadata", () => {
