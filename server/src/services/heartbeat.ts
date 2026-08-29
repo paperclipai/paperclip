@@ -16486,13 +16486,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       const adapter = getServerAdapter(agent.adapterType);
       const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
-        dispatch: () => Promise<T>,
+        dispatch: (markDispatchStarted: () => void) => Promise<T>,
       ): Promise<
         | { dispatched: true; resultPromise: Promise<T> }
         | { dispatched: false }
       > => {
         if (!issueId || !isResolvedInteractionContinuationWakeContext(context)) {
-          return { dispatched: true, resultPromise: dispatch() };
+          return { dispatched: true, resultPromise: dispatch(() => {}) };
         }
         await options.beforeResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
 
@@ -16530,11 +16530,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
 
           await options.afterResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
-          // Invoke the adapter while the issue row lock is still held. Every
-          // status/assignee update takes this same lock, so an operator change
-          // either lands before validation (and cancels this run) or after the
-          // adapter has begun dispatch; it cannot slip between the two.
-          return { dispatched: true as const, resultPromise: dispatch() };
+          let dispatchStarted = false;
+          let resolveDispatchStarted!: () => void;
+          const dispatchStartedPromise = new Promise<void>((resolve) => {
+            resolveDispatchStarted = resolve;
+          });
+          const markDispatchStarted = () => {
+            if (dispatchStarted) return;
+            dispatchStarted = true;
+            resolveDispatchStarted();
+          };
+
+          // Keep the issue row locked through the adapter's asynchronous
+          // preparation and release it only once the adapter reports an
+          // actual process spawn. If preparation fails or returns without a
+          // spawn, settling the adapter promise also releases the gate.
+          const resultPromise = dispatch(markDispatchStarted);
+          void resultPromise.then(markDispatchStarted, markDispatchStarted);
+          await dispatchStartedPromise;
+          return { dispatched: true as const, resultPromise };
         });
 
         if (gate.dispatched) return gate;
@@ -16783,7 +16797,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             promptMetrics: { promptChars: prompt.length },
             context: { provider: "codex", protocolVersion: 1 },
           });
-          const guardedDispatch = await dispatchResolvedInteractionContinuationWithAtomicGate(() =>
+          const guardedDispatch = await dispatchResolvedInteractionContinuationWithAtomicGate((markDispatchStarted) =>
             executeNativeCodexRunner({
             db,
             companyId: agent.companyId,
@@ -16803,7 +16817,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             timeoutMs,
             environment,
             onLog,
-            onSpawn,
+            onSpawn: async (meta) => {
+              markDispatchStarted();
+              await onSpawn(meta);
+            },
             }),
           );
           if (!guardedDispatch.dispatched) return;
@@ -16855,7 +16872,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (managedMcpConfig) {
             adapterContext.paperclipManagedMcp = managedMcpConfig;
           }
-          const guardedDispatch = await dispatchResolvedInteractionContinuationWithAtomicGate(() =>
+          const guardedDispatch = await dispatchResolvedInteractionContinuationWithAtomicGate((markDispatchStarted) =>
             adapter.execute({
             runId: run.id,
             agent,
@@ -16880,7 +16897,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             onRuntimeProgress: async (progress) => {
               await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
             },
-            onSpawn,
+            onSpawn: async (meta) => {
+              markDispatchStarted();
+              await onSpawn(meta);
+            },
             authToken: authToken ?? undefined,
             }),
           );

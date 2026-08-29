@@ -611,7 +611,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     },
   );
 
-  it("starts adapter dispatch before a concurrent park can cross the final continuation gate", async () => {
+  it("holds the final continuation gate through asynchronous adapter preparation", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -662,12 +662,21 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         ordering.push("parked");
       });
       // Give the concurrent update a chance to reach the row lock. It must
-      // remain blocked until the gate invokes the adapter and commits.
+      // remain blocked until the adapter reports an actual process spawn.
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(ordering).toEqual(["validated"]);
     };
-    mockAdapterExecute.mockImplementation(async () => {
+    mockAdapterExecute.mockImplementation(async (context) => {
+      ordering.push("preparing");
+      // Model asynchronous adapter setup before the child process exists.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(ordering).toEqual(["validated", "preparing"]);
       ordering.push("dispatched");
+      await context.onSpawn?.({
+        pid: 12345,
+        processGroupId: 12345,
+        startedAt: new Date().toISOString(),
+      });
       return {
         exitCode: 0,
         signal: null,
@@ -696,7 +705,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("backlog");
-    expect(ordering).toEqual(["validated", "dispatched", "parked"]);
+    expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked"]);
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
