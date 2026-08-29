@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-07T20:30:29.973Z",
+  "generatedAt": "2026-08-29T03:13:55.193Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -1112,6 +1112,58 @@
         "commit": "daca71f89eb71d0d56d01a43ed7627aa919dba4f",
         "path": "skills/last30days",
         "url": "https://github.com/mvanhorn/last30days-skill/tree/v3.3.0/skills/last30days"
+      }
+    },
+    {
+      "id": "paperclipai:optional:social-media:tweetclaw",
+      "key": "paperclipai/optional/social-media/tweetclaw",
+      "kind": "optional",
+      "category": "social-media",
+      "slug": "tweetclaw",
+      "name": "tweetclaw",
+      "description": "OpenClaw guide for Twitter search, follower exports, monitoring, media, and approved X automation through Xquik. Not affiliated with X Corp.",
+      "path": "catalog/optional/social-media/tweetclaw",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "researcher",
+        "marketer",
+        "support",
+        "community-manager"
+      ],
+      "requires": [
+        "node",
+        "openclaw"
+      ],
+      "tags": [
+        "twitter",
+        "x",
+        "social-media",
+        "search",
+        "monitoring",
+        "openclaw",
+        "xquik"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 12761,
+          "sha256": "b73afc7432aa08b958dd737d0dc87c55ae0647d18ce1fbbe5439310e435331e6"
+        }
+      ],
+      "contentHash": "sha256:cbd75bab584a948a3e6392281d9507aa23797de21f781e72e3f4294d6715e3af",
+      "source": {
+        "type": "github",
+        "hostname": "github.com",
+        "owner": "Xquik-dev",
+        "repo": "tweetclaw",
+        "ref": "v1.6.44",
+        "commit": "59a44db32ef0fb90cf36ff9ca084ad055f7a9689",
+        "path": "skills/tweetclaw",
+        "url": "https://github.com/Xquik-dev/tweetclaw/tree/v1.6.44/skills/tweetclaw"
       }
     },
     {
