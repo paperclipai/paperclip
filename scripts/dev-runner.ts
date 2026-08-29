@@ -1,12 +1,13 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, unwatchFile, utimesSync, watchFile, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
+import { clearViteCaches, detectStaleInstall, lockfilePath, markInstallFresh } from "./dev-runner-install.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
@@ -72,6 +73,7 @@ const watchedDirectories = [
 const watchedFiles = [
   ".env",
   "package.json",
+  "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "tsconfig.base.json",
   "tsconfig.json",
@@ -491,6 +493,42 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
   await refreshPendingMigrations();
 }
 
+let installInFlight = false;
+
+async function maybeAutoInstallDependencies(options: { exitOnFailure?: boolean } = {}): Promise<boolean> {
+  const exitOnFailure = options.exitOnFailure ?? true;
+  if (installInFlight) return true;
+  const check = detectStaleInstall(repoRoot);
+  if (!check.stale) return true;
+
+  installInFlight = true;
+  try {
+    console.log(`[paperclip] ${check.reason}; running pnpm install...`);
+    const result = await runPnpm(["install"], { stdio: "inherit", cwd: repoRoot });
+    if (result.signal) {
+      exitForSignal(result.signal);
+      return false;
+    }
+    if (result.code !== 0) {
+      console.error("[paperclip] pnpm install failed; run it manually, then restart `pnpm dev`");
+      if (exitOnFailure) {
+        process.exit(result.code);
+      }
+      return false;
+    }
+    markInstallFresh(repoRoot);
+    const removedCaches = clearViteCaches(repoRoot);
+    if (removedCaches.length > 0) {
+      console.log(
+        `[paperclip] cleared stale Vite caches: ${removedCaches.map((cachePath) => path.relative(repoRoot, cachePath)).join(", ")}`,
+      );
+    }
+    return true;
+  } finally {
+    installInFlight = false;
+  }
+}
+
 async function buildPluginSdk() {
   console.log("[paperclip] building plugin sdk...");
   const result = await runPnpm(
@@ -638,6 +676,12 @@ async function maybeAutoRestartChild() {
   }
 
   try {
+    // Never exit here on a failed install: the old server child is still
+    // running and would be orphaned. Skip the restart and keep serving.
+    const installed = await maybeAutoInstallDependencies({ exitOnFailure: false });
+    if (!installed) {
+      return;
+    }
     await maybePreflightMigrations({
       autoApply: true,
       interactive: false,
@@ -652,6 +696,30 @@ async function maybeAutoRestartChild() {
   } finally {
     restartInFlight = false;
   }
+}
+
+// In watch mode the server child restarts itself (tsx watch) on source
+// changes, but nothing reinstalls dependencies when a pull updates the
+// lockfile — the server then respawns against stale node_modules and dies on
+// unresolvable imports. Watch the lockfile, install, and nudge the server
+// entry's mtime so tsx watch does one clean respawn on the fresh install.
+function installWatchModeLockfileWatcher() {
+  if (mode !== "watch") return;
+
+  const serverEntryPath = path.join(repoRoot, "server", "src", "index.ts");
+  watchFile(lockfilePath(repoRoot), { interval: 2000 }, () => {
+    void (async () => {
+      if (!detectStaleInstall(repoRoot).stale) return;
+      const installed = await maybeAutoInstallDependencies({ exitOnFailure: false });
+      if (!installed) return;
+      try {
+        const now = new Date();
+        utimesSync(serverEntryPath, now, now);
+      } catch {
+        console.warn("[paperclip] dependencies reinstalled; restart the server to pick them up");
+      }
+    })();
+  });
 }
 
 function installDevIntervals() {
@@ -680,6 +748,7 @@ async function shutdown(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearDevIntervals();
+  unwatchFile(lockfilePath(repoRoot));
   clearDevServerStatus();
   await removeLocalServiceRegistryRecord(devService.serviceKey);
 
@@ -705,9 +774,11 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+await maybeAutoInstallDependencies();
 await maybePreflightMigrations();
 await startServerChild();
 installDevIntervals();
+installWatchModeLockfileWatcher();
 
 if (mode === "watch") {
   const exit = await waitForChildExit();
