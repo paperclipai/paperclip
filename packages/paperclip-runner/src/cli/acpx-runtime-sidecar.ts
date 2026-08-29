@@ -497,10 +497,19 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
         "ACPX semantic result disposition does not match its terminal operation",
       );
     }
+    // The authenticated runner bridge admitted this built-in invocation. Send
+    // that fact across the sidecar boundary before its locally produced result
+    // so runnerd can authorize and correlate the terminal claim.
+    emit("runtime.tool_called", {
+      callId,
+      operationId,
+      input: validation.result,
+    });
     emit("runtime.event", {
       type: "semantic_result",
       callId,
       operationId,
+      ok: true,
       result: validation.result,
     });
     return { accepted: true };

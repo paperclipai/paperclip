@@ -277,6 +277,11 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
         "semantic_result" => {
             required_id(payload, "callId", "semantic result call")?;
             required_id(payload, "operationId", "semantic result operation")?;
+            if !payload.get("ok").is_some_and(Value::is_boolean) {
+                return Err(LocalRunnerError::invalid(
+                    "ACPX semantic result must contain a boolean outcome",
+                ));
+            }
             if !payload.get("result").is_some_and(Value::is_object) {
                 return Err(LocalRunnerError::invalid(
                     "ACPX semantic result must contain an object result",

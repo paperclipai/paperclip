@@ -79,8 +79,307 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("amber-signal-7305");
                 std::process::exit(9);
             }
-            "bootstrap" | "bootstrap-wrong-model" | "bootstrap-wrong-run" => {
+            "bootstrap"
+            | "bootstrap-wrong-model"
+            | "bootstrap-wrong-run"
+            | "turns"
+            | "turns-wrong-turn"
+            | "turns-wrong-cancel"
+            | "turns-wrong-scope"
+            | "turns-tool"
+            | "turns-tool-terminal"
+            | "turns-tool-result-terminal"
+            | "turns-tool-error-result-terminal"
+            | "turns-multiple-tool-results-terminal"
+            | "turns-reserved-result-terminal"
+            | "turns-reserved-yielded-terminal"
+            | "turns-reserved-block-terminal"
+            | "turns-invalid-reserved-block-terminal"
+            | "turns-uncorrelated-reserved-result-terminal"
+            | "turns-mismatched-reserved-result-terminal"
+            | "turns-unauthorized-tool" => {
                 write_json(&mut stdout, &bootstrap_success(id, command, &request, mode))?;
+                let params = request.get("params").unwrap_or(&Value::Null);
+                let turn_id = params
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("missing");
+                let tool_call_id = turn_id
+                    .strip_prefix("turn-")
+                    .map(|suffix| format!("call-{suffix}"))
+                    .unwrap_or_else(|| "call-1".to_owned());
+                if command == "turn.start" && matches!(mode, "turns" | "turns-wrong-scope") {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.event",
+                        if mode == "turns-wrong-scope" {
+                            "wrong-run"
+                        } else {
+                            "run-1"
+                        },
+                        turn_id,
+                        json!({"type":"text_delta","text":"hello"}),
+                    )?;
+                    next_sequence += 1;
+                }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-tool"
+                            | "turns-tool-terminal"
+                            | "turns-tool-result-terminal"
+                            | "turns-tool-error-result-terminal"
+                            | "turns-unauthorized-tool"
+                    )
+                {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.tool_called",
+                        "run-1",
+                        turn_id,
+                        json!({
+                            "callId":tool_call_id.clone(),
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "input":{"id":"issue-1"},
+                        }),
+                    )?;
+                    next_sequence += 1;
+                }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-tool-result-terminal" | "turns-tool-error-result-terminal"
+                    )
+                {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.event",
+                        "run-1",
+                        turn_id,
+                        json!({
+                            "type":"semantic_result",
+                            "callId":tool_call_id,
+                            "operationId":"issues.read",
+                            "ok":mode == "turns-tool-result-terminal",
+                            "result":if mode == "turns-tool-result-terminal" { json!({"id":"issue-1"}) } else { json!({"error":{"code":"tool_failed"}}) },
+                        }),
+                    )?;
+                    next_sequence += 1;
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"completed"}),
+                    )?;
+                    next_sequence += 1;
+                }
+                if command == "turn.start" && mode == "turns-tool-terminal" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"completed"}),
+                    )?;
+                    next_sequence += 1;
+                }
+                if command == "turn.start" && mode == "turns-multiple-tool-results-terminal" {
+                    for index in 1..=2 {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.tool_called",
+                            "run-1",
+                            turn_id,
+                            json!({
+                                "callId":format!("call-{index}"),
+                                "operationId":"issues.read",
+                                "input":{"id":format!("issue-{index}")},
+                            }),
+                        )?;
+                        next_sequence += 1;
+                    }
+                    for index in 1..=2 {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.event",
+                            "run-1",
+                            turn_id,
+                            json!({
+                                "type":"semantic_result",
+                                "callId":format!("call-{index}"),
+                                "operationId":"issues.read",
+                                "ok":true,
+                                "result":{"id":format!("issue-{index}")},
+                            }),
+                        )?;
+                        next_sequence += 1;
+                    }
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"completed"}),
+                    )?;
+                    next_sequence += 1;
+                }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-reserved-result-terminal"
+                            | "turns-reserved-yielded-terminal"
+                            | "turns-reserved-block-terminal"
+                            | "turns-invalid-reserved-block-terminal"
+                            | "turns-uncorrelated-reserved-result-terminal"
+                            | "turns-mismatched-reserved-result-terminal"
+                    )
+                {
+                    let (operation_id, result) = if matches!(
+                        mode,
+                        "turns-reserved-block-terminal" | "turns-invalid-reserved-block-terminal"
+                    ) {
+                        (
+                            "paperclip_block",
+                            json!({
+                                "schema":"paperclip.run_result.v1",
+                                "reportedWorkDisposition":"blocked",
+                                "summary":"Reserved blocker accepted.",
+                                "completionClaim":{
+                                    "contractRevision":"acpx-provider-turns-v1",
+                                    "objectiveSatisfied":false,
+                                    "criteria":[],
+                                    "remainingWork":[{
+                                        "description":"Wait for external input.",
+                                        "blocksCompletion":true,
+                                    }],
+                                },
+                                "evidence":[],
+                                "verification":[],
+                                "blocker":{
+                                    "reasonCode":"external_input",
+                                    "owner":if mode == "turns-invalid-reserved-block-terminal" {
+                                        json!({})
+                                    } else {
+                                        json!({"kind":"external","name":"External input"})
+                                    },
+                                    "unblockAction":"Provide the required input.",
+                                    "scope":"current_track",
+                                },
+                                "attentionRequests":[],
+                                "artifacts":[],
+                            }),
+                        )
+                    } else if mode == "turns-reserved-yielded-terminal" {
+                        (
+                            "paperclip_finish",
+                            json!({
+                                "schema":"paperclip.run_result.v1",
+                                "reportedWorkDisposition":"yielded",
+                                "summary":"Reserved continuation accepted.",
+                                "completionClaim":{
+                                    "contractRevision":"acpx-provider-turns-v1",
+                                    "objectiveSatisfied":false,
+                                    "criteria":[],
+                                    "remainingWork":[],
+                                },
+                                "evidence":[],
+                                "verification":[],
+                                "continuation":{
+                                    "kind":"same_agent",
+                                    "summary":"Continue the current run.",
+                                    "idempotencyKey":"continuation-1",
+                                },
+                                "attentionRequests":[],
+                                "artifacts":[],
+                            }),
+                        )
+                    } else {
+                        (
+                            "paperclip_finish",
+                            json!({
+                                "schema":"paperclip.run_result.v1",
+                                "reportedWorkDisposition":"done",
+                                "summary":"Reserved completion accepted.",
+                                "completionClaim":{
+                                    "contractRevision":"acpx-provider-turns-v1",
+                                    "objectiveSatisfied":true,
+                                    "criteria":[],
+                                    "remainingWork":[],
+                                },
+                                "evidence":[],
+                                "verification":[],
+                                "attentionRequests":[],
+                                "artifacts":[],
+                            }),
+                        )
+                    };
+                    if mode != "turns-uncorrelated-reserved-result-terminal" {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.tool_called",
+                            "run-1",
+                            turn_id,
+                            json!({
+                                "callId":"call-finish",
+                                "operationId":operation_id,
+                                "input":result.clone(),
+                            }),
+                        )?;
+                        next_sequence += 1;
+                    }
+                    let semantic_result = if mode == "turns-mismatched-reserved-result-terminal" {
+                        let mut changed = result.clone();
+                        changed["summary"] = json!("A different terminal result.");
+                        changed
+                    } else {
+                        result
+                    };
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.event",
+                        "run-1",
+                        turn_id,
+                        json!({
+                            "type":"semantic_result",
+                            "callId":"call-finish",
+                            "operationId":operation_id,
+                            "ok":true,
+                            "result":semantic_result,
+                        }),
+                    )?;
+                    next_sequence += 1;
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"completed"}),
+                    )?;
+                    next_sequence += 1;
+                }
+                if command == "turn.cancel" && mode == "turns" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"interrupted"}),
+                    )?;
+                    next_sequence += 1;
+                }
             }
             "happy" => {
                 write_event(&mut stdout, next_sequence)?;
@@ -134,6 +433,10 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
             "runId": if mode == "bootstrap-wrong-run" { "wrong-run" } else { params.get("runId").and_then(Value::as_str).unwrap_or("missing") },
             "catalogRevision": params.get("catalogRevision"),
         }),
+        "turn.start" => json!({
+            "turnId": if mode == "turns-wrong-turn" { "wrong-turn" } else { params.get("turnId").and_then(Value::as_str).unwrap_or("missing") },
+        }),
+        "turn.cancel" => json!({"cancelled":mode != "turns-wrong-cancel"}),
         "session.close" => json!({"closed":true}),
         _ => json!({"command":command,"params":params}),
     };
@@ -143,6 +446,27 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
         "ok": true,
         "result": result,
     })
+}
+
+fn write_turn_event(
+    output: &mut impl Write,
+    sequence: u64,
+    event_type: &str,
+    run_id: &str,
+    turn_id: &str,
+    payload: Value,
+) -> io::Result<()> {
+    write_json(
+        output,
+        &json!({
+            "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "sequence": sequence,
+            "eventType": event_type,
+            "runId": run_id,
+            "turnId": turn_id,
+            "payload": payload,
+        }),
+    )
 }
 
 fn success(id: u64, command: &str, request: &Value) -> Value {

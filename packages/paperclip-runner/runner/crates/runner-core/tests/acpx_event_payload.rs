@@ -47,7 +47,7 @@ fn decodes_every_admitted_runtime_event_shape() {
             AcpxRuntimeEventKind::ToolCall,
         ),
         (
-            json!({"type": "semantic_result", "callId": "call-1", "operationId": "paperclip_finish", "result": {"ok": true}}),
+            json!({"type": "semantic_result", "callId": "call-1", "operationId": "paperclip_finish", "ok": true, "result": {"ok": true}}),
             AcpxRuntimeEventKind::SemanticResult,
         ),
         (

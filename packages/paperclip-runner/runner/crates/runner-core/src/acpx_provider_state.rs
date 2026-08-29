@@ -8,6 +8,7 @@ use crate::acpx_event_payload::{
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::local_runner::LocalRunnerError;
+use crate::provider_bridge::ToolResult;
 use crate::provider_events::{normalize_acpx_runtime_event, NormalizedProviderEvent};
 
 const MAX_ASSISTANT_TEXT_BYTES: usize = 1024 * 1024;
@@ -15,6 +16,8 @@ const MAX_PENDING_TOOLS: usize = 4_096;
 const MAX_PENDING_TOOL_INPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PENDING_RUNTIME_REQUESTS: usize = 1_024;
 const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 16 * 1024 * 1024;
+const PRP_COMPLETION_TOOL_NAME: &str = "paperclip_finish";
+const PRP_BLOCK_TOOL_NAME: &str = "paperclip_block";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AcpxPendingTool {
@@ -27,6 +30,7 @@ pub struct AcpxPendingTool {
 pub struct AcpxSemanticResult {
     pub call_id: String,
     pub operation_id: String,
+    pub ok: bool,
     pub result: Value,
 }
 
@@ -38,6 +42,7 @@ pub enum AcpxProviderStateEvent {
         operation_id: String,
         input: Value,
     },
+    ToolResult(ToolResult),
     PermissionRequest {
         request_id: String,
         kind: String,
@@ -261,6 +266,10 @@ impl AcpxProviderState {
         self.pending_tools.get(call_id)
     }
 
+    pub fn has_pending_tools(&self) -> bool {
+        !self.pending_tools.is_empty()
+    }
+
     pub fn complete_tool(
         &mut self,
         call_id: &str,
@@ -351,21 +360,34 @@ impl AcpxProviderState {
                     .and_then(Value::as_str)
                     .expect("decoded ACPX semantic result has an operation id")
                     .to_owned(),
+                ok: payload
+                    .get("ok")
+                    .and_then(Value::as_bool)
+                    .expect("decoded ACPX semantic result has an outcome"),
                 result: payload
                     .get("result")
                     .expect("decoded ACPX semantic result has a result")
                     .clone(),
             };
-            return match self.semantic_result.as_ref() {
-                None => {
-                    self.semantic_result = Some(result.clone());
-                    Ok(vec![AcpxProviderStateEvent::SemanticResult(result)])
-                }
-                Some(existing) if existing == &result => Ok(Vec::new()),
-                Some(_) => Err(LocalRunnerError::invalid(
-                    "ACPX emitted conflicting semantic results for one turn",
-                )),
-            };
+            if matches!(
+                result.operation_id.as_str(),
+                PRP_COMPLETION_TOOL_NAME | PRP_BLOCK_TOOL_NAME
+            ) {
+                return match self.semantic_result.as_ref() {
+                    None => {
+                        self.semantic_result = Some(result.clone());
+                        Ok(vec![AcpxProviderStateEvent::SemanticResult(result)])
+                    }
+                    Some(existing) if existing == &result => Ok(Vec::new()),
+                    Some(_) => Err(LocalRunnerError::invalid(
+                        "ACPX emitted conflicting terminal semantic results for one turn",
+                    )),
+                };
+            }
+            // Dynamic results are independently authorized and deduplicated
+            // by call ID in ProviderToolBridge. They must not compete for the
+            // turn-wide terminal-result slot.
+            return Ok(vec![AcpxProviderStateEvent::SemanticResult(result)]);
         }
         let turn_id = event
             .turn_id

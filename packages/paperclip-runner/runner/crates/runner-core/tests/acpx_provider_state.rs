@@ -167,6 +167,7 @@ fn accepts_an_identical_semantic_result_once_and_rejects_a_conflict() {
             "type":"semantic_result",
             "callId":"finish-1",
             "operationId":"paperclip_finish",
+            "ok":true,
             "result":{"reportedWorkDisposition":"done"}
         }),
     );
@@ -189,11 +190,38 @@ fn accepts_an_identical_semantic_result_once_and_rejects_a_conflict() {
             "type":"semantic_result",
             "callId":"finish-2",
             "operationId":"paperclip_finish",
+            "ok":true,
             "result":{"reportedWorkDisposition":"done"}
         }),
     );
     assert!(state.accept_event(&conflict).is_err());
     assert_eq!(state.semantic_result().unwrap().call_id, "finish-1");
+}
+
+#[test]
+fn keeps_dynamic_results_independent_from_terminal_result_authority() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    for index in 1..=2 {
+        let result = event(
+            index,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-1"),
+            json!({
+                "type":"semantic_result",
+                "callId":format!("call-{index}"),
+                "operationId":"issues.read",
+                "ok":true,
+                "result":{"id":format!("issue-{index}")}
+            }),
+        );
+        assert!(matches!(
+            &state.accept_event(&result).unwrap()[0],
+            AcpxProviderStateEvent::SemanticResult(result)
+                if result.call_id == format!("call-{index}")
+        ));
+    }
+    assert!(state.semantic_result().is_none());
 }
 
 #[test]
