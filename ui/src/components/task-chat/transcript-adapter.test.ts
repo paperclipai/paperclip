@@ -190,6 +190,26 @@ describe("transcriptToTaskChatItems native usage", () => {
     }]);
   });
 
+  it("renders cumulative-only runner session usage", () => {
+    const items = transcriptToTaskChatItems([{
+      kind: "result",
+      ts: TS,
+      text: "",
+      inputTokens: 80,
+      outputTokens: 20,
+      cachedTokens: 0,
+      costUsd: 0,
+      subtype: "paperclip_runner_session_usage",
+      isError: false,
+      errors: [],
+    }], { runId: "native-run", running: true });
+
+    expect(items).toEqual([expect.objectContaining({
+      kind: "usage",
+      usage: expect.objectContaining({ used: 100, inputTokens: 80, outputTokens: 20 }),
+    })]);
+  });
+
   it("does not change direct-adapter result presentation", () => {
     const items = transcriptToTaskChatItems([{
       kind: "result",

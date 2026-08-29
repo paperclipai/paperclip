@@ -311,7 +311,10 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "result": {
-        if (entry.subtype !== "paperclip_runner_usage") break;
+        if (
+          entry.subtype !== "paperclip_runner_usage" &&
+          entry.subtype !== "paperclip_runner_session_usage"
+        ) break;
         const inputTokens = entry.inputTokens || 0;
         const outputTokens = entry.outputTokens || 0;
         items.push({
