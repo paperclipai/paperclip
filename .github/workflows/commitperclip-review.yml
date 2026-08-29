@@ -22,16 +22,55 @@ jobs:
         with:
           ref: master
 
-      - name: Dependency Review
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          base-ref: ${{ github.event.pull_request.base.sha }}
-          head-ref: ${{ github.event.pull_request.head.sha }}
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+          cache: pnpm
+
+      # GitHub's Dependency Graph API does not support forked repositories
+      # (this repo is a fork of paperclipai/paperclip), so
+      # actions/dependency-review-action fails unconditionally here with
+      # "Dependency review is not supported on this repository." (KEWL-4373).
+      # This step reproduces the useful part of that check without the graph
+      # API: it audits the base and head lockfiles independently via `pnpm
+      # audit` and fails only on HIGH/CRITICAL advisories newly introduced by
+      # the PR. Pre-existing advisories already on the base branch are
+      # reported but do not block — they are inherited debt, not this PR's.
+      - name: Dependency audit (fork-safe alternative to dependency-review-action)
+        run: |
+          set -euo pipefail
+          git fetch --quiet --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+
+          audit_ids() {
+            git show "$1:pnpm-lock.yaml" > pnpm-lock.yaml
+            pnpm audit --audit-level=high --json 2>/dev/null | \
+              python3 -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(str(a['id']) for a in d.get('advisories', {}).values()))" \
+              || true
+          }
+
+          BASE_IDS="$(audit_ids "$BASE_SHA" | sort -u)"
+          HEAD_IDS="$(audit_ids "$HEAD_SHA" | sort -u)"
+          git checkout -- pnpm-lock.yaml
+
+          NEW_IDS="$(comm -13 <(echo "$BASE_IDS") <(echo "$HEAD_IDS") | sed '/^$/d')"
+
+          if [ -n "$NEW_IDS" ]; then
+            echo "New HIGH/CRITICAL advisory IDs introduced by this PR:"
+            echo "$NEW_IDS"
+            echo "Run 'pnpm audit --audit-level=high' locally against this branch for details."
+            exit 1
+          fi
+
+          BASE_COUNT="$(echo "$BASE_IDS" | sed '/^$/d' | wc -l | tr -d ' ')"
+          echo "No new HIGH/CRITICAL advisories introduced by this PR."
+          echo "(Base branch carries $BASE_COUNT pre-existing HIGH/CRITICAL advisories — tracked separately, not blocking.)"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
       - name: Generate commitperclip token
         id: token
