@@ -76,6 +76,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
+import { agentExplicitlyDeniesTaskAssignment } from "./agent-permissions.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
@@ -3535,10 +3536,38 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     agentId: string,
     permissionGrants: PortableAgentPermissionGrant[],
     grantedByUserId: string | null,
+    taskAssignmentEnabled: boolean,
+    grantTaskAssignmentByDefault: boolean,
   ) {
-    if (permissionGrants.length === 0) return;
+    const hasUnscopedTaskAssignmentGrant = permissionGrants.some(
+      (grant) => grant.permissionKey === "tasks:assign",
+    );
+    const hasScopedTaskAssignmentGrant = permissionGrants.some(
+      (grant) => grant.permissionKey === "tasks:assign_scope",
+    );
+    const grantUnscopedTaskAssignment = taskAssignmentEnabled && (
+      hasUnscopedTaskAssignmentGrant
+      || (grantTaskAssignmentByDefault && !hasScopedTaskAssignmentGrant)
+    );
     await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    await access.setPrincipalPermission(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+      grantUnscopedTaskAssignment,
+      grantedByUserId,
+    );
     for (const grant of permissionGrants) {
+      if (grant.permissionKey === "tasks:assign") {
+        continue;
+      }
+      if (
+        !taskAssignmentEnabled
+        && grant.permissionKey === "tasks:assign_scope"
+      ) {
+        continue;
+      }
       await access.setPrincipalPermission(
         companyId,
         "agent",
@@ -5628,6 +5657,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               updated.id,
               manifestAgent.permissionGrants ?? [],
               actorUserId ?? null,
+              !agentExplicitlyDeniesTaskAssignment(manifestAgent),
+              false,
             );
             agentStatusById.set(updated.id, updated.status ?? agentStatusById.get(updated.id) ?? null);
             await secrets.syncEnvBindingsForTarget?.(
@@ -5652,15 +5683,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
           });
-          await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
-          await access.setPrincipalPermission(
-            targetCompany.id,
-            "agent",
-            created.id,
-            "tasks:assign",
-            true,
-            actorUserId ?? null,
-          );
           try {
             const materialized = await instructions.materializeManagedBundle(created, bundleFiles, {
               clearLegacyPromptTemplate: true,
@@ -5675,6 +5697,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             created.id,
             manifestAgent.permissionGrants ?? [],
             actorUserId ?? null,
+            !agentExplicitlyDeniesTaskAssignment(manifestAgent),
+            true,
           );
           agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
           await secrets.syncEnvBindingsForTarget?.(

@@ -34,6 +34,12 @@ describe("agent permissions service", () => {
     expect(normalizeAgentPermissions({ canCreateSkills: true }, "engineer").canCreateSkills).toBe(true);
   });
 
+  it("defaults legacy task assignment permission on and preserves explicit false", () => {
+    expect(normalizeAgentPermissions({}, "engineer").canAssignTasks).toBe(true);
+    expect(normalizeAgentPermissions({ canAssignTasks: false }, "pm").canAssignTasks).toBe(false);
+    expect(agentPermissionsSchema.parse({ canCreateAgents: false }).canAssignTasks).toBe(true);
+  });
+
   it("validates skill creation permission with a default-on value", () => {
     expect(agentPermissionsSchema.parse({ canCreateAgents: false }).canCreateSkills).toBe(true);
     expect(agentPermissionsSchema.parse({ canCreateAgents: false, canCreateSkills: false }).canCreateSkills).toBe(false);

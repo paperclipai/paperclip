@@ -2159,7 +2159,7 @@ function ConfigurationTab({
   const canCreateSkills = agent.permissions?.canCreateSkills !== false;
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
-  const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const taskAssignLocked = agent.role === "ceo";
   const taskAssignHint =
     taskAssignSource === "ceo_role"
       ? "Enabled automatically for CEO agents."
@@ -2167,9 +2167,13 @@ function ConfigurationTab({
         ? "Enabled automatically while this agent can create new agents."
         : taskAssignSource === "explicit_grant"
           ? "Enabled via explicit organization permission grant."
-          : taskAssignSource === "simple_default"
-            ? "Enabled by simple organization-wide task assignment defaults."
-            : "Disabled unless explicitly granted.";
+          : taskAssignSource === "explicit_permission"
+            ? "Enabled by this agent's explicit task assignment permission."
+            : taskAssignSource === "explicit_deny"
+              ? "Disabled by this agent's explicit task assignment permission."
+              : taskAssignSource === "simple_default"
+                ? "Enabled by simple organization-wide task assignment defaults."
+                : "Disabled unless explicitly granted.";
 
   return (
     <div className="space-y-6">
@@ -2224,7 +2228,7 @@ function ConfigurationTab({
             <div className="space-y-1">
               <div>Can create new agents</div>
               <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents. This also grants task assignment authority.
+                Lets this agent create or hire agents. Task assignment authority is configured separately.
               </p>
             </div>
             <ToggleSwitch
@@ -2233,7 +2237,7 @@ function ConfigurationTab({
                 updatePermissions.mutate({
                   canCreateAgents: !canCreateAgents,
                   canCreateSkills,
-                  canAssignTasks: !canCreateAgents ? true : canAssignTasks,
+                  canAssignTasks,
                 })
               }
               disabled={updatePermissions.isPending}

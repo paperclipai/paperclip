@@ -1295,6 +1295,49 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("denies task assignment when an active common agent explicitly disables it despite a stale grant", async () => {
+    const company = await createCompany(db, "ExplicitAgentAssignmentDeny");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "pm",
+      permissions: { canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_agent_permission",
+    });
+  });
+
+  it("keeps an authorized CTO task assignment grant effective", async () => {
+    const company = await createCompany(db, "ExplicitCtoAssignmentAllow");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "cto",
+      permissions: { canAssignTasks: true },
+    });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+    });
+  });
+
   it("allows null-mapped visibility actions for active same-company board members", async () => {
     const company = await createCompany(db, "BoardVisibility");
     const userId = `user-${randomUUID()}`;
@@ -2206,6 +2249,43 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({
       allowed: false,
       reason: "deny_scope",
+    });
+  });
+
+  it("denies task bridge assignment when the actor explicitly disables task assignment", async () => {
+    const company = await createCompany(db, "TaskBridgeExplicitDeny");
+    const bridgeAgent = await createAgent(db, company.id, {
+      permissions: { canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id);
+    const project = await createProject(db, company.id, "BridgeExplicitDeny");
+    const parentIssue = await createIssue(db, company.id, { projectId: project.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: bridgeAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        keyId: randomUUID(),
+        keyScope: {
+          kind: "task_bridge",
+          parentIssueId: parentIssue.id,
+          allowedAssigneeAgentIds: [targetAgent.id],
+        },
+      },
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        parentIssueId: parentIssue.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_agent_permission",
     });
   });
 

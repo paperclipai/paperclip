@@ -1,12 +1,24 @@
 export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;
   canCreateSkills: boolean;
+  canAssignTasks: boolean;
 };
+
+type AgentTaskAssignmentSubject = {
+  role: string;
+  permissions: Record<string, unknown> | null | undefined;
+};
+
+export function agentExplicitlyDeniesTaskAssignment(agent: AgentTaskAssignmentSubject): boolean {
+  return agent.role.trim().toLowerCase() !== "ceo"
+    && agent.permissions?.canAssignTasks === false;
+}
 
 export function defaultPermissionsForRole(role: string): NormalizedAgentPermissions {
   return {
     canCreateAgents: role.trim().toLowerCase() === "ceo",
     canCreateSkills: true,
+    canAssignTasks: true,
   };
 }
 
@@ -31,5 +43,9 @@ export function normalizeAgentPermissions(
       typeof record.canCreateSkills === "boolean"
         ? record.canCreateSkills
         : defaults.canCreateSkills,
+    canAssignTasks:
+      typeof record.canAssignTasks === "boolean"
+        ? record.canAssignTasks
+        : defaults.canAssignTasks,
   };
 }

@@ -28,6 +28,7 @@ import {
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
 import { logger } from "../middleware/logger.js";
+import { agentExplicitlyDeniesTaskAssignment } from "./agent-permissions.js";
 
 export type AuthorizationActor =
   {
@@ -119,6 +120,7 @@ export type AuthorizationDecision = {
     | "inbox_agent_not_allowed"
     | "deny_unauthenticated"
     | "deny_company_boundary"
+    | "deny_agent_permission"
     | "deny_missing_membership"
     | "deny_missing_grant"
     | "deny_missing_consent"
@@ -1836,6 +1838,14 @@ export function authorizationService(db: Db) {
         action: input.action,
         reason: "deny_company_boundary",
         explanation: "Actor agent was not found in the target company.",
+      });
+    }
+
+    if (input.action === "tasks:assign" && agentExplicitlyDeniesTaskAssignment(actorAgent)) {
+      return deny({
+        action: input.action,
+        reason: "deny_agent_permission",
+        explanation: "Task assignment is disabled by the agent's explicit canAssignTasks permission.",
       });
     }
 
