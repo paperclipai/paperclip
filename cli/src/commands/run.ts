@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import type { Server as HttpServer } from "node:http";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -20,6 +21,11 @@ import { assertForegroundRunAllowed } from "../services/service-manager.js";
 import { removeRuntimeInfoForPid, writeRuntimeInfo } from "../runtime-info.js";
 import { printUpdateNotice } from "../update-notice.js";
 import { ensureWorktreeSeeded } from "./worktree.js";
+import {
+  runWithWindowsSupervisor,
+  WINDOWS_RUN_ACCEPTANCE_CLOSE_LISTENER,
+  WINDOWS_RUN_ACCEPTANCE_HARNESS_ENV,
+} from "./windows-run-supervisor.js";
 
 interface RunOptions {
   config?: string;
@@ -28,9 +34,11 @@ interface RunOptions {
   yes?: boolean;
   bind?: "loopback" | "lan" | "tailnet";
   force?: boolean;
+  supervisedChild?: boolean;
 }
 
 interface StartedServer {
+  server: HttpServer;
   apiUrl: string;
   databaseUrl: string;
   host: string;
@@ -40,6 +48,14 @@ interface StartedServer {
 export async function runCommand(opts: RunOptions): Promise<void> {
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  if (
+    process.platform === "win32"
+    && !opts.supervisedChild
+    && process.env.PAPERCLIP_SERVICE_MANAGED !== "1"
+  ) {
+    await runWithWindowsSupervisor(instanceId, opts);
+    return;
+  }
   await assertForegroundRunAllowed(instanceId, opts.force);
 
   const homeDir = resolvePaperclipHomeDir();
@@ -104,6 +120,45 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     startedAt: new Date().toISOString(),
   });
   process.once("exit", () => removeRuntimeInfoForPid(process.pid, instanceId));
+  // Windows parent supervision uses IPC rather than SIGTERM so the child
+  // reaches the server's ordered shutdown path before any forced fallback.
+  if (process.send) {
+    process.on("message", (message: unknown) => {
+      if (
+        message
+        && typeof message === "object"
+        && (message as { type?: unknown }).type === "paperclip:graceful-shutdown"
+      ) {
+        process.emit("SIGTERM");
+        return;
+      }
+      if (
+        process.env[WINDOWS_RUN_ACCEPTANCE_HARNESS_ENV] === "1"
+        && message
+        && typeof message === "object"
+        && (message as { type?: unknown }).type === WINDOWS_RUN_ACCEPTANCE_CLOSE_LISTENER
+      ) {
+        try {
+          // Failure injection is reachable only from the explicitly enabled
+          // Windows acceptance harness over the inherited private IPC channel.
+          // close() removes the listener while this Node child and embedded
+          // PostgreSQL stay alive, reproducing the field failure deterministically.
+          startedServer.server.close();
+          startedServer.server.closeAllConnections();
+          process.send?.({
+            type: "paperclip:acceptance:listener-closed",
+            pid: process.pid,
+            at: new Date().toISOString(),
+          });
+        } catch (error) {
+          process.send?.({
+            type: "paperclip:acceptance:error",
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    });
+  }
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");

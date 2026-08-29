@@ -156,9 +156,11 @@ paperclipai service uninstall
 ```
 
 Paperclip uses a systemd user service on Linux and WSL2 systems with user
-systemd, and a LaunchAgent on macOS. Containers, WSL1, and systems without a
-supported user service manager receive foreground `paperclipai run` guidance
-instead of a hard failure.
+systemd, and a LaunchAgent on macOS. Windows does not yet install an OS service;
+its foreground `paperclipai run` command uses a per-instance watchdog that
+owns one server child and restarts it after a lost listener-health check. Containers,
+WSL1, and other systems without a supported user service manager receive
+foreground `paperclipai run` guidance instead of a hard failure.
 
 The service uses the stable managed-install shim, restarts after crashes, and
 can start on login. On Linux, service installation may offer to enable user

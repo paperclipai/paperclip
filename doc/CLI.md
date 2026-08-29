@@ -202,8 +202,12 @@ paperclipai service logs [-f]
 ```
 
 Every service verb supports `--instance <id>` and `--json`. Linux and WSL2 use
-a systemd user unit when available; macOS uses a LaunchAgent. Unsupported
-environments receive foreground `paperclipai run` guidance.
+a systemd user unit when available; macOS uses a LaunchAgent. Windows does not
+yet install an OS service, but foreground `paperclipai run` is supervised: it
+holds one instance lock, starts the server in a child process, and replaces that
+child after three failed listener-health probes. This detects a lost HTTP listener even
+when the old Node process remains alive. Other unsupported environments receive
+foreground `paperclipai run` guidance.
 
 `paperclipai doctor` includes managed-install and service-health diagnostics in
 addition to configuration, storage, database, logging, and port checks.

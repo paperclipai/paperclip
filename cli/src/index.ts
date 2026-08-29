@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
@@ -179,6 +179,7 @@ const run = program
   .option("--repair", "Attempt automatic repairs during doctor", true)
   .option("--no-repair", "Disable automatic repairs during doctor")
   .option("--force", "Run even when the same instance is active under the service manager")
+  .addOption(new Option("--supervised-child").hideHelp())
   .action(runCommand);
 
 registerRunCommands(run);
