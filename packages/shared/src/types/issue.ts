@@ -1266,6 +1266,8 @@ export interface RequestConfirmationSecretProposalResult {
   status: "executed" | "failed" | "rejected" | "withdrawn" | "expired";
   errorCode?: string | null;
   updatedAt: string;
+}
+
 export type RequestConfirmationAuthorizationScope = string | string[];
 
 export interface RequestConfirmationAuthorizationWarning {
