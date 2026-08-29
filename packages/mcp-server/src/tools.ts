@@ -4,7 +4,7 @@ import {
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
   createApprovalSchema,
-  createIssueInputSchema,
+  createIssueInputObjectSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
   requestConfirmationPayloadSchema,
@@ -97,7 +97,7 @@ const upsertDocumentToolSchema = z.object({
 
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createIssueInputSchema);
+}).merge(createIssueInputObjectSchema);
 
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,

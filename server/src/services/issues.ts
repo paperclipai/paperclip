@@ -676,6 +676,9 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
+type IssueCreateOptions = {
+  afterCreateInTransaction?: (tx: DbWriter, issue: typeof issues.$inferSelect) => Promise<void>;
+};
 type IssueChildCreateInput = IssueCreateInput & {
   executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
 };
@@ -755,6 +758,8 @@ export type IssueDependencyReadiness = {
   blockerIssueIds: string[];
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerCount: number;
+  /** True when a direct blocker is in progress or has a queued/running execution. */
+  blockingTreeLive?: boolean;
   /** Blockers whose status is `done` but whose execution workspace has not yet finalized. */
   pendingFinalizeBlockerIssueIds: string[];
   allBlockersDone: boolean;
@@ -990,6 +995,7 @@ function createIssueDependencyReadiness(issueId: string): IssueDependencyReadine
     blockerIssueIds: [],
     unresolvedBlockerIssueIds: [],
     unresolvedBlockerCount: 0,
+    blockingTreeLive: false,
     pendingFinalizeBlockerIssueIds: [],
     allBlockersDone: true,
     isDependencyReady: true,
@@ -1228,6 +1234,7 @@ async function listIssueDependencyReadinessMap(
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
       blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      blockerExecutionRunId: issues.executionRunId,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -1256,10 +1263,27 @@ async function listIssueDependencyReadinessMap(
     companyId,
     doneBlockerWorkspacePairs,
   );
+  const activeBlockerRunIds = new Set<string>();
+  const blockerRunIds = [...new Set(blockerRows
+    .map((row) => row.blockerExecutionRunId)
+    .filter((runId): runId is string => runId !== null))];
+  if (blockerRunIds.length > 0) {
+    const activeRuns = await dbOrTx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        inArray(heartbeatRuns.id, blockerRunIds),
+        inArray(heartbeatRuns.status, BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES),
+      ));
+    for (const run of activeRuns) activeBlockerRunIds.add(run.id);
+  }
 
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
+    if (row.blockerStatus === "in_progress" || (row.blockerExecutionRunId && activeBlockerRunIds.has(row.blockerExecutionRunId))) {
+      current.blockingTreeLive = true;
+    }
     // Only done blockers resolve dependents; cancelled blockers stay unresolved
     // until an operator removes or replaces the blocker relationship explicitly.
     if (row.blockerStatus !== "done") {
@@ -2355,6 +2379,7 @@ async function listIssueBlockerAttentionMap(
       attentionMap.set(readiness.issueId, createIssueBlockerAttention({
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+        blockingTreeLive: readiness.blockingTreeLive,
       }));
     }
   }
@@ -5225,7 +5250,10 @@ export function issueService(db: Db) {
     childId: string,
     actor: { agentId?: string | null; userId?: string | null } = {},
     dbOrTx: DbWriter = db,
-  ) {
+  ): Promise<boolean> {
+    if (dbOrTx === db) {
+      return db.transaction((tx) => ensureParentBlockedByChild(companyId, parentId, childId, actor, tx));
+    }
     await dbOrTx.execute(sql`
       SELECT ${issues.id}
       FROM ${issues}
@@ -6780,7 +6808,7 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
-      let child = await issueService(db).create(parent.companyId, {
+      const child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
@@ -6798,21 +6826,17 @@ export function issueService(db: Db) {
         ...(inheritStrategyOnly
           ? { skipExecutionWorkspaceInheritance: true }
           : { inheritExecutionWorkspaceFromIssueId: parent.id }),
-      });
-
-      if (blockParentUntilDone) {
-        const existingBlockers = await db
-          .select({ blockerIssueId: issueRelations.issueId })
-          .from(issueRelations)
-          .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
-        await syncBlockedByIssueIds(
-          parent.id,
-          parent.companyId,
-          [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
-          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
-        );
-        [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
-      }
+      }, blockParentUntilDone
+        ? {
+            afterCreateInTransaction: (tx, createdChild) => ensureParentBlockedByChild(
+              parent.companyId,
+              parent.id,
+              createdChild.id,
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+              tx,
+            ).then(() => undefined),
+          }
+        : undefined);
 
       return {
         issue: child,
@@ -7095,7 +7119,7 @@ export function issueService(db: Db) {
       });
     },
 
-    create: async (companyId: string, data: IssueCreateInput) => {
+    create: async (companyId: string, data: IssueCreateInput, options: IssueCreateOptions = {}) => {
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -7458,6 +7482,9 @@ export function issueService(db: Db) {
             },
             tx,
           );
+        }
+        if (options.afterCreateInTransaction) {
+          await options.afterCreateInTransaction(tx, issue);
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);

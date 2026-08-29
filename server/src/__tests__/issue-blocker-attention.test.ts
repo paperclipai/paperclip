@@ -187,7 +187,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       companyId,
       identifier: "PBN-2",
       title: "Open child blocker",
-      status: "todo",
+      status: "in_progress",
       parentId,
     });
     const ordinaryChildId = await insertIssue({
@@ -211,7 +211,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       coveredBlockerCount: 0,
       stalledBlockerCount: 0,
       attentionBlockerCount: 0,
-      blockingTreeLive: false,
+      blockingTreeLive: true,
     });
     expect(ordinaryChild?.blockerAttention).toMatchObject({
       state: "none",

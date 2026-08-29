@@ -564,12 +564,14 @@ function requireParentIdForBlockParentUntilDone(
   }
 }
 
-export const createIssueInputSchema = createIssueBaseSchema.extend({
+export const createIssueInputObjectSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
   ...onboardingFirstTaskMarkerSchema,
   ...createIssueParentBlockerFields,
-}).superRefine((value, ctx) => {
+});
+
+export const createIssueInputSchema = createIssueInputObjectSchema.superRefine((value, ctx) => {
   requireBlockedStatusForUnblockDescriptor(value, ctx);
   requireParentIdForBlockParentUntilDone(value, ctx);
 });
