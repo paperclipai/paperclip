@@ -173,6 +173,28 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("does not accumulate session totals when provider deltas are unavailable", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "usage.reported", {
+        runDelta: { inputTokens: 0, outputTokens: 0, providerCostUsd: 0 },
+        cumulative: { inputTokens: 12, outputTokens: 3, providerCostUsd: 0.01 },
+      }),
+      event(2, "usage.reported", {
+        runDelta: { inputTokens: 0, outputTokens: 0, providerCostUsd: 0 },
+        cumulative: { inputTokens: 20, outputTokens: 5, providerCostUsd: 0.02 },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "result",
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      }),
+    ]);
+  });
+
   it("uses the structured run summary when no agent message was emitted", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "run.result.proposed", { summary: "Recovered final reply." }),

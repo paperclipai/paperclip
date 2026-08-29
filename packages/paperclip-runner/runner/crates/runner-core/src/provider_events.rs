@@ -200,7 +200,10 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 .get("tokenUsage")
                 .and_then(|value| value.get("last"))
                 .or_else(|| params.get("last"))
-                .unwrap_or(cumulative);
+                // `total` is session-cumulative. Treat a missing provider
+                // delta as unknown/zero instead of relabelling the total as a
+                // per-run delta and double-counting it downstream.
+                .unwrap_or(&Value::Null);
             push(
                 &mut events,
                 "usage.reported",
@@ -370,6 +373,25 @@ mod tests {
         );
         assert_eq!(usage[0].event_type, "usage.reported");
         assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 12);
+        assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 0);
         assert_eq!(usage[0].priority, EventPriority::P0);
+    }
+
+    #[test]
+    fn does_not_substitute_session_cumulative_usage_for_a_missing_run_delta() {
+        let first = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {"total": {"inputTokens": 12, "outputTokens": 3}}}),
+        );
+        let second = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {"total": {"inputTokens": 20, "outputTokens": 5}}}),
+        );
+
+        assert_eq!(first[0].payload["runDelta"]["inputTokens"], 0);
+        assert_eq!(first[0].payload["runDelta"]["outputTokens"], 0);
+        assert_eq!(second[0].payload["runDelta"]["inputTokens"], 0);
+        assert_eq!(second[0].payload["runDelta"]["outputTokens"], 0);
+        assert_eq!(second[0].payload["cumulative"]["inputTokens"], 20);
     }
 }
