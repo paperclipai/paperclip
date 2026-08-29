@@ -58,6 +58,12 @@ type TransitionInput = {
 type TransitionResult = {
   patch: Record<string, unknown>;
   decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
+  reviewEscalation?: {
+    stageId: string;
+    reviewerAgentId: string;
+    responsibleUserId: string;
+    reason: string;
+  };
   workflowControlledAssignment?: boolean;
 };
 
@@ -886,6 +892,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             return {
               patch,
               decision,
+              reviewEscalation: actor?.agentId
+                ? {
+                    stageId: activeStage.id,
+                    reviewerAgentId: actor.agentId,
+                    responsibleUserId: escalationUserId,
+                    reason: decision.body,
+                  }
+                : undefined,
               workflowControlledAssignment: true,
             };
           }

@@ -9420,6 +9420,7 @@ export function issueRoutes(
     const reviewVerdictRequested =
       existing.status === "in_review"
       && (updateFields.status === "done" || updateFields.status === "cancelled");
+    const executionPolicyMutationRequested = req.body.executionPolicy !== undefined;
     const reviewPolicySensitiveMutationRequested =
       req.body.reviewPolicy !== undefined
       || updateFields.status === "done"
@@ -9660,25 +9661,31 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined && monitorChanged,
     );
 
-    const transition = applyIssueExecutionPolicyTransition({
-      issue: existing,
-      policy: nextExecutionPolicy,
-      previousPolicy: previousExecutionPolicy,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
-      requestedAssigneePatch: {
-        assigneeAgentId: normalizedAssigneeAgentId,
-        assigneeUserId:
-          req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
-      },
-      actor: {
-        agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-      allowBoardOverride: req.actor.type === "board",
-      commentBody,
-      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
-      monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
-    });
+    const deriveExecutionPolicyTransition = (issue: typeof existing) => {
+      const issuePreviousExecutionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+      const issueMonitorChanged = monitorPoliciesEqual(issuePreviousExecutionPolicy, nextExecutionPolicy) === false;
+      return applyIssueExecutionPolicyTransition({
+        issue,
+        policy: nextExecutionPolicy,
+        previousPolicy: issuePreviousExecutionPolicy,
+        requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+        requestedAssigneePatch: {
+          assigneeAgentId: normalizedAssigneeAgentId,
+          assigneeUserId:
+            req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+        },
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        allowBoardOverride: req.actor.type === "board",
+        commentBody,
+        reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+        monitorExplicitlyUpdated: executionPolicyMutationRequested && issueMonitorChanged,
+      });
+    };
+    const transition = deriveExecutionPolicyTransition(existing);
+    const transitionBeforeDecisionId = JSON.stringify(transition);
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
@@ -9955,7 +9962,8 @@ export function issueRoutes(
       Boolean(decision)
       || shouldRelayStop
       || persistReviewActivityTransactionally
-      || reviewPolicySensitiveMutationRequested;
+      || reviewPolicySensitiveMutationRequested
+      || executionPolicyMutationRequested;
     try {
       if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
@@ -9963,6 +9971,45 @@ export function issueRoutes(
             reviewPolicySensitiveMutationRequested
             && !(await assertLockedReviewPolicyAllowsMutation(tx))
           ) return null;
+          if (executionPolicyMutationRequested || transition.reviewEscalation) {
+            const lockedExisting = await svc.getByIdForUpdate(id, tx);
+            if (!lockedExisting) return null;
+
+            if (executionPolicyMutationRequested) {
+              const lockedPreviousExecutionPolicy = normalizeIssueExecutionPolicy(lockedExisting.executionPolicy ?? null);
+              if (JSON.stringify(lockedPreviousExecutionPolicy) !== JSON.stringify(previousExecutionPolicy)) {
+                throw conflict("The execution policy changed before this update could be recorded. Retry the update.");
+              }
+              const interactionSvc = issueThreadInteractionService(tx as unknown as Db);
+              if (await interactionSvc.hasPendingReviewEscalationForIssue(lockedExisting)) {
+                throw conflict("Resolve the capped review decision before changing the execution policy.");
+              }
+              const lockedTransition = deriveExecutionPolicyTransition(lockedExisting);
+              if (JSON.stringify(lockedTransition) !== transitionBeforeDecisionId) {
+                throw conflict("The active review stage changed before this update could be recorded. Retry the update.");
+              }
+            }
+
+            if (transition.reviewEscalation) {
+              const expectedState = parseIssueExecutionState(existing.executionState);
+              const lockedState = parseIssueExecutionState(lockedExisting.executionState);
+              const lockedPolicy = normalizeIssueExecutionPolicy(lockedExisting.executionPolicy ?? null);
+              if (
+                !decisionId
+                || !expectedState
+                || !lockedState
+                || lockedExisting.status !== existing.status
+                || lockedExisting.assigneeAgentId !== existing.assigneeAgentId
+                || lockedExisting.assigneeUserId !== existing.assigneeUserId
+                || JSON.stringify(lockedPolicy) !== JSON.stringify(previousExecutionPolicy)
+                || lockedState.currentStageId !== expectedState.currentStageId
+                || JSON.stringify(lockedState.currentParticipant) !== JSON.stringify(expectedState.currentParticipant)
+                || lockedState.lastDecisionId !== expectedState.lastDecisionId
+              ) {
+                throw conflict("The active review stage changed before this decision could be recorded. Retry the update.");
+              }
+            }
+          }
           const updated = await updateIssue(tx);
           if (!updated) return null;
 
@@ -9979,6 +10026,39 @@ export function issueRoutes(
               body: decision.body,
               createdByRunId: actor.runId ?? null,
             });
+          }
+
+          if (transition.reviewEscalation && decisionId) {
+            await issueThreadInteractionService(tx as unknown as Db).create(updated, {
+              kind: "request_confirmation",
+              idempotencyKey: `execution-review-escalation:${decisionId}`,
+              sourceRunId: actor.runId ?? null,
+              title: "Review decision required",
+              summary: "The review round limit was reached.",
+              continuationPolicy: "wake_assignee",
+              resolverPolicy: "human_only",
+              payload: {
+                version: 1,
+                prompt: "The review round limit was reached. Approve the reviewed work or return it to the executor.",
+                acceptLabel: "Approve reviewed work",
+                rejectRequiresReason: true,
+                allowDeclineReason: true,
+                declineReasonPlaceholder: "Describe the correction the executor must make.",
+                supersedeOnUserComment: false,
+                detailsMarkdown: [
+                  "**Review reason:**",
+                  "",
+                  transition.reviewEscalation.reason,
+                ].join("\n"),
+                reviewEscalation: {
+                  version: 1,
+                  decisionId,
+                  stageId: transition.reviewEscalation.stageId,
+                  reviewerAgentId: transition.reviewEscalation.reviewerAgentId,
+                  responsibleUserId: transition.reviewEscalation.responsibleUserId,
+                },
+              },
+            }, { allowReviewEscalationCreation: true });
           }
 
           if (shouldRelayStop) {
@@ -11243,6 +11323,9 @@ export function issueRoutes(
     if (req.body.kind === "request_confirmation" && req.body.payload?.secretProposal !== undefined) {
       throw unprocessable("payload.secretProposal is server-owned metadata and cannot be supplied when creating an interaction");
     }
+    if (req.body.kind === "request_confirmation" && req.body.payload?.reviewEscalation !== undefined) {
+      throw unprocessable("payload.reviewEscalation is server-owned metadata and cannot be supplied when creating an interaction");
+    }
 
     // Plan-document confirmation targets are validated authoritatively inside
     // issueThreadInteractionService.create, which re-reads the plan document's
@@ -11357,6 +11440,51 @@ export function issueRoutes(
       if (!suggestedTaskEffectsAuthorized) return;
 
       const actor = getActorInfo(req);
+      if (current.kind === "request_confirmation" && current.payload.reviewEscalation) {
+        const resolved = await interactionSvc.resolveReviewEscalation({
+          issue: { id: issue.id, companyId: issue.companyId },
+          interactionId,
+          outcome: "approved",
+          actor: {
+            agentId: actor.agentId,
+            runId: actor.runId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+            resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+          },
+        });
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.thread_interaction_accepted",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            interactionId: resolved.interaction.id,
+            interactionKind: resolved.interaction.kind,
+            interactionStatus: resolved.interaction.status,
+            resolutionActorKind: actor.actorType,
+            requestedResolverPolicy: resolved.interaction.requestedResolverPolicy,
+            effectiveResolverPolicy: resolved.interaction.effectiveResolverPolicy,
+            resolverPolicyProvenance: resolved.interaction.resolverPolicyProvenance,
+            effectiveResolverPolicySource: resolved.interaction.effectiveResolverPolicySource,
+            resolverAuthorizationReason: resolutionAuthorization.decision.reason,
+          },
+        });
+        await queueResolvedInteractionContinuationWakeup({
+          db,
+          heartbeat,
+          issue: { ...resolved.issue, companyId: issue.companyId },
+          interaction: resolved.interaction,
+          actor,
+          source: "issue.interaction.accept",
+        });
+        res.json(resolved.interaction);
+        return;
+      }
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
@@ -11593,9 +11721,56 @@ export function issueRoutes(
         interactionId,
       );
       if (!authorizedResolution) return;
-      const { interactionSvc, resolutionAuthorization } = authorizedResolution;
+      const { interactionSvc, current, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
+      if (current.kind === "request_confirmation" && current.payload.reviewEscalation) {
+        const resolved = await interactionSvc.resolveReviewEscalation({
+          issue: { id: issue.id, companyId: issue.companyId },
+          interactionId,
+          outcome: "changes_requested",
+          reason: req.body.reason,
+          actor: {
+            agentId: actor.agentId,
+            runId: actor.runId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+            resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+          },
+        });
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.thread_interaction_rejected",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            interactionId: resolved.interaction.id,
+            interactionKind: resolved.interaction.kind,
+            interactionStatus: resolved.interaction.status,
+            resolutionActorKind: actor.actorType,
+            requestedResolverPolicy: resolved.interaction.requestedResolverPolicy,
+            effectiveResolverPolicy: resolved.interaction.effectiveResolverPolicy,
+            resolverPolicyProvenance: resolved.interaction.resolverPolicyProvenance,
+            effectiveResolverPolicySource: resolved.interaction.effectiveResolverPolicySource,
+            resolverAuthorizationReason: resolutionAuthorization.decision.reason,
+            rejectionReason: req.body.reason,
+          },
+        });
+        await queueResolvedInteractionContinuationWakeup({
+          db,
+          heartbeat,
+          issue: { ...resolved.issue, companyId: issue.companyId },
+          interaction: resolved.interaction,
+          actor,
+          source: "issue.interaction.reject",
+        });
+        res.json(resolved.interaction);
+        return;
+      }
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,

@@ -655,6 +655,35 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).not.toContain("Request changes");
   });
 
+  it("labels capped-review decisions as approve or return-to-executor actions", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          prompt: "The review round limit was reached.",
+          acceptLabel: "Approve reviewed work",
+          rejectRequiresReason: true,
+          detailsMarkdown: "**Review reason:**\n\nPreserve audit records.",
+          reviewEscalation: {
+            version: 1,
+            decisionId: "11111111-1111-4111-8111-111111111111",
+            stageId: "22222222-2222-4222-8222-222222222222",
+            reviewerAgentId: "33333333-3333-4333-8333-333333333333",
+            responsibleUserId: "local-board",
+          },
+        },
+      },
+      onAcceptInteraction: vi.fn(async () => undefined),
+      onRejectInteraction: vi.fn(async () => undefined),
+    });
+
+    const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
+    expect(labels).toContain("Approve reviewed work");
+    expect(labels).toContain("Return to executor…");
+    expect(host.textContent).toContain("Preserve audit records.");
+  });
+
   it("does not expose continuation wake policy labels in the card header", () => {
     const host = renderCard({
       interaction: {

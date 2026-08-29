@@ -2514,6 +2514,7 @@ function RequestConfirmationCard({
   // Screenshots ride along in the revise note as markdown image refs so the
   // board can attach images when sending a plan back — no schema change needed.
   const allowScreenshots = isPlan && Boolean(onUploadImage);
+  const isReviewEscalation = interaction.payload.reviewEscalation !== undefined;
   const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
   const allowRevise = interaction.payload.allowDeclineReason !== false;
   const reasonPlaceholder =
@@ -2606,6 +2607,7 @@ function RequestConfirmationCard({
         <ConfirmationActionRow
           resetKey={`${interaction.id}:${interaction.status}`}
           approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
+          reviseLabel={isReviewEscalation ? "Return to executor…" : undefined}
           rejectLabel={CONFIRMATION_REJECT_LABEL}
           approveVariant={isPlan ? "cta" : "default"}
           primaryActionOnRight={primaryActionOnRight}

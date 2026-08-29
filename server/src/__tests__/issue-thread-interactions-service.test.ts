@@ -13,6 +13,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueExecutionDecisions,
   instanceSettings,
   issueRelations,
   issueThreadInteractions,
@@ -30,6 +31,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1288,6 +1290,77 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(interactions.find((interaction) => interaction.id === otherKind.id)?.status).toBe("pending");
   });
 
+  it("keeps a capped review decision pending when the reviewer creates a newer confirmation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Durable review escalation");
+    const reviewerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const escalation = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "review-escalation:decision-1",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        prompt: "Review round limit reached. Approve this review stage or request changes.",
+        reviewEscalation: {
+          version: 1,
+          decisionId: randomUUID(),
+          stageId: randomUUID(),
+          reviewerAgentId,
+          responsibleUserId: "local-board",
+        },
+      },
+    }, { agentId: reviewerAgentId, allowReviewEscalationCreation: true });
+
+    const ordinaryConfirmation = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      idempotencyKey: "reviewer:ordinary-confirmation",
+      payload: { version: 1, prompt: "Approve the ordinary request?" },
+    }, { agentId: reviewerAgentId });
+
+    expect(await interactionsSvc.hasPendingReviewEscalationForIssue({ id: issueId, companyId })).toBe(true);
+
+    const afterCreation = await interactionsSvc.listForIssue(issueId);
+    expect(afterCreation.find((interaction) => interaction.id === escalation.id)?.status).toBe("pending");
+    expect(afterCreation.find((interaction) => interaction.id === ordinaryConfirmation.id)?.status).toBe("pending");
+
+    await expect(interactionsSvc.sweepSupersededPendingRequestConfirmations())
+      .resolves.toEqual({ expired: 0 });
+    const afterSweep = await interactionsSvc.listForIssue(issueId);
+    expect(afterSweep.find((interaction) => interaction.id === escalation.id)?.status).toBe("pending");
+  });
+
+  it("rejects public creation of server-owned capped-review metadata", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Protected review escalation");
+
+    await expect(interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Forged capped review",
+        reviewEscalation: {
+          version: 1,
+          decisionId: randomUUID(),
+          stageId: randomUUID(),
+          reviewerAgentId: randomUUID(),
+          responsibleUserId: "local-board",
+        },
+      },
+    } as never, { userId: "local-board" })).rejects.toThrow("payload.reviewEscalation is server-owned metadata");
+
+    await expect(interactionsSvc.listForIssue(issueId)).resolves.toHaveLength(0);
+  });
+
   it("supersedes an agent's own older pending ask_user_questions without crossing agent, kind, or issue", async () => {
     const { companyId, goalId, issueId } = await seedConfirmationIssue("Question supersedes older sibling");
     const otherIssueId = randomUUID();
@@ -1680,6 +1753,190 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, requiresReason.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("A decline reason is required for this confirmation");
+  });
+
+  it.each([
+    {
+      action: "approves",
+      outcome: "approved" as const,
+      reason: undefined,
+      interactionStatus: "accepted",
+      issueStatus: "done",
+      executionStatus: "completed",
+      assignee: null,
+      assigneeUserId: "local-board",
+    },
+    {
+      action: "returns work",
+      outcome: "changes_requested" as const,
+      reason: "Please preserve the audit records.",
+      interactionStatus: "rejected",
+      issueStatus: "in_progress",
+      executionStatus: "changes_requested",
+      assignee: "executor",
+      assigneeUserId: null,
+    },
+  ])("$action a capped review through its owner interaction", async ({
+    outcome,
+    reason,
+    interactionStatus,
+    issueStatus,
+    executionStatus,
+    assignee,
+    assigneeUserId,
+  }) => {
+    const { companyId, issueId } = await seedConfirmationIssue("Capped review decision");
+    const reviewerAgentId = randomUUID();
+    const executorAgentId = randomUUID();
+    const stageId = randomUUID();
+    const escalationDecisionId = randomUUID();
+    const interactionId = randomUUID();
+    const ownerUserId = "local-board";
+    const policy = normalizeIssueExecutionPolicy({
+      maxReviewRounds: 1,
+      stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: reviewerAgentId }] }],
+    })!;
+
+    await db.insert(agents).values([
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "reviewer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: executorAgentId,
+        companyId,
+        name: "Executor",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: ownerUserId,
+      responsibleUserId: ownerUserId,
+      executionPolicy: policy as unknown as Record<string, unknown>,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: ownerUserId },
+        returnAssignee: { type: "agent", agentId: executorAgentId },
+        completedStageIds: [],
+        lastDecisionId: escalationDecisionId,
+        lastDecisionOutcome: "changes_requested",
+        changesRequestedCount: 1,
+      },
+    }).where(eq(issues.id, issueId));
+    await db.insert(issueExecutionDecisions).values({
+      id: escalationDecisionId,
+      companyId,
+      issueId,
+      stageId,
+      stageType: "review",
+      actorAgentId: reviewerAgentId,
+      outcome: "changes_requested",
+      body: "The data migration drops audit records.",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        prompt: "The review round limit was reached.",
+        rejectRequiresReason: true,
+        supersedeOnUserComment: false,
+        reviewEscalation: {
+          version: 1,
+          decisionId: escalationDecisionId,
+          stageId,
+          reviewerAgentId,
+          responsibleUserId: ownerUserId,
+        },
+      },
+    });
+
+    const resolved = await interactionsSvc.resolveReviewEscalation({
+      issue: { id: issueId, companyId },
+      interactionId,
+      outcome,
+      reason,
+      actor: { userId: ownerUserId },
+    });
+
+    expect(resolved.interaction).toMatchObject({
+      id: interactionId,
+      status: interactionStatus,
+      resolvedByUserId: ownerUserId,
+      result: outcome === "changes_requested"
+        ? { outcome: "rejected", reason }
+        : { outcome: "accepted" },
+    });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updatedIssue).toMatchObject({
+      status: issueStatus,
+      assigneeAgentId: assignee === "executor" ? executorAgentId : null,
+      assigneeUserId,
+      executionState: expect.objectContaining({ status: executionStatus, changesRequestedCount: 0 }),
+    });
+    const decisions = await db
+      .select()
+      .from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(2);
+    expect(decisions.find((decision) => decision.id !== escalationDecisionId)).toMatchObject({
+      actorUserId: ownerUserId,
+      outcome,
+      body: outcome === "changes_requested" ? reason : "Approved through the review decision interaction.",
+    });
+  });
+
+  it("keeps a capped review interaction pending until the owner decides", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Durable capped review");
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        prompt: "The review round limit was reached.",
+        supersedeOnUserComment: false,
+        reviewEscalation: {
+          version: 1,
+          decisionId: randomUUID(),
+          stageId: randomUUID(),
+          reviewerAgentId: randomUUID(),
+          responsibleUserId: "local-board",
+        },
+      },
+    }, { userId: "local-board", allowReviewEscalationCreation: true });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({ id: issueId, companyId }, {
+      id: randomUUID(),
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+    }, { userId: "local-board" });
+    expect(expired).toEqual([]);
+    await expect(interactionsSvc.withdrawInteraction({ id: issueId, companyId }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("must be approved or returned to the executor");
   });
 
   it("records an authorized agent as the review-confirmation resolver", async () => {

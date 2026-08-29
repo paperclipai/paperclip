@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -9,6 +10,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueExecutionDecisions,
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
@@ -65,13 +67,18 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
 } from "./issue-review-policy.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+import {
+  applyIssueExecutionPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
   assertIssueThreadInteractionResolverAudience,
@@ -100,6 +107,7 @@ type InteractionActor = {
     | IssueThreadInteractionResolverRestriction
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
+  allowReviewEscalationCreation?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
 
@@ -403,6 +411,20 @@ function isTargetBoundInteractionKind(kind: string): kind is TargetBoundInteract
 
 function isUserCommentSupersedableKind(kind: string): kind is UserCommentSupersedableKind {
   return (USER_COMMENT_SUPERSEDABLE_INTERACTION_KINDS as readonly string[]).includes(kind);
+}
+
+function hasReviewEscalationPayload(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const reviewEscalation = (payload as Record<string, unknown>).reviewEscalation;
+  return Boolean(
+    reviewEscalation
+    && typeof reviewEscalation === "object"
+    && !Array.isArray(reviewEscalation),
+  );
+}
+
+function isReviewEscalationInteraction(row: Pick<IssueThreadInteractionRow, "kind" | "payload">) {
+  return row.kind === "request_confirmation" && hasReviewEscalationPayload(row.payload);
 }
 
 function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
@@ -1501,6 +1523,19 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     return hydrateInteraction(current);
   }
 
+  async function hasPendingReviewEscalationForIssue(issue: { id: string; companyId: string }) {
+    const rows = await db
+      .select({ payload: issueThreadInteractions.payload })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, issue.companyId),
+        eq(issueThreadInteractions.issueId, issue.id),
+        eq(issueThreadInteractions.kind, "request_confirmation"),
+        eq(issueThreadInteractions.status, "pending"),
+      ));
+    return rows.some((row) => hasReviewEscalationPayload(row.payload));
+  }
+
   async function assertIssueWorkspaceFinalizedForAccept(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
@@ -1849,8 +1884,178 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     return rejected;
   }
 
+  async function resolveReviewEscalation(args: {
+    issue: { id: string; companyId: string };
+    interactionId: string;
+    outcome: "approved" | "changes_requested";
+    reason?: string | null;
+    actor: InteractionActor;
+  }): Promise<{
+    interaction: RequestConfirmationInteraction;
+    issue: IssueWakeTarget;
+  }> {
+    if (!args.actor.userId) {
+      throw forbidden("Only the responsible user can resolve a review escalation");
+    }
+    const requestedStatus = args.outcome === "approved" ? "done" : "in_progress";
+    const commentBody = args.outcome === "approved"
+      ? "Approved through the review decision interaction."
+      : args.reason?.trim() ?? "";
+    if (!commentBody) {
+      throw unprocessable("Returning work to the executor requires a comment");
+    }
+
+    const publications: ActivityPublication[] = [];
+    const resolved = await db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, args.issue.id), eq(issues.companyId, args.issue.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) throw notFound("Issue not found");
+
+      const lockedInteraction = await tx
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, args.interactionId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedInteraction
+        || lockedInteraction.companyId !== args.issue.companyId
+        || lockedInteraction.issueId !== args.issue.id
+      ) {
+        throw notFound("Interaction not found");
+      }
+      if (lockedInteraction.status !== "pending") {
+        throw issueThreadInteractionResolutionError(
+          409,
+          "interaction_already_resolved",
+          "Interaction has already been resolved",
+        );
+      }
+      await assertRequestConfirmationResolutionAllowedUnderLock(
+        tx as unknown as Db,
+        lockedIssue,
+        lockedInteraction,
+        args.actor,
+      );
+
+      const interaction = hydrateInteraction(lockedInteraction);
+      if (interaction.kind !== "request_confirmation" || !interaction.payload.reviewEscalation) {
+        throw unprocessable("Interaction is not a capped review decision");
+      }
+      const escalation = interaction.payload.reviewEscalation;
+      if (escalation.responsibleUserId !== args.actor.userId) {
+        throw forbidden("Only the responsible user can resolve this review escalation");
+      }
+
+      const policy = normalizeIssueExecutionPolicy(lockedIssue.executionPolicy ?? null);
+      const executionState = parseIssueExecutionState(lockedIssue.executionState);
+      if (
+        !policy
+        || !executionState
+        || lockedIssue.status !== "in_review"
+        || executionState.status !== "pending"
+        || executionState.currentStageId !== escalation.stageId
+        || executionState.lastDecisionId !== escalation.decisionId
+        || executionState.currentParticipant?.type !== "user"
+        || executionState.currentParticipant.userId !== args.actor.userId
+      ) {
+        throw conflict("This review escalation is no longer active");
+      }
+
+      const transition = applyIssueExecutionPolicyTransition({
+        issue: lockedIssue,
+        policy,
+        previousPolicy: policy,
+        requestedStatus,
+        requestedAssigneePatch: {},
+        actor: { userId: args.actor.userId },
+        commentBody,
+      });
+      if (!transition.decision || transition.decision.stageId !== escalation.stageId) {
+        throw conflict("This review escalation can no longer advance the active stage");
+      }
+      const nextExecutionState = transition.patch.executionState;
+      if (!nextExecutionState || typeof nextExecutionState !== "object") {
+        throw new Error("Review escalation decision patch is missing executionState");
+      }
+
+      const now = new Date();
+      const resolutionDecisionId = randomUUID();
+      const [updatedInteraction] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: args.outcome === "approved" ? "accepted" : "rejected",
+          result: {
+            version: 1,
+            outcome: args.outcome === "approved" ? "accepted" : "rejected",
+            ...(args.outcome === "changes_requested" ? { reason: commentBody } : {}),
+          },
+          resolvedByAgentId: null,
+          resolvedByRunId: null,
+          resolvedByUserId: args.actor.userId,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, lockedInteraction.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+      if (!updatedInteraction) {
+        throw issueThreadInteractionResolutionError(
+          409,
+          "interaction_already_resolved",
+          "Interaction has already been resolved",
+        );
+      }
+
+      const updatePatch: Record<string, unknown> = {
+        ...transition.patch,
+        status: transition.patch.status ?? requestedStatus,
+        executionState: {
+          ...nextExecutionState,
+          lastDecisionId: resolutionDecisionId,
+        },
+        actorAgentId: null,
+        actorUserId: args.actor.userId,
+      };
+      const updatedIssue = await issueService(db).update(args.issue.id, updatePatch, tx, publications);
+      if (!updatedIssue) throw notFound("Issue not found");
+      await tx.insert(issueExecutionDecisions).values({
+        id: resolutionDecisionId,
+        companyId: updatedIssue.companyId,
+        issueId: updatedIssue.id,
+        stageId: transition.decision.stageId,
+        stageType: transition.decision.stageType,
+        actorAgentId: null,
+        actorUserId: args.actor.userId,
+        outcome: transition.decision.outcome,
+        body: transition.decision.body,
+        createdByRunId: null,
+      });
+      return {
+        interaction: hydrateInteraction(updatedInteraction) as RequestConfirmationInteraction,
+        issue: {
+          id: updatedIssue.id,
+          assigneeAgentId: updatedIssue.assigneeAgentId ?? null,
+          assigneeUserId: updatedIssue.assigneeUserId ?? null,
+          status: updatedIssue.status,
+        },
+      };
+    });
+    for (const publication of publications) publishActivity(publication);
+    await emitInteractionResolvedTelemetry(db, resolved.interaction);
+    return resolved;
+  }
+
   return {
     getForIssue,
+    hasPendingReviewEscalationForIssue,
+    resolveReviewEscalation,
     sweepMergedPullRequestConfirmations: async () => {
       const rows = await db
         .select({
@@ -2204,7 +2409,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         replacementInteractionId: string;
       }> = [];
       for (const row of rows) {
-        if (!row.createdByAgentId) continue;
+        if (!row.createdByAgentId || isReviewEscalationInteraction(row)) continue;
         const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}`;
         const newest = newestByGroup.get(groupKey);
         if (!newest) {
@@ -2263,6 +2468,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       actor: InteractionActor,
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      if (
+        data.kind === "request_confirmation"
+        && data.payload.reviewEscalation !== undefined
+        && actor.allowReviewEscalationCreation !== true
+      ) {
+        throw unprocessable("payload.reviewEscalation is server-owned metadata and cannot be supplied when creating an interaction");
+      }
       const usedDeprecatedResolverPolicyAlias =
         data.resolverPolicy === "board_or_agents" || data.resolverPolicy === "board_only";
       const governance = await db
@@ -2421,10 +2633,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           // result shape. Scoped strictly to the same agent + issue + kind, so
           // other agents' or other kinds' pending cards are untouched.
           const canSupersedeSiblingCards =
-            (data.kind === "request_confirmation"
-              && data.payload.toolAction === undefined
-              && data.payload.secretProposal === undefined)
-            || data.kind === "ask_user_questions";
+            !hasReviewEscalationPayload(data.payload)
+            && (
+              (data.kind === "request_confirmation"
+                && data.payload.toolAction === undefined
+                && data.payload.secretProposal === undefined)
+              || data.kind === "ask_user_questions"
+            );
           if (!actor.agentId || !canSupersedeSiblingCards) {
             return { row, supersededRows: [] };
           }
@@ -2433,6 +2648,23 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           const supersededResult = data.kind === "ask_user_questions"
             ? buildSupersededByNewerInteractionResult(row.id)
             : buildSupersededByNewerRequestResult(row.id);
+          const siblingRows = await tx
+            .select()
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.kind, data.kind),
+              eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+              eq(issueThreadInteractions.status, "pending"),
+              ne(issueThreadInteractions.id, row.id),
+            ));
+          const supersededIds = siblingRows
+            .filter((sibling) => !isReviewEscalationInteraction(sibling))
+            .map((sibling) => sibling.id);
+          if (supersededIds.length === 0) {
+            return { row, supersededRows: [] };
+          }
           const supersededRows = await tx
             .update(issueThreadInteractions)
             .set({
@@ -2444,12 +2676,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               updatedAt: now,
             })
             .where(and(
-              eq(issueThreadInteractions.companyId, issue.companyId),
-              eq(issueThreadInteractions.issueId, issue.id),
-              eq(issueThreadInteractions.kind, data.kind),
-              eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+              inArray(issueThreadInteractions.id, supersededIds),
               eq(issueThreadInteractions.status, "pending"),
-              ne(issueThreadInteractions.id, row.id),
             ))
             .returning();
           for (const supersededRow of supersededRows) {
@@ -3246,6 +3474,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw interactionNotFoundError();
       }
       if (current.status !== "pending") throw interactionTerminalError(current);
+      const interaction = hydrateInteraction(current);
+      if (interaction.kind === "request_confirmation" && interaction.payload.reviewEscalation) {
+        throw conflict("A capped review decision must be approved or returned to the executor");
+      }
 
       const reason = data.reason?.trim() || null;
       const now = new Date();

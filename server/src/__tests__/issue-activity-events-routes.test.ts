@@ -114,6 +114,7 @@ function registerModuleMocks() {
     }),
     issueThreadInteractionService: () => ({
       listForIssue: vi.fn(async () => []),
+      hasPendingReviewEscalationForIssue: vi.fn(async () => false),
       expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
       expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
       expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
@@ -660,7 +661,9 @@ describe("issue activity event routes", () => {
       updatedAt: new Date(),
     }));
 
-    const res = await request(await createApp())
+    const res = await request(await createApp({
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
+    }))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ executionPolicy: nextPolicy });
 

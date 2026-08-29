@@ -6,18 +6,21 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   approvals,
   assets,
   companies,
   companyMemberships,
+  companySkills,
   costEvents,
   createDb,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueAttachments,
+  issueExecutionDecisions,
   issueComments,
   issueRelations,
   issueThreadInteractions,
@@ -32,6 +35,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -119,6 +123,8 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(companyMemberships);
+    await db.delete(companySkills);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -978,6 +984,183 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
     return interactionId;
   }
+
+  async function seedCappedReviewEscalation() {
+    const { companyId, agentId: executorAgentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = randomUUID();
+    const ownerUserId = randomUUID();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    const interactionId = randomUUID();
+    const policy = normalizeIssueExecutionPolicy({
+      maxReviewRounds: 1,
+      stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: reviewerAgentId }] }],
+    })!;
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer",
+      role: "reviewer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: { command: "true" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Capped review",
+      status: "in_review",
+      priority: "medium",
+      assigneeUserId: ownerUserId,
+      responsibleUserId: ownerUserId,
+      executionPolicy: policy as never,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: ownerUserId },
+        returnAssignee: { type: "agent", agentId: executorAgentId },
+        completedStageIds: [],
+        changesRequestedCount: 1,
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+      },
+    });
+    await db.insert(issueExecutionDecisions).values({
+      id: decisionId,
+      companyId,
+      issueId,
+      stageId,
+      stageType: "review",
+      actorAgentId: reviewerAgentId,
+      outcome: "changes_requested",
+      body: "The audit record is missing.",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        prompt: "Review round limit reached.",
+        rejectRequiresReason: true,
+        reviewEscalation: {
+          version: 1,
+          decisionId,
+          stageId,
+          reviewerAgentId,
+          responsibleUserId: ownerUserId,
+        },
+      },
+    });
+    return { companyId, executorAgentId, ownerUserId, issueId, interactionId };
+  }
+
+  it("createInteraction rejects forged capped-review metadata from a plugin", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    await expect(services.issues.createInteraction({
+      issueId,
+      companyId,
+      authorAgentId: agentId,
+      interaction: {
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Forged capped review",
+          reviewEscalation: {
+            version: 1,
+            decisionId: randomUUID(),
+            stageId: randomUUID(),
+            reviewerAgentId: agentId,
+            responsibleUserId: "local-board",
+          },
+        },
+      } as never,
+    })).rejects.toThrow("payload.reviewEscalation is server-owned metadata");
+
+    await expect(db.select().from(issueThreadInteractions)).resolves.toHaveLength(0);
+  });
+
+  it.each([
+    { action: "accept" as const, reason: undefined, interactionStatus: "accepted", issueStatus: "done", assigneeAgentId: null },
+    { action: "reject" as const, reason: "Restore the audit record.", interactionStatus: "rejected", issueStatus: "in_progress", assigneeAgentId: "executor" },
+  ])("respondInteraction applies the capped review $action through the execution-policy decision", async ({
+    action,
+    reason,
+    interactionStatus,
+    issueStatus,
+    assigneeAgentId,
+  }) => {
+    const fixture = await seedCappedReviewEscalation();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    const result = await services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action,
+      ...(reason ? { reason } : {}),
+      actorUserId: fixture.ownerUserId,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.interaction).toMatchObject({ status: interactionStatus });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(issue).toMatchObject({
+      status: issueStatus,
+      assigneeAgentId: assigneeAgentId === "executor" ? fixture.executorAgentId : null,
+      executionState: expect.objectContaining({ changesRequestedCount: 0 }),
+    });
+    const decisions = await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, fixture.issueId));
+    expect(decisions).toHaveLength(2);
+    expect(decisions.some((decision) => decision.actorUserId === fixture.ownerUserId)).toBe(true);
+  });
+
+  it("respondInteraction keeps a capped review pending for a non-responsible human", async () => {
+    const fixture = await seedCappedReviewEscalation();
+    const otherUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: otherUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    await expect(services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action: "accept",
+      actorUserId: otherUserId,
+    })).rejects.toThrow("Only the responsible user can resolve this review escalation");
+
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, fixture.interactionId));
+    expect(interaction?.status).toBe("pending");
+  });
 
   it("respondInteraction fails closed when actorUserId is omitted", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();

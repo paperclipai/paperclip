@@ -1897,6 +1897,12 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 3,
     });
+    expect(result.reviewEscalation).toEqual({
+      stageId: reviewStageId,
+      reviewerAgentId: qaAgentId,
+      responsibleUserId: boardUserId,
+      reason: "Round three feedback — still not converging",
+    });
   });
 
   it("keeps the escalated hold sticky across unrelated transitions", () => {
@@ -2001,6 +2007,74 @@ describe("review round circuit breaker", () => {
       status: "changes_requested",
       changesRequestedCount: 0,
     });
+  });
+
+  it("allows a later agent review to start a new capped escalation after the human resets rounds", () => {
+    const strictPolicy = normalizeIssueExecutionPolicy({
+      maxReviewRounds: 1,
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+    })!;
+    const stageId = strictPolicy.stages[0].id;
+    const heldIssue = {
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: boardUserId,
+      responsibleUserId: boardUserId,
+      executionPolicy: strictPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review" as const,
+        currentParticipant: { type: "user" as const, userId: boardUserId },
+        returnAssignee: { type: "agent" as const, agentId: coderAgentId },
+        completedStageIds: [],
+        changesRequestedCount: 1,
+        lastDecisionId: null,
+        lastDecisionOutcome: "changes_requested" as const,
+      },
+    };
+    const humanReturn = applyIssueExecutionPolicyTransition({
+      issue: heldIssue,
+      policy: strictPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { userId: boardUserId },
+      commentBody: "Make the requested correction.",
+    });
+    const afterHumanReturn = { ...heldIssue, ...humanReturn.patch };
+    expect(afterHumanReturn.executionState).toMatchObject({ changesRequestedCount: 0 });
+
+    const resubmission = applyIssueExecutionPolicyTransition({
+      issue: afterHumanReturn,
+      policy: strictPolicy,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      commentBody: "Correction completed.",
+    });
+    const nextReview = { ...afterHumanReturn, ...resubmission.patch };
+    expect(nextReview.executionState).toMatchObject({
+      changesRequestedCount: 0,
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+    });
+
+    const laterEscalation = applyIssueExecutionPolicyTransition({
+      issue: nextReview,
+      policy: strictPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "A distinct later review reason.",
+    });
+
+    expect(laterEscalation.reviewEscalation).toMatchObject({
+      stageId,
+      reviewerAgentId: qaAgentId,
+      responsibleUserId: boardUserId,
+      reason: "A distinct later review reason.",
+    });
+    expect(laterEscalation.patch.executionState).toMatchObject({ changesRequestedCount: 1 });
   });
 
   it("lets the escalated human approve the stage", () => {
