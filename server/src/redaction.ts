@@ -972,6 +972,23 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
+function redactConfigurationValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactConfigurationValue);
+  if (isSecretRefBinding(value)) return { type: value.type, secretId: value.secretId, version: value.version };
+  if (isUserSecretRefBinding(value)) return { type: value.type, key: value.key, version: value.version };
+  if (isPlainBinding(value)) return { type: value.type, value: REDACTED_EVENT_VALUE };
+  if (!isPlainObject(value)) return REDACTED_EVENT_VALUE;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactConfigurationValue(child)]));
+}
+
+/** Redact executable configuration deny-by-default while retaining its shape. */
+export function redactConfigurationPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!payload) return null;
+  if (!isPlainObject(payload)) return {};
+  return redactConfigurationValue(payload) as Record<string, unknown>;
+}
+
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(

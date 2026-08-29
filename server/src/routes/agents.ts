@@ -2890,7 +2890,7 @@ export function agentRoutes(
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
       ),
-      runtimeConfig: redactEventPayload(
+      runtimeConfig: redactConfigurationPayload(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
           ? (record.runtimeConfig as Record<string, unknown>)
           : {},

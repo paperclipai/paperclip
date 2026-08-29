@@ -407,6 +407,7 @@ async function seedLowTrustFixture(db: Db) {
     adapterType: "process",
     adapterConfig: {
       token: canaries.agentConfig,
+      innocuousScalar: canaries.agentConfig,
       env: { DISPLAY_NAME: { type: "plain", value: canaries.agentConfig } },
     },
     runtimeConfig: {
@@ -1078,6 +1079,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
     expect(JSON.stringify(standardRes.body)).not.toContain(fixture.canaries.agentConfig);
     expect(standardRes.body.adapterConfig.token).toBe("***REDACTED***");
+    expect(standardRes.body.adapterConfig.innocuousScalar).toBe("***REDACTED***");
     expect(standardRes.body.runtimeConfig.env.SECRET_MARKER).toBe("***REDACTED***");
     expect(standardRes.body.adapterConfig.env.DISPLAY_NAME).toEqual({
       type: "plain",
@@ -1093,6 +1095,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(standardSelfByIdRes.status, JSON.stringify(standardSelfByIdRes.body)).toBe(200);
     expect(JSON.stringify(standardSelfByIdRes.body)).not.toContain(fixture.canaries.agentConfig);
     expect(standardSelfByIdRes.body.adapterConfig.token).toBe("***REDACTED***");
+    expect(standardSelfByIdRes.body.adapterConfig.innocuousScalar).toBe("***REDACTED***");
     expect(standardSelfByIdRes.body.runtimeConfig.env.SECRET_MARKER).toBe("***REDACTED***");
     expect(standardSelfByIdRes.body.adapterConfig.env.DISPLAY_NAME.value).toBe("***REDACTED***");
     expect(standardSelfByIdRes.body.runtimeConfig.env.BENIGN_LABEL.value).toBe("***REDACTED***");
