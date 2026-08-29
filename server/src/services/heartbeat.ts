@@ -12940,33 +12940,70 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // reaches the same "not active" conclusion active tracking already
   // reached. This does not retry the "queued" release: a run that could not
   // even release cleanly is treated as failed, not requeued.
+  //
+  // The run row, the wakeup request, and the issue execution lock all guard
+  // the same claim, so — same as the atomic release above — one transaction
+  // commits all three writes together. A partial write here would leave the
+  // same false-quiescence gap this fallback exists to close. Live-event and
+  // plugin-event publishing run after the transaction commits, so a publish
+  // failure cannot roll back the durable claim writes.
   async function failRunClaimedJustBeforeSuppression(runId: string, cause: unknown) {
     const now = new Date();
     const causeMessage = cause instanceof Error ? cause.message : String(cause);
-    const failed = await setRunStatus(runId, "failed", {
-      finishedAt: now,
-      error: `Failed to release the run claim before task-drain suppression: ${causeMessage}`,
-      errorCode: "claim_release_failed",
+
+    const failed = await db.transaction(async (tx) => {
+      const updated = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          finishedAt: now,
+          error: `Failed to release the run claim before task-drain suppression: ${causeMessage}`,
+          errorCode: "claim_release_failed",
+          updatedAt: now,
+        })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+
+      if (updated.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "failed",
+            finishedAt: now,
+            error: "Run claim release failed before task-drain suppression",
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, updated.wakeupRequestId));
+      }
+
+      const context = parseObject(updated.contextSnapshot);
+      const issueId = readNonEmptyString(context.issueId);
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+          .where(and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, updated.companyId),
+            eq(issues.executionRunId, updated.id),
+          ));
+      }
+
+      return updated;
     });
     if (!failed) return;
 
-    await setWakeupStatus(failed.wakeupRequestId, "failed", {
-      finishedAt: now,
-      error: "Run claim release failed before task-drain suppression",
-    });
-
-    const context = parseObject(failed.contextSnapshot);
-    const issueId = readNonEmptyString(context.issueId);
-    if (issueId) {
-      await db
-        .update(issues)
-        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
-        .where(and(
-          eq(issues.id, issueId),
-          eq(issues.companyId, failed.companyId),
-          eq(issues.executionRunId, failed.id),
-        ));
+    if (isHeartbeatRunTerminalStatus(failed.status)) {
+      clearHeartbeatRunRuntimeStatus(failed.id);
     }
+    publishLiveEvent({
+      companyId: failed.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(failed),
+    });
+    publishRunLifecyclePluginEvent(failed);
   }
 
   async function cancelQueuedRunForBlockedDependencies(

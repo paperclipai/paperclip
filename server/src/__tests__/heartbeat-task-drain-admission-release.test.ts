@@ -220,20 +220,29 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   }, 20_000);
 
   // Wraps db.transaction so the callback's tx object throws the moment code
-  // calls tx.update(failingTable) — this makes releaseRunClaimedJustBeforeSuppression's
+  // calls tx.update(table) for a table named in tablesByCall — this makes a
   // real Postgres transaction roll back exactly like a genuine write failure
   // partway through, without touching any other table's update path.
-  function withFailingTransactionalUpdate(realDb: typeof db, failingTable: unknown) {
+  // tablesByCall maps a 0-based db.transaction() call index (in call order)
+  // to the table that call should fail on; a call index with no entry runs
+  // every update for real. For example { 0: issues, 1: agentWakeupRequests }
+  // fails only the issue-lock write in the first transaction
+  // (releaseRunClaimedJustBeforeSuppression) and only the wakeup write in
+  // the second (failRunClaimedJustBeforeSuppression's own transaction).
+  function withFailingTransactionalUpdate(realDb: typeof db, tablesByCall: Record<number, unknown>) {
+    let callIndex = 0;
     return new Proxy(realDb, {
       get(target, prop, receiver) {
         if (prop !== "transaction") return Reflect.get(target, prop, receiver);
-        return (fn: (tx: unknown) => Promise<unknown>) =>
-          target.transaction((tx) => {
+        return (fn: (tx: unknown) => Promise<unknown>) => {
+          const failingTable = tablesByCall[callIndex];
+          callIndex += 1;
+          return target.transaction((tx) => {
             const txProxy = new Proxy(tx as object, {
               get(txTarget, txProp, txReceiver) {
                 if (txProp === "update") {
                   return (table: unknown) => {
-                    if (table === failingTable) {
+                    if (failingTable !== undefined && table === failingTable) {
                       throw new Error("simulated transactional write failure");
                     }
                     return (txTarget as any).update(table);
@@ -244,6 +253,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
             });
             return fn(txProxy);
           });
+        };
       },
     }) as typeof db;
   }
@@ -254,7 +264,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   ] as const) {
     it(`fails the run instead of leaving it claimed when ${label} fails`, async () => {
       const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
-      const failingDb = withFailingTransactionalUpdate(db, failingTable);
+      // Fault only the first (release) transaction, so the fallback's own
+      // transaction runs for real and this test proves it can still reach
+      // "failed" on its own — atomicity of the fallback itself is covered
+      // separately below.
+      const failingDb = withFailingTransactionalUpdate(db, { 0: failingTable });
       const heartbeat = heartbeatService(failingDb);
 
       const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
@@ -305,6 +319,64 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       const status = getTaskDrainStatus();
       expect(status.activeRuns).toBe(0);
       expect(status.quiescent).toBe(true);
+    }, 20_000);
+  }
+
+  for (const [label, failingTable] of [
+    ["the wakeup-request update", agentWakeupRequests],
+    ["the issue-lock update", issues],
+  ] as const) {
+    it(`leaves the run claimed instead of a partial write when the fallback's own ${label} fails`, async () => {
+      const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
+      // Fault the release transaction (call 0) on the issue lock so the
+      // fallback engages, then fault the fallback's own transaction
+      // (call 1) on a different table. Before the fix, the fallback wrote
+      // the run row with a plain, unconditional update before it ever
+      // touched the wakeup or issue rows — that write would have committed
+      // here regardless of what came after it. With the fallback's writes
+      // in one transaction, a failure anywhere inside it must roll back
+      // everything, including the run-status write that ran first.
+      const failingDb = withFailingTransactionalUpdate(db, { 0: issues, 1: failingTable });
+      const heartbeat = heartbeatService(failingDb);
+
+      const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+        const payload = event.payload as { runId?: string; status?: string };
+        if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
+          startTaskDrain({});
+        }
+      });
+
+      try {
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+      } finally {
+        unsubscribe();
+      }
+
+      // Both transactions rolled back, so the database still shows the run
+      // exactly as the admission claim left it — claimed, not a mix of
+      // "failed" run row with a still-claimed wakeup or a still-locked issue.
+      const run = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("running");
+      expect(run?.errorCode).toBeNull();
+
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("claimed");
+
+      const issue = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.executionRunId).toBe(runId);
     }, 20_000);
   }
 });
