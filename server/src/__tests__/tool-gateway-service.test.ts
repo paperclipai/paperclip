@@ -523,6 +523,33 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(approved.status).toBe("approved");
     const [parkedInvocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id));
     expect(parkedInvocation.status).toBe("awaiting_approval");
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+      approvedActionRequestId: actionRequest.id,
+    })).rejects.toMatchObject({ reasonCode: "legacy_approved_action_inert" });
+
+    const [settledRequest] = await db
+      .select()
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.id, actionRequest.id));
+    const [settledInvocation] = await db
+      .select()
+      .from(toolInvocations)
+      .where(eq(toolInvocations.id, invocation.id));
+    expect(settledRequest.status).toBe("failed");
+    expect(settledInvocation.status).toBe("failed");
+    expect(settledInvocation.errorCode).toBe("legacy_approved_action_inert");
+    expect(settledInvocation.idempotencyKey).toBeNull();
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    expect(await db.select().from(toolActionRequests)).toHaveLength(2);
   });
 
   it("does not leave unsigned action requests pending when signing is unavailable", async () => {

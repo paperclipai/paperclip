@@ -5003,6 +5003,7 @@ export function createToolGatewayService(
     const now = new Date();
     await db.update(toolInvocations).set({
       status: "failed",
+      idempotencyKey: null,
       errorCode: reasonCode,
       errorMessage: message,
       completedAt: now,
@@ -5154,11 +5155,13 @@ export function createToolGatewayService(
       throw error;
     }
     if (signedPayload.executionOnApprove !== true) {
-      throw new ToolGatewayHttpError(
+      const error = new ToolGatewayHttpError(
         409,
         "This approval predates execute-on-approve and must remain inert",
         "legacy_approved_action_inert",
       );
+      await markApprovedActionFailed({ actionRequestId: claimed.id, invocationId: invocation.id, error });
+      throw error;
     }
 
     const session: ToolGatewaySession = {
@@ -6653,6 +6656,19 @@ export function createToolGatewayService(
         });
         if (!signedPayload) {
           throw new ToolGatewayHttpError(409, "Approved tool action arguments signature is invalid", "signed_arguments_invalid");
+        }
+        if (signedPayload.executionOnApprove !== true) {
+          const error = new ToolGatewayHttpError(
+            409,
+            "This approval predates execute-on-approve and must remain inert",
+            "legacy_approved_action_inert",
+          );
+          await markApprovedActionFailed({
+            actionRequestId: actionRequest.id,
+            invocationId: storedInvocation.id,
+            error,
+          });
+          throw error;
         }
         const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
         if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot)) {
