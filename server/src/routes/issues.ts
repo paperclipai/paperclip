@@ -9247,9 +9247,22 @@ export function issueRoutes(
       const id = req.params.id as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      assertBoard(req);
+      if (req.actor.type === "agent") {
+        const executionState = parseIssueExecutionState(issue.executionState);
+        const currentParticipant = executionState?.status === "pending"
+          ? executionState.currentParticipant
+          : null;
+        if (
+          currentParticipant?.type !== "agent" ||
+          currentParticipant.agentId !== req.actor.agentId
+        ) {
+          throw forbidden("Only the active execution participant can decide this stalled review");
+        }
+      } else {
+        assertBoard(req);
+      }
 
-      if (req.actor.source !== "local_implicit") {
+      if (req.actor.type !== "agent" && req.actor.source !== "local_implicit") {
         const userId = req.actor.userId?.trim();
         const membership = userId
           ? await db
@@ -9274,10 +9287,9 @@ export function issueRoutes(
         companyId: issue.companyId,
         action: req.body.action,
         note: req.body.note,
-        actor: {
-          userId: actor.actorId,
-          runId: actor.runId,
-        },
+        actor: actor.actorType === "agent"
+          ? { actorType: "agent", agentId: actor.actorId, runId: actor.runId }
+          : { actorType: "user", userId: actor.actorId, runId: actor.runId },
       });
 
       // The decision transaction has already committed the status change. The
@@ -9311,23 +9323,25 @@ export function issueRoutes(
 
       let wakeQueued = false;
       if (req.body.action !== "approve" && result.issue.assigneeAgentId) {
-        const userAuthoredNote = result.comment
-          ? { commentId: result.comment.id, authorUserId: actor.actorId }
-          : undefined;
+        const decisionNoteReference = result.comment
+          ? actor.actorType === "agent"
+            ? { agentAuthoredNote: { commentId: result.comment.id, authorAgentId: actor.actorId } }
+            : { userAuthoredNote: { commentId: result.comment.id, authorUserId: actor.actorId } }
+          : {};
         try {
           const wake = await enqueueStalledReviewDecisionWakeup(result.issue.assigneeAgentId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_status_changed",
             idempotencyKey: `stalled-review-decision:${result.issue.id}:${req.body.action}`,
-            requestedByActorType: "user",
+            requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             payload: {
               issueId: result.issue.id,
               mutation: "stalled_review_decision",
               reviewDecision: req.body.action,
               resumeIntent: true,
-              ...(userAuthoredNote ? { userAuthoredNote } : {}),
+              ...decisionNoteReference,
             },
             contextSnapshot: {
               issueId: result.issue.id,
@@ -9336,7 +9350,7 @@ export function issueRoutes(
               wakeReason: "issue_status_changed",
               reviewDecision: req.body.action,
               resumeIntent: true,
-              ...(userAuthoredNote ? { userAuthoredNote } : {}),
+              ...decisionNoteReference,
             },
           });
           wakeQueued = wake !== null;

@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueComments,
+  issueExecutionDecisions,
   issueInboxArchives,
   issueRecoveryActions,
   issueThreadInteractions,
@@ -48,6 +49,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
   afterEach(async () => {
     enqueueWakeup.mockClear();
     await db.delete(issueThreadInteractions);
+    await db.delete(issueExecutionDecisions);
     await db.delete(issueApprovals);
     await db.delete(approvals);
     await db.delete(issueComments);
@@ -210,7 +212,46 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     return runId;
   }
 
-  it("denies agents, viewers, and cross-company users without exposing issue existence", async () => {
+  async function seedStalledAgentStageReview(input: {
+    companyId: string;
+    reviewerAgentId: string;
+    returnAgentId: string;
+    identifier: string;
+  }) {
+    const issueId = await seedReview({
+      companyId: input.companyId,
+      assigneeAgentId: input.reviewerAgentId,
+      identifier: input.identifier,
+    });
+    const stageId = randomUUID();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, input.reviewerAgentId));
+    await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: input.reviewerAgentId }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: input.reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: input.returnAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, issueId));
+    return { issueId, stageId };
+  }
+
+  it("denies unrelated agents, viewers, and cross-company users without exposing issue existence", async () => {
     const primary = await seedCompany("SRD");
     const foreign = await seedCompany("FRN");
     const issueId = await seedReview({
@@ -249,6 +290,105 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .send({ status: "done" });
     expect(selfApproval.status, JSON.stringify(selfApproval.body)).toBe(200);
     expect(selfApproval.body).toMatchObject({ id: issueId, status: "done" });
+  });
+
+  it("lets the active agent participant approve and records stage completion exactly once", async () => {
+    const seeded = await seedCompany("AAP");
+    const { issueId, stageId } = await seedStalledAgentStageReview({
+      companyId: seeded.companyId,
+      reviewerAgentId: seeded.assigneeAgentId,
+      returnAgentId: seeded.peerAgentId,
+      identifier: "AAP-1",
+    });
+    const reviewerRunId = await seedRun(seeded.companyId, seeded.assigneeAgentId, issueId);
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, reviewerRunId));
+
+    await request(app(agentActor(seeded.companyId, seeded.peerAgentId)))
+      .post(`/api/issues/${issueId}/stalled-review-decision`)
+      .send({ action: "approve", note: "Approval verified." })
+      .expect(403);
+
+    const response = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId, reviewerRunId)))
+      .post(`/api/issues/${issueId}/stalled-review-decision`)
+      .send({ action: "approve", note: "Approval verified." });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect(response.body).toMatchObject({
+      action: "approve",
+      wakeQueued: false,
+      issue: {
+        id: issueId,
+        status: "done",
+        executionState: {
+          status: "completed",
+          completedStageIds: [stageId],
+          lastDecisionOutcome: "approved",
+        },
+      },
+      comment: { authorType: "agent", authorAgentId: seeded.assigneeAgentId },
+    });
+    const decisions = await db.select().from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      stageId,
+      actorAgentId: seeded.assigneeAgentId,
+      actorUserId: null,
+      outcome: "approved",
+    });
+  });
+
+  it("lets the active agent participant request changes and routes to the return assignee once", async () => {
+    const seeded = await seedCompany("ARC");
+    const { issueId, stageId } = await seedStalledAgentStageReview({
+      companyId: seeded.companyId,
+      reviewerAgentId: seeded.assigneeAgentId,
+      returnAgentId: seeded.peerAgentId,
+      identifier: "ARC-1",
+    });
+    const reviewerRunId = await seedRun(seeded.companyId, seeded.assigneeAgentId, issueId);
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, reviewerRunId));
+
+    const response = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId, reviewerRunId)))
+      .post(`/api/issues/${issueId}/stalled-review-decision`)
+      .send({ action: "request_changes", note: "Please address the race." });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect(response.body).toMatchObject({
+      action: "request_changes",
+      wakeQueued: true,
+      issue: {
+        id: issueId,
+        status: "in_progress",
+        assigneeAgentId: seeded.peerAgentId,
+        executionState: {
+          status: "changes_requested",
+          currentStageId: stageId,
+          currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId },
+          returnAssignee: { type: "agent", agentId: seeded.peerAgentId },
+          lastDecisionOutcome: "changes_requested",
+        },
+      },
+      comment: { authorType: "agent", authorAgentId: seeded.assigneeAgentId },
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(seeded.peerAgentId, expect.objectContaining({
+      requestedByActorType: "agent",
+      requestedByActorId: seeded.assigneeAgentId,
+      payload: expect.objectContaining({
+        issueId,
+        reviewDecision: "request_changes",
+        agentAuthoredNote: expect.objectContaining({ authorAgentId: seeded.assigneeAgentId }),
+      }),
+    }));
+    const decisions = await db.select().from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      stageId,
+      actorAgentId: seeded.assigneeAgentId,
+      outcome: "changes_requested",
+    });
   });
 
   it("still lets the pending execution-policy stage participant sign off as done", async () => {

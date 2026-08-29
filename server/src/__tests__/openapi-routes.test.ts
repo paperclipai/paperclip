@@ -294,6 +294,14 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post["x-paperclip-authorization"]).toEqual({
       actor: "board",
     });
+    expect(spec.paths["/api/issues/{id}/stalled-review-decision"].post.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+      { AgentBearerAuth: [] },
+    ]);
+    expect(spec.paths["/api/issues/{id}/stalled-review-decision"].post["x-paperclip-authorization"]).toEqual({
+      actor: "board_or_agent",
+    });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();
     expect(spec.paths["/api/instance/database-backups"].post.responses["201"]).toBeDefined();
