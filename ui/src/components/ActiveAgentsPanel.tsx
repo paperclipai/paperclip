@@ -132,13 +132,13 @@ export function ActiveAgentsPanel({
   return (
     <div>
       <div className="mb-3 flex items-baseline justify-between gap-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <h3 className="dashboard-section-title">
           {title}
         </h3>
         {headerExtra}
       </div>
       {runs.length === 0 ? (
-        <div className="rounded-xl border border-border p-4">
+        <div className="dashboard-subtle-panel rounded-xl border p-4">
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>
         </div>
       ) : (
@@ -187,23 +187,23 @@ const AgentRunCard = memo(function AgentRunCard({
 }) {
   return (
     <div className={cn(
-      "flex h-(--sz-320px) flex-col overflow-hidden rounded-xl border shadow-sm",
+      "flex h-(--sz-320px) flex-col overflow-hidden rounded-xl border",
       isActive
-        ? "border-blue-500/25 bg-blue-500/[0.04] shadow-(--shadow-extract-1)"
-        : "border-border bg-background/70",
+        ? "dashboard-live-card dashboard-surface-dotted"
+        : "dashboard-surface dashboard-surface-dotted",
       className,
     )}>
-      <div className="border-b border-border/60 px-3 py-3">
+      <div className="dashboard-divider border-b px-3 py-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               {isActive ? (
                 <span className="relative flex h-2.5 w-2.5 shrink-0">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
+                  <span className="dashboard-live-indicator absolute inline-flex h-full w-full motion-safe:animate-ping rounded-full opacity-70" />
+                  <span className="dashboard-live-indicator relative inline-flex h-2.5 w-2.5 rounded-full" />
                 </span>
               ) : (
-                <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
+                <span className="dashboard-neutral-indicator inline-flex h-2.5 w-2.5 rounded-full" />
               )}
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-(length:--text-micro)" />
             </div>
@@ -214,18 +214,18 @@ const AgentRunCard = memo(function AgentRunCard({
 
           <Link
             to={`/agents/${run.agentId}/runs/${run.id}`}
-            className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-(length:--text-nano) text-muted-foreground transition-colors hover:text-foreground"
+            className="dashboard-surface-interactive inline-flex items-center gap-1 rounded-full border px-2 py-1 text-(length:--text-nano) text-muted-foreground"
           >
             <ExternalLink className="h-2.5 w-2.5" />
           </Link>
         </div>
 
         {run.issueId && (
-          <div className="mt-3 rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 text-xs">
+          <div className="dashboard-subtle-panel mt-3 rounded-lg border px-2.5 py-2 text-xs">
             {issue?.project?.name ? (
               <Link
                 to={`/projects/${issue.projectId ?? issue.project.id}`}
-                className="mb-1 block truncate text-[10px] uppercase tracking-wide text-muted-foreground/80 hover:text-foreground hover:underline"
+                className="mb-1 block truncate dashboard-eyebrow text-muted-foreground/80 hover:text-foreground hover:underline"
                 title={issue.project.name}
               >
                 {issue.project.name}
@@ -235,7 +235,7 @@ const AgentRunCard = memo(function AgentRunCard({
               to={`/issues/${issue?.identifier ?? run.issueId}`}
               className={cn(
                 "line-clamp-2 hover:underline",
-                isActive ? "text-blue-700 dark:text-blue-300" : "text-muted-foreground hover:text-foreground",
+                isActive ? "dashboard-link" : "text-muted-foreground hover:text-foreground",
               )}
               title={issue?.title ? `${issue?.identifier ?? run.issueId.slice(0, 8)} - ${issue.title}` : issue?.identifier ?? run.issueId.slice(0, 8)}
             >

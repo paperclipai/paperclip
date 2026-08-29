@@ -19,6 +19,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        PAPERCLIP_BUILD_COMMIT: "${PAPERCLIP_BUILD_COMMIT:-}"
     ports:
       - "3100:3100"
     environment:

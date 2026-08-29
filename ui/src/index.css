@@ -107,6 +107,33 @@
   --glass-border:     rgb(0 0 0 / 0.07);
   --glass-border-light: rgb(255 255 255 / 0.60);
   --glass-inner-highlight: linear-gradient(180deg, rgb(255 255 255 / 0.12) 0%, rgb(255 255 255 / 0) 100%);
+
+  /* Dashboard visual system — neutral Nothing-style chrome with semantic
+     accents. Keep these roles here so dashboard surfaces, usage analytics,
+     charts, alerts, and live-run cards cannot drift into local palettes. */
+  --dashboard-surface: color-mix(in oklab, var(--background) 96%, var(--foreground) 4%);
+  --dashboard-surface-raised: color-mix(in oklab, var(--dashboard-surface) 88%, var(--foreground) 12%);
+  --dashboard-surface-inset: color-mix(in oklab, var(--dashboard-surface) 94%, var(--foreground) 6%);
+  --dashboard-surface-hover: color-mix(in oklab, var(--dashboard-surface) 82%, var(--foreground) 18%);
+  --dashboard-border: color-mix(in oklab, var(--foreground) 14%, transparent);
+  --dashboard-border-strong: color-mix(in oklab, var(--foreground) 28%, transparent);
+  --dashboard-grid: color-mix(in oklab, var(--foreground) 16%, transparent);
+  --dashboard-track: color-mix(in oklab, var(--foreground) 10%, transparent);
+  --dashboard-neutral: var(--muted-foreground);
+  --dashboard-neutral-strong: color-mix(in oklab, var(--foreground) 72%, var(--muted-foreground));
+  --dashboard-accent: var(--destructive);
+  --dashboard-positive: var(--status-task-done);
+  --dashboard-warning: var(--status-task-todo);
+  --dashboard-danger: var(--status-task-blocked);
+  --dashboard-live-bg: color-mix(in oklab, var(--dashboard-accent) 10%, transparent);
+  --dashboard-positive-bg: color-mix(in oklab, var(--dashboard-positive) 10%, transparent);
+  --dashboard-warning-bg: color-mix(in oklab, var(--dashboard-warning) 12%, transparent);
+  --dashboard-danger-bg: color-mix(in oklab, var(--dashboard-danger) 10%, transparent);
+  --dashboard-dot-size: 1px;
+  --dashboard-dot-space: 1rem;
+  --dashboard-hairline: 1px;
+  --dashboard-shadow: 0 1px 0 color-mix(in oklab, var(--foreground) 7%, transparent);
+
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -328,6 +355,20 @@
   --glass-border:     rgb(255 255 255 / 0.10);
   --glass-border-light: rgb(255 255 255 / 0.06);
   --glass-inner-highlight: linear-gradient(180deg, rgb(255 255 255 / 0.08) 0%, rgb(255 255 255 / 0) 100%);
+
+  /* Dashboard visual system — keep every card on the same black/graphite
+     ladder in dark mode; semantic accents retain their meaning. */
+  --dashboard-surface: color-mix(in oklab, var(--background) 92%, var(--foreground) 8%);
+  --dashboard-surface-raised: color-mix(in oklab, var(--dashboard-surface) 82%, var(--foreground) 18%);
+  --dashboard-surface-inset: color-mix(in oklab, var(--dashboard-surface) 96%, var(--foreground) 4%);
+  --dashboard-surface-hover: color-mix(in oklab, var(--dashboard-surface) 72%, var(--foreground) 28%);
+  --dashboard-border: color-mix(in oklab, var(--foreground) 16%, transparent);
+  --dashboard-border-strong: color-mix(in oklab, var(--foreground) 30%, transparent);
+  --dashboard-grid: color-mix(in oklab, var(--foreground) 18%, transparent);
+  --dashboard-track: color-mix(in oklab, var(--foreground) 13%, transparent);
+  --dashboard-neutral: var(--muted-foreground);
+  --dashboard-neutral-strong: color-mix(in oklab, var(--foreground) 78%, var(--muted-foreground));
+  --dashboard-shadow: 0 1px 0 color-mix(in oklab, var(--foreground) 10%, transparent);
 
   /* Pure Nothing-OS black — the dot wallpaper pops on absolute black. */
   --background: oklch(0 0 0);
@@ -2089,6 +2130,415 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 }
 .status-fill {
   background-color: var(--sc);
+}
+
+/* ── Dashboard visual system ───────────────────────────────────────────────
+   Dashboard components share one surface ladder and one semantic accent map.
+   Layout utilities remain local to the component; these classes own the
+   visual language so usage, charts, alerts, and live runs stay in sync. */
+.dashboard-surface {
+  background-color: var(--dashboard-surface);
+  border-color: var(--dashboard-border);
+  box-shadow: var(--dashboard-shadow);
+}
+
+.dashboard-surface-dotted,
+.dashboard-chart-card,
+.dashboard-metric-card,
+.dashboard-quota-card,
+.dashboard-stat-widget {
+  background-image: radial-gradient(
+    circle,
+    var(--dashboard-grid) var(--dashboard-dot-size),
+    transparent var(--dashboard-dot-size)
+  );
+  background-size: var(--dashboard-dot-space) var(--dashboard-dot-space);
+}
+
+.dashboard-surface-interactive {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.dashboard-surface-interactive:hover {
+  background-color: var(--dashboard-surface-hover);
+  border-color: var(--dashboard-border-strong);
+}
+
+.dashboard-divider {
+  border-color: var(--dashboard-border);
+}
+
+.dashboard-eyebrow,
+.dashboard-section-title {
+  color: var(--dashboard-neutral);
+  font-size: var(--text-micro);
+  font-weight: 600;
+  letter-spacing: var(--tracking-eyebrow);
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.dashboard-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  letter-spacing: var(--tracking-caps);
+}
+
+.dashboard-display-value {
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-tone-accent {
+  color: var(--dashboard-accent);
+}
+
+.dashboard-tone-muted {
+  color: var(--dashboard-neutral);
+}
+
+.dashboard-tone-positive {
+  color: var(--dashboard-positive);
+}
+
+.dashboard-tone-warning {
+  color: var(--dashboard-warning);
+}
+
+.dashboard-tone-danger {
+  color: var(--dashboard-danger);
+}
+
+.dashboard-tone-live {
+  color: var(--dashboard-accent);
+}
+
+.dashboard-supporting-text {
+  color: color-mix(in oklab, var(--dashboard-neutral) 82%, transparent);
+  font-size: var(--text-micro);
+}
+
+.dashboard-icon-box {
+  border-color: var(--dashboard-border);
+  background-color: var(--dashboard-surface-inset);
+  color: var(--dashboard-neutral);
+}
+
+.dashboard-link {
+  color: var(--dashboard-accent);
+  text-underline-offset: 0.2em;
+}
+
+.dashboard-live-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  color: var(--dashboard-neutral);
+  font-size: var(--text-nano);
+  font-weight: 600;
+  letter-spacing: var(--tracking-eyebrow);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.dashboard-live-dot {
+  background-color: var(--dashboard-accent);
+  box-shadow: 0 0 0 0 var(--dashboard-live-bg);
+}
+
+.dashboard-live-value {
+  color: var(--foreground);
+  font-size: var(--text-compact);
+}
+
+.dashboard-alert {
+  border: var(--dashboard-hairline) solid;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--dashboard-shadow);
+}
+
+.dashboard-alert-warning {
+  background-color: var(--dashboard-warning-bg);
+  border-color: color-mix(in oklab, var(--dashboard-warning) 42%, transparent);
+  color: var(--dashboard-warning);
+}
+
+.dashboard-alert-danger {
+  background-color: var(--dashboard-danger-bg);
+  border-color: color-mix(in oklab, var(--dashboard-danger) 42%, transparent);
+  color: var(--dashboard-danger);
+}
+
+.dashboard-alert-copy {
+  color: currentColor;
+}
+
+.dashboard-alert-action {
+  color: currentColor;
+  text-underline-offset: 0.2em;
+}
+
+.dashboard-stat-widget,
+.dashboard-chart-card,
+.dashboard-metric-card,
+.dashboard-quota-card {
+  background-color: var(--dashboard-surface);
+  border-color: var(--dashboard-border);
+  box-shadow: var(--dashboard-shadow);
+}
+
+.dashboard-stat-widget {
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.dashboard-stat-widget.dashboard-surface-interactive:hover {
+  background-color: var(--dashboard-surface-hover);
+  border-color: var(--dashboard-border-strong);
+}
+
+.dashboard-stat-arc-default {
+  stroke: var(--dashboard-neutral-strong);
+}
+
+.dashboard-stat-arc-info {
+  stroke: var(--dashboard-neutral-strong);
+}
+
+.dashboard-stat-arc-success {
+  stroke: var(--dashboard-positive);
+}
+
+.dashboard-stat-arc-danger {
+  stroke: var(--dashboard-danger);
+}
+
+.dashboard-stat-track {
+  stroke: var(--dashboard-track);
+}
+
+.dashboard-stat-value-default,
+.dashboard-stat-value-info {
+  color: var(--foreground);
+}
+
+.dashboard-stat-value-success {
+  color: var(--dashboard-positive);
+}
+
+.dashboard-stat-value-danger {
+  color: var(--dashboard-danger);
+}
+
+.dashboard-chart-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.dashboard-chart-card > * {
+  position: relative;
+}
+
+.dashboard-chart-title {
+  color: var(--dashboard-neutral);
+  font-size: var(--text-micro);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.dashboard-chart-subtitle {
+  color: color-mix(in oklab, var(--dashboard-neutral) 70%, transparent);
+  font-size: var(--text-nano);
+}
+
+.dashboard-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.625rem;
+  row-gap: 0.125rem;
+  margin-top: 0.5rem;
+}
+
+.dashboard-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--dashboard-neutral);
+  font-size: var(--text-nano);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.dashboard-chart-swatch {
+  width: 0.75rem;
+  height: 0.375rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+}
+
+.dashboard-status-chip {
+  display: inline-flex;
+  align-items: center;
+  border: var(--dashboard-hairline) solid;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-nano);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.dashboard-status-live {
+  background-color: var(--dashboard-live-bg);
+  border-color: color-mix(in oklab, var(--dashboard-accent) 48%, transparent);
+  color: var(--dashboard-accent);
+}
+
+.dashboard-status-positive {
+  background-color: var(--dashboard-positive-bg);
+  border-color: color-mix(in oklab, var(--dashboard-positive) 48%, transparent);
+  color: var(--dashboard-positive);
+}
+
+.dashboard-status-warning {
+  background-color: var(--dashboard-warning-bg);
+  border-color: color-mix(in oklab, var(--dashboard-warning) 48%, transparent);
+  color: var(--dashboard-warning);
+}
+
+.dashboard-status-danger {
+  background-color: var(--dashboard-danger-bg);
+  border-color: color-mix(in oklab, var(--dashboard-danger) 48%, transparent);
+  color: var(--dashboard-danger);
+}
+
+.dashboard-status-neutral {
+  background-color: var(--dashboard-surface-inset);
+  border-color: var(--dashboard-border);
+  color: var(--dashboard-neutral);
+}
+
+.dashboard-summary-cell,
+.dashboard-credential-card,
+.dashboard-subtle-panel {
+  background-color: var(--dashboard-surface-inset);
+  border-color: var(--dashboard-border);
+}
+
+.dashboard-credential-card {
+  background-image: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--dashboard-grid) 72%, transparent) var(--dashboard-dot-size),
+    transparent var(--dashboard-dot-size)
+  );
+  background-size: var(--dashboard-dot-space) var(--dashboard-dot-space);
+}
+
+.dashboard-progress-track {
+  border-color: var(--dashboard-border);
+  background-color: var(--dashboard-track);
+}
+
+.dashboard-led-grid {
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+}
+
+.dashboard-progress-positive {
+  background-color: var(--dashboard-positive);
+}
+
+.dashboard-progress-warning {
+  background-color: var(--dashboard-warning);
+}
+
+.dashboard-progress-danger {
+  background-color: var(--dashboard-danger);
+}
+
+.dashboard-progress-neutral {
+  background-color: var(--dashboard-neutral);
+}
+
+.dashboard-progress-accent {
+  background-color: var(--dashboard-accent);
+}
+
+.dashboard-progress-dot {
+  background-color: var(--dashboard-track);
+}
+
+.dashboard-glyph-inner {
+  position: absolute;
+  inset: var(--sz-4px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dashboard-glyph-active {
+    animation: glyph-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+  }
+}
+
+.dashboard-glyph-broken-border {
+  border-color: var(--dashboard-danger);
+}
+
+.dashboard-glyph-broken {
+  background-color: var(--dashboard-danger);
+}
+
+.dashboard-glyph-broken-line {
+  background-color: var(--dashboard-danger);
+}
+
+.dashboard-list {
+  background-color: var(--dashboard-surface);
+  border-color: var(--dashboard-border);
+  box-shadow: var(--dashboard-shadow);
+}
+
+.dashboard-list > :not(:first-child) {
+  border-color: var(--dashboard-border);
+}
+
+.dashboard-list-row {
+  display: block;
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+.dashboard-list-row:hover {
+  background-color: var(--dashboard-surface-hover);
+}
+
+.dashboard-chip-warning {
+  background-color: var(--dashboard-warning-bg);
+  color: var(--dashboard-warning);
+}
+
+.dashboard-live-card {
+  background-color: var(--dashboard-live-bg);
+  border-color: color-mix(in oklab, var(--dashboard-accent) 36%, var(--dashboard-border));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--dashboard-accent) 8%, transparent), var(--dashboard-shadow);
+}
+
+.dashboard-live-indicator {
+  background-color: var(--dashboard-accent);
+}
+
+.dashboard-neutral-indicator {
+  background-color: color-mix(in oklab, var(--dashboard-neutral) 45%, transparent);
+}
+
+.dashboard-plugin-card {
+  background-color: var(--dashboard-surface);
+  border-color: var(--dashboard-border);
+  box-shadow: var(--dashboard-shadow);
 }
 
 /* ── Extracted verbatim tokens (Phase 2, design/token-extraction) ── */

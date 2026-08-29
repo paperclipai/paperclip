@@ -112,6 +112,8 @@ services:
     build:
       context: .
       no_cache: true
+      args:
+        PAPERCLIP_BUILD_COMMIT: "${PAPERCLIP_BUILD_COMMIT:-}"
     restart: unless-stopped
     labels:
       paperclip.dev.deployment_generation: "2026-06-17-clean-server-dist"

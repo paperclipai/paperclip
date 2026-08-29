@@ -26,6 +26,8 @@
 // exit via `shutdownInstrumentation()`, which index.ts awaits in its signal
 // handler before `process.exit`.
 
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
@@ -354,6 +356,39 @@ async function importExporter(protocol: ExporterProtocol): Promise<{
   }
 }
 
+/** Read the exact commit written beside the compiled server. */
+export function readBuildStamp(): string | null {
+  try {
+    const raw = readFileSync(new URL("./build-info.json", import.meta.url), "utf8");
+    const parsed = JSON.parse(raw) as { commit?: unknown };
+    return typeof parsed.commit === "string" && parsed.commit.trim()
+      ? parsed.commit.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve git relative to this checkout for tsx/dev mode. */
+export function readGitCommit(): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: new URL("./", import.meta.url),
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString().trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveServiceVersion(
+  buildStamp: string | null,
+  gitCommit: string | null,
+  envVersion: string | undefined,
+): string {
+  return buildStamp || gitCommit || envVersion || "unknown";
+}
+
 async function bootstrapOtel(endpoint: string): Promise<void> {
   const { protocol, packageName: exporterPackage } = resolveProtocol();
 
@@ -378,11 +413,16 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     const { OTLPTraceExporter } = traceExporter;
     const { resourceFromAttributes } = resources;
     const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = semconv;
+    const serviceVersion = resolveServiceVersion(
+      readBuildStamp(),
+      readGitCommit(),
+      process.env.OTEL_SERVICE_VERSION,
+    );
 
     const sdk = new NodeSDK({
       resource: resourceFromAttributes({
         [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "paperclip",
-        [ATTR_SERVICE_VERSION]: process.env.OTEL_SERVICE_VERSION || "unknown",
+        [ATTR_SERVICE_VERSION]: serviceVersion,
       }),
       // For the HTTP protocols OTEL_EXPORTER_OTLP_ENDPOINT is a *base* URL
       // and the exporter appends /v1/traces only when it reads the env var

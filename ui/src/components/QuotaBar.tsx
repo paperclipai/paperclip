@@ -27,9 +27,9 @@ export function QuotaBar({
     <div className={cn("space-y-1.5", className)}>
       {/* row header */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground dark:text-[#E1E5EA]/75">{label}</span>
+        <span className="text-xs text-muted-foreground">{label}</span>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs font-medium tabular-nums dark:text-[#FCFAFE]">{leftLabel}</span>
+          <span className="text-xs font-medium tabular-nums text-foreground">{leftLabel}</span>
           {rightLabel && (
             <span className="text-xs text-muted-foreground tabular-nums">{rightLabel}</span>
           )}

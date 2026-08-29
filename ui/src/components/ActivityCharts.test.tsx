@@ -91,8 +91,9 @@ function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
 }
 
 function renderedDotColors() {
-  return Array.from(container.querySelectorAll<HTMLElement>("[style*='--dot-color']"))
-    .map((node) => node.style.getPropertyValue("--dot-color"));
+  return Array.from(container.querySelectorAll<HTMLElement>("[style]"))
+    .map((node) => node.style.backgroundColor)
+    .filter(Boolean);
 }
 
 describe("ActivityCharts", () => {
@@ -156,9 +157,9 @@ describe("ActivityCharts", () => {
     const dayCell = container.querySelector<HTMLElement>("[title^='2026-04-20: 2 runs']");
     const colors = Array.from(dayCell?.querySelectorAll<HTMLElement>("[style*='background-color']") ?? [])
       .map((node) => node.style.backgroundColor);
-    expect(colors).toContain("var(--hex-10b981)");
-    expect(colors).toContain("var(--hex-ef4444)");
-    expect(colors).not.toContain("var(--hex-737373)");
+    expect(colors).toContain("var(--dashboard-positive)");
+    expect(colors).toContain("var(--dashboard-danger)");
+    expect(colors).not.toContain("var(--dashboard-neutral)");
   });
 
   it("renders priority bars with critical/high/medium semantic colors and neutral low color", () => {
@@ -174,10 +175,10 @@ describe("ActivityCharts", () => {
     );
 
     const colors = renderedDotColors();
-    expect(colors).toContain("var(--hex-ef4444)");
-    expect(colors).toContain("var(--hex-f97316)");
-    expect(colors).toContain("var(--hex-eab308)");
-    expect(colors).toContain("var(--hex-6b7280)");
+    expect(colors).toContain("var(--dashboard-danger)");
+    expect(colors).toContain("var(--dashboard-warning)");
+    expect(colors).toContain("var(--dashboard-neutral-strong)");
+    expect(colors).toContain("var(--dashboard-neutral)");
   });
 
   it("renders issue status bars with workflow semantic colors", () => {
@@ -195,20 +196,20 @@ describe("ActivityCharts", () => {
       />,
     );
 
-    expect(renderedDotColors()).toHaveLength(0);
+    expect(container.querySelectorAll("[style*='--dot-color']")).toHaveLength(0);
     expect(container.querySelector<HTMLElement>("[data-status-segment='todo']")?.style.backgroundColor)
-      .toBe("var(--status-task-todo)");
+      .toBe("var(--dashboard-warning)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='in_progress']")?.style.backgroundColor)
-      .toBe("var(--status-task-in_progress)");
+      .toBe("var(--dashboard-accent)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='in_review']")?.style.backgroundColor)
-      .toBe("var(--status-task-in_review)");
+      .toBe("var(--dashboard-neutral-strong)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='done']")?.style.backgroundColor)
-      .toBe("var(--status-task-done)");
+      .toBe("var(--dashboard-positive)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='blocked']")?.style.backgroundColor)
-      .toBe("var(--status-task-blocked)");
+      .toBe("var(--dashboard-danger)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='cancelled']")?.style.backgroundColor)
-      .toBe("var(--status-task-cancelled)");
+      .toBe("var(--dashboard-neutral)");
     expect(container.querySelector<HTMLElement>("[data-status-segment='backlog']")?.style.backgroundColor)
-      .toBe("var(--project-none)");
+      .toBe("var(--dashboard-neutral)");
   });
 });

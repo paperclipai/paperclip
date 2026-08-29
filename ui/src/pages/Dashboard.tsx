@@ -7,7 +7,7 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { costsApi } from "../api/costs";
+import { credentialsApi } from "../api/credentials";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -126,20 +126,44 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  const forceCredentialQuotaRefreshRef = useRef(false);
   const {
-    data: providerQuota = [],
+    data: credentialQuota = [],
     error: providerQuotaError,
     isFetching: providerQuotaFetching,
     isLoading: providerQuotaLoading,
     refetch: refetchProviderQuota,
   } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.usageQuotaWindows(selectedCompanyId)
-      : ["usage-quota-windows", "none"],
-    queryFn: () => costsApi.quotaWindows(selectedCompanyId!),
+      ? queryKeys.credentials.quotaWindows(selectedCompanyId)
+      : ["credentials", "none", "quota-windows"],
+    queryFn: () => {
+      const refresh = forceCredentialQuotaRefreshRef.current;
+      forceCredentialQuotaRefreshRef.current = false;
+      return credentialsApi.quotaWindows(selectedCompanyId!, { refresh });
+    },
     enabled: !!selectedCompanyId,
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const refreshProviderQuota = () => {
+    forceCredentialQuotaRefreshRef.current = true;
+    void refetchProviderQuota();
+  };
+
+  const {
+    data: credentialUsageResponse,
+    error: credentialUsageError,
+    isLoading: credentialUsageLoading,
+  } = useQuery({
+    queryKey: selectedCompanyId
+      ? ["credentials", selectedCompanyId, "usage", "mtd"]
+      : ["credentials", "none", "usage", "mtd"],
+    queryFn: () => credentialsApi.usage(selectedCompanyId!, { period: "month" }),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
     refetchOnWindowFocus: false,
   });
 
@@ -275,19 +299,19 @@ export function Dashboard() {
 
   return (
     <div className="space-y-8 pb-10">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {error && <p className="dashboard-tone-danger text-sm">{error.message}</p>}
 
       {hasNoAgents && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-300/60 bg-amber-50/80 backdrop-blur-sm px-5 py-4 dark:border-amber-500/25 dark:bg-amber-950/60 shadow-sm">
+        <div className="dashboard-alert dashboard-alert-warning flex items-center justify-between gap-3 px-5 py-4">
           <div className="flex items-center gap-2.5">
-            <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-sm text-amber-900 dark:text-amber-100">
+            <Bot className="dashboard-tone-warning h-4 w-4 shrink-0" />
+            <p className="dashboard-alert-copy text-sm">
               You have no agents.
             </p>
           </div>
           <button
             onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
-            className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
+            className="dashboard-alert-action shrink-0 text-sm font-medium underline"
           >
             Create one here
           </button>
@@ -298,10 +322,10 @@ export function Dashboard() {
         companyId={selectedCompanyId!}
         headerExtra={
           data ? (
-            <div className="flex items-baseline gap-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#34BFF0] animate-pulse" aria-hidden />
+            <div className="dashboard-live-summary">
+              <span className="dashboard-live-dot h-1.5 w-1.5 rounded-full motion-safe:animate-pulse" aria-hidden />
               <span>Tokens this month</span>
-              <DotMatrixText className="text-[15px] leading-none text-foreground">
+              <DotMatrixText className="dashboard-live-value leading-none">
                 <AnimatedNumber
                   value={
                     data.costs.monthInputTokens
@@ -319,33 +343,42 @@ export function Dashboard() {
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
-            <div className="flex items-start justify-between gap-3 rounded-2xl border border-red-500/20 bg-[linear-gradient(135deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] backdrop-blur-sm px-5 py-4 shadow-sm">
+            <div className="dashboard-alert dashboard-alert-danger flex items-start justify-between gap-3 px-5 py-4">
               <div className="flex items-start gap-2.5">
-                <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+                <PauseCircle className="dashboard-tone-danger mt-0.5 h-4 w-4 shrink-0" />
                 <div>
-                  <p className="text-sm font-medium text-red-950 dark:text-red-50">
+                  <p className="dashboard-alert-copy text-sm font-medium">
                     {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
                   </p>
-                  <p className="text-xs text-red-900/70 dark:text-red-100/70">
+                  <p className="dashboard-alert-copy text-xs opacity-75">
                     {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
                   </p>
                 </div>
               </div>
-              <Link to="/costs" className="text-sm underline underline-offset-2 text-red-900 dark:text-red-100">
+              <Link to="/costs" className="dashboard-alert-action text-sm underline">
                 Open budgets
               </Link>
             </div>
           ) : null}
 
           <DashboardQuotaCard
-            results={providerQuota}
+            results={credentialQuota}
+            usage={credentialUsageResponse?.usage}
             isLoading={providerQuotaLoading}
             isFetching={providerQuotaFetching}
+            usageLoading={credentialUsageLoading}
             error={
               providerQuotaError instanceof Error
                 ? providerQuotaError
                 : providerQuotaError
                   ? "The quota request failed."
+                  : null
+            }
+            usageError={
+              credentialUsageError instanceof Error
+                ? credentialUsageError
+                : credentialUsageError
+                  ? "The usage request failed."
                   : null
             }
             monthTokens={
@@ -354,7 +387,7 @@ export function Dashboard() {
               + data.costs.monthOutputTokens
             }
             monthSpendCents={data.costs.monthSpendCents}
-            onRefresh={() => void refetchProviderQuota()}
+            onRefresh={refreshProviderQuota}
           />
 
           {(() => {
@@ -544,17 +577,17 @@ export function Dashboard() {
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
             // design-allow(card-pattern): class-string prop consumed by the plugin outlet; a component can't be passed here (C5a Run 3)
-            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+            itemClassName="dashboard-plugin-card rounded-lg border p-4"
           />
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}
             {recentActivity.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1">
+                <h3 className="dashboard-section-title mb-3 px-1">
                   Recent Activity
                 </h3>
-                <Card className="block py-0 divide-y divide-border overflow-hidden">
+                <Card className="dashboard-list block py-0 divide-y overflow-hidden">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -573,18 +606,18 @@ export function Dashboard() {
             {/* Needs you — issues awaiting your decision (same set as Inbox) */}
             {waitingOnYou && waitingOnYou.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1 flex items-center justify-between">
+                <h3 className="dashboard-section-title mb-3 px-1">
                   <span>Needs you ({waitingOnYou.length})</span>
-                  <Link to="/inbox/decisions" className="text-[10px] font-normal normal-case tracking-normal text-blue-600 dark:text-blue-400 no-underline hover:underline">
+                  <Link to="/inbox/decisions" className="dashboard-link text-xs font-normal normal-case no-underline hover:underline">
                     Open inbox
                   </Link>
                 </h3>
-                <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm divide-y divide-border/50 overflow-hidden">
+                <div className="dashboard-list rounded-2xl border divide-y overflow-hidden">
                   {waitingOnYou.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-5 py-4 text-sm cursor-pointer hover:bg-accent/40 transition-colors no-underline text-inherit block"
+                      className="dashboard-list-row px-5 py-4 text-sm cursor-pointer no-underline text-inherit"
                     >
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         <span className="shrink-0 sm:hidden">
@@ -599,7 +632,7 @@ export function Dashboard() {
                             <span className="text-xs font-mono text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
-                            <span className="text-[10px] font-medium rounded px-1.5 py-0.5 shrink-0 bg-amber-500/10 text-amber-600">
+                            <span className="dashboard-chip-warning rounded px-1.5 py-0.5 text-xs font-medium shrink-0">
                               needs decision
                             </span>
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
@@ -617,15 +650,15 @@ export function Dashboard() {
             {/* Stalled tasks — drill-down for the "Stalled tasks" metric */}
             {stalledIssues.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1">
+                <h3 className="dashboard-section-title mb-3 px-1">
                   Stalled tasks ({stalledIssues.length})
                 </h3>
-                <div className="rounded-2xl border border-amber-500/20 bg-background/70 backdrop-blur-sm shadow-sm divide-y divide-border/50 overflow-hidden">
+                <div className="dashboard-list rounded-2xl border divide-y overflow-hidden">
                   {stalledIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-5 py-4 text-sm cursor-pointer hover:bg-accent/40 transition-colors no-underline text-inherit block"
+                      className="dashboard-list-row px-5 py-4 text-sm cursor-pointer no-underline text-inherit"
                     >
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         <span className="shrink-0 sm:hidden">
@@ -641,7 +674,7 @@ export function Dashboard() {
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
                             {issue.blockerAttention?.reason && (
-                              <span className="text-[10px] font-medium rounded px-1.5 py-0.5 shrink-0 bg-amber-500/10 text-amber-600">
+                              <span className="dashboard-chip-warning rounded px-1.5 py-0.5 text-xs font-medium shrink-0">
                                 {issue.blockerAttention.reason.replace(/_/g, " ")}
                               </span>
                             )}
@@ -659,20 +692,20 @@ export function Dashboard() {
 
             {/* Recent Tasks */}
             <div className="min-w-0">
-              <h3 className="text-xs font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3 px-1">
+              <h3 className="dashboard-section-title mb-3 px-1">
                 Recent Tasks
               </h3>
               {recentIssues.length === 0 ? (
-                <Card className="block p-4">
+                <Card className="dashboard-subtle-panel block border p-4">
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </Card>
               ) : (
-                <Card className="block py-0 divide-y divide-border overflow-hidden">
+                <Card className="dashboard-list block py-0 divide-y overflow-hidden">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-5 py-4 text-sm cursor-pointer hover:bg-accent/40 transition-colors no-underline text-inherit block"
+                      className="dashboard-list-row px-5 py-4 text-sm cursor-pointer no-underline text-inherit"
                     >
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         {/* Status icon - left column on mobile */}

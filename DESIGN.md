@@ -1,8 +1,8 @@
 # Paperclip Design Principles
 
-**Status:** v0.3 — anchor document for design-language simplification. Governs structure, not brand. Brand values (color, type, iconography) are intentionally unspecified: they are being redesigned and will land as token values only. Nothing in `ui/` may hardcode them. Spacing/radius scales are likewise TBD pending the token audit (see Principle 3).
+**Status:** v0.4 — anchor document for design-language simplification. Governs structure, not brand. Brand values (color, type, iconography) are intentionally unspecified: they are being redesigned and will land as token values only. Nothing in `ui/` may hardcode them. Spacing/radius scales are likewise TBD pending the token audit (see Principle 3).
 
-Changes from v0.2: token layer location corrected to the repo's real source (`ui/src/index.css`); existing token tiers inventoried; snapshot-coverage scope bounded for Run 1; the issue→task copy rename moved out of the zero-visual-change run.
+Changes from v0.3: the dashboard visual direction is now explicitly approved and tokenized; the zero-visual-change simplification rules remain the default for all other surfaces.
 
 ## What this document is for
 
@@ -11,6 +11,14 @@ Agents and humans modifying `ui/` treat this file as the source of truth for des
 ## Product stance
 
 Paperclip is an operational control plane: org charts, tasks, heartbeat runs, budgets, approvals, audit logs. The user is an operator scanning state and making decisions. Every screen should answer, in order: *what is happening, does it need me, what do I do about it.* Density in service of scanning beats whitespace in service of aesthetics — but density comes from information, never from chrome.
+
+## Approved dashboard visual direction (2026-08-29)
+
+The operator dashboard uses a restrained Nothing-inspired visual language: near-black or neutral surfaces, fine borders, dotted texture, and NDot/Doto display values for machine-readable metrics. The dashboard's chrome is monochrome by default; color is reserved for meaning rather than decoration.
+
+The dashboard token set lives in `ui/src/index.css` and defines the surface, border, grid, live-accent, positive, warning, danger, and neutral roles. The live accent is the single Nothing-style red; green, amber, and red are also allowed where they communicate success, attention, and failure. Blue and purple must not appear as accidental dashboard chrome.
+
+This is an intentional, scoped exception to the zero-visual-change simplification run for dashboard surfaces only. Usage calculations, workflow semantics, accessibility behavior, and provider status meanings remain unchanged. New dashboard surfaces must use the shared dashboard classes/tokens and must not add local palettes or hardcoded visual values.
 
 ## The token layer (where visual values live)
 
@@ -49,7 +57,7 @@ Aspirational (NOT gating this run): no duplicate components; every component has
 
 ## Out of scope (do not do during simplification)
 
-No visual redesign, no new colors or typefaces, no layout restructuring, no new dependencies beyond snapshot tooling, no component consolidation/merges (audit + recommend only), no copy renames, no changes to server code or app logic. Simplification means fewer parts, same product.
+No visual redesign for the generic simplification run, no new colors or typefaces outside an approved surface-specific direction, no layout restructuring, no new dependencies beyond snapshot tooling, no component consolidation/merges (audit + recommend only), no copy renames, no changes to server code or app logic. The dashboard direction above is the approved exception; simplification elsewhere means fewer parts, same product.
 
 ## Prior art (read before auditing)
 

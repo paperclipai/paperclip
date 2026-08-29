@@ -37,22 +37,26 @@ export function CircularStatWidget({
 
   const arcClass =
     tone === "danger"
-      ? "stroke-red-500"
+      ? "dashboard-stat-arc-danger"
       : tone === "success"
-        ? "stroke-emerald-500"
+        ? "dashboard-stat-arc-success"
         : tone === "info"
-          ? "stroke-[#2C94EE]"
-          : "stroke-foreground";
+          ? "dashboard-stat-arc-info"
+          : "dashboard-stat-arc-default";
   const valueClass =
     tone === "danger"
-      ? "text-red-500"
-      : "text-foreground";
+      ? "dashboard-stat-value-danger"
+      : tone === "success"
+        ? "dashboard-stat-value-success"
+        : tone === "info"
+          ? "dashboard-stat-value-info"
+          : "dashboard-stat-value-default";
 
   const inner = (
     <div
       className={cn(
-        "h-full px-3 py-5 sm:px-4 sm:py-6 rounded-2xl border border-border/60 bg-background/40 transition-colors flex flex-col items-center gap-3",
-        isClickable && "hover:bg-accent/40 cursor-pointer",
+        "dashboard-stat-widget h-full px-3 py-5 sm:px-4 sm:py-6 rounded-2xl border flex flex-col items-center gap-3",
+        isClickable && "dashboard-surface-interactive cursor-pointer",
       )}
     >
       <div className="relative" style={{ width: SIZE, height: SIZE }}>
@@ -72,7 +76,7 @@ export function CircularStatWidget({
             strokeWidth={4}
             strokeDasharray="3 10"
             strokeLinecap="round"
-            className="stroke-muted-foreground/50"
+            className="dashboard-stat-track"
           />
           {/* Filled arc */}
           <circle
@@ -89,15 +93,15 @@ export function CircularStatWidget({
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
           <Icon className="h-3.5 w-3.5 text-muted-foreground/60" />
-          <DotMatrixText className={cn("text-3xl leading-none sm:text-4xl", valueClass)}>
+          <DotMatrixText className={cn("dashboard-display-value text-3xl leading-none sm:text-4xl", valueClass)}>
             {value}
           </DotMatrixText>
         </div>
       </div>
       <div className="text-center min-w-0 w-full">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground truncate">{label}</p>
+        <p className="dashboard-eyebrow truncate">{label}</p>
         {description && (
-          <div className="text-[11px] text-muted-foreground/70 mt-1.5 hidden sm:block">
+          <div className="dashboard-supporting-text mt-1.5 hidden sm:block">
             {description}
           </div>
         )}

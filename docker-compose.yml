@@ -92,7 +92,10 @@ services:
         wait "$$PG_PID"
 
   server:
-    build: .
+    build:
+      context: .
+      args:
+        PAPERCLIP_BUILD_COMMIT: "${PAPERCLIP_BUILD_COMMIT:-}"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null || exit 1"]

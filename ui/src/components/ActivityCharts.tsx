@@ -22,10 +22,10 @@ function emptyRunDay(date: string): DashboardRunActivityDay {
 }
 
 const runSegmentColors = {
-  succeeded: "var(--hex-10b981)",
-  recovered: "var(--status-task-todo)",
-  failed: "var(--hex-ef4444)",
-  other: "var(--hex-737373)",
+  succeeded: "var(--dashboard-positive)",
+  recovered: "var(--dashboard-warning)",
+  failed: "var(--dashboard-danger)",
+  other: "var(--dashboard-neutral)",
 } as const;
 
 // Compact per-day tooltip that also attributes failures to their error class.
@@ -59,23 +59,23 @@ function DateLabels({ days }: { days: string[] }) {
 }
 
 export const chartSemanticColors = {
-  success: "#22c55e",
-  warning: "#eab308",
-  review: "#8b5cf6",
-  info: "#3b82f6",
-  high: "#f97316",
-  danger: "#ef4444",
-  cancelled: "#6b7280",
-  backlog: "#64748b",
-  other: "#06b6d4",
+  success: "var(--dashboard-positive)",
+  warning: "var(--dashboard-warning)",
+  review: "var(--dashboard-neutral-strong)",
+  info: "var(--dashboard-neutral-strong)",
+  high: "var(--dashboard-warning)",
+  danger: "var(--dashboard-danger)",
+  cancelled: "var(--dashboard-neutral)",
+  backlog: "var(--dashboard-neutral)",
+  other: "var(--dashboard-neutral)",
 } as const;
 
 function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
-    <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
+    <div className="dashboard-chart-legend">
       {items.map(item => (
-        <span key={item.label} className="flex items-center gap-1 text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
-          <span className="h-1.5 w-3 shrink-0 rounded-[1px]" style={{ backgroundColor: item.color }} aria-hidden="true" />
+        <span key={item.label} className="dashboard-chart-legend-item">
+          <span className="dashboard-chart-swatch" style={{ backgroundColor: item.color }} aria-hidden="true" />
           {item.label}
         </span>
       ))}
@@ -85,13 +85,12 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <div className="relative overflow-hidden rounded-md border border-border/70 bg-background/55 p-4 shadow-sm space-y-3 dark:border-white/10 dark:bg-[#050914]/88 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.08),0_10px_30px_rgb(0_0_0/0.18)]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle,rgb(255_255_255/0.14)_1px,transparent_1px)] bg-[length:16px_16px] opacity-[0.12]" />
-      <div className="relative">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground dark:text-[#E1E5EA]/80">{title}</h3>
-        {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
+    <div className="dashboard-chart-card dashboard-surface dashboard-surface-dotted rounded-md border p-4 space-y-3">
+      <div>
+        <h3 className="dashboard-chart-title">{title}</h3>
+        {subtitle && <span className="dashboard-chart-subtitle">{subtitle}</span>}
       </div>
-      <div className="relative">{children}</div>
+      <div>{children}</div>
     </div>
   );
 }
@@ -181,10 +180,10 @@ export function RunActivityChart(props: RunChartProps) {
 }
 
 const priorityColors: Record<string, string> = {
-  critical: "var(--hex-ef4444)",
-  high: "var(--hex-f97316)",
-  medium: "var(--hex-eab308)",
-  low: "var(--hex-6b7280)",
+  critical: "var(--dashboard-danger)",
+  high: "var(--dashboard-warning)",
+  medium: "var(--dashboard-neutral-strong)",
+  low: "var(--dashboard-neutral)",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -238,21 +237,18 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   );
 }
 
-// DECISION-SHEET.md B5: chart status colors re-pointed at the canonical
-// --status-task-* system (DESIGN.md principle 5 — an operator learns one
-// status vocabulary; badge, row, chart, and log agree). Previously an
-// independent palette (todo blue, in_progress violet, etc.). `backlog`
-// deliberately keeps --project-none (pre-B5, per user ruling); the
-// priority series and success-rate tints below are not status hues and
-// are left alone.
+// Dashboard status colors use the shared dashboard semantic roles. Status
+// meaning remains in the labels and status icons; dashboard chrome stays
+// neutral/monochrome unless a color communicates attention, failure, or
+// successful completion. Priority and success-rate series use the same roles.
 const statusColors: Record<string, string> = {
-  todo: "var(--status-task-todo)",
-  in_progress: "var(--status-task-in_progress)",
-  in_review: "var(--status-task-in_review)",
-  done: "var(--status-task-done)",
-  blocked: "var(--status-task-blocked)",
-  cancelled: "var(--status-task-cancelled)",
-  backlog: "var(--project-none)",
+  todo: "var(--dashboard-warning)",
+  in_progress: "var(--dashboard-accent)",
+  in_review: "var(--dashboard-neutral-strong)",
+  done: "var(--dashboard-positive)",
+  blocked: "var(--dashboard-danger)",
+  cancelled: "var(--dashboard-neutral)",
+  backlog: "var(--dashboard-neutral)",
 };
 
 const statusLabels: Record<string, string> = {
@@ -295,7 +291,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
                 <div
-                  className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]"
+                  className="flex flex-col-reverse gap-px overflow-hidden rounded-sm"
                   style={{ height: `${heightPct}%`, minHeight: 2 }}
                 >
                   {statusOrder.map((status) => {
@@ -308,7 +304,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
                         className="block w-full min-h-px"
                         style={{
                           height: `${Math.max(8, (value / total) * 100)}%`,
-                          backgroundColor: statusColors[status] ?? "#737373",
+                          backgroundColor: statusColors[status] ?? "var(--dashboard-neutral)",
                         }}
                       />
                     );
@@ -322,7 +318,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--hex-6b7280)", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--dashboard-neutral)", label: statusLabels[s] ?? s }))} />
     </div>
   );
 }

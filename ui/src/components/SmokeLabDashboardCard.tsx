@@ -9,10 +9,10 @@ import { cn } from "@/lib/utils";
 import { failingPaths, runHealth, type SmokeHealth } from "@/pages/tools/smoke-lab-matrix";
 
 const HEALTH_DOT: Record<SmokeHealth, string> = {
-  green: "bg-emerald-500",
-  amber: "bg-amber-500",
-  red: "bg-destructive",
-  unknown: "bg-muted-foreground/40",
+  green: "dashboard-progress-positive",
+  amber: "dashboard-progress-warning",
+  red: "dashboard-progress-danger",
+  unknown: "dashboard-progress-neutral",
 };
 
 const HEALTH_LABEL: Record<SmokeHealth, string> = {
@@ -62,11 +62,11 @@ export function SmokeLabDashboardCard({ companyId }: { companyId: string }) {
   return (
     <Link
       to={advancedTabHref("smoke-lab")}
-      className="group flex items-center justify-between gap-3 rounded-lg border border-border bg-card p-4 shadow-sm transition-colors hover:bg-accent/40"
+      className="dashboard-surface dashboard-surface-dotted dashboard-surface-interactive group flex items-center justify-between gap-3 rounded-lg border p-4"
       data-testid="smoke-lab-dashboard-card"
     >
       <div className="flex min-w-0 items-start gap-3">
-        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+        <span className="dashboard-icon-box mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border">
           <FlaskConical className="h-4 w-4 text-muted-foreground" />
         </span>
         <div className="min-w-0">
