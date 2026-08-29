@@ -34,14 +34,11 @@ export interface CapabilitySemanticToolRuntimeOptions {
   /**
    * Optional trusted backend receipt lookup for an expired extension. The
    * package-local mock runtime falls back to the exact prepared receipt stored
-   * before execution. Legacy records without a prepared receipt are also
-   * recoverable for replay-safe package-local fixture computations; the
-   * runtime can reconstruct and durably adopt their result without repeating
-   * an external effect. The package-local fixture export is also side-effect
-   * free, so a legacy retry may atomically freeze one reconstructed receipt;
-   * production state-derived exports still require an exact prepared receipt
-   * or a trusted backend lookup because their projection can change while an
-   * execution lease is abandoned.
+   * before execution. Legacy records without a prepared receipt are recoverable
+   * only for fixture computations whose output is independent of mutable
+   * adapter state. State-derived exports require an exact prepared receipt or
+   * a trusted backend lookup so a retry cannot substitute a newer projection
+   * for the value observed by the original execution.
    */
   resolveExpiredExtensionReceipt?: (input: {
     operationId: string;
@@ -99,11 +96,6 @@ const REPLAY_SAFE_LEGACY_MOCK_EXTENSIONS = new Set([
   "routines.list",
   "company_skills.list",
   "secrets.metadata",
-  // Exporting the package-local fixture snapshot has no external side effect.
-  // A pre-preparedExecution snapshot cannot recover the bytes observed before
-  // the crash, but it can safely publish one replacement receipt and then
-  // preserve that exact result for every later retry of the same key.
-  "portability.export",
   "company_skills.sync",
   "routines.manage",
   "cases.upsert",
@@ -712,10 +704,9 @@ export class CapabilitySemanticToolRuntime {
         // Snapshots written before preparedExecution existed can still be
         // recovered without replaying an external mutation. Every idempotent
         // extension in this explicit allowlist is a pure fixture computation.
-        // Secret reads are deliberately excluded. State-derived exports are
-        // admitted only through the explicit package-local allowlist above:
-        // they have no external effect, and reconciliation atomically freezes
-        // the reconstructed value before returning it to the retrying caller.
+        // Secret reads and mutable state-derived exports are deliberately
+        // excluded: neither can recover the exact value observed by the lost
+        // executor without a prepared or authoritative receipt.
         const reconstructed = this.#prepareBuiltInExtensionExecution(
           descriptor,
           asObject(invocation.input),

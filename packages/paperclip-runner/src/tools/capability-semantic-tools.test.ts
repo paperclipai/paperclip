@@ -1256,7 +1256,7 @@ describe("Capability exposure and authorization", () => {
     expect(resolveExpiredExtensionReceipt).not.toHaveBeenCalled();
   });
 
-  it("reconstructs an expired legacy export once and durably replays it", async () => {
+  it("fails closed for a legacy export without an exact receipt", async () => {
     let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot = {
       schema: "paperclip.capability.semantic-tool-runtime.v1",
       resultSequence: 0,
@@ -1298,53 +1298,22 @@ describe("Capability exposure and authorization", () => {
       now: () => 1_001,
     });
 
-    const reconstructedExport = {
-      schema: "paperclip.capability.mock-export.v1",
-      company: { id: "company-1", name: "Company State Changed After Execution" },
-      taskCount: 1,
-      actorCount: 1,
-    };
     await expect(restored.invoke({
       operationId: "export_company",
       input: {},
       idempotencyKey: "expired-export",
     })).resolves.toMatchObject({
-      ok: true,
-      operationResultId: "tool-result-1",
-      value: reconstructedExport,
+      ok: false,
+      error: {
+        code: "operation_unsupported",
+        reason: "idempotency_recovery_in_flight",
+      },
     });
     expect(durableSnapshot.extensions[0]).toMatchObject({
-      status: "completed",
-      resultId: "tool-result-1",
-      execution: { value: reconstructedExport },
+      status: "pending",
+      phase: "executing",
     });
-
-    const laterBase = await runtimeFor({
-      scenarioGrants: ["portability:export"],
-      seed: { company: { name: "Company State Changed Again" } },
-    });
-    const laterAdapter = CapabilityMockControlPlaneAdapter.restore(
-      laterBase.adapter.serialize(),
-      { semanticToolRuntimeStore: durableStore },
-    );
-    const laterRuntime = new CapabilitySemanticToolRuntime({
-      adapter: laterAdapter,
-      runId: OPEN.identity.runId,
-      scenarioGrants: ["portability:export"],
-      now: () => 2_001,
-    });
-    await expect(laterRuntime.invoke({
-      operationId: "export_company",
-      input: {},
-      idempotencyKey: "expired-export",
-    })).resolves.toMatchObject({
-      ok: true,
-      operationResultId: "tool-result-1",
-      value: reconstructedExport,
-    });
-    expect(durableSnapshot.operationResults).toEqual({
-      "tool-result-1": reconstructedExport,
-    });
+    expect(durableSnapshot.operationResults).toEqual({});
   });
 
   it("adopts an authoritative completion that wins the recovery publication race", async () => {
