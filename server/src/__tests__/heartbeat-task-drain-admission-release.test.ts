@@ -448,6 +448,37 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     }) as typeof db;
   }
 
+  // Wraps a db handle (which may already be wrapped by
+  // withFailingTransactionalUpdate) so a db.transaction() callback's own
+  // tx.update(table) call throws once armed.value is true. This mirrors
+  // withFailingInsertWhenArmed above, but for a table a step updates inside
+  // its own transaction (releaseIssueExecutionAndPromote updates the issues
+  // table this way) instead of a plain top-level insert.
+  function withFailingTransactionalUpdateWhenArmed(realDb: typeof db, table: unknown, armed: { value: boolean }) {
+    return new Proxy(realDb, {
+      get(target, prop, receiver) {
+        if (prop !== "transaction") return Reflect.get(target, prop, receiver);
+        return (fn: (tx: unknown) => Promise<unknown>) =>
+          target.transaction((tx) => {
+            const txProxy = new Proxy(tx as object, {
+              get(txTarget, txProp, txReceiver) {
+                if (txProp === "update") {
+                  return (updateTable: unknown) => {
+                    if (armed.value && updateTable === table) {
+                      throw new Error("simulated issue-lock release failure");
+                    }
+                    return (txTarget as any).update(updateTable);
+                  };
+                }
+                return Reflect.get(txTarget, txProp, txReceiver);
+              },
+            });
+            return fn(txProxy);
+          });
+      },
+    }) as typeof db;
+  }
+
   it("clears the stuck claim-release marker even when later reap cleanup rejects", async () => {
     const { companyId, runId } = await seedQueuedRun();
     // Reuse the same setup as "leaves the run claimed instead of a partial
@@ -497,5 +528,73 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     const statusAfterFailedReap = getTaskDrainStatus();
     expect(statusAfterFailedReap.activeRuns).toBe(0);
     expect(statusAfterFailedReap.quiescent).toBe(true);
+  }, 20_000);
+
+  // This test's failure (the issue-lock release itself rejects) never
+  // resolves the run's marker within this run of the process — see
+  // stuckClaimReleaseRunIds's own comment in heartbeat.ts: that is the
+  // documented, accepted outcome when the lock release itself keeps
+  // failing, not a bug. Because the marker is process-memory state with no
+  // per-test reset, this test runs last in the file so its permanently
+  // stuck marker cannot affect another test's activeRuns count.
+  it("keeps the stuck claim-release marker active when the reap loop's own issue-lock release rejects", async () => {
+    const { companyId, issueId, runId } = await seedQueuedRun();
+    // Same admission-race setup as "leaves the run claimed instead of a
+    // partial write" above: both the release transaction and the fallback's
+    // own transaction fail, so the run stays "running" and its
+    // claim-release marker keeps task drain non-quiescent until the orphan
+    // reaper picks the run up.
+    const transactionFailingDb = withFailingTransactionalUpdate(db, { 0: issues, 1: agentWakeupRequests });
+    const armedIssueReleaseFailure = { value: false };
+    const failingDb = withFailingTransactionalUpdateWhenArmed(transactionFailingDb, issues, armedIssueReleaseFailure);
+    const heartbeat = heartbeatService(failingDb);
+
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      const payload = event.payload as { runId?: string; status?: string };
+      if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
+        startTaskDrain({});
+      }
+    });
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      unsubscribe();
+    }
+
+    const claimedStatus = getTaskDrainStatus();
+    expect(claimedStatus.activeRuns).toBeGreaterThanOrEqual(1);
+    expect(claimedStatus.quiescent).toBe(false);
+
+    // Arm the failure only now, so it hits releaseIssueExecutionAndPromote's
+    // own issue-lock update inside the reap loop, after the run's row
+    // already reached "failed" — not the admission-time issue-lock write
+    // exercised above.
+    armedIssueReleaseFailure.value = true;
+    await expect(heartbeat.reapOrphanedRuns()).rejects.toThrow("simulated issue-lock release failure");
+
+    const reapedRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(reapedRun?.status).toBe("failed");
+
+    // The run's row reached a terminal status, but its issue-lock release
+    // itself failed, so the issue is still locked to this run. The marker
+    // must stay active and keep reporting this instance non-quiescent — the
+    // failure this test guards against clears it as soon as the row reaches
+    // a terminal status, before the lock is actually released.
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(runId);
+
+    const statusAfterFailedRelease = getTaskDrainStatus();
+    expect(statusAfterFailedRelease.activeRuns).toBeGreaterThanOrEqual(1);
+    expect(statusAfterFailedRelease.quiescent).toBe(false);
   }, 20_000);
 });

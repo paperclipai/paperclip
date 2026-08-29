@@ -872,10 +872,13 @@ const activeWakeupPromises = new Set<Promise<unknown>>();
 // for this run. There is no in-process retry for a fallback that already
 // failed once, so the run's row stays "running" until reapOrphanedRuns picks
 // it up as an orphan and finalizes it — that is also where this marker gets
-// removed, right after the run's row reaches a terminal status and before
-// any further per-run cleanup runs. An entry here only outlives that reap,
-// and so only clears on a process restart, if the reaper itself never runs
-// again for this run.
+// removed, right after the reaper finishes the durable issue-lock cleanup
+// for the run (releaseIssueExecutionAndPromote, or handing the run's pending
+// work to a retry), and before any later, lock-unrelated cleanup runs. An
+// entry here only outlives that reap, and so only clears on a process
+// restart, if the reaper itself never runs again for this run, or if
+// classification, retry scheduling, or the lock release itself keeps
+// failing for it.
 const stuckClaimReleaseRunIds = new Set<string>();
 // Thrown by executeRun's task-drain suppression branch when both the atomic
 // claim release and its fallback fail a durable write for the same run. The
@@ -14029,13 +14032,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
-      // This run's row just reached a terminal status. Drop its stuck
-      // claim-release marker (see stuckClaimReleaseRunIds above) right here,
-      // before any further cleanup below that can reject — the durable
-      // state the marker stood in for is already resolved, so any later
-      // failure must not leave it stuck and reporting this instance as
-      // non-quiescent forever, until a restart.
-      stuckClaimReleaseRunIds.delete(run.id);
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
@@ -14059,6 +14055,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!retriedRun) {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
+      // The run's row reached a terminal status above, and the block above
+      // just finished the durable issue-lock cleanup for it — either
+      // releaseIssueExecutionAndPromote cleared executionRunId/checkoutRunId,
+      // or the retry took over the run's pending work. Only now is it safe to
+      // drop this run's stuck claim-release marker (see stuckClaimReleaseRunIds
+      // above): a failure in classification, retry scheduling, or the release
+      // call above throws before this point, so the marker stays active and
+      // task-drain keeps reporting this instance non-quiescent while the
+      // issue may still be locked. Clearing it here, rather than after the
+      // unrelated cleanup below (event logging, agent-status finalization,
+      // queue promotion), keeps it from getting stuck on a failure in one of
+      // those instead.
+      stuckClaimReleaseRunIds.delete(run.id);
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
