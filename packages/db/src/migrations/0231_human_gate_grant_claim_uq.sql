@@ -18,3 +18,6 @@ ON "activity_log"
 USING btree (entity_id, ((details->>'interactionId')))
 WHERE action = 'issue.human_authorized_agent_mutation'
   AND (details->>'interactionId') IS NOT NULL;
+
+-- The index name follows the existing convention for partial unique indexes in
+-- this repo: table name + purpose slug + "_uq" suffix.
