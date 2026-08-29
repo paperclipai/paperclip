@@ -70,6 +70,12 @@ export class HarnessDriverBackend implements NativeSessionBackend {
     if (this.#driver.recoverSession === undefined) {
       return { recovered: false, reason: "driver does not support recovery" };
     }
+    // `null` is a durable "no active turn" checkpoint. Only an omitted legacy
+    // field may use the compatibility fallback; nullish coalescing here would
+    // otherwise turn the most recent terminal turn back into an active one.
+    const activeTurnId = snapshot.activeTurnId === undefined
+      ? snapshot.terminalTurns?.at(-1)?.turnId ?? null
+      : snapshot.activeTurnId;
     const persisted: PersistedHarnessSession = {
       driverKind: snapshot.driverKind ?? snapshot.backendKind,
       driverSessionId: snapshot.sessionId,
@@ -82,7 +88,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         : { providerRecoveryPolicy: snapshot.providerRecoveryPolicy }),
       runId: snapshot.identity.runId,
       normalizedSessionId: snapshot.identity.sessionId,
-      activeTurnId: snapshot.activeTurnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? null,
+      activeTurnId,
       lastSourceSequence: parseCursor(snapshot.cursor),
       ...(snapshot.semanticResult === undefined || snapshot.semanticResult === null
         ? {}
@@ -90,7 +96,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
             semanticResult: {
               result: snapshot.semanticResult,
               fingerprint: canonicalJson(snapshot.semanticResult),
-              turnId: snapshot.activeTurnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? "recovered",
+              turnId: activeTurnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? "recovered",
           },
         }),
       terminalTurns: snapshot.terminalTurns ?? [],
@@ -125,6 +131,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       session: new HarnessNativeSession(
         { identity: snapshot.identity },
         recovered.session,
+        snapshot.terminal,
       ),
     };
   }
@@ -154,9 +161,14 @@ class HarnessNativeSession implements NativeSession {
   #terminal: PrpTerminalState | null = null;
   #explicitlyCancelled = false;
 
-  constructor(input: OpenNativeSessionInput, session: HarnessSession) {
+  constructor(
+    input: OpenNativeSessionInput,
+    session: HarnessSession,
+    terminal?: PrpTerminalState | null,
+  ) {
     this.#input = structuredClone(input);
     this.#session = session;
+    this.#terminal = terminal === undefined ? null : structuredClone(terminal);
   }
 
   identity() {
@@ -410,7 +422,12 @@ class HarnessNativeSession implements NativeSession {
           : String(snapshot.lastSourceSequence),
       semanticResult: snapshot.semanticResult?.result ?? null,
       terminal: this.#terminal,
-      activeTurnId: snapshot.activeTurnId ?? snapshot.semanticResult?.turnId ?? null,
+      // Harness snapshots use an explicit null to record a settled turn. Keep
+      // the semantic-result fallback solely for legacy snapshots that omitted
+      // activeTurnId, or a later recovery can replay the terminal turn.
+      activeTurnId: snapshot.activeTurnId === undefined
+        ? snapshot.semanticResult?.turnId ?? null
+        : snapshot.activeTurnId,
       terminalTurns: snapshot.terminalTurns ?? [],
       pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
       lineage: snapshot.lineage ?? [],

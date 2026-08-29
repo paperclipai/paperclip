@@ -9,4 +9,8 @@ export * from "./index.js";
 export * from "./conformance/control-plane-port.js";
 export * from "./conformance/harness-driver.js";
 export * from "./conformance/semantic-conformance.js";
+export * from "./mock-core/deterministic-harness-driver.js";
+export * from "./mock-core/mock-control-plane-adapter.js";
+export * from "./protocol/conformance-fixture.js";
 export * from "./protocol/replay-loader.js";
+export * from "./tracer/conformance-runner.js";

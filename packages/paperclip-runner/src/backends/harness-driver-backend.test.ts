@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
-import type { PrpEvent, PrpStructuredRunResult } from "../protocol/replay-contract.js";
+import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 
 const result: PrpStructuredRunResult = {
@@ -269,6 +269,105 @@ describe("HarnessDriverBackend", () => {
 
     expect(recovery.recovered).toBe(true);
     expect(receivedSignal).toBe(controller.signal);
+  });
+
+  it("does not resurrect a settled turn across repeated backend recovery", async () => {
+    const terminal: PrpTerminalState = {
+      schema: "paperclip.prp.terminal.v1",
+      turnTerminalState: "completed",
+      runTerminalState: "succeeded",
+      reportedWorkDisposition: "done",
+    };
+    const recoveredSnapshots: PersistedHarnessSession[] = [];
+
+    class SettledRecoveredSession extends FakeHarnessSession {
+      readonly #snapshot: PersistedHarnessSession;
+
+      constructor(snapshot: PersistedHarnessSession) {
+        super();
+        this.#snapshot = structuredClone(snapshot);
+      }
+
+      override async *events() {
+        // Model the deterministic driver's recovery rule: only an active turn
+        // produces a reconstructed result/terminal sequence.
+        if (this.#snapshot.activeTurnId === null || this.#snapshot.activeTurnId === undefined) return;
+        yield prpEvent(3, "run.result.proposed", result);
+        yield prpEvent(4, "turn.completed", { status: "completed" });
+        yield prpEvent(5, "run.terminal", terminal);
+      }
+
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return structuredClone(this.#snapshot);
+      }
+    }
+
+    const recoveryDriver: HarnessDriver = {
+      ...driver,
+      async recoverSession(snapshot) {
+        recoveredSnapshots.push(structuredClone(snapshot));
+        return { recovered: true, session: new SettledRecoveredSession(snapshot) };
+      },
+    };
+    const backend = new HarnessDriverBackend(recoveryDriver);
+    const settledSnapshot = {
+      backendKind: "runner" as const,
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-1",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      cursor: "2",
+      semanticResult: result,
+      terminal,
+      activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-1", fingerprint: "terminal-1" }],
+    };
+
+    const recoveryOptions = { signal: new AbortController().signal };
+    const firstRecovery = await backend.recoverSession(
+      settledSnapshot,
+      recoveryOptions,
+    );
+    expect(firstRecovery.recovered).toBe(true);
+    const firstSession = firstRecovery.session!;
+    const firstRecoveredSnapshot = await firstSession.snapshot();
+    expect(firstRecoveredSnapshot).toMatchObject({
+      activeTurnId: null,
+      semanticResult: result,
+      terminal,
+    });
+    await expect(firstSession.result()).resolves.toEqual({
+      result,
+      terminal,
+      turnId: "turn-1",
+    });
+
+    const secondRecovery = await backend.recoverSession(
+      firstRecoveredSnapshot,
+      recoveryOptions,
+    );
+    expect(secondRecovery.recovered).toBe(true);
+    const secondSession = secondRecovery.session!;
+    await expect(secondSession.snapshot()).resolves.toMatchObject({
+      activeTurnId: null,
+      semanticResult: result,
+      terminal,
+    });
+    const replayedEvents: PrpEvent[] = [];
+    for await (const event of secondSession.events()) replayedEvents.push(event);
+    expect(replayedEvents.filter((event) =>
+      event.eventType === "run.result.proposed" || event.eventType === "run.terminal"
+    )).toEqual([]);
+    expect(recoveredSnapshots.map((snapshot) => snapshot.activeTurnId)).toEqual([null, null]);
+
+    await secondSession.close({ reason: "double recovery complete" });
+    await firstSession.close({ reason: "first recovery complete" });
   });
 
   it("allows only the run id to change when a harness session is attached", async () => {
