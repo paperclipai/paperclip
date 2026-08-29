@@ -307,6 +307,10 @@ export function instanceSettingsRoutes(db: Db) {
       // process-local drain mutation below, so a failed read never leaves
       // that mutation in place with no audit record of it.
       const companyIds = await svc.listCompanyIds();
+      // A POST over an already-active drain replaces it. Capture that prior
+      // state before the mutation, so a failed audit write below can restore
+      // it instead of clearing task-drain state the operator still relies on.
+      const priorStatus = heartbeat.getTaskDrainStatus();
       const drain = heartbeat.startTaskDrain({ ttlMs: req.body.ttlMs ?? null });
       try {
         await Promise.all(
@@ -330,9 +334,20 @@ export function instanceSettingsRoutes(db: Db) {
         );
       } catch (err) {
         // The audit record did not commit, so undo the in-memory drain this
-        // call started. The route must not return an error while it leaves
-        // a mutation with no audit trail behind.
-        heartbeat.stopTaskDrain();
+        // call started. If a drain was already active, this call replaced
+        // it — restore that prior drain (best-effort: the remaining TTL
+        // carries over, but the original start time does not) instead of
+        // clearing task-drain state the operator still relies on. The route
+        // must not return an error while it leaves a mutation with no audit
+        // trail behind.
+        if (priorStatus.draining) {
+          const remainingTtlMs = priorStatus.expiresAt
+            ? Math.max(0, priorStatus.expiresAt.getTime() - Date.now())
+            : null;
+          heartbeat.startTaskDrain({ ttlMs: remainingTtlMs });
+        } else {
+          heartbeat.stopTaskDrain();
+        }
         throw err;
       }
       res.json(drain);

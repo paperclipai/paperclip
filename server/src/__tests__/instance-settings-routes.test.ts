@@ -1026,6 +1026,7 @@ describe("instance settings routes", () => {
     });
 
     it("reverts the drain when the activity log write fails", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
       mockHeartbeatService.startTaskDrain.mockReturnValue({
         startedAt: "2026-08-29T00:00:00.000Z",
         expiresAt: null,
@@ -1038,6 +1039,35 @@ describe("instance settings routes", () => {
       expect(res.status).toBeGreaterThanOrEqual(500);
       expect(mockHeartbeatService.startTaskDrain).toHaveBeenCalledTimes(1);
       expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledWith();
+    });
+
+    it("restores the prior drain when a POST over an active drain fails to write its audit record", async () => {
+      const priorExpiresAt = new Date(Date.now() + 60_000);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
+        draining: true,
+        startedAt: new Date(Date.now() - 60_000),
+        expiresAt: priorExpiresAt,
+        activeRuns: 0,
+        pendingWakes: 0,
+        quiescent: true,
+      });
+      mockHeartbeatService.startTaskDrain.mockReturnValue({
+        startedAt: "2026-08-29T00:00:00.000Z",
+        expiresAt: "2026-08-29T06:00:00.000Z",
+      });
+      mockLogActivity.mockRejectedValue(new Error("activity insert failed"));
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .post("/api/instance/task-drain")
+        .send({ ttlMs: 21_600_000 });
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.startTaskDrain).toHaveBeenCalledTimes(2);
+      const [{ ttlMs }] = mockHeartbeatService.startTaskDrain.mock.calls[1];
+      expect(ttlMs).toBeGreaterThan(0);
+      expect(ttlMs).toBeLessThanOrEqual(60_000);
     });
 
     it("does not stop the drain when the company list read fails", async () => {
