@@ -4314,6 +4314,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "workspace-owner", []);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
     const service = createTestToolAccessService(db);
@@ -4809,6 +4810,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip-public.example");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board-user", []);
     const app = createRouteApp(db);
 
     const connectRes = await request(app)
@@ -5098,6 +5100,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "oauth-operator", []);
     const service = createTestToolAccessService(db);
     const initiatingActor = boardSessionActor(company.id, "operator", "oauth-operator");
     const connect = await service.connectGalleryApp(
@@ -5437,6 +5440,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board", []);
     const service = createTestToolAccessService(db);
     const concurrentService = createTestToolAccessService(db);
 
@@ -5542,6 +5546,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board", []);
     const service = createTestToolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack invalid grant" });
     const start = await service.startOAuth(company.id, connect.connectionId, {
@@ -5632,6 +5637,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board", []);
     const service = createTestToolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, {
       galleryKey: "slack",
@@ -5827,6 +5833,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board", []);
     const service = createTestToolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack no refresh" });
     const start = await service.startOAuth(company.id, connect.connectionId, {
@@ -6698,6 +6705,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_SECRET", "generic-client-secret");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board-user", []);
     const app = createRouteApp(db);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
@@ -6880,6 +6888,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
   it("starts OAuth only for the marked Smoke Lab HTTP fixture", async () => {
     const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board", []);
     const service = createTestToolAccessService(db);
     const [application] = await db.insert(toolApplications).values({
       companyId: company.id,
