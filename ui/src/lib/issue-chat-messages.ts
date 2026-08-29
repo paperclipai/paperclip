@@ -274,6 +274,30 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
   });
 }
 
+function dedupeInteractionsById(
+  interactions: readonly IssueThreadInteraction[],
+): IssueThreadInteraction[] {
+  const byId = new Map<string, IssueThreadInteraction>();
+  for (const interaction of interactions) {
+    const previous = byId.get(interaction.id);
+    if (!previous) {
+      byId.set(interaction.id, interaction);
+      continue;
+    }
+    const previousUpdatedAt = toTimestamp(previous.updatedAt);
+    const nextUpdatedAt = toTimestamp(interaction.updatedAt);
+    if (
+      nextUpdatedAt > previousUpdatedAt
+      || (nextUpdatedAt === previousUpdatedAt
+        && previous.status === "pending"
+        && interaction.status !== "pending")
+    ) {
+      byId.set(interaction.id, interaction);
+    }
+  }
+  return [...byId.values()];
+}
+
 export function latestSameRunHandoffTimestamp(args: {
   interactionCreatedAtMs: number;
   sourceRunId: string;
@@ -1105,7 +1129,11 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const interaction of sortByCreated(interactions)) {
+  // A live-event cache patch and the polling response can briefly contain the
+  // same interaction. Collapse by id before constructing messages, preferring
+  // the newest/terminal snapshot so a resolved connection card updates in its
+  // existing thread slot instead of flashing a duplicate beside itself.
+  for (const interaction of sortByCreated(dedupeInteractionsById(interactions))) {
     // A card IssueThreadInteractionCard never renders — a degenerate
     // `ask_user_questions` (e.g. the onboarding `Test / A` placeholder) or a
     // stale sibling superseded by a newer question (PAP-437) — is skipped here so

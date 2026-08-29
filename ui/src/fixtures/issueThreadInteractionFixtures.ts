@@ -7,6 +7,7 @@ import type {
 import type { IssueTimelineEvent } from "../lib/issue-timeline-events";
 import type {
   AskUserQuestionsInteraction,
+  ConnectionIntentInteraction,
   IssueThreadInteractionBase,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
@@ -812,6 +813,161 @@ function createSecretProposalConfirmationInteraction(
 
 export const pendingSecretProposalInteraction = createSecretProposalConfirmationInteraction({
   id: "interaction-secret-proposal-pending",
+});
+
+// ---------------------------------------------------------------------------
+// Connection-authorization fixtures (PAP-17835). Same interaction kind and the
+// same server-addressed audience as any other confirmation; only the
+// presentation payload is added, so the card never has to parse a title string
+// to know what it is looking at.
+// ---------------------------------------------------------------------------
+
+function createConnectionAuthorizationInteraction(
+  overrides: Partial<RequestConfirmationInteraction> = {},
+): RequestConfirmationInteraction {
+  const { payload, ...rest } = overrides;
+  return createRequestConfirmationInteraction({
+    id: "interaction-connection-authorization-default",
+    title: "Connect your Gmail to continue",
+    summary: "Outreach Agent needs your Gmail identity for work running as you.",
+    createdByAgentId: "agent-codex",
+    addresseeUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolverPolicy: "human_only",
+    requestedResolverPolicy: "human_only",
+    effectiveResolverPolicy: "human_only",
+    payload: {
+      version: 1,
+      prompt: "Connect your Gmail to continue",
+      acceptLabel: "Connect Gmail",
+      rejectLabel: "Not now",
+      ...payload,
+      connectionAuthorization: {
+        version: 1,
+        providerName: "Gmail",
+        connectionName: null,
+        requestingAgentName: "Outreach Agent",
+      },
+      target: {
+        type: "custom",
+        key: "connection:gmail-abc:user:user-dotta",
+        label: "Connect Gmail",
+        href: "https://accounts.google.com/o/oauth2/v2/auth?client_id=paperclip",
+      },
+    },
+    ...rest,
+  });
+}
+
+export const pendingConnectionAuthorizationInteraction = createConnectionAuthorizationInteraction({
+  id: "interaction-connection-authorization-pending",
+});
+
+export const resolvedConnectionAuthorizationInteraction = createConnectionAuthorizationInteraction({
+  id: "interaction-connection-authorization-resolved",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:03.000Z"),
+  result: { version: 1, outcome: "accepted" },
+});
+
+function createConnectionIntentInteraction(
+  overrides: Partial<ConnectionIntentInteraction> = {},
+): ConnectionIntentInteraction {
+  return {
+    id: "interaction-connection-intent-default",
+    companyId: issueThreadInteractionFixtureMeta.companyId,
+    issueId: issueThreadInteractionFixtureMeta.issueId,
+    kind: "connection_intent",
+    title: "Connect Notion",
+    summary: "Researcher needs this connection to continue.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "11111111-1111-4111-8111-111111111111",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    addresseeUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    createdAt: new Date("2026-04-20T15:08:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:08:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      serviceSlug: "notion",
+      serviceName: "Notion",
+      serviceLogoUrl: null,
+      requestingAgentId: "11111111-1111-4111-8111-111111111111",
+      requestingAgentName: "Researcher",
+      phase: "requested",
+    },
+    result: null,
+    resolverPolicy: "human_only",
+    requestedResolverPolicy: "human_only",
+    effectiveResolverPolicy: "human_only",
+    resolverPolicyProvenance: "explicit",
+    effectiveResolverPolicySource: "governed_action",
+    legacyResolverPolicyAliases: {
+      requested: "board_only",
+      effective: "board_only",
+    },
+    ...overrides,
+  };
+}
+
+export const pendingConnectionIntentInteraction = createConnectionIntentInteraction();
+export const retryConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-retry",
+  payload: {
+    version: 1,
+    serviceSlug: "notion",
+    serviceName: "Notion",
+    serviceLogoUrl: null,
+    requestingAgentId: "11111111-1111-4111-8111-111111111111",
+    requestingAgentName: "Researcher",
+    phase: "needs_retry",
+  },
+});
+export const authorizingConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-authorizing",
+  payload: {
+    version: 1,
+    serviceSlug: "notion",
+    serviceName: "Notion",
+    serviceLogoUrl: null,
+    requestingAgentId: "11111111-1111-4111-8111-111111111111",
+    requestingAgentName: "Researcher",
+    phase: "authorizing",
+  },
+});
+export const connectedConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-connected",
+  status: "accepted",
+  result: {
+    version: 1,
+    outcome: "connected",
+    connectionId: "22222222-2222-4222-8222-222222222222",
+  },
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
+});
+export const declinedConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-declined",
+  status: "rejected",
+  result: { version: 1, outcome: "declined", reason: "Not right now" },
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
+});
+export const supersededConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-superseded",
+  status: "expired",
+  result: { version: 1, outcome: "superseded" },
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
+});
+export const expiredConnectionIntentInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-intent-expired",
+  status: "expired",
+  result: { version: 1, outcome: "expired" },
+  resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
 });
 
 export const executedSecretProposalInteraction = createSecretProposalConfirmationInteraction({

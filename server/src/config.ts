@@ -198,17 +198,21 @@ export function loadConfig(): Config {
       ? (authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       : null;
   const publicUrlFromEnv = process.env.PAPERCLIP_PUBLIC_URL;
-  const authPublicBaseUrlRaw =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
-    process.env.BETTER_AUTH_URL ??
-    process.env.BETTER_AUTH_BASE_URL ??
-    publicUrlFromEnv ??
-    fileConfig?.auth?.publicBaseUrl;
+  const configuredAuthPublicBaseUrlRaw = [
+    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL,
+    process.env.BETTER_AUTH_URL,
+    process.env.BETTER_AUTH_BASE_URL,
+    publicUrlFromEnv,
+    fileConfig?.auth?.publicBaseUrl,
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const managedRuntimePublicUrl = process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim() || undefined;
+  const authPublicBaseUrlRaw = configuredAuthPublicBaseUrlRaw ?? managedRuntimePublicUrl;
   const authPublicBaseUrl = authPublicBaseUrlRaw?.trim() || undefined;
   const authBaseUrlMode: AuthBaseUrlMode =
     authBaseUrlModeFromEnv ??
-    fileConfig?.auth?.baseUrlMode ??
-    (authPublicBaseUrl ? "explicit" : "auto");
+    (configuredAuthPublicBaseUrlRaw === undefined && managedRuntimePublicUrl
+      ? "explicit"
+      : fileConfig?.auth?.baseUrlMode ?? (authPublicBaseUrl ? "explicit" : "auto"));
   const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
   const authDisableSignUp: boolean =
     disableSignUpFromEnv !== undefined

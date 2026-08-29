@@ -46,10 +46,16 @@ Start immediately after onboarding:
 pnpm paperclipai onboard --run
 ```
 
-Non-interactive defaults + immediate start (opens browser on server listen):
+Non-interactive defaults + immediate start (prints the URL without opening a browser):
 
 ```sh
 pnpm paperclipai onboard --yes
+```
+
+Browser opening is opt-in. Set the environment variable explicitly when that is the desired behavior:
+
+```sh
+PAPERCLIP_OPEN_ON_LISTEN=true pnpm paperclipai onboard --yes
 ```
 
 On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.

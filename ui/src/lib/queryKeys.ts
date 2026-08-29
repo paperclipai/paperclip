@@ -29,6 +29,10 @@ export const queryKeys = {
     connection: (connectionId: string) => ["tools", "connection", connectionId] as const,
     connectionInstalls: (connectionId: string) =>
       ["tools", "connection", connectionId, "installs"] as const,
+    connectionGrants: (connectionId: string) =>
+      ["tools", "connection", connectionId, "grants"] as const,
+    composioServices: (connectionId: string) =>
+      ["tools", "connection", connectionId, "composio-services"] as const,
     catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
     connectionActivity: (connectionId: string) =>
       ["tools", "connection", connectionId, "activity"] as const,
@@ -53,12 +57,13 @@ export const queryKeys = {
     audit: (companyId: string, limit: number) => ["tools", companyId, "audit", limit] as const,
     activity: (
       companyId: string,
-      filters: { app?: string; agent?: string; outcome?: string; window?: string; search?: string },
+      filters: { gateway?: string; app?: string; agent?: string; outcome?: string; window?: string; search?: string },
     ) =>
       [
         "tools",
         companyId,
         "activity",
+        filters.gateway ?? "__all",
         filters.app ?? "__all",
         filters.agent ?? "__all",
         filters.outcome ?? "__all",

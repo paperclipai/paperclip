@@ -23,7 +23,7 @@ test("captures the current app removal confirmations", async ({ page }) => {
 
   await page.goto(`/${prefix}/apps/app/${application.id}/advanced`);
   await expect(page.getByRole("heading", { name: "Demo Notes" })).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("Danger zone")).toBeVisible();
+  await page.getByRole("button", { name: "Danger zone" }).click();
   await page.getByRole("button", { name: "Remove app", exact: true }).click();
   await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
   await page.screenshot({ path: "test-results/pap-10817-delete-dialog.png", fullPage: true });
@@ -33,7 +33,7 @@ test("captures the current app removal confirmations", async ({ page }) => {
       applicationName: "Guarded MCP",
       name: "Primary connection",
       transport: "mcp_remote",
-      config: { url: "https://fixture.example/mcp" },
+      config: { url: "http://127.0.0.1:65535/mcp" },
     },
   });
   expect(conn.ok(), `connection create failed ${conn.status()}: ${await conn.text()}`).toBe(true);
@@ -41,6 +41,7 @@ test("captures the current app removal confirmations", async ({ page }) => {
 
   await page.goto(`/${prefix}/apps/${connection.id}/advanced`);
   await expect(page.getByRole("heading", { name: "Primary connection" })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Danger zone" }).click();
   await page.getByRole("button", { name: "Remove app", exact: true }).click();
   await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
   await page.screenshot({ path: "test-results/pap-10817-delete-dialog-guarded.png", fullPage: true });

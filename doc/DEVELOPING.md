@@ -735,6 +735,8 @@ For Tailscale HTTPS exposure, readiness includes stable listener-ownership check
 
 In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to the managed runtime's loopback host. The browser still derives the HMR hostname from the public HTTPS page, so listener containment does not break remote hot reload.
 
+When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
@@ -952,6 +954,22 @@ pnpm secrets:migrate-inline-env         # dry run
 pnpm secrets:migrate-inline-env --apply # apply migration
 ```
 
+## Internal Connection Token Brokers
+
+Connection token exchanges carry a resolved parent credential, so their URLs
+are public-only by default even in local/private deployments. To intentionally
+use an internal broker, configure an exact hostname allowlist:
+
+```sh
+PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS=broker.internal.example,10.0.0.42
+```
+
+Entries are comma- or whitespace-separated exact hostnames (no wildcards). The
+host configured by `PAPERCLIP_PAGES_API_URL` is included automatically. Every
+broker hostname is resolved once and the request is pinned to the approved
+address; IPv4 and IPv6 link-local destinations remain denied even when their
+host is allowlisted.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:
@@ -1035,6 +1053,38 @@ Optional auth flags (for authenticated mode):
 
 - `PAPERCLIP_AUTH_HEADER` (for example `Bearer ...`)
 - `PAPERCLIP_COOKIE` (session cookie header value)
+
+## PostHog MCP Live Smoke Test
+
+The PostHog smoke targets an already-running authenticated Paperclip instance.
+It is deliberately separate from `pnpm test` and `pnpm test:e2e` because it
+uses a live vendor OAuth flow and creates a short-lived connection plus one
+fresh-run proof issue.
+
+```sh
+INTEGRATIONS_POSTHOG_PAPERCLIP_E2E_EMAIL=operator@example.test \
+INTEGRATIONS_POSTHOG_PAPERCLIP_DEV_LOGIN_PASSWORD='<environment-delivered>' \
+INTEGRATIONS_POSTHOG_POSTHOG_PROJECT_ID=483530 \
+pnpm smoke:posthog-live https://paperclip.example.test
+```
+
+The command fails before browser launch unless all three integration bindings
+are present, and never prints their values. A Paperclip heartbeat derives the
+target origin from its injected `PAPERCLIP_API_URL`; the positional URL (or
+`--base-url <url>`) selects the running instance for a manual invocation. It
+creates no trace, video, or HAR, begins
+screenshots only after OAuth returns to Paperclip, enables read actions only,
+installs the connection on `CodexCoderPro` only, runs `project-get` with `{}`
+from the board Test panel and a fresh agent run, then removes the connection.
+Sanitized JSON and PNG evidence defaults to `PAPERCLIP_RUN_SCRATCH_DIR` when the
+command runs in a heartbeat; set `POSTHOG_EVIDENCE_DIR` for a different output
+directory.
+
+Run the focused harness checks without contacting Paperclip or PostHog:
+
+```sh
+node --test scripts/smoke/posthog-live.test.mjs
+```
 
 ## OpenClaw Docker UI One-Command Script
 

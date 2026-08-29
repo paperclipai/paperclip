@@ -20,6 +20,8 @@ export type {
   AdapterRuntimeEvent,
   AdapterRuntimeMcpServer,
   AdapterRuntimeMcpAccess,
+  AdapterRuntimeToolAccess,
+  AdapterRuntimeToolDelivery,
   AdapterModelProfileDefinition,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

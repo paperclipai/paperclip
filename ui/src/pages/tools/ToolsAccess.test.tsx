@@ -29,14 +29,6 @@ vi.mock("./profiles/ProfilesIndex", () => ({
   ProfilesIndex: () => <section>Tool profiles</section>,
 }));
 
-vi.mock("./PoliciesTab", () => ({
-  PoliciesTab: () => <section>Policies tab</section>,
-}));
-
-vi.mock("./RuntimeTab", () => ({
-  RuntimeTab: () => <section>Runtime tab</section>,
-}));
-
 vi.mock("./AuditTab", () => ({
   AuditTab: () => <section>Audit tab</section>,
 }));
@@ -100,7 +92,17 @@ describe("ToolsAccess", () => {
     },
   );
 
-  it("uses Profiles as the developer surface entry point", async () => {
+  it.each([
+    ["runtime", "/apps/connections"],
+    ["policies", "/apps/advanced/profiles"],
+  ])("redirects the retired %s page to %s", async (tab, target) => {
+    mockParams.tab = tab;
+    await render();
+
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: target, replace: true }));
+  });
+
+  it("uses Profiles as the developer entry point without a second page shell", async () => {
     await render();
 
     expect(container.querySelector('a[href="/apps/advanced/profiles"]')?.textContent).toContain(
@@ -110,7 +112,8 @@ describe("ToolsAccess", () => {
     mockParams.tab = "profiles";
     await render();
 
-    expect(container.textContent).toContain("Developer tools");
+    expect(container.textContent).not.toContain("Developer tools");
     expect(container.textContent).toContain("Tool profiles");
+    expect(container.firstElementChild?.classList.contains("max-w-5xl")).toBe(true);
   });
 });

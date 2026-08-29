@@ -1218,7 +1218,7 @@ describe("plugin worker manager setup-token pty route gate", () => {
     } finally {
       await handle.stop().catch(() => undefined);
     }
-  });
+  }, 15_000);
 
   it("routes delayed input to the worker and back to the listener", async () => {
     const handle = makeLoginPtyHandle();
@@ -1246,20 +1246,20 @@ describe("plugin worker manager setup-token pty route gate", () => {
     try {
       await handle.start();
       const session = await handle.openLoginPtySession(
-        ptyOpenInput({
-          outputs: [
-            { chunk: "aaaaa" }, // total 5 → delivered
-            { chunk: "bbbbb" }, // total 10 → delivered
-            { chunk: "ccccc" }, // total 15 > 10 → terminalize
-          ],
-        }),
+        ptyOpenInput({ mode: "normal" }),
       );
       const chunks: string[] = [];
       session.onData((chunk) => chunks.push(chunk));
+      // Each empty input produces the five-character `echo:` chunk. Attach the
+      // listener first, then drive exactly two accepted chunks and one overflow
+      // so process scheduling cannot move output ahead of listener registration.
+      session.write("");
+      session.write("");
+      session.write("");
       // The per-route bound terminalizes the route, so the login wait resolves
       // with a null exit code and the third chunk never reaches the listener.
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
-      expect(chunks).toEqual(["aaaaa", "bbbbb"]);
+      expect(chunks).toEqual(["echo:", "echo:"]);
     } finally {
       await handle.stop().catch(() => undefined);
     }

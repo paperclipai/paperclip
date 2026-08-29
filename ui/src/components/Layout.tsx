@@ -64,6 +64,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "browse",
   "connections",
   "connect",
+  "vercel-connect",
   "review",
   "attention",
   "gateways",

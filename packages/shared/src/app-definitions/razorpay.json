@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "slug": "razorpay",
+  "name": "Razorpay",
+  "description": "Connect Razorpay's provider-hosted MCP server.",
+  "categories": [
+    "commerce"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/razorpay.svg",
+    "darkLogoUrl": "/brands/apps/razorpay-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.razorpay.com/*"
+  ],
+  "docsUrl": "https://razorpay.com/docs/mcp-server/oauth/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.razorpay.com/mcp"
+      },
+      "guidanceMd": "Connect Razorpay in the browser. A Razorpay account; financial or destructive actions always require explicit approval.",
+      "riskTier": "S4",
+      "label": "Sign in with Razorpay",
+      "consoleLinks": {
+        "docs": "https://razorpay.com/docs/mcp-server/oauth/"
+      },
+      "warnings": [
+        "A Razorpay account; financial or destructive actions always require explicit approval.",
+        "Financial or destructive actions must be explicitly approved before execution."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.razorpay.com/mcp"
+      },
+      "guidanceMd": "Use a customer-created Razorpay key. A Razorpay account; financial or destructive actions always require explicit approval.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Razorpay API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the base64-encoded key ID and secret",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Basic "
+      },
+      "consoleLinks": {
+        "keys": "https://razorpay.com/docs/mcp-server/oauth/",
+        "docs": "https://razorpay.com/docs/mcp-server/oauth/"
+      },
+      "warnings": [
+        "A Razorpay account; financial or destructive actions always require explicit approval.",
+        "Financial or destructive actions must be explicitly approved before execution."
+      ]
+    }
+  ]
+}

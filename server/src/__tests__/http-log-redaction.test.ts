@@ -1,9 +1,12 @@
-import { createServer, request } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { Writable } from "node:stream";
+import express from "express";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
+import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { HTTP_LOG_REDACT_PATHS } from "../middleware/http-log-redaction.js";
+import { createHttpLogger } from "../middleware/logger.js";
 
 describe("HTTP logger redaction", () => {
   it("defines the HTTP auth and cookie header paths that must be redacted", () => {
@@ -44,7 +47,7 @@ describe("HTTP logger redaction", () => {
       }
 
       await new Promise<void>((resolve, reject) => {
-        const client = request(
+        const client = httpRequest(
           {
             hostname: "127.0.0.1",
             port: address.port,
@@ -82,5 +85,46 @@ describe("HTTP logger redaction", () => {
     expect(log.req.headers.cookie).toBe("[Redacted]");
     expect(log.req.headers["set-cookie"]).toBe("[Redacted]");
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
+  });
+
+  it("drops OAuth callback query data from the message and structured request", async () => {
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const testLogger = pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream);
+    const app = express();
+    app.use(createHttpLogger(testLogger));
+    app.get("/api/tools/oauth/callback", (_req, res) => {
+      res.status(400).json({ error: "callback rejected" });
+    });
+
+    const authorizationCode = "oauth-code-canary-61a88f";
+    const providerProse = "provider-prose-canary-2087e2";
+    const providerUriCanary = "provider-uri-canary-d91ac4";
+    const response = await request(app)
+      .get("/api/tools/oauth/callback")
+      .query({
+        code: authorizationCode,
+        error_description: providerProse,
+        error_uri: `https://provider.example/error?detail=${providerUriCanary}`,
+      });
+
+    expect(response.status).toBe(400);
+    const output = chunks.join("");
+    expect(output).not.toMatch(new RegExp(`${authorizationCode}|${providerProse}|${providerUriCanary}`));
+
+    const log = JSON.parse(output.trim()) as {
+      msg: string;
+      req: { method: string; url: string; query?: unknown };
+      reqQuery?: unknown;
+    };
+    expect(log.msg).toBe("GET /api/tools/oauth/callback 400");
+    expect(log.req).toMatchObject({ method: "GET", url: "/api/tools/oauth/callback" });
+    expect(log.req.query).toBeUndefined();
+    expect(log.reqQuery).toBeUndefined();
   });
 });

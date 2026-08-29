@@ -46,6 +46,7 @@ export type IssueThreadInteractionResolverAudienceInput = {
     createdByUserId?: string | null;
     sourceRunId?: string | null;
     addresseeAgentId?: string | null;
+    addresseeUserId?: string | null;
     effectiveResolverPolicy: IssueThreadInteractionResolverPolicy | string;
     resolverPolicyProvenance?: string | null;
   };
@@ -181,6 +182,18 @@ export function evaluateIssueThreadInteractionResolverAudience(
 
   if (input.actor.type === "user") {
     if (
+      input.interaction.addresseeUserId
+      && input.interaction.addresseeUserId !== input.actor.userId
+    ) {
+      return {
+        allowed: false,
+        effectiveResolverPolicy,
+        status: 403,
+        code: "interaction_addressee_mismatch",
+        message: "Only the addressed user may resolve this issue-thread interaction",
+      };
+    }
+    if (
       creatorExcluded
       && input.interaction.createdByUserId === input.actor.userId
     ) {
@@ -204,7 +217,11 @@ export function evaluateIssueThreadInteractionResolverAudience(
     return {
       allowed: true,
       effectiveResolverPolicy,
-      reason: input.interaction.addresseeAgentId ? "allow_human_override" : "allow_human",
+      reason: input.interaction.addresseeUserId
+        ? "allow_addressee"
+        : input.interaction.addresseeAgentId
+          ? "allow_human_override"
+          : "allow_human",
     };
   }
 

@@ -3,8 +3,15 @@ import type { ToolProfileBindingTargetType } from "@paperclipai/shared";
 type BindingLike = {
   profileId: string;
   targetType: ToolProfileBindingTargetType;
+  targetId: string;
   priority: number;
   createdAt: Date | string;
+};
+
+type ProfileLike = {
+  id: string;
+  profileKey: string;
+  metadata: unknown;
 };
 
 const TOOL_PROFILE_SCOPE_PRECEDENCE: Record<ToolProfileBindingTargetType, number> = {
@@ -47,4 +54,40 @@ export function profileIdsInBindingOrder<T extends Pick<BindingLike, "profileId"
     ordered.push(binding.profileId);
   }
   return ordered;
+}
+
+function isWizardAppProfile(profile: ProfileLike, connectionId?: string | null): boolean {
+  if (!profile.metadata || typeof profile.metadata !== "object" || Array.isArray(profile.metadata)) return false;
+  const metadata = profile.metadata as Record<string, unknown>;
+  if (metadata.source !== "app_gallery_finish" || typeof metadata.connectionId !== "string") return false;
+  if (profile.profileKey !== `app:${metadata.connectionId}`) return false;
+  return connectionId === undefined || connectionId === null || metadata.connectionId === connectionId;
+}
+
+/**
+ * App-wizard assignments are additive capabilities: choosing an app for all
+ * agents (or for one agent) must not disappear merely because that agent also
+ * has a narrower general-purpose profile. Ordinary profiles still use the
+ * narrowest-scope rule; only the profile managed by the app wizard is carried
+ * alongside that winning tier.
+ */
+export function effectiveToolProfileBindings<T extends BindingLike>(
+  bindings: T[],
+  profiles: ProfileLike[],
+  connectionId?: string | null,
+): T[] {
+  const appProfileIds = new Set(
+    profiles.filter((profile) => isWizardAppProfile(profile, connectionId)).map((profile) => profile.id),
+  );
+  const selected = [
+    ...narrowestScopeBindings(bindings),
+    ...bindings.filter((binding) => appProfileIds.has(binding.profileId)),
+  ];
+  const seen = new Set<string>();
+  return selected.filter((binding) => {
+    const key = `${binding.targetType}:${binding.targetId}:${binding.profileId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

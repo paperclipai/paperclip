@@ -123,6 +123,7 @@ const mockLoginProjections = vi.hoisted(
   () =>
     new Map<string, { panelMode: string; timeoutPolicy: string }>([
       ["codex_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
+      ["grok_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
       ["claude_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
       // A third adapter, not a built-in, with a projected displayed-code login.
       ["vendor_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
@@ -365,6 +366,24 @@ const VENDOR_AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+const GROK_AUTH_MISSING_RESULT = {
+  adapterType: "grok_local",
+  status: "warn",
+  checks: [
+    {
+      code: "grok_hello_probe_auth_required",
+      level: "warn",
+      message: "Grok CLI could not answer the hello probe because authentication is missing.",
+    },
+    {
+      code: "adapter_auth_missing",
+      level: "warn",
+      message: "This environment has no ready authentication for this adapter.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
 const PTY_VENDOR_AUTH_MISSING_RESULT = {
   adapterType: "pty_vendor_local",
   status: "fail",
@@ -447,6 +466,26 @@ async function renderVendorSandbox(agentOverrides: Partial<Agent> = {}) {
       }),
     ],
     { adapterType: "vendor_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+// A Grok agent in a sandbox environment. Its projected login capability
+// drives the login affordance and the displayed-code panel, the same as
+// Codex. The provider advertises the login pseudo-terminal capability the
+// login needs.
+async function renderGrokSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ],
+    { adapterType: "grok_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
     { showAdapterTestEnvironmentButton: true },
   );
 }
@@ -1103,6 +1142,26 @@ describe("AgentConfigForm environment selector", () => {
     // The displayed-code panel shows the one-time code and the authentication
     // URL. It shows no browser-code input, so the dispatcher picked the panel
     // from the projected `displayed_code` mode.
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+  });
+
+  it("shows the login affordance and the displayed-code panel for a Grok sandbox with a projected login capability", async () => {
+    // The panel dispatcher reads the projected `displayed_code` mode from the
+    // capability, the same way it does for Codex. It shows the Grok code and
+    // URL.
+    mockAgentsApi.testEnvironment.mockResolvedValue(GROK_AUTH_MISSING_RESULT);
+    const result = await renderGrokSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+
+    await startLogin(result.container);
+
     expect(result.container.textContent).toContain("WXYZ-1234");
     expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
   });

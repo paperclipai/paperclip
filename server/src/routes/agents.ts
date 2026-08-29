@@ -32,6 +32,7 @@ import {
   startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
+  type AgentAdapterType,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -146,14 +147,19 @@ import {
   promoteDeviceLoginCredential,
 } from "@paperclipai/adapter-codex-local/server";
 import {
+  checkStagedGrokCredentialReadiness,
+  promoteGrokDeviceLoginCredential,
+} from "@paperclipai/adapter-grok-local/server";
+import {
   AdapterAuthSessionConflictError,
-  createCodexDeviceLoginService,
-  createCodexWorkerBoundLoginPtyOpener,
+  createDeviceLoginService,
+  createWorkerBoundLoginPtyOpener,
   createDbAdapterAuthSessionStore,
   createProductionLoginSessionRuntime,
-  CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
-  CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
-} from "../services/codex-device-login-service.js";
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+  type CredentialPromotion,
+} from "../services/device-login-service.js";
 import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -496,7 +502,7 @@ export function agentRoutes(
   // process owns one instance, so the in-memory prompt and the cancellation
   // controllers persist across requests.
   const adapterLoginStore = createDbAdapterAuthSessionStore(db);
-  const adapterLoginService = createCodexDeviceLoginService({
+  const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
     runtime: createProductionLoginSessionRuntime({
       db,
@@ -514,73 +520,119 @@ export function agentRoutes(
       // opens. When no worker manager is bound, the runtime keeps its fail-closed
       // opener and the login fails closed.
       openLivePtySession: options.pluginWorkerManager
-        ? createCodexWorkerBoundLoginPtyOpener({
+        ? createWorkerBoundLoginPtyOpener({
             workerManager: options.pluginWorkerManager,
             log: (line) => logger.info(line),
           })
         : undefined,
     }),
-    // The mandatory credential promotion. A successful login authenticates only
-    // after this promotion validates the exact staged credential, runs an
-    // independent readiness check, confirms the session still holds the sole
-    // active claim, and writes the credential into the company scope. A rejected
-    // or unready credential fails the session and writes nothing.
-    promotion: {
-      async promote(authBytes, context) {
-        // Hold the promotion critical-section lock across the ownership check and
-        // the credential write. The reaper takes the same lock before it reclaims
-        // a stale `promoting` row. So a reclaim never interleaves with a live
-        // write: the reaper either wins the lock first and the ownership check
-        // then reads a reclaimed row and writes nothing, or the write finishes
-        // first under the lock and the reaper reclaims only after it completes. A
-        // read-only fence is not enough, because the filesystem write can start
-        // after the fence; the lock spans the whole section.
-        const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
-          context.companyId,
-          context.startedByUserId,
-          context.adapterType,
-          () =>
-            promoteDeviceLoginCredential({
-              authBytes,
-              companyId: context.companyId,
-              userInitiated: true,
-              checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
-              isSoleActiveOwner: async () => {
-                // The partial unique index allows one active row per company and
-                // adapter. So a `promoting` row for this session is the sole
-                // active owner of the company credential slot. The read runs
-                // inside the lock, so it observes a reaper reclaim that committed
-                // before this section acquired the lock.
-                const row = await adapterLoginStore.get(context.sessionId);
-                return row?.status === "promoting" && row.companyId === context.companyId;
-              },
-              log: (line) => {
-                // The promotion lines carry no token bytes and no raw account id,
-                // so it is safe to log them with the session identifier.
-                logger.info({ sessionId: context.sessionId }, line);
-              },
-            }),
-        );
-        // A resolved promotion is not necessarily an accepted promotion. In
-        // particular, a reaper/expiry race can revoke this session's sole
-        // ownership between the service transition and Decision H. Fail closed:
-        // only a credential write or a deliberate safe keep can authenticate.
-        if (outcome === "kept_foreign_identity") {
-          // The login produced a different account than the one the company
-          // credential home already holds. The promotion never clobbers an
-          // occupied home, so this login installed nothing durable, and the
-          // identity-anchored vend can never select it: a later run keeps the
-          // existing account. Fail the session, so the operator never sees a
-          // false `authenticated` for an account the system will not use.
-          throw new Error(
-            "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+    // The mandatory credential promotion, keyed by adapter type. A successful
+    // login authenticates only after the promotion for its own adapter type
+    // validates the exact staged credential, runs an independent readiness
+    // check, confirms the session still holds the sole active claim, and
+    // writes the credential into the company scope. A rejected or unready
+    // credential fails the session and writes nothing. Keying by adapter type
+    // keeps a `grok_local` login from ever running the Codex promotion (and
+    // vice versa): each entry closes over its own readiness check and its own
+    // promotion function.
+    promotionByAdapterType: {
+      codex_local: {
+        async promote(authBytes, context) {
+          // Hold the promotion critical-section lock across the ownership check and
+          // the credential write. The reaper takes the same lock before it reclaims
+          // a stale `promoting` row. So a reclaim never interleaves with a live
+          // write: the reaper either wins the lock first and the ownership check
+          // then reads a reclaimed row and writes nothing, or the write finishes
+          // first under the lock and the reaper reclaims only after it completes. A
+          // read-only fence is not enough, because the filesystem write can start
+          // after the fence; the lock spans the whole section.
+          const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+            context.companyId,
+            context.startedByUserId,
+            context.adapterType,
+            () =>
+              promoteDeviceLoginCredential({
+                authBytes,
+                companyId: context.companyId,
+                userInitiated: true,
+                checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
+                isSoleActiveOwner: async () => {
+                  // The partial unique index allows one active row per company and
+                  // adapter. So a `promoting` row for this session is the sole
+                  // active owner of the company credential slot. The read runs
+                  // inside the lock, so it observes a reaper reclaim that committed
+                  // before this section acquired the lock.
+                  const row = await adapterLoginStore.get(context.sessionId);
+                  return row?.status === "promoting" && row.companyId === context.companyId;
+                },
+                log: (line) => {
+                  // The promotion lines carry no token bytes and no raw account id,
+                  // so it is safe to log them with the session identifier.
+                  logger.info({ sessionId: context.sessionId }, line);
+                },
+              }),
           );
-        }
-        if (outcome !== "promoted" && outcome !== "kept") {
-          throw new Error(`device-login credential promotion rejected: ${outcome}`);
-        }
+          // A resolved promotion is not necessarily an accepted promotion. In
+          // particular, a reaper/expiry race can revoke this session's sole
+          // ownership between the service transition and Decision H. Fail closed:
+          // only a credential write or a deliberate safe keep can authenticate.
+          if (outcome === "kept_foreign_identity") {
+            // The login produced a different account than the one the company
+            // credential home already holds. The promotion never clobbers an
+            // occupied home, so this login installed nothing durable, and the
+            // identity-anchored vend can never select it: a later run keeps the
+            // existing account. Fail the session, so the operator never sees a
+            // false `authenticated` for an account the system will not use.
+            throw new Error(
+              "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+            );
+          }
+          if (outcome !== "promoted" && outcome !== "kept") {
+            throw new Error(`device-login credential promotion rejected: ${outcome}`);
+          }
+        },
       },
-    },
+      grok_local: {
+        async promote(authBytes, context) {
+          // The same promotion critical-section lock as the Codex entry above,
+          // keyed by the same `(companyId, startedByUserId, adapterType)` tuple,
+          // so a Grok reclaim and a Grok write never interleave.
+          const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+            context.companyId,
+            context.startedByUserId,
+            context.adapterType,
+            () =>
+              promoteGrokDeviceLoginCredential({
+                authBytes,
+                companyId: context.companyId,
+                userInitiated: true,
+                checkReadiness: (bytes) => checkStagedGrokCredentialReadiness(bytes),
+                isSoleActiveOwner: async () => {
+                  const row = await adapterLoginStore.get(context.sessionId);
+                  return row?.status === "promoting" && row.companyId === context.companyId;
+                },
+                log: (line) => {
+                  // The promotion lines carry no token bytes and no personal
+                  // field, so it is safe to log them with the session identifier.
+                  logger.info({ sessionId: context.sessionId }, line);
+                },
+              }),
+          );
+          if (outcome === "kept_foreign_identity") {
+            // The login produced a different account than the one the company
+            // credential home already holds. Fail the session, so the operator
+            // never sees a false `authenticated` for an account the system will
+            // not use.
+            throw new Error(
+              "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+            );
+          }
+          if (outcome !== "promoted") {
+            throw new Error(`device-login credential promotion rejected: ${outcome}`);
+          }
+        },
+      },
+    } satisfies Partial<Record<AgentAdapterType, CredentialPromotion>>,
     recordActivity: (event) => {
       // The event carries no URL, no code, no credential, no account identifier,
       // and no lease identifier, so it is safe to log.
@@ -1357,8 +1409,8 @@ export function agentRoutes(
    */
   async function assertCodexLoginProviderCapability(environmentId: string): Promise<void> {
     if (!(await resolveProviderSupportsLoginPty(environmentId))) {
-      throw unprocessable(CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
-        code: CODEX_DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+      throw unprocessable(DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
+        code: DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
       });
     }
   }

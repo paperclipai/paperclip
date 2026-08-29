@@ -63,11 +63,6 @@ import {
   type DuplexObservabilityRecorder,
   type Http2TelemetryEventName,
 } from "./duplex-observability.js";
-import {
-  DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
-  type DuplexAggregateByteLedger,
-  type ReservationToken,
-} from "./duplex-aggregate-byte-ledger.js";
 import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
   ensureCommandResolvable,
@@ -196,16 +191,6 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * duplex observability surface. Absent means the safe no-op default.
    */
   duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
-  /**
-   * The process-owned aggregate byte ledger for the sandbox duplex channel. The
-   * host stamps this same object on every sandbox target on the same seam as
-   * `runner`, so one shared gauge bounds the aggregate retained bytes across all
-   * live duplex routes. The live object stays on the host and never enters the
-   * sandbox environment. The bridge passes it to the broker, the decoder, and the
-   * response-body reader. Absent means no host ledger; a non-duplex run keeps the
-   * bridge inert for this seam.
-   */
-  duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
 }
 
 export type AdapterExecutionTarget =
@@ -450,19 +435,6 @@ export function adapterExecutionTargetDuplexObservabilityRecorder(
     : null;
 }
 
-/**
- * Read the injected aggregate byte ledger off a target. Only a sandbox target
- * with a ledger attached returns it. Every other target returns null, so the
- * bridge stays inert for this seam. The reader never makes a fresh ledger, so a
- * host duplex run always uses the one process-owned ledger the host stamped.
- */
-export function adapterExecutionTargetDuplexAggregateByteLedger(
-  target: AdapterExecutionTarget | null | undefined,
-): DuplexAggregateByteLedger | null {
-  return target?.kind === "remote" && target.transport === "sandbox"
-    ? target.duplexAggregateByteLedger ?? null
-    : null;
-}
 
 export function adapterExecutionTargetRemoteCwd(
   target: AdapterExecutionTarget | null | undefined,
@@ -1505,26 +1477,15 @@ function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
 }
 
 /**
- * Read the forward response body into a string. The reader bounds the body with
- * two controls. The per-request `maxBodyBytes` limit rejects a body larger than
- * the configured per-request ceiling. The optional host aggregate byte ledger
- * bounds the retained bytes across all live routes.
+ * Read the forward response body into a string. The per-request `maxBodyBytes`
+ * limit rejects a body larger than the configured per-request ceiling.
  *
- * The reader charges the ledger for every retained buffer before it allocates
- * that buffer. It reserves the exact chunk bytes before it copies a chunk into a
- * retained `Buffer`. It reserves the concatenation buffer before it allocates it.
- * A reservation that would pass the aggregate ceiling returns no token; the
- * reader retains nothing more, cancels the stream reader, and throws the fixed
- * marker {@link DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED}. The `finally` releases
- * every token exactly one time, so the reader charges the retained bytes only
- * while the raw buffers live and never leaves a token held after it returns or
- * throws.
+ * This function reserves no process-wide byte budget: it enforces only the
+ * one request's own ceiling. See the "Known behavior: aggregate retained
+ * body bytes" section in `doc/observability.md` for the accepted aggregate
+ * ceiling this leaves across every concurrent route.
  */
-async function readBridgeForwardResponseBody(
-  response: Response,
-  maxBodyBytes: number,
-  ledger?: DuplexAggregateByteLedger | null,
-): Promise<string> {
+async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<string> {
   const rawContentLength = response.headers.get("content-length");
   if (rawContentLength) {
     const contentLength = Number.parseInt(rawContentLength, 10);
@@ -1539,54 +1500,20 @@ async function readBridgeForwardResponseBody(
 
   const reader = response.body.getReader();
   const chunks: Buffer[] = [];
-  // Every response-body reservation token the reader holds. The `finally` block
-  // releases each token one time, so a return, a size error, an aggregate
-  // rejection, and a read error all release every token.
-  const tokens: ReservationToken[] = [];
   let totalBytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      const chunkBytes = value.byteLength;
-      totalBytes += chunkBytes;
-      if (totalBytes > maxBodyBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw bridgeResponseBodyLimitError(maxBodyBytes);
-      }
-      // Reserve the exact chunk bytes before the host copies the chunk into a
-      // retained buffer. A rejection fails closed: cancel the stream reader and
-      // report the fixed marker; the reader retains nothing more.
-      if (ledger) {
-        const token = ledger.reserve("response_body", chunkBytes);
-        if (!token) {
-          await reader.cancel().catch(() => undefined);
-          throw new Error(DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED);
-        }
-        tokens.push(token);
-      }
-      chunks.push(Buffer.from(value));
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    const chunkBytes = value.byteLength;
+    totalBytes += chunkBytes;
+    if (totalBytes > maxBodyBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw bridgeResponseBodyLimitError(maxBodyBytes);
     }
-    // Reserve the concatenation buffer before the reader allocates it. The
-    // concatenation buffer is a second copy of the body bytes that lives next to
-    // the chunk buffers during the concatenation, so it is the peak retained
-    // allocation. A rejection fails closed with the fixed marker.
-    if (ledger && totalBytes > 0) {
-      const concatToken = ledger.reserve("response_body", totalBytes);
-      if (!concatToken) {
-        throw new Error(DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED);
-      }
-      tokens.push(concatToken);
-    }
-    return Buffer.concat(chunks, totalBytes).toString("utf8");
-  } finally {
-    if (ledger) {
-      for (const token of tokens) {
-        ledger.release(token);
-      }
-    }
+    chunks.push(Buffer.from(value));
   }
+  return Buffer.concat(chunks, totalBytes).toString("utf8");
 }
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
@@ -3008,12 +2935,7 @@ export function buildDuplexGatewayLaunchArgv(input: {
 }
 
 /** The reason the duplex readiness handshake did not pass. */
-type DuplexReadinessFailure =
-  | "protocol_contamination"
-  | "nonce_mismatch"
-  | "channel_exit"
-  | "timeout"
-  | "aggregate_bytes_exceeded";
+type DuplexReadinessFailure = "protocol_contamination" | "nonce_mismatch" | "channel_exit" | "timeout";
 
 /** The outcome of the duplex readiness handshake. */
 type DuplexReadinessResult =
@@ -3035,8 +2957,6 @@ function duplexReadinessFallbackReason(reason: DuplexReadinessFailure): DuplexFa
       return "ready_timeout";
     case "channel_exit":
       return "ready_invalid";
-    case "aggregate_bytes_exceeded":
-      return "aggregate_bytes_exceeded";
   }
 }
 
@@ -3187,22 +3107,14 @@ function findPrefaceFrom(buffer: Buffer, from: number): number {
  * found, it calls `onMissing` exactly one time and stops buffering, so the
  * caller can abort the open and fall back to `queue_v1`. The function holds
  * no prologue byte count: it always scans for the fixed 24-octet sequence,
- * never a length. The scan buffer holds untrusted, sandbox-controlled bytes
- * on the same footing as the readiness gate's own pre-READY buffer, so, when
- * the caller supplies a ledger, it charges each received chunk against the
- * process aggregate byte ledger under the `http2_preface_scan` owner before
- * the chunk grows the buffer. A refusal fails closed the same way the cap
- * does: the function drops the buffer and calls `onMissing`.
+ * never a length.
  *
  * The bytes that follow the found preface, before the HTTP/2 server binds a
  * downstream listener, land in `pendingAfterPreface`. This buffer holds
  * untrusted bytes on the same footing as the scan buffer, so it carries the
- * same {@link DUPLEX_READINESS_BUFFER_CAP_BYTES} cap and, when the caller
- * supplies a ledger, charges each retained chunk against it under the
- * `http2_preface_replay` owner. A chunk that would pass the cap, or that the
- * ledger refuses, fails closed: the function
- * drops the buffer, releases its ledger tokens, and stops the channel. The
- * caller reads {@link replayOverflowed} after the preface settles and, on
+ * same {@link DUPLEX_READINESS_BUFFER_CAP_BYTES} cap. A chunk that would pass
+ * the cap fails closed: the function drops the buffer and stops the channel.
+ * The caller reads {@link replayOverflowed} after the preface settles and, on
  * `true`, treats the open the same as a missing preface.
  */
 function createHttp2PrefaceScanningChannel(
@@ -3211,14 +3123,12 @@ function createHttp2PrefaceScanningChannel(
     capBytes: number;
     onFound: () => void;
     onMissing: () => void;
-    ledger?: DuplexAggregateByteLedger | null;
   },
 ): {
   channel: CommandManagedDuplexChannel;
   replayOverflowed: () => boolean;
   disposeScanBuffer: () => void;
 } {
-  const ledger = options.ledger ?? null;
   // The pre-preface scan buffer. `scanBuf.append` grows its backing storage
   // by doubling, instead of copying the whole retained buffer on every
   // fragment — see {@link createGrowableByteBuffer}. `scanSearchFrom` is the
@@ -3240,42 +3150,14 @@ function createHttp2PrefaceScanningChannel(
   const pendingAfterPreface = createGrowableByteBuffer((copiedBytes) => {
     http2PrefaceReplayBufferGrowthCopyUnits += copiedBytes;
   });
-  // Every `http2_preface_replay` reservation token this buffer holds. The
-  // function releases each token exactly once, on the downstream handoff or
-  // on an overflow.
-  const replayTokens: ReservationToken[] = [];
-  // Every `http2_preface_scan` reservation token the pre-preface scan buffer
-  // holds. The scan is untrusted, sandbox-controlled input on the same
-  // footing as the readiness gate's own pre-READY buffer, so it charges the
-  // ledger the same way: one reservation per received chunk, released in
-  // full on the terminal scan outcome — the preface found, the cap passed
-  // with no match, or a ledger refusal.
-  const scanTokens: ReservationToken[] = [];
   let replayOverflow = false;
 
-  function releaseReplayTokens(): void {
-    if (!ledger) return;
-    for (const token of replayTokens) {
-      ledger.release(token);
-    }
-    replayTokens.length = 0;
-  }
-
-  function releaseScanTokens(): void {
-    if (!ledger) return;
-    for (const token of scanTokens) {
-      ledger.release(token);
-    }
-    scanTokens.length = 0;
-  }
-
-  // Drop the pending buffer, release its tokens, and stop the channel. The
-  // caller reads `replayOverflowed()` after the preface settles and falls
-  // back the same way it does for a missing preface.
+  // Drop the pending buffer and stop the channel. The caller reads
+  // `replayOverflowed()` after the preface settles and falls back the same
+  // way it does for a missing preface.
   function overflowAndStop(): void {
     replayOverflow = true;
     pendingAfterPreface.reset();
-    releaseReplayTokens();
     channel.stop();
   }
 
@@ -3288,14 +3170,6 @@ function createHttp2PrefaceScanningChannel(
     if (pendingAfterPreface.length() + chunk.byteLength > options.capBytes) {
       overflowAndStop();
       return;
-    }
-    if (ledger) {
-      const token = ledger.reserve("http2_preface_replay", chunk.byteLength);
-      if (!token) {
-        overflowAndStop();
-        return;
-      }
-      replayTokens.push(token);
     }
     pendingAfterPreface.append(chunk);
   }
@@ -3318,24 +3192,8 @@ function createHttp2PrefaceScanningChannel(
       failed = true;
       scanBuf.reset();
       scanSearchFrom = 0;
-      releaseScanTokens();
       options.onMissing();
       return;
-    }
-    // Charge this chunk against the aggregate ledger before it grows the
-    // scan buffer. A refusal fails closed the same way the cap does: drop
-    // the buffer and report a missing preface.
-    if (ledger) {
-      const token = ledger.reserve("http2_preface_scan", rawChunk.byteLength);
-      if (!token) {
-        failed = true;
-        scanBuf.reset();
-        scanSearchFrom = 0;
-        releaseScanTokens();
-        options.onMissing();
-        return;
-      }
-      scanTokens.push(token);
     }
     scanBuf.append(rawChunk);
     const scanBuffer = scanBuf.view();
@@ -3358,12 +3216,6 @@ function createHttp2PrefaceScanningChannel(
     const fromPreface = Buffer.from(scanBuffer.subarray(offset));
     scanBuf.reset();
     scanSearchFrom = 0;
-    // Release the scan tokens before `deliver` charges the same bytes under
-    // `http2_preface_replay`. The two calls run inside one synchronous
-    // callback with no `await` between them, so no other reservation can
-    // observe the released state in between; releasing first keeps the
-    // ledger's momentary peak at the real retained bytes, not double them.
-    releaseScanTokens();
     deliver(fromPreface);
   });
 
@@ -3383,15 +3235,6 @@ function createHttp2PrefaceScanningChannel(
           pendingAfterPreface.reset();
           listener(replay);
         }
-        // Release every replay token exactly once, after the synchronous
-        // handoff to the downstream listener. Order is safe here: the
-        // downstream listener is the bound HTTP/2 server duplex, which holds
-        // no aggregate-ledger reservation of its own for these bytes, so
-        // this release cannot overlap a second reservation for the same
-        // bytes. Contrast the readiness gate's own `readiness_replay`
-        // handoff, which releases first because its downstream listener (the
-        // preface scanner) does take its own reservation for the same bytes.
-        releaseReplayTokens();
       },
       onExit: (listener: (exit: { exitCode: number | null }) => void) => channel.onExit(listener),
       stop: () => channel.stop(),
@@ -3399,20 +3242,18 @@ function createHttp2PrefaceScanningChannel(
     },
     replayOverflowed: () => replayOverflow,
     /**
-     * Release every held `http2_preface_scan` token and drop the scan
-     * buffer, for a caller-side terminal path this function itself never
-     * reaches — the bound readiness timeout elapsing while the scan is
-     * still searching, with no preface found and no cap or ledger refusal
-     * of its own. A call after the preface already matched, or after the
-     * cap or the ledger already failed the scan closed, is a no-op: both
-     * paths already released the scan tokens themselves.
+     * Drop the scan buffer, for a caller-side terminal path this function
+     * itself never reaches — the bound readiness timeout elapsing while the
+     * scan is still searching, with no preface found and no cap refusal of
+     * its own. A call after the preface already matched, or after the cap
+     * already failed the scan closed, is a no-op: both paths already reset
+     * the scan buffer themselves.
      */
     disposeScanBuffer: (): void => {
       if (sawPreface || failed) return;
       failed = true;
       scanBuf.reset();
       scanSearchFrom = 0;
-      releaseScanTokens();
     },
   };
 }
@@ -3430,12 +3271,12 @@ type Http2PrefaceScanResult = "found" | "missing";
  * Returns the scanning channel alongside the settled result, so the caller
  * binds the HTTP/2 server to it only on a `found` result. On a `found`
  * result, the caller must still read `replayOverflowed()`: the post-preface
- * buffer can overflow its cap or its ledger reservation after the preface
- * settles as `found` and before the caller binds a downstream listener.
+ * buffer can overflow its cap after the preface settles as `found` and
+ * before the caller binds a downstream listener.
  */
 function scanForHttp2ClientPreface(
   channel: CommandManagedDuplexChannel,
-  options: { capBytes: number; timeoutMs: number; ledger?: DuplexAggregateByteLedger | null },
+  options: { capBytes: number; timeoutMs: number },
 ): {
   scanned: CommandManagedDuplexChannel;
   settled: Promise<Http2PrefaceScanResult>;
@@ -3457,10 +3298,10 @@ function scanForHttp2ClientPreface(
     settledOnce = true;
     clearTimeout(timer);
     // The bound readiness timeout can elapse while the scan still searches,
-    // with no preface found and no cap or ledger refusal of its own. That
-    // path holds no other cleanup, so release its `http2_preface_scan`
-    // tokens here. A `found` result, or a `missing` result the scan itself
-    // already failed closed, is a no-op inside `disposeScanBuffer`.
+    // with no preface found and no cap refusal of its own. That path holds
+    // no other cleanup, so drop the scan buffer here. A `found` result, or a
+    // `missing` result the scan itself already failed closed, is a no-op
+    // inside `disposeScanBuffer`.
     if (result === "missing") disposeScanBuffer();
     resolveSettled(result);
   };
@@ -3470,7 +3311,6 @@ function scanForHttp2ClientPreface(
     capBytes: options.capBytes,
     onFound: () => settle("found"),
     onMissing: () => settle("missing"),
-    ledger: options.ledger,
   });
   disposeScanBuffer = scan.disposeScanBuffer;
   return { scanned: scan.channel, settled, replayOverflowed: scan.replayOverflowed };
@@ -3478,13 +3318,13 @@ function scanForHttp2ClientPreface(
 
 /**
  * Test-only surface for {@link scanForHttp2ClientPreface}. A test drives the
- * post-preface replay cap and ledger charge across every terminal path
- * without the whole bridge. Production code never reads this export.
+ * post-preface replay cap across every terminal path without the whole
+ * bridge. Production code never reads this export.
  */
 export const __http2PrefaceScanTesting = {
   scanForHttp2ClientPreface: (
     channel: CommandManagedDuplexChannel,
-    options: { capBytes: number; timeoutMs: number; ledger?: DuplexAggregateByteLedger | null },
+    options: { capBytes: number; timeoutMs: number },
   ) => scanForHttp2ClientPreface(channel, options),
   readScanSearchUnits: (): number => http2PrefaceScanSearchUnits,
   resetScanSearchUnits: (): void => {
@@ -3648,12 +3488,10 @@ export const __duplexReadinessTesting = {
     duplexReadinessBufferGrowthCopyUnits = 0;
   },
   // Build one readiness gate over a supplied channel, so a test can drive the
-  // readiness-replay reservation lifecycle across every terminal path without the
-  // whole bridge. Production code never reads this factory.
-  createReadinessGate: (
-    channel: CommandManagedDuplexChannel,
-    options: { nonce: string; timeoutMs: number; ledger?: DuplexAggregateByteLedger | null },
-  ) => createDuplexReadinessGate(channel, options),
+  // readiness-replay cap lifecycle across every terminal path without the whole
+  // bridge. Production code never reads this factory.
+  createReadinessGate: (channel: CommandManagedDuplexChannel, options: { nonce: string; timeoutMs: number }) =>
+    createDuplexReadinessGate(channel, options),
 };
 
 interface DuplexReadinessGate {
@@ -3667,19 +3505,18 @@ interface DuplexReadinessGate {
    */
   readonly brokerChannel: CommandManagedDuplexChannel;
   /**
-   * Report whether a post-READY pre-bind chunk could not reserve its replay bytes
-   * against the aggregate ledger. On such a refusal the gate drops the pending
-   * replay buffer and stops the channel. The caller reads this after `ready`
-   * resolves `ok`, and before it binds the broker. A `true` result means the caller
-   * must abandon the broker and select the file bridge with the aggregate marker.
+   * Report whether a post-READY pre-bind chunk tipped the pending replay buffer
+   * past {@link DUPLEX_READINESS_BUFFER_CAP_BYTES}. On such an overflow the gate
+   * drops the pending replay buffer and stops the channel. The caller reads this
+   * after `ready` resolves `ok`, and before it binds the broker.
    */
   replayOverflowed(): boolean;
   /**
-   * Release every held readiness-replay reservation exactly once and drop the
-   * pending replay buffer. The caller runs this on a terminal path that abandons
-   * the pending replay without a broker handoff: a readiness failure, a replay
-   * overflow, or a broker-construction failure. The normal handoff releases the
-   * reservation inside `brokerChannel.onData`, so a later call here is a no-op.
+   * Drop the pending replay buffer. The caller runs this on a terminal path that
+   * abandons the pending replay without a broker handoff: a readiness failure, a
+   * replay overflow, or a broker-construction failure. The normal handoff already
+   * drops the buffer inside `brokerChannel.onData`, so a later call here is a
+   * no-op.
    */
   disposePendingReplay(): void;
   /**
@@ -3696,52 +3533,15 @@ function createDuplexReadinessGate(
   options: {
     nonce: string;
     timeoutMs: number;
-    // The one host-process aggregate byte ledger. The gate charges the untrusted
-    // pre-READY buffer bytes against it, so a pre-READY flood counts toward the
-    // aggregate ceiling across all live routes. A gate with no ledger stays inert
-    // for this seam. The gate holds the same object every other host retention
-    // site holds, so the aggregate identity holds at this seam.
-    ledger?: DuplexAggregateByteLedger | null;
   },
 ): DuplexReadinessGate {
-  const ledger = options.ledger ?? null;
   let settled = false;
   let readyOk = false;
-  // Every readiness-buffer reservation token the gate holds for the pre-READY
-  // bytes. The gate releases each token one time when it settles or when it
-  // accepts READY. On a failed handshake the gate drops the buffer, so the release
-  // frees the untrusted bytes. On READY the gate discards the whole pre-READY
-  // buffer, then re-charges only the retained suffix under `readiness_replay`.
-  const retainedTokens: ReservationToken[] = [];
-  // Every readiness-replay reservation token the gate holds for the post-READY
-  // suffix and each later pre-bind chunk. The gate releases each token one time
-  // after the synchronous handoff to the broker, or on a terminal path that
-  // abandons the pending replay without a broker handoff.
-  const replayTokens: ReservationToken[] = [];
-  // The gate sets this when a post-READY pre-bind chunk cannot reserve its replay
-  // bytes. On that refusal the gate drops the pending buffer and stops the channel.
-  // The caller reads it through `replayOverflowed` and selects the file bridge.
+  // The gate sets this when a post-READY pre-bind chunk tips the pending replay
+  // buffer past the cap. On that overflow the gate drops the pending buffer and
+  // stops the channel. The caller reads it through `replayOverflowed` and selects
+  // the file bridge.
   let replayOverflow = false;
-
-  // Release every readiness-buffer token exactly once and clear the registry. A
-  // second call is a no-op, because the array is empty.
-  function releaseReadinessBufferTokens(): void {
-    if (!ledger) return;
-    for (const token of retainedTokens) {
-      ledger.release(token);
-    }
-    retainedTokens.length = 0;
-  }
-
-  // Release every readiness-replay token exactly once and clear the registry. A
-  // second call is a no-op, because the array is empty.
-  function releaseReplayTokens(): void {
-    if (!ledger) return;
-    for (const token of replayTokens) {
-      ledger.release(token);
-    }
-    replayTokens.length = 0;
-  }
   // The raw bytes the host reads before the READY frame completes. `buffer` is
   // append-only and always a zero-copy view over the used prefix of `storage`,
   // so the O(1) cap check on `buffer.length` stays valid.
@@ -3806,11 +3606,6 @@ function createDuplexReadinessGate(
     settled = true;
     clearTimeout(timer);
     if (result.ok) readyOk = true;
-    // Release every readiness-buffer token exactly once. The gate no longer owns
-    // the pre-READY bytes: a failed handshake drops the buffer. The READY-accept
-    // path already released these tokens and charged the retained suffix under
-    // `readiness_replay`, so this call is a no-op there.
-    releaseReadinessBufferTokens();
     resolveReady(result);
   }
 
@@ -3820,23 +3615,20 @@ function createDuplexReadinessGate(
       return;
     }
     if (readyOk) {
-      // READY already passed; hold the bytes until the broker binds. Reserve the
-      // exact UTF-8 bytes under `readiness_replay` before the append, so the replay
-      // buffer counts toward the aggregate ceiling. A refusal fails closed: the gate
-      // drops the pending buffer, releases the replay tokens, stops the channel, and
-      // sets the overflow flag. The caller reads the flag and selects the file bridge
-      // with the aggregate marker, because `ready` already resolved before this
-      // synchronous post-READY chunk arrived.
-      if (ledger) {
-        const token = ledger.reserve("readiness_replay", chunk.byteLength);
-        if (!token) {
-          replayOverflow = true;
-          pending = READINESS_EMPTY_BUFFER;
-          releaseReplayTokens();
-          channel.stop();
-          return;
-        }
-        replayTokens.push(token);
+      // READY already passed; hold the bytes until the broker binds. Bound this
+      // buffer directly against {@link DUPLEX_READINESS_BUFFER_CAP_BYTES}, the
+      // same way the preface-scan gate's own post-preface replay buffer bounds
+      // itself: a worker that keeps sending bytes after READY, faster than the
+      // broker can bind, cannot grow this buffer past the cap. A chunk that
+      // would pass the cap fails closed: the gate drops the pending buffer,
+      // stops the channel, and sets the overflow flag. The caller reads the
+      // flag and selects the file bridge, because `ready` already resolved
+      // before this synchronous post-READY chunk arrived.
+      if (pending.length + chunk.byteLength > DUPLEX_READINESS_BUFFER_CAP_BYTES) {
+        replayOverflow = true;
+        pending = READINESS_EMPTY_BUFFER;
+        channel.stop();
+        return;
       }
       // Copy a first chunk instead of aliasing the caller's `Uint8Array`, so a
       // channel that reuses its delivered buffer across calls cannot corrupt the
@@ -3849,18 +3641,6 @@ function createDuplexReadinessGate(
       // sending bytes until the host closes it. Drop them, so a failed handshake
       // never grows the buffer after the gate settles.
       return;
-    }
-    // Reserve the exact bytes of this chunk against the aggregate ledger before
-    // the gate retains it. The pre-READY buffer holds untrusted bytes, so a
-    // flood counts toward the process aggregate ceiling. A rejection fails
-    // closed: the gate retains nothing more and falls back to the file bridge.
-    if (ledger) {
-      const token = ledger.reserve("readiness_buffer", chunk.byteLength);
-      if (!token) {
-        finish({ ok: false, reason: "aggregate_bytes_exceeded" });
-        return;
-      }
-      retainedTokens.push(token);
     }
     // Append the new bytes and continue the newline search from `scanFrom`, the
     // first index not yet examined. Each byte is read at most one time for the
@@ -3933,40 +3713,21 @@ function createDuplexReadinessGate(
           return;
         }
         // The bytes that follow the READY line become the replay buffer for the
-        // broker. Drop the whole pre-READY buffer charge first, then reserve the
-        // retained suffix under `readiness_replay`. The release-before-reserve order
-        // keeps the transient charge equal to the suffix, not the sum of the dropped
-        // prefix and the retained suffix. The two steps run in one synchronous
-        // section, so no other route can take the freed bytes in between.
+        // broker.
         //
         // Copy the suffix instead of slicing it off `buffer`. `buffer` is a view
         // over `storage`, and `storage`'s capacity can run ahead of the bytes in
         // use (the doubling growth in `appendReadinessBytes` over-provisions it).
-        // A slice would keep that whole over-provisioned allocation alive, so the
-        // process would retain more physical bytes than the ledger charges under
-        // `readiness_replay`. The copy is exactly `suffix.length` bytes, one time,
-        // not a per-fragment cost.
+        // A slice would keep that whole over-provisioned allocation alive for as
+        // long as the broker replay holds its reference. The copy is exactly
+        // `suffix.length` bytes, one time, not a per-fragment cost.
         const suffix = Buffer.from(buffer.subarray(newlineIndex + 1));
         // Drop the original pre-READY buffer and its backing storage now. The
-        // gate keeps only the retained suffix as `pending`, and it charges that
-        // suffix under `readiness_replay` below. If the gate keeps `storage`, the
-        // process retains the full sandbox-controlled bytes while the ledger
-        // counts only the suffix, so aggregate retention passes the ceiling. This
-        // clear also covers the broker handoff and the replay disposal. Both run
-        // later and read no buffer bytes.
+        // gate keeps only the retained suffix as `pending`. This clear also
+        // covers the broker handoff and the replay disposal. Both run later and
+        // read no buffer bytes.
         buffer = READINESS_EMPTY_BUFFER;
         storage = READINESS_EMPTY_BUFFER;
-        releaseReadinessBufferTokens();
-        if (ledger && suffix.length > 0) {
-          const token = ledger.reserve("readiness_replay", suffix.byteLength);
-          if (!token) {
-            // The retained suffix passes the aggregate ceiling. Fail closed: drop
-            // the suffix and fall back to the file bridge with the aggregate marker.
-            finish({ ok: false, reason: "aggregate_bytes_exceeded" });
-            return;
-          }
-          replayTokens.push(token);
-        }
         pending = suffix;
         finish({ ok: true });
         return;
@@ -4005,19 +3766,9 @@ function createDuplexReadinessGate(
       if (pending.length > 0) {
         const replay = pending;
         pending = READINESS_EMPTY_BUFFER;
-        // Release every readiness-replay token before the synchronous handoff
-        // to the broker, not after. The broker (the HTTP/2 preface scanner)
-        // charges its own reservation for these same bytes inside
-        // `listener(replay)` below, under a different owner. Releasing first
-        // keeps the ledger's momentary peak at the real retained bytes, not
-        // double them: the release and the broker's reserve both run inside
-        // this one synchronous call, with no `await` between them, so no
-        // other route can claim the freed capacity in between.
-        releaseReplayTokens();
         listener(replay);
         return;
       }
-      releaseReplayTokens();
     },
     onExit: (listener: (exit: { exitCode: number | null }) => void) => {
       exitSink = listener;
@@ -4037,7 +3788,6 @@ function createDuplexReadinessGate(
     replayOverflowed: () => replayOverflow,
     disposePendingReplay: () => {
       pending = READINESS_EMPTY_BUFFER;
-      releaseReplayTokens();
     },
     retainedReadinessBufferLength: () => buffer.length,
   };
@@ -4122,12 +3872,6 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   }
 
   const target = input.target;
-  // The process-owned aggregate byte ledger the host stamped on this sandbox
-  // target. The forward response-body reader charges its retained bytes against
-  // this one ledger, so the aggregate retained bytes across all live routes stay
-  // under the ceiling. A target with no ledger keeps the reader inert for this
-  // seam.
-  const duplexAggregateByteLedger = adapterExecutionTargetDuplexAggregateByteLedger(target);
   const onLog = input.onLog ?? (async () => {});
   const hostApiToken = input.hostApiToken?.trim() ?? "";
   if (hostApiToken.length === 0) {
@@ -4271,11 +4015,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // to a non-retryable 409 for both the file bridge and the duplex broker.
     let responseBody: string;
     try {
-      responseBody = await readBridgeForwardResponseBody(
-        response,
-        maxBodyBytes,
-        duplexAggregateByteLedger,
-      );
+      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
     } catch (error) {
       if (isSafeBridgeMethod(method)) {
         // The method is safe, so a retry cannot double-apply a mutation. Return a
@@ -4416,10 +4156,6 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       const gate = createDuplexReadinessGate(channel, {
         nonce,
         timeoutMs: readinessTimeoutMs,
-        // Inject the one host-process aggregate byte ledger, the same object the
-        // broker and the response-body reader hold. The gate charges the untrusted
-        // pre-READY buffer against it, so the aggregate identity holds at this seam.
-        ledger: duplexAggregateByteLedger,
       });
       const readiness = await gate.ready;
       if (!readiness.ok) {
@@ -4435,19 +4171,6 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           "stderr",
           `[paperclip] Sandbox duplex readiness failed (${readiness.reason}). Using the file bridge.\n`,
         );
-      } else if (gate.replayOverflowed()) {
-        // Readiness passed, but a post-READY pre-bind chunk passed the aggregate
-        // byte ceiling. The gate dropped the replay buffer and stopped the channel.
-        // Release any held replay reservation, close the partial channel inside the
-        // cleanup budget, and select the file bridge with the aggregate marker. The
-        // broker never bound, so no request reached the channel or any endpoint.
-        gate.disposePendingReplay();
-        await closeDuplexChannelWithinBudget(channel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
-        duplexChannelOpen.fallback(duplexReadinessFallbackReason("aggregate_bytes_exceeded"));
-        await onLog(
-          "stderr",
-          "[paperclip] Sandbox duplex readiness replay exceeded the aggregate byte ceiling (aggregate_bytes_exceeded). Using the file bridge.\n",
-        );
       } else {
         // Readiness passed. The gate retained every byte that followed the
         // accepted READY line. Scan those retained bytes for the HTTP/2
@@ -4460,32 +4183,20 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         const prefaceScan = scanForHttp2ClientPreface(gate.brokerChannel, {
           capBytes: DUPLEX_READINESS_BUFFER_CAP_BYTES,
           timeoutMs: readinessTimeoutMs,
-          // Inject the same host-process aggregate byte ledger the readiness
-          // gate charges, so the post-preface pre-bind buffer counts toward
-          // the same aggregate ceiling.
-          ledger: duplexAggregateByteLedger,
         });
         const prefaceResult = await prefaceScan.settled;
-        if (prefaceResult === "missing" || prefaceScan.replayOverflowed()) {
+        if (prefaceResult === "missing") {
           // Fail closed, the same shape as a readiness failure: close the
           // partial channel inside the cleanup budget, then select the file
           // bridge. No HTTP/2 server ever bound to this channel, so no
           // request reached it or any endpoint.
           gate.disposePendingReplay();
           await closeDuplexChannelWithinBudget(openedChannel, DEFAULT_DUPLEX_CLEANUP_BUDGET_MS);
-          if (prefaceResult === "missing") {
-            duplexChannelOpen.fallback("preface_missing");
-            await onLog(
-              "stderr",
-              "[paperclip] Sandbox HTTP/2 client preface did not appear inside the bounded readiness buffer (preface_missing). Using the file bridge.\n",
-            );
-          } else {
-            duplexChannelOpen.fallback("aggregate_bytes_exceeded");
-            await onLog(
-              "stderr",
-              "[paperclip] Sandbox HTTP/2 post-preface buffer exceeded the aggregate byte ceiling (aggregate_bytes_exceeded). Using the file bridge.\n",
-            );
-          }
+          duplexChannelOpen.fallback("preface_missing");
+          await onLog(
+            "stderr",
+            "[paperclip] Sandbox HTTP/2 client preface did not appear inside the bounded readiness buffer (preface_missing). Using the file bridge.\n",
+          );
         } else {
           // The run disposition latch for the http2_v1 path, in the same
           // shape the retired duplex_v1 broker exposed. A loss ordered before
@@ -4532,7 +4243,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                   headers: request.headers,
                   body: request.body.toString("utf8"),
                 },
-                undefined,
+                request.signal,
                 { suppressDebugLog: true },
               );
               duplexObservability.recordRequest({ latencyMs: Date.now() - dispatchStartMs, outcome: "ok" });

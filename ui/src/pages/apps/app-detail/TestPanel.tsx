@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import type {
   ToolCatalogEntry,
-  ToolConnectionAccessSummary,
   ToolConnectionTestAgent,
   ToolConnectionTestCallResult,
   ToolConnectionTestCallStatus,
@@ -41,6 +40,7 @@ import {
 } from "@/components/JsonSchemaForm";
 import { cn, relativeTime } from "@/lib/utils";
 import { appTabHref } from "../app-tabs";
+import { formatActionPermissionSummary } from "./action-permission-summary";
 
 // ---------------------------------------------------------------------------
 // Small format helpers
@@ -99,19 +99,6 @@ function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
   );
 }
 
-/** "Allowed for 1 action · Ask first for 2 · Off for 1" — singular gets " action". */
-function summaryCount(label: string, n: number): string {
-  return `${label} ${n}${n === 1 ? " action" : ""}`;
-}
-
-function accessSummaryLine(summary: ToolConnectionAccessSummary): string {
-  return [
-    summaryCount("Allowed for", summary.allowedCount),
-    summaryCount("Ask first for", summary.askFirstCount),
-    summaryCount("Off for", summary.offCount),
-  ].join(" · ");
-}
-
 // ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
@@ -136,22 +123,21 @@ export function TestPanel({
   });
 
   const agents = useMemo(
-    () => [...(testAgentsQuery.data?.agents ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+    () => [...(testAgentsQuery.data?.agents ?? [])].sort(
+      (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
+    ),
     [testAgentsQuery.data],
   );
 
   const [agentId, setAgentId] = useState<string | null>(null);
-  // Default to the first agent (alphabetical) that can run at least one action;
-  // otherwise the first agent we can test as at all.
+  // The API returns only agents this user may write to. Prefer the highest
+  // agent in that accessible slice of the org tree, regardless of whether a
+  // lower-ranked agent happens to have a broader app policy today.
   useEffect(() => {
     if (agentId && agents.some((a) => a.id === agentId)) return;
     if (agents.length === 0) return;
-    const withAccess = agents.find((a) => a.effectiveAccess.allowedCount > 0);
-    setAgentId((withAccess ?? agents[0]).id);
+    setAgentId(agents[0].id);
   }, [agents, agentId]);
-
-  // Switches the header from "TEST AS" card to the compact "Testing as …" line.
-  const [hasInteracted, setHasInteracted] = useState(false);
 
   const selectedAgent = agents.find((a) => a.id === agentId) ?? null;
 
@@ -199,6 +185,10 @@ export function TestPanel({
   if (testAgentsQuery.isLoading) {
     return (
       <div className="space-y-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading MCP actions, this may take a minute.
+        </div>
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-12 w-full" />
         <Skeleton className="h-12 w-full" />
@@ -212,7 +202,7 @@ export function TestPanel({
 
   if (agents.length === 0) {
     return (
-      <div className="rounded-lg border border-border bg-card p-6 text-center">
+      <div className="py-6 text-center">
         <p className="text-sm font-medium text-foreground">No agents to test as</p>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
           Only agents you can assign tasks to can preview {appName}. Give an agent access in{" "}
@@ -230,11 +220,10 @@ export function TestPanel({
     appName,
     allAgents: agents,
     onSelectAgent: setAgentId,
-    onInteract: () => setHasInteracted(true),
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-8">
       {selectedAgent && (
         <TestAsHeader
           appName={appName}
@@ -242,11 +231,11 @@ export function TestPanel({
           selectedAgent={selectedAgent}
           onSelect={setAgentId}
           connectionId={connectionId}
-          compact={hasInteracted}
         />
       )}
 
-      <div className="space-y-3">
+      <section className="space-y-4 border-t border-border pt-8">
+        <h2 className="text-lg font-semibold text-foreground">Actions</h2>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-(--sz-12rem) flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -263,10 +252,10 @@ export function TestPanel({
           <FilterChip label={`Write ${writeActions.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
         </div>
         <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
-      </div>
+      </section>
 
       {visibleCount === 0 ? (
-        <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+        <div className="py-6 text-center text-sm text-muted-foreground">
           No actions match “{query}”. Clear the search to see them all.
         </div>
       ) : (
@@ -311,7 +300,7 @@ export function TestPanel({
 
 function EmptyState({ connectionId, appName }: { connectionId: string; appName: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-8 text-center">
+    <div className="py-8 text-center">
       <p className="text-base font-bold text-foreground">Nothing to test yet</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
         Once {appName} is connected, the actions it offers will show up here so you can try them out.
@@ -333,38 +322,24 @@ function TestAsHeader({
   selectedAgent,
   onSelect,
   connectionId,
-  compact,
 }: {
   appName: string;
   agents: ToolConnectionTestAgent[];
   selectedAgent: ToolConnectionTestAgent;
   onSelect: (agentId: string) => void;
   connectionId: string;
-  compact: boolean;
 }) {
-  if (compact) {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-        <p className="text-sm text-muted-foreground">
-          Testing as{" "}
-          <AgentPicker
-            agents={agents}
-            selectedAgent={selectedAgent}
-            onSelect={onSelect}
-            connectionId={connectionId}
-            appName={appName}
-            inline
-          />
-        </p>
-        <p className="text-xs text-muted-foreground">{accessSummaryLine(selectedAgent.effectiveAccess)}</p>
-      </div>
-    );
-  }
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <section className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-foreground">Test an action</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Run a real action as an agent.
+        </p>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Test as</p>
+          <p className="text-xs font-medium text-muted-foreground">Agent</p>
           <AgentPicker
             agents={agents}
             selectedAgent={selectedAgent}
@@ -373,12 +348,14 @@ function TestAsHeader({
             appName={appName}
           />
         </div>
-        <p className="text-sm text-muted-foreground">{accessSummaryLine(selectedAgent.effectiveAccess)}</p>
+        <Link
+          className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          to={appTabHref(connectionId, "permissions")}
+        >
+          {formatActionPermissionSummary(selectedAgent.effectiveAccess)}
+        </Link>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Runs real actions in {appName}, exactly as this agent would.
-      </p>
-    </div>
+    </section>
   );
 }
 
@@ -525,7 +502,6 @@ type RowSharedProps = {
   appName: string;
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
-  onInteract: () => void;
 };
 
 function ActionGroup({
@@ -546,7 +522,7 @@ function ActionGroup({
     <section>
       <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
       {subheading && <p className="mb-1.5 -mt-1 text-xs text-muted-foreground">{subheading}</p>}
-      <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+      <div className="divide-y divide-border">
         {entries.map((entry) => (
           <ActionRow
             key={entry.id}
@@ -599,7 +575,7 @@ function ActionRow({
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="border-t border-border bg-muted/20 px-4 py-4">
+        <div className="border-t border-border py-4 pl-11">
           <ActionTester entry={entry} decision={decision} agent={agent} {...shared} />
         </div>
       </CollapsibleContent>
@@ -687,7 +663,6 @@ function ActionTester({
   agent,
   allAgents,
   onSelectAgent,
-  onInteract,
 }: {
   entry: ToolCatalogEntry;
   decision: ToolConnectionTestDecision;
@@ -755,7 +730,6 @@ function ActionTester({
     const validationErrors = validateJsonSchemaForm(rawSchema, values);
     setErrors(validationErrors);
     if (Object.keys(validationErrors).length > 0) return;
-    onInteract();
     cancelledRef.current = false;
     startedAtRef.current = Date.now();
     setElapsedMs(0);
@@ -1358,7 +1332,7 @@ function OffExplanation({
   return (
     <div className="grid gap-3 md:grid-cols-(--gtc-62)">
       <div className="space-y-3">
-        <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3">
+        <div className="flex items-start gap-2">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-sm text-muted-foreground">
             <p className="font-medium text-foreground">{title} is off for {agent.name}.</p>
@@ -1378,7 +1352,7 @@ function OffExplanation({
         <p className="text-xs text-muted-foreground">No call will be made — this action is off for {agent.name}.</p>
       </div>
 
-      <aside className="rounded-md border border-border bg-card p-3">
+      <aside>
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
         {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}
