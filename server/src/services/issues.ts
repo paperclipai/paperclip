@@ -7142,6 +7142,13 @@ export function issueService(db: Db) {
       if (blockParentUntilDone && !issueData.parentId) {
         throw unprocessable("blockParentUntilDone requires parentId");
       }
+      if (blockParentUntilDone && issueData.parentId) {
+        const [parent] = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueData.parentId)));
+        if (!parent) throw notFound("Parent issue not found");
+      }
       issueData.description = appendAcceptanceCriteriaToDescription(
         issueData.description,
         acceptanceCriteria,
