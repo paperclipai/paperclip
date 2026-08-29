@@ -206,6 +206,8 @@ describe("transcriptToTaskChatItems native usage", () => {
 
     expect(items).toEqual([expect.objectContaining({
       kind: "usage",
+      label: "Provider session total",
+      detail: expect.stringContaining("cumulative usage"),
       usage: expect.objectContaining({ used: 100, inputTokens: 80, outputTokens: 20 }),
     })]);
   });

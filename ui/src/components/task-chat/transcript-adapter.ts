@@ -320,6 +320,14 @@ export function transcriptToTaskChatItems(
         items.push({
           id: `${runId}:usage:${i}`,
           kind: "usage",
+          ...(entry.subtype === "paperclip_runner_session_usage"
+            ? {
+                label: "Provider session total",
+                detail:
+                  entry.text ||
+                  "This cumulative usage can include earlier runs in the resumed provider session.",
+              }
+            : {}),
           usage: {
             used: inputTokens + outputTokens + (entry.cachedTokens || 0),
             size: 0,
