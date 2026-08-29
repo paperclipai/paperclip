@@ -7,6 +7,7 @@ import type {
 import { connectionIntentsApi } from "@/api/connection-intents";
 import { Link } from "@/lib/router";
 import { AppLogo } from "@/pages/apps/AppLogo";
+import { appSourceConnectHref, isMcpDirectOAuthConnectSlug } from "@/pages/apps/app-connect-policy";
 import { Button } from "./ui/button";
 
 export interface ConnectionIntentInteractionBodyProps {
@@ -29,11 +30,13 @@ export function ConnectionIntentInteractionBody({
   useEffect(() => setCurrent(interaction), [interaction]);
 
   const isAddressee = Boolean(currentUserId && current.addresseeUserId === currentUserId);
-  const connectHref = `/apps/connect?${new URLSearchParams({
-    byo: "1",
-    appKey: current.payload.serviceSlug,
-    intent: current.id,
-  }).toString()}`;
+  const connectHref = isMcpDirectOAuthConnectSlug(current.payload.serviceSlug)
+    ? appSourceConnectHref(current.payload.serviceSlug, current.id)
+    : `/apps/connect?${new URLSearchParams({
+      byo: "1",
+      appKey: current.payload.serviceSlug,
+      intent: current.id,
+    }).toString()}`;
 
   async function loadOptions() {
     setExpanded(true);
