@@ -615,4 +615,52 @@ describe.sequential("DurablePrpControlPlane", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("waits for in-flight committed events before disconnecting", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-disconnect-drain-"));
+    let markCommitStarted!: () => void;
+    const commitStarted = new Promise<void>((resolveStarted) => {
+      markCommitStarted = resolveStarted;
+    });
+    let finishCommit = (): void => undefined;
+    const commitBlocked = new Promise<void>((resolveCommit) => {
+      finishCommit = resolveCommit;
+    });
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onSemanticToolInput: async () => ({ result: { ok: true } }),
+      onCommittedEvent: async () => {
+        markCommitStarted();
+        await commitBlocked;
+      },
+    });
+    try {
+      await controlPlane.start();
+      const client = await authenticate(
+        controlPlane,
+        controlPlane.issueBootstrapTicket(),
+      );
+      sendSecure(client!, semanticInputEvent());
+      await commitStarted;
+
+      let disconnected = false;
+      const disconnecting = Promise.resolve(
+        controlPlane.disconnectActiveRunner(),
+      ).then(() => {
+        disconnected = true;
+      });
+      await new Promise<void>((resolveImmediate) => setImmediate(resolveImmediate));
+      expect(disconnected).toBe(false);
+
+      finishCommit();
+      await disconnecting;
+    } finally {
+      finishCommit();
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

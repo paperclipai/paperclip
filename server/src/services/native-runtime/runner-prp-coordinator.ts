@@ -283,8 +283,8 @@ export function runnerPrpCoordinator(
       try {
         bootstrapTicket = authority.issueBootstrapTicket(bootstrapTtlMs);
       } catch (error) {
-        authority.disconnectActiveRunner();
         await registration.release();
+        await authority.disconnectActiveRunner();
         throw error;
       }
       let released = false;
@@ -339,8 +339,8 @@ export function runnerPrpCoordinator(
         release: async () => {
           if (released) return;
           released = true;
-          authority.disconnectActiveRunner();
           await registration.release();
+          await authority.disconnectActiveRunner();
         },
       };
     },
