@@ -110,6 +110,12 @@
   ],
   "fixtures": [
     {
+      "path": "fixtures/codex-driver/driver-conformance.json",
+      "sha256": "55bbd66bb0d6641a64eedfaf02bb067c65a8b51c46d76d3052eeb99343f53176",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/conformance-expected-output.json",
       "sha256": "5a643639c9df0a2925ba95c5c5dfa2217605018bfa0dd3954ab4aca5fcfdc2c6",
       "expectation": "accept",
