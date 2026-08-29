@@ -176,10 +176,18 @@ describe("openapi routes", () => {
     expect(res.body.info.title).toBe("Paperclip API");
     expect(res.body.paths["/api/openapi.json"].get.summary).toBe("Get the generated OpenAPI document");
     expect(res.body.paths["/api/companies/{companyId}/agents"].get.summary).toBe("List agents in a company");
-    expect(res.body.paths["/api/companies/{companyId}/issues"].post.requestBody.content["application/json"].schema)
-      .toMatchObject({ additionalProperties: false });
-    expect(res.body.paths["/api/issues/{id}"].patch.requestBody.content["application/json"].schema)
-      .toMatchObject({ additionalProperties: false });
+    const createIssueBodySchema = res.body.paths["/api/companies/{companyId}/issues"]
+      .post.requestBody.content["application/json"].schema;
+    expect(createIssueBodySchema).toMatchObject({
+      additionalProperties: false,
+      properties: {
+        acceptanceCriteria: { type: "array" },
+        blockParentUntilDone: { type: "boolean" },
+      },
+    });
+    const updateIssueBodySchema = res.body.paths["/api/issues/{id}"].patch
+      .requestBody.content["application/json"].schema;
+    expect(updateIssueBodySchema).toMatchObject({ additionalProperties: false });
     expect(res.body.paths["/api/agents/{id}/keys"].post.summary).toBe("Create an agent API key");
     expect(res.body.components.securitySchemes).toMatchObject({
       BoardSessionAuth: { type: "apiKey", in: "cookie" },
