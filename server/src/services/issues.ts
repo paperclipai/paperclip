@@ -657,6 +657,90 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+
+export function parseForeignKeyError(error: unknown): { message: string } | null {
+  if (!error || typeof error !== "object") return null;
+  const records: Record<string, unknown>[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const record = current as Record<string, unknown>;
+    records.push(record);
+    current = record.cause;
+  }
+  const isFk = records.some((r) => r.code === "23503");
+  if (!isFk) return null;
+
+  for (const r of records) {
+    const str = `${r.constraint ?? ""} ${r.detail ?? ""} ${r.message ?? ""}`.toLowerCase();
+    if (str.includes("parent") || str.includes("issues_parent")) {
+      return { message: "Parent issue not found" };
+    }
+    if (str.includes("goal") || str.includes("issues_goal")) {
+      return { message: "Goal not found" };
+    }
+  }
+  return { message: "Foreign key constraint violation" };
+}
+
+async function isIssueDescendantOf(
+  dbOrTx: DbReader,
+  companyId: string,
+  candidateId: string,
+  ancestorId: string,
+): Promise<boolean> {
+  let currentId: string | null = candidateId;
+  const visited = new Set<string>();
+  while (currentId) {
+    if (currentId === ancestorId) return true;
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const row = await dbOrTx
+      .select({ parentId: issues.parentId })
+      .from(issues)
+      .where(and(eq(issues.id, currentId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    currentId = row?.parentId ?? null;
+  }
+  return false;
+}
+
+export async function assertParentIssueExists(
+  dbOrTx: DbReader,
+  companyId: string,
+  parentId: string,
+  currentIssueId?: string,
+) {
+  if (currentIssueId && parentId === currentIssueId) {
+    throw unprocessable("Parent issue not found");
+  }
+  const parent = await dbOrTx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(eq(issues.id, parentId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!parent) {
+    throw unprocessable("Parent issue not found");
+  }
+  if (currentIssueId && (await isIssueDescendantOf(dbOrTx, companyId, parentId, currentIssueId))) {
+    throw unprocessable("Parent issue cannot be a descendant of this issue");
+  }
+}
+
+export async function assertGoalExists(
+  dbOrTx: DbReader,
+  companyId: string,
+  goalId: string,
+) {
+  const goal = await dbOrTx
+    .select({ id: goals.id })
+    .from(goals)
+    .where(and(eq(goals.id, goalId), eq(goals.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!goal) {
+    throw unprocessable("Goal not found");
+  }
+}
+
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -7074,298 +7158,310 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
-        const idempotencyKey = rawIdempotencyKey?.trim() || null;
-        const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
-        if (allowDuplicate === false) {
-          const titleGuardKey =
-            `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
-          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
-        }
-        if (idempotencyKey) {
-          const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
-          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
-        }
-
-        let existingIssue: typeof issues.$inferSelect | undefined;
-        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
-        if (idempotencyKey) {
-          const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
-          await tx.execute(sql`
-            delete from ${issueCreateIdempotencyKeys}
-            where ${issueCreateIdempotencyKeys.id} in (
-              select ${issueCreateIdempotencyKeys.id}
-              from ${issueCreateIdempotencyKeys}
-              where ${issueCreateIdempotencyKeys.companyId} = ${companyId}
-                and ${issueCreateIdempotencyKeys.createdAt} < ${idempotencyKeyRetentionCutoff.toISOString()}::timestamptz
-              order by ${issueCreateIdempotencyKeys.createdAt} asc, ${issueCreateIdempotencyKeys.id} asc
-              limit ${ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE}
-            )
-          `);
-
-          [existingIssue] = await tx
-            .select()
-            .from(issueCreateIdempotencyKeys)
-            .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
-            .where(and(
-              eq(issueCreateIdempotencyKeys.companyId, companyId),
-              eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
-            ))
-            .limit(1)
-            .then((rows) => rows.map((row) => row.issues));
-          if (existingIssue) deduplicationReason = "idempotency_key";
-        }
-        if (!existingIssue && allowDuplicate === false) {
-          [existingIssue] = await tx
-            .select()
-            .from(issues)
-            .where(and(
-              eq(issues.companyId, companyId),
-              issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
-              isNull(issues.hiddenAt),
-              notInArray(issues.status, ["done", "cancelled"]),
-              gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
-              sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
-            ))
-            .orderBy(asc(issues.createdAt), asc(issues.id))
-            .limit(1);
-          if (existingIssue) deduplicationReason = "recent_open_title";
-        }
-        if (existingIssue) {
+      if (issueData.parentId !== undefined && issueData.parentId !== null) {
+        await assertParentIssueExists(db, companyId, issueData.parentId);
+      }
+      if (issueData.goalId !== undefined && issueData.goalId !== null) {
+        await assertGoalExists(db, companyId, issueData.goalId);
+      }
+      try {
+        return await db.transaction(async (tx) => {
+          const idempotencyKey = rawIdempotencyKey?.trim() || null;
+          const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
+          if (allowDuplicate === false) {
+            const titleGuardKey =
+              `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
+            await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
+          }
           if (idempotencyKey) {
-            await tx
-              .insert(issueCreateIdempotencyKeys)
-              .values({ companyId, idempotencyKey, issueId: existingIssue.id })
-              .onConflictDoNothing();
+            const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
+            await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
           }
-          if (deduplicationReason) onDeduplicated?.(deduplicationReason);
-          const [enriched] = await withIssueLabels(tx, [existingIssue]);
-          const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
-          return withRelations;
-        }
 
-        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
-        let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
-        let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
-        let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
-        let executionWorkspaceSettings =
-          (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
-          ? null
-          : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
-        const hasExplicitExecutionWorkspaceOverride =
-          issueData.executionWorkspaceId !== undefined ||
-          issueData.executionWorkspacePreference !== undefined ||
-          issueData.executionWorkspaceSettings !== undefined;
-        if (workspaceInheritanceIssueId) {
-          const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
-          if (issueData.projectId == null && workspaceSource.projectId) {
-            issueData.projectId = workspaceSource.projectId;
+          let existingIssue: typeof issues.$inferSelect | undefined;
+          let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+          if (idempotencyKey) {
+            const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+            await tx.execute(sql`
+              delete from ${issueCreateIdempotencyKeys}
+              where ${issueCreateIdempotencyKeys.id} in (
+                select ${issueCreateIdempotencyKeys.id}
+                from ${issueCreateIdempotencyKeys}
+                where ${issueCreateIdempotencyKeys.companyId} = ${companyId}
+                  and ${issueCreateIdempotencyKeys.createdAt} < ${idempotencyKeyRetentionCutoff.toISOString()}::timestamptz
+                order by ${issueCreateIdempotencyKeys.createdAt} asc, ${issueCreateIdempotencyKeys.id} asc
+                limit ${ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE}
+              )
+            `);
+
+            [existingIssue] = await tx
+              .select()
+              .from(issueCreateIdempotencyKeys)
+              .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+              .where(and(
+                eq(issueCreateIdempotencyKeys.companyId, companyId),
+                eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+              ))
+              .limit(1)
+              .then((rows) => rows.map((row) => row.issues));
+            if (existingIssue) deduplicationReason = "idempotency_key";
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
-            projectWorkspaceId = workspaceSource.projectWorkspaceId;
+          if (!existingIssue && allowDuplicate === false) {
+            [existingIssue] = await tx
+              .select()
+              .from(issues)
+              .where(and(
+                eq(issues.companyId, companyId),
+                issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
+                isNull(issues.hiddenAt),
+                notInArray(issues.status, ["done", "cancelled"]),
+                gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
+                sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
+              ))
+              .orderBy(asc(issues.createdAt), asc(issues.id))
+              .limit(1);
+            if (existingIssue) deduplicationReason = "recent_open_title";
           }
-          if (
-            isolatedWorkspacesEnabled &&
-            !hasExplicitExecutionWorkspaceOverride &&
-            workspaceSource.executionWorkspaceId
-          ) {
-            const sourceWorkspace = await tx
-              .select({
-                id: executionWorkspaces.id,
-                mode: executionWorkspaces.mode,
-              })
-              .from(executionWorkspaces)
-              .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
-              .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
-              executionWorkspaceId = sourceWorkspace.id;
-              executionWorkspacePreference = "reuse_existing";
-              executionWorkspaceSettings = {
-                ...((workspaceSource.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
-                mode: issueExecutionWorkspaceModeForPersistedWorkspace(sourceWorkspace.mode),
-              };
+          if (existingIssue) {
+            if (idempotencyKey) {
+              await tx
+                .insert(issueCreateIdempotencyKeys)
+                .values({ companyId, idempotencyKey, issueId: existingIssue.id })
+                .onConflictDoNothing();
+            }
+            if (deduplicationReason) onDeduplicated?.(deduplicationReason);
+            const [enriched] = await withIssueLabels(tx, [existingIssue]);
+            const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+            return withRelations;
+          }
+
+          const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+          let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
+          let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
+          let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
+          let executionWorkspaceSettings =
+            (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+          const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
+            ? null
+            : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+          const hasExplicitExecutionWorkspaceOverride =
+            issueData.executionWorkspaceId !== undefined ||
+            issueData.executionWorkspacePreference !== undefined ||
+            issueData.executionWorkspaceSettings !== undefined;
+          if (workspaceInheritanceIssueId) {
+            const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
+            if (issueData.projectId == null && workspaceSource.projectId) {
+              issueData.projectId = workspaceSource.projectId;
+            }
+            if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+              projectWorkspaceId = workspaceSource.projectWorkspaceId;
+            }
+            if (
+              isolatedWorkspacesEnabled &&
+              !hasExplicitExecutionWorkspaceOverride &&
+              workspaceSource.executionWorkspaceId
+            ) {
+              const sourceWorkspace = await tx
+                .select({
+                  id: executionWorkspaces.id,
+                  mode: executionWorkspaces.mode,
+                })
+                .from(executionWorkspaces)
+                .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
+                .then((rows) => rows[0] ?? null);
+              if (sourceWorkspace) {
+                executionWorkspaceId = sourceWorkspace.id;
+                executionWorkspacePreference = "reuse_existing";
+                executionWorkspaceSettings = {
+                  ...((workspaceSource.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
+                  mode: issueExecutionWorkspaceModeForPersistedWorkspace(sourceWorkspace.mode),
+                };
+              }
             }
           }
-        }
-        if (issueData.projectId == null && projectWorkspaceId) {
-          const workspace = await assertValidProjectWorkspace(companyId, null, projectWorkspaceId, tx);
-          issueData.projectId = workspace.projectId;
-        }
-        if (issueData.projectId == null && executionWorkspaceId) {
-          const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
-          issueData.projectId = workspace.projectId;
-        }
-        const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
-        // Cache the project policy lookup for this insert so the default
-        // workspace-settings block does not re-query the project row.
-        let projectPolicyCached: ReturnType<typeof parseProjectExecutionWorkspacePolicy> | null = null;
-        let projectPolicyLoaded = false;
-        const loadProjectPolicyOnce = async () => {
-          if (projectPolicyLoaded) return projectPolicyCached;
-          projectPolicyLoaded = true;
-          if (!issueData.projectId) return null;
-          const projectRow = await tx
-            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-            .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
-          projectPolicyCached = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
-          return projectPolicyCached;
-        };
-
-        if (
-          executionWorkspaceSettings == null &&
-          executionWorkspaceId == null &&
-          issueData.projectId
-        ) {
-          executionWorkspaceSettings =
-            defaultIssueExecutionWorkspaceSettingsForProject(
-              gateProjectExecutionWorkspacePolicy(
-                await loadProjectPolicyOnce(),
-                isolatedWorkspacesEnabled,
-              ),
-            ) as Record<string, unknown> | null;
-        }
-        if (!projectWorkspaceId && issueData.projectId) {
-          const project = await tx
-            .select({
-              executionWorkspacePolicy: projects.executionWorkspacePolicy,
-            })
-            .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
-          const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
-          projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
-          if (!projectWorkspaceId) {
-            projectWorkspaceId = await tx
-              .select({ id: projectWorkspaces.id })
-              .from(projectWorkspaces)
-              .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
-              .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-              .then((rows) => rows[0]?.id ?? null);
+          if (issueData.projectId == null && projectWorkspaceId) {
+            const workspace = await assertValidProjectWorkspace(companyId, null, projectWorkspaceId, tx);
+            issueData.projectId = workspace.projectId;
           }
-        }
-        if (projectWorkspaceId) {
-          await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
-        }
-        if (executionWorkspaceId) {
-          await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
-        }
-        if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
-          assertExplicitPinnedWorktreeIssueRunnable({
-            projectId: issueData.projectId ?? null,
-            projectWorkspaceId,
-            executionWorkspaceId,
-            executionWorkspacePreference,
-            executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+          if (issueData.projectId == null && executionWorkspaceId) {
+            const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
+            issueData.projectId = workspace.projectId;
+          }
+          const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
+          // Cache the project policy lookup for this insert so the default
+          // workspace-settings block does not re-query the project row.
+          let projectPolicyCached: ReturnType<typeof parseProjectExecutionWorkspacePolicy> | null = null;
+          let projectPolicyLoaded = false;
+          const loadProjectPolicyOnce = async () => {
+            if (projectPolicyLoaded) return projectPolicyCached;
+            projectPolicyLoaded = true;
+            if (!issueData.projectId) return null;
+            const projectRow = await tx
+              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+              .from(projects)
+              .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            projectPolicyCached = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+            return projectPolicyCached;
+          };
+
+          if (
+            executionWorkspaceSettings == null &&
+            executionWorkspaceId == null &&
+            issueData.projectId
+          ) {
+            executionWorkspaceSettings =
+              defaultIssueExecutionWorkspaceSettingsForProject(
+                gateProjectExecutionWorkspacePolicy(
+                  await loadProjectPolicyOnce(),
+                  isolatedWorkspacesEnabled,
+                ),
+              ) as Record<string, unknown> | null;
+          }
+          if (!projectWorkspaceId && issueData.projectId) {
+            const project = await tx
+              .select({
+                executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              })
+              .from(projects)
+              .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            const projectPolicy = parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy);
+            projectWorkspaceId = projectPolicy?.defaultProjectWorkspaceId ?? null;
+            if (!projectWorkspaceId) {
+              projectWorkspaceId = await tx
+                .select({ id: projectWorkspaces.id })
+                .from(projectWorkspaces)
+                .where(and(eq(projectWorkspaces.projectId, issueData.projectId), eq(projectWorkspaces.companyId, companyId)))
+                .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+                .then((rows) => rows[0]?.id ?? null);
+            }
+          }
+          if (projectWorkspaceId) {
+            await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
+          }
+          if (executionWorkspaceId) {
+            await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+          }
+          if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+            assertExplicitPinnedWorktreeIssueRunnable({
+              projectId: issueData.projectId ?? null,
+              projectWorkspaceId,
+              executionWorkspaceId,
+              executionWorkspacePreference,
+              executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+            });
+          }
+          // Self-correcting counter: use MAX(issue_number) + 1 if the counter
+          // has drifted below the actual max, preventing identifier collisions.
+          const [maxRow] = await tx
+            .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+            .from(issues)
+            .where(eq(issues.companyId, companyId));
+          const currentMax = maxRow?.maxNum ?? 0;
+
+          const [company] = await tx
+            .update(companies)
+            .set({
+              issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
+            })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+
+          const issueNumber = company.issueCounter;
+          const identifier = `${company.issuePrefix}-${issueNumber}`;
+          const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(tx, companyId, {
+            explicitResponsibleUserId: issueData.responsibleUserId ?? null,
+            createdByUserId: issueData.createdByUserId ?? null,
+            parentId: issueData.parentId ?? null,
+            originKind: issueData.originKind ?? "manual",
+            originRunId: issueData.originRunId ?? null,
+            actorRunId: actorRunId ?? null,
+            actorResponsibleUserId: actorResponsibleUserId ?? null,
+            trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
           });
-        }
-        // Self-correcting counter: use MAX(issue_number) + 1 if the counter
-        // has drifted below the actual max, preventing identifier collisions.
-        const [maxRow] = await tx
-          .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
-          .from(issues)
-          .where(eq(issues.companyId, companyId));
-        const currentMax = maxRow?.maxNum ?? 0;
 
-        const [company] = await tx
-          .update(companies)
-          .set({
-            issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
-          })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
-
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
-        const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(tx, companyId, {
-          explicitResponsibleUserId: issueData.responsibleUserId ?? null,
-          createdByUserId: issueData.createdByUserId ?? null,
-          parentId: issueData.parentId ?? null,
-          originKind: issueData.originKind ?? "manual",
-          originRunId: issueData.originRunId ?? null,
-          actorRunId: actorRunId ?? null,
-          actorResponsibleUserId: actorResponsibleUserId ?? null,
-          trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
-        });
-
-        const values = {
-          ...issueData,
-          responsibleUserId,
-          requestDepth: clampIssueRequestDepth(issueData.requestDepth),
-          originKind: issueData.originKind ?? "manual",
-          goalId: resolveIssueGoalId({
-            projectId: issueData.projectId,
-            goalId: issueData.goalId,
-            projectGoalId,
-            defaultGoalId: defaultCompanyGoal?.id ?? null,
-          }),
-          ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
-          ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
-          ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),
-          ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
-          companyId,
-          issueNumber,
-          identifier,
-        } as typeof issues.$inferInsert;
-        if (values.status === "in_progress" && !values.startedAt) {
-          values.startedAt = new Date();
-        }
-        if (values.status === "done") {
-          values.completedAt = new Date();
-        }
-        if (values.status === "cancelled") {
-          values.cancelledAt = new Date();
-        }
-        Object.assign(
-          values,
-          buildInitialIssueMonitorFields({
-            policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
-            status: values.status ?? "backlog",
-            assigneeAgentId: values.assigneeAgentId ?? null,
-            assigneeUserId: values.assigneeUserId ?? null,
-          }),
-        );
-
-        const [issue] = await tx.insert(issues).values(values).returning();
-        if (idempotencyKey) {
-          await tx.insert(issueCreateIdempotencyKeys).values({
+          const values = {
+            ...issueData,
+            responsibleUserId,
+            requestDepth: clampIssueRequestDepth(issueData.requestDepth),
+            originKind: issueData.originKind ?? "manual",
+            goalId: resolveIssueGoalId({
+              projectId: issueData.projectId,
+              goalId: issueData.goalId,
+              projectGoalId,
+              defaultGoalId: defaultCompanyGoal?.id ?? null,
+            }),
+            ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+            ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
+            ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),
+            ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
             companyId,
-            idempotencyKey,
-            issueId: issue.id,
-          });
-        }
-        if (watchdog) {
-          await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
-            agentId: watchdog.agentId,
-            instructions: watchdog.instructions,
-            actor: {
-              agentId: issueData.createdByAgentId ?? null,
-              userId: issueData.createdByUserId ?? null,
-              runId: watchdogActorRunId ?? null,
-            },
-          });
-        }
-        if (inputLabelIds) {
-          await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
-        }
-        if (blockedByIssueIds !== undefined) {
-          await syncBlockedByIssueIds(
-            issue.id,
-            companyId,
-            blockedByIssueIds,
-            {
-              agentId: issueData.createdByAgentId ?? null,
-              userId: issueData.createdByUserId ?? null,
-            },
-            tx,
+            issueNumber,
+            identifier,
+          } as typeof issues.$inferInsert;
+          if (values.status === "in_progress" && !values.startedAt) {
+            values.startedAt = new Date();
+          }
+          if (values.status === "done") {
+            values.completedAt = new Date();
+          }
+          if (values.status === "cancelled") {
+            values.cancelledAt = new Date();
+          }
+          Object.assign(
+            values,
+            buildInitialIssueMonitorFields({
+              policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+              status: values.status ?? "backlog",
+              assigneeAgentId: values.assigneeAgentId ?? null,
+              assigneeUserId: values.assigneeUserId ?? null,
+            }),
           );
-        }
-        const [enriched] = await withIssueLabels(tx, [issue]);
-        const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
-        return withRelations;
-      });
+
+          const [issue] = await tx.insert(issues).values(values).returning();
+          if (idempotencyKey) {
+            await tx.insert(issueCreateIdempotencyKeys).values({
+              companyId,
+              idempotencyKey,
+              issueId: issue.id,
+            });
+          }
+          if (watchdog) {
+            await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
+              agentId: watchdog.agentId,
+              instructions: watchdog.instructions,
+              actor: {
+                agentId: issueData.createdByAgentId ?? null,
+                userId: issueData.createdByUserId ?? null,
+                runId: watchdogActorRunId ?? null,
+              },
+            });
+          }
+          if (inputLabelIds) {
+            await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+          }
+          if (blockedByIssueIds !== undefined) {
+            await syncBlockedByIssueIds(
+              issue.id,
+              companyId,
+              blockedByIssueIds,
+              {
+                agentId: issueData.createdByAgentId ?? null,
+                userId: issueData.createdByUserId ?? null,
+              },
+              tx,
+            );
+          }
+          const [enriched] = await withIssueLabels(tx, [issue]);
+          const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+          return withRelations;
+        });
+      } catch (err) {
+        const fkError = parseForeignKeyError(err);
+        if (fkError) throw unprocessable(fkError.message);
+        throw err;
+      }
     },
 
     /**
@@ -7662,6 +7758,13 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      // The descendant-cycle check for parentId is deferred to runUpdate(),
+      // where it runs under the same row locks as the write (see below) --
+      // checking it here, ahead of the transaction, would let two concurrent
+      // requests each observe the pre-update tree and both pass.
+      if (issueData.goalId !== undefined && issueData.goalId !== null) {
+        await assertGoalExists(dbOrTx, existing.companyId, issueData.goalId);
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7805,6 +7908,22 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (issueData.parentId !== undefined && issueData.parentId !== null) {
+          // Lock the current issue and the proposed parent together, in a
+          // stable order, before re-checking the descendant cycle. A
+          // concurrent request that tries the mirrored update (e.g. setting
+          // the proposed parent's parentId to this issue) needs the same two
+          // rows, so it blocks until this transaction commits or rolls back
+          // instead of racing this check (Greptile finding on PR #11087).
+          const lockIds = [...new Set([id, issueData.parentId])].sort();
+          await tx.execute(
+            sql`SELECT ${issues.id} FROM ${issues}
+                WHERE ${inArray(issues.id, lockIds)}
+                ORDER BY ${issues.id}
+                FOR UPDATE`,
+          );
+          await assertParentIssueExists(tx, existing.companyId, issueData.parentId, id);
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -8052,7 +8171,14 @@ export function issueService(db: Db) {
         };
       };
 
-      const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
+      let result;
+      try {
+        result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
+      } catch (err) {
+        const fkError = parseForeignKeyError(err);
+        if (fkError) throw unprocessable(fkError.message);
+        throw err;
+      }
       if (dbOrTx === db && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications) publishActivity(publication);
       }
