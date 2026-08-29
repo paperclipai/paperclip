@@ -6,6 +6,7 @@ pub mod fake_harness;
 pub mod local_runner;
 pub mod process_supervisor;
 pub mod provider_backend;
+pub mod provider_bridge;
 pub mod provider_events;
 pub mod replay;
 

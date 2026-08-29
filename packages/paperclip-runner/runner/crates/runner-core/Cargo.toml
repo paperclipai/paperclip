@@ -9,6 +9,7 @@ publish.workspace = true
 aes-gcm.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
+jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
