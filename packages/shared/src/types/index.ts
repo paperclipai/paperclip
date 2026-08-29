@@ -13,6 +13,9 @@ export type {
   InteractionResolverKindGovernance,
 } from "./company.js";
 export type {
+  ClaimedRoutineSummaryRefreshSlot,
+  ClaimRoutineSummaryRefreshSlotsRequest,
+  ClaimRoutineSummaryRefreshSlotsResponse,
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
   GetSummarySlotResponse,

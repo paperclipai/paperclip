@@ -1,15 +1,18 @@
-import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documentRevisions,
   documents,
+  builtInManagedResources,
   executionWorkspaces,
   issues,
   projectWorkspaces,
   projects,
+  routines,
   summarySlots,
 } from "@paperclipai/db";
 import {
+  type ClaimRoutineSummaryRefreshSlotsResponse,
   type GenerateSummarySlotResponse,
   type GetSummarySlotResponse,
   type IssueStatus,
@@ -31,6 +34,7 @@ import { issueService } from "./issues.js";
 
 /** Built-in agent key for the Summarizer bundle (see PAP-13920). */
 export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
+export const SUMMARIZER_REFRESH_ROUTINE_KEY = "refresh-stale-summaries";
 
 /** Generation issues in these statuses are no longer active and can be superseded. */
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
@@ -580,6 +584,18 @@ export function summarySlotService(db: Db) {
     if (!issueRef.row) {
       throw forbidden("Linked generation task not found");
     }
+    if (issueRef.row.assigneeAgentId !== actor.agentId) {
+      throw forbidden("Generation task is not assigned to this agent");
+    }
+    const runId = actor.runId ?? null;
+    const runMatches =
+      !!runId && (issueRef.row.checkoutRunId === runId || issueRef.row.executionRunId === runId);
+    if (!runMatches) {
+      throw forbidden("Summary write must run from the linked generation task");
+    }
+
+    if (await isSummarizerRefreshRoutineIssue(sel.companyId, issueRef.row)) return;
+
     const payloadMatch = issueRef.row.description?.match(/```json\n([\s\S]*?)\n```/);
     let payload: Record<string, unknown> | null = null;
     try {
@@ -595,15 +611,186 @@ export function summarySlotService(db: Db) {
     ) {
       throw forbidden("Generation task does not target this summary slot");
     }
-    if (issueRef.row.assigneeAgentId !== actor.agentId) {
-      throw forbidden("Generation task is not assigned to this agent");
+  }
+
+  async function isSummarizerRefreshRoutineIssue(
+    companyId: string,
+    issueRow: typeof issues.$inferSelect,
+  ): Promise<boolean> {
+    if (issueRow.originKind !== "routine_execution" || !issueRow.originId) return false;
+    const row = await db
+      .select({ routineId: routines.id })
+      .from(routines)
+      .innerJoin(
+        builtInManagedResources,
+        and(
+          eq(builtInManagedResources.companyId, routines.companyId),
+          eq(builtInManagedResources.resourceId, routines.id),
+          eq(builtInManagedResources.bundleKey, SUMMARIZER_BUILT_IN_KEY),
+          eq(builtInManagedResources.resourceKind, "routine"),
+          eq(builtInManagedResources.resourceKey, SUMMARIZER_REFRESH_ROUTINE_KEY),
+        ),
+      )
+      .where(
+        and(
+          eq(routines.id, issueRow.originId),
+          eq(routines.companyId, companyId),
+          eq(routines.assigneeAgentId, issueRow.assigneeAgentId!),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return !!row;
+  }
+
+  async function assertRoutineRefreshWriter(
+    companyId: string,
+    generationIssueId: string,
+    actor: SummaryWriteActor,
+  ): Promise<typeof issues.$inferSelect> {
+    if (!actor.agentId) throw forbidden("Only the Summarizer refresh routine may claim summary slots");
+    const agent = await agents.getById(actor.agentId);
+    if (
+      !agent ||
+      agent.companyId !== companyId ||
+      readBuiltInAgentMarker(agent.metadata)?.key !== SUMMARIZER_BUILT_IN_KEY
+    ) {
+      throw forbidden("Only the Summarizer refresh routine may claim summary slots");
+    }
+    const issueRow = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, generationIssueId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !issueRow ||
+      issueRow.status !== "in_progress" ||
+      issueRow.assigneeAgentId !== actor.agentId ||
+      !(await isSummarizerRefreshRoutineIssue(companyId, issueRow))
+    ) {
+      throw forbidden("Summary refresh claims require the checked-out Summarizer routine task");
     }
     const runId = actor.runId ?? null;
-    const runMatches =
-      !!runId && (issueRef.row.checkoutRunId === runId || issueRef.row.executionRunId === runId);
-    if (!runMatches) {
-      throw forbidden("Summary write must run from the linked generation task");
+    if (!runId || (issueRow.checkoutRunId !== runId && issueRow.executionRunId !== runId)) {
+      throw forbidden("Summary refresh claims must run from the checked-out routine task");
     }
+    return issueRow;
+  }
+
+  async function hasMeaningfulScopeChange(
+    executor: Db,
+    slotRow: SummarySlotRow,
+  ): Promise<boolean> {
+    const since = slotRow.lastGeneratedAt;
+    if (!since) return false;
+    const changedIssue = async (conditions: ReturnType<typeof eq>[]) =>
+      executor
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, slotRow.companyId), isNull(issues.hiddenAt), gt(issues.updatedAt, since), ...conditions))
+        .limit(1)
+        .then((rows) => rows.length > 0);
+
+    if (slotRow.scopeKind === "project" && slotRow.scopeId) {
+      const [targetChanged, issueChanged] = await Promise.all([
+        executor.select({ id: projects.id }).from(projects).where(and(
+          eq(projects.id, slotRow.scopeId),
+          eq(projects.companyId, slotRow.companyId),
+          gt(projects.updatedAt, since),
+        )).limit(1).then((rows) => rows.length > 0),
+        changedIssue([eq(issues.projectId, slotRow.scopeId)]),
+      ]);
+      return targetChanged || issueChanged;
+    }
+    if (slotRow.scopeKind === "project_workspace" && slotRow.scopeId) {
+      const [targetChanged, issueChanged] = await Promise.all([
+        executor.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.id, slotRow.scopeId),
+          eq(projectWorkspaces.companyId, slotRow.companyId),
+          gt(projectWorkspaces.updatedAt, since),
+        )).limit(1).then((rows) => rows.length > 0),
+        changedIssue([eq(issues.projectWorkspaceId, slotRow.scopeId)]),
+      ]);
+      return targetChanged || issueChanged;
+    }
+    if (slotRow.scopeKind === "execution_workspace" && slotRow.scopeId) {
+      const [targetChanged, issueChanged] = await Promise.all([
+        executor.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+          eq(executionWorkspaces.id, slotRow.scopeId),
+          eq(executionWorkspaces.companyId, slotRow.companyId),
+          gt(executionWorkspaces.updatedAt, since),
+        )).limit(1).then((rows) => rows.length > 0),
+        changedIssue([eq(issues.executionWorkspaceId, slotRow.scopeId)]),
+      ]);
+      return targetChanged || issueChanged;
+    }
+    if (slotRow.scopeKind === "workspaces_overview") {
+      const [projectWorkspaceChanged, executionWorkspaceChanged, issueChanged] = await Promise.all([
+        executor.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.companyId, slotRow.companyId),
+          gt(projectWorkspaces.updatedAt, since),
+        )).limit(1).then((rows) => rows.length > 0),
+        executor.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+          eq(executionWorkspaces.companyId, slotRow.companyId),
+          gt(executionWorkspaces.updatedAt, since),
+        )).limit(1).then((rows) => rows.length > 0),
+        changedIssue([or(isNotNull(issues.projectWorkspaceId), isNotNull(issues.executionWorkspaceId))!]),
+      ]);
+      return projectWorkspaceChanged || executionWorkspaceChanged || issueChanged;
+    }
+    return false;
+  }
+
+  async function claimRoutineRefreshSlots(
+    input: {
+      companyId: string;
+      generationIssueId: string;
+      staleAfterHours: number;
+      maxSlots: number;
+      scopeKinds: SummarySlotScopeKind | "all";
+    },
+    actor: SummaryWriteActor,
+  ): Promise<ClaimRoutineSummaryRefreshSlotsResponse> {
+    await assertRoutineRefreshWriter(input.companyId, input.generationIssueId, actor);
+    const cutoff = new Date(Date.now() - input.staleAfterHours * 60 * 60 * 1_000);
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const candidates = await txDb
+        .select()
+        .from(summarySlots)
+        .where(and(
+          eq(summarySlots.companyId, input.companyId),
+          inArray(summarySlots.status, ["idle", "failed"]),
+          isNotNull(summarySlots.documentId),
+          isNotNull(summarySlots.lastGeneratedAt),
+          lte(summarySlots.lastGeneratedAt, cutoff),
+          ...(input.scopeKinds === "all" ? [] : [eq(summarySlots.scopeKind, input.scopeKinds)]),
+        ))
+        .orderBy(asc(summarySlots.lastGeneratedAt), asc(summarySlots.id))
+        .for("update");
+
+      const claimed: ClaimRoutineSummaryRefreshSlotsResponse["slots"] = [];
+      for (const candidate of candidates) {
+        if (claimed.length >= input.maxSlots) break;
+        if (!(await hasMeaningfulScopeChange(txDb, candidate))) continue;
+        const [nextSlot] = await txDb
+          .update(summarySlots)
+          .set({
+            status: "generating",
+            failureReason: null,
+            generatingIssueId: input.generationIssueId,
+            updatedAt: new Date(),
+          })
+          .where(eq(summarySlots.id, candidate.id))
+          .returning();
+        const document = await txDb
+          .select()
+          .from(documents)
+          .where(and(eq(documents.id, candidate.documentId!), eq(documents.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (nextSlot && document) claimed.push({ slot: mapSlot(nextSlot), document: mapDocument(document) });
+      }
+      return { slots: claimed };
+    });
   }
 
   async function write(
@@ -758,6 +945,7 @@ export function summarySlotService(db: Db) {
     getSlot,
     listRevisions,
     generate,
+    claimRoutineRefreshSlots,
     write,
   };
 }

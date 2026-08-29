@@ -28,6 +28,7 @@ export const API = {
   summarySlot: `${API_PREFIX}/companies/:companyId/summary-slots/:scopeKind/:slotKey`,
   summarySlotRevisions: `${API_PREFIX}/companies/:companyId/summary-slots/:scopeKind/:slotKey/revisions`,
   summarySlotGenerate: `${API_PREFIX}/companies/:companyId/summary-slots/:scopeKind/:slotKey/generate`,
+  summarySlotRoutineRefreshClaim: `${API_PREFIX}/companies/:companyId/summary-slots/routine-refresh/claim`,
   goals: `${API_PREFIX}/goals`,
   approvals: `${API_PREFIX}/approvals`,
   secrets: `${API_PREFIX}/secrets`,

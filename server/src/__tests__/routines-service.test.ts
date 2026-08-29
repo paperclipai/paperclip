@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  builtInManagedResources,
   companies,
   companySecretBindings,
   companySecrets,
@@ -62,6 +63,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
     }
     await db.delete(activityLog);
+    await db.delete(builtInManagedResources);
     await db.delete(issueInboxArchives);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
@@ -1239,6 +1241,28 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         },
       },
     ]);
+  });
+
+  it("applies a built-in routine's cheap model profile to its execution issue", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db.insert(builtInManagedResources).values({
+      companyId,
+      bundleKey: "summarizer",
+      resourceKind: "routine",
+      resourceKey: "refresh-stale-summaries",
+      resourceId: routine.id,
+      stockVersion: "test",
+      stockHash: "test",
+      defaultsJson: { issueTemplate: { modelProfile: "cheap" } },
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    const [executionIssue] = await db
+      .select({ assigneeAdapterOverrides: issues.assigneeAdapterOverrides })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!));
+
+    expect(executionIssue?.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
   });
 
   it("records the manual board runner on fresh routine issues so they appear in that user's inbox", async () => {
