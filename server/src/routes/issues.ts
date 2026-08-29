@@ -202,6 +202,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
+  resolveCreatedByRunId,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
@@ -6978,7 +6979,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: transition.decision.outcome,
               body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
+              createdByRunId: await resolveCreatedByRunId(tx, lockedIssue.companyId, actor.runId),
             });
           }
         }
@@ -8104,7 +8105,7 @@ export function issueRoutes(
             },
           },
           sourceTrust: promotionTrust,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId: await resolveCreatedByRunId(tx, issue.companyId, actor.runId),
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -9977,7 +9978,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: decision.outcome,
               body: decision.body,
-              createdByRunId: actor.runId ?? null,
+              createdByRunId: await resolveCreatedByRunId(tx, updated.companyId, actor.runId),
             });
           }
 
@@ -12456,7 +12457,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: transition.decision.outcome,
               body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
+              createdByRunId: await resolveCreatedByRunId(tx, updated.companyId, actor.runId),
             });
           }
 
