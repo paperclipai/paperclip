@@ -1,0 +1,13 @@
+# Normalize line endings repo-wide.
+#
+# Several checks in this repo compare freshly generated LF text against a
+# committed artifact byte-for-byte, or hash a source file's exact bytes: the PRP
+# contract manifest, the generated schema bundle, the semantic action catalog,
+# and the replay goldens under packages/paperclip-runner. On a Windows clone
+# with core.autocrlf=true those files check out as CRLF, so every `--check`
+# script reports a stale artifact even when nothing changed, which blocks the
+# runner build and the server typecheck that depends on it.
+#
+# `text=auto` lets git keep detecting binary files and leave them alone;
+# `eol=lf` pins the working-tree copy of everything it does treat as text.
+* text=auto eol=lf
