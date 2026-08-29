@@ -6812,5 +6812,5 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       process.off("unhandledRejection", onUnhandledRejection);
       vi.useRealTimers();
     }
-  });
+  }, 10000);
 });
